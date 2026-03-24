@@ -91,7 +91,7 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
   fi
 
   target_link="$SKILLS_DIR/$skill_name"
-  jj_target="jjstack/skills/$skill_name"
+  jj_target="$JJSTACK_DIR/skills/$skill_name"
 
   if [ -L "$target_link" ]; then
     current_target="$(readlink "$target_link")"
