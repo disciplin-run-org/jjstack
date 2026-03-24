@@ -1,0 +1,123 @@
+#!/bin/bash
+# jjstack uninstaller — restores gstack symlinks and removes jjstack hooks.
+#
+# Does NOT remove:
+# - Config files (.jjstack.config.yaml in projects)
+# - Output files ({repo}/jjstack/ directories)
+# - State directory (~/.jjstack/)
+set -euo pipefail
+
+SKILLS_DIR="$HOME/.claude/skills"
+HOOKS_DIR="$HOME/.claude/hooks"
+MANIFEST="$SKILLS_DIR/jjstack/.install-manifest"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[jjstack]${NC} $1"; }
+ok()    { echo -e "${GREEN}[jjstack]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[jjstack]${NC} $1"; }
+fail()  { echo -e "${RED}[jjstack]${NC} $1"; exit 1; }
+
+# ─── Step 1: Read manifest ──────────────────────────────────
+if [ ! -f "$MANIFEST" ]; then
+  fail "No install manifest found at $MANIFEST. Was jjstack installed?"
+fi
+
+RESTORED=()
+REMOVED=()
+SKIPPED=()
+
+while IFS='|' read -r name orig_target jj_target; do
+  [ -z "$name" ] && continue
+  [[ "$name" == \#* ]] && continue
+
+  target_link="$SKILLS_DIR/$name"
+
+  if [ ! -L "$target_link" ]; then
+    warn "SKIPPED: $name is not a symlink (modified since install)"
+    SKIPPED+=("$name")
+    continue
+  fi
+
+  current_target="$(readlink "$target_link")"
+  if ! echo "$current_target" | grep -q "jjstack/"; then
+    warn "SKIPPED: $name no longer points to jjstack ($current_target)"
+    SKIPPED+=("$name")
+    continue
+  fi
+
+  if [ -n "$orig_target" ]; then
+    # Restore original gstack symlink
+    ln -snf "$orig_target" "$target_link"
+    ok "Restored $name → $orig_target"
+    RESTORED+=("$name")
+  else
+    # New skill (no gstack original) — remove symlink
+    rm -f "$target_link"
+    ok "Removed $name"
+    REMOVED+=("$name")
+  fi
+done < "$MANIFEST"
+
+# ─── Step 2: Remove hook ────────────────────────────────────
+HOOK_DST="$HOOKS_DIR/auto-approve-safe.sh"
+HOOK_STATUS="not found"
+
+if [ -L "$HOOK_DST" ]; then
+  hook_target="$(readlink "$HOOK_DST")"
+  if echo "$hook_target" | grep -q "jjstack"; then
+    rm -f "$HOOK_DST"
+    HOOK_STATUS="removed"
+    ok "Removed hook symlink"
+  else
+    HOOK_STATUS="skipped (not jjstack)"
+    warn "Hook at $HOOK_DST does not point to jjstack — skipping"
+  fi
+fi
+
+# Remove hook config from settings.json
+if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if grep -q "auto-approve-safe" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq 'del(.hooks.PermissionRequest)' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Removed hook config from settings.json"
+  fi
+fi
+
+# ─── Step 3: Remove jjstack root symlink ─────────────────────
+if [ -L "$SKILLS_DIR/jjstack" ]; then
+  rm -f "$SKILLS_DIR/jjstack"
+  ok "Removed $SKILLS_DIR/jjstack symlink"
+fi
+
+# ─── Step 4: Summary ────────────────────────────────────────
+echo ""
+echo -e "${CYAN}jjstack uninstalled${NC}"
+echo ""
+
+if [ ${#RESTORED[@]} -gt 0 ]; then
+  echo "  Restored to gstack:"
+  for s in "${RESTORED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#REMOVED[@]} -gt 0 ]; then
+  echo "  Removed (jjstack-only):"
+  for s in "${REMOVED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#SKIPPED[@]} -gt 0 ]; then
+  echo "  Skipped:"
+  for s in "${SKIPPED[@]}"; do echo "    $s"; done
+fi
+
+echo ""
+echo "  Hook: $HOOK_STATUS"
+echo ""
+echo "  Note: ~/.jjstack/ state dir and project output were left intact."
+echo ""

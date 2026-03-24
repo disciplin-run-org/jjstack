@@ -1,0 +1,23 @@
+version: 1
+
+# Quality thresholds
+review:
+  min_score: 10              # gstack default: 8
+  max_iterations: 3          # how many times to loop for higher score
+  adversarial_passes: 2      # gstack default: 1
+
+# Output location
+output:
+  location: repo             # "repo" = {repo}/jjstack/, "home" = ~/.gstack/projects/
+  repo_subdir: jjstack       # subdirectory name in repo
+
+# DNA injection (optional — users bring their own)
+# Paths are absolute or relative to the project repo root.
+dna:
+  voice: null                # path to voice DNA file, e.g., ~/ai-personalizations/voice-dna/Voice.md
+  coding: null               # path to coding DNA file, e.g., ~/ai-personalizations/coding-dna/Coding.md
+
+# gstack compatibility — update if gstack changes its output paths
+gstack_compat:
+  output_path: ~/.gstack/projects/$SLUG/   # where gstack writes per-project files
+  min_version: "0.11.0.0"                  # minimum gstack version required

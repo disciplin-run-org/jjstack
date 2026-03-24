@@ -1,0 +1,217 @@
+#!/bin/bash
+# jjstack setup — derived distribution for gstack
+#
+# Creates symlinks in ~/.claude/skills/ so jjstack skills are globally
+# available in every Claude Code session. Wrapper skills replace gstack
+# symlinks; new skills get fresh symlinks.
+#
+# Installs gstack automatically if not present (it's a dependency).
+#
+# Idempotent: safe to re-run after upgrades to pick up new skills.
+set -euo pipefail
+
+JJSTACK_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILLS_DIR="$HOME/.claude/skills"
+HOOKS_DIR="$HOME/.claude/hooks"
+STATE_DIR="$HOME/.jjstack"
+MANIFEST="$SKILLS_DIR/jjstack/.install-manifest"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[jjstack]${NC} $1"; }
+ok()    { echo -e "${GREEN}[jjstack]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[jjstack]${NC} $1"; }
+fail()  { echo -e "${RED}[jjstack]${NC} $1"; exit 1; }
+
+# ─── Step 1: Ensure gstack is installed ───────────────────────
+GSTACK_DIR="$SKILLS_DIR/gstack"
+GSTACK_VERSION_FILE="$GSTACK_DIR/VERSION"
+
+if [ ! -f "$GSTACK_VERSION_FILE" ]; then
+  info "gstack not found — installing dependency..."
+  mkdir -p "$SKILLS_DIR"
+  if ! git clone https://github.com/garrytan/gstack.git "$GSTACK_DIR"; then
+    fail "Failed to clone gstack. Check your network connection and try again."
+  fi
+  if [ -x "$GSTACK_DIR/setup" ]; then
+    info "Running gstack setup..."
+    (cd "$GSTACK_DIR" && ./setup)
+  fi
+  ok "gstack installed"
+fi
+
+GSTACK_VERSION="$(cat "$GSTACK_VERSION_FILE" | tr -d '[:space:]')"
+info "Found gstack v${GSTACK_VERSION}"
+
+# ─── Step 2: Symlink jjstack repo root ────────────────────────
+ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
+ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
+
+# ─── Step 3: Create state directory ──────────────────────────
+mkdir -p "$STATE_DIR"
+
+# ─── Step 4: Install skills ──────────────────────────────────
+INSTALLED=()
+REPLACED=()
+SKIPPED=()
+NEW=()
+
+# Read existing manifest if present (for idempotent re-runs)
+declare -A EXISTING_ORIGINALS
+if [ -f "$MANIFEST" ]; then
+  while IFS='|' read -r name orig_target jj_target; do
+    [ -z "$name" ] && continue
+    [[ "$name" == \#* ]] && continue
+    EXISTING_ORIGINALS["$name"]="$orig_target"
+  done < "$MANIFEST"
+fi
+
+# Build new manifest
+MANIFEST_LINES=()
+MANIFEST_LINES+=("# jjstack install manifest — DO NOT EDIT")
+MANIFEST_LINES+=("# format: skill-name|original-target|jjstack-target")
+
+for skill_dir in "$JJSTACK_DIR"/skills/*/; do
+  [ ! -d "$skill_dir" ] && continue
+  skill_name="$(basename "$skill_dir")"
+
+  # Skip skills without a SKILL.md (empty dirs from design phase)
+  if [ ! -f "$skill_dir/SKILL.md" ]; then
+    continue
+  fi
+
+  # Skip the jjstack meta-skill for symlink purposes (it's accessed via jjstack/ root link)
+  if [ "$skill_name" = "jjstack" ]; then
+    continue
+  fi
+
+  target_link="$SKILLS_DIR/$skill_name"
+  jj_target="jjstack/skills/$skill_name"
+
+  if [ -L "$target_link" ]; then
+    current_target="$(readlink "$target_link")"
+
+    if echo "$current_target" | grep -q "gstack/"; then
+      # Replacing gstack symlink — save original for uninstall
+      original="$current_target"
+      # Check if we already have a saved original from a previous install
+      if [ -n "${EXISTING_ORIGINALS[$skill_name]:-}" ]; then
+        original="${EXISTING_ORIGINALS[$skill_name]}"
+      fi
+      ln -snf "$jj_target" "$target_link"
+      MANIFEST_LINES+=("$skill_name|$original|$jj_target")
+      REPLACED+=("$skill_name")
+      ok "Replaced $skill_name (was gstack)"
+
+    elif echo "$current_target" | grep -q "jjstack/"; then
+      # Already points to jjstack — update in case path changed
+      original="${EXISTING_ORIGINALS[$skill_name]:-}"
+      ln -snf "$jj_target" "$target_link"
+      MANIFEST_LINES+=("$skill_name|$original|$jj_target")
+      INSTALLED+=("$skill_name")
+
+    else
+      # Points somewhere else — don't touch
+      warn "SKIPPED: $skill_name already exists at $current_target. Remove it manually to use jjstack's version."
+      SKIPPED+=("$skill_name")
+    fi
+
+  elif [ -e "$target_link" ]; then
+    # Real directory or file — don't touch
+    warn "SKIPPED: $skill_name is a real directory/file. Remove it manually to use jjstack's version."
+    SKIPPED+=("$skill_name")
+
+  else
+    # Doesn't exist — new skill
+    ln -snf "$jj_target" "$target_link"
+    MANIFEST_LINES+=("$skill_name||$jj_target")
+    NEW+=("$skill_name")
+    ok "Installed $skill_name (new)"
+  fi
+done
+
+# Write manifest
+printf '%s\n' "${MANIFEST_LINES[@]}" > "$MANIFEST"
+
+# ─── Step 5: Install hooks ──────────────────────────────────
+mkdir -p "$HOOKS_DIR"
+
+HOOK_SRC="$JJSTACK_DIR/hooks/auto-approve-safe.sh"
+HOOK_DST="$HOOKS_DIR/auto-approve-safe.sh"
+HOOK_STATUS="skipped"
+
+if [ -f "$HOOK_SRC" ]; then
+  if [ -L "$HOOK_DST" ]; then
+    # Already a symlink — update it
+    ln -snf "$HOOK_SRC" "$HOOK_DST"
+    HOOK_STATUS="updated"
+  elif [ -f "$HOOK_DST" ]; then
+    # Real file exists — check if it's identical
+    if diff -q "$HOOK_SRC" "$HOOK_DST" >/dev/null 2>&1; then
+      HOOK_STATUS="already installed (identical)"
+    else
+      warn "Hook already exists at $HOOK_DST with different content. Skipping."
+      HOOK_STATUS="skipped (conflict)"
+    fi
+  else
+    ln -snf "$HOOK_SRC" "$HOOK_DST"
+    HOOK_STATUS="installed"
+  fi
+fi
+
+# Inject hook config into settings.json if not present
+if [ -f "$SETTINGS_FILE" ]; then
+  if ! grep -q "auto-approve-safe" "$SETTINGS_FILE" 2>/dev/null; then
+    if command -v jq >/dev/null 2>&1; then
+      TMP_SETTINGS=$(mktemp)
+      jq '.hooks.PermissionRequest = [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}]' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+      mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+      ok "Injected hook config into settings.json"
+    else
+      warn "jq not found — add the hook config to $SETTINGS_FILE manually"
+    fi
+  fi
+elif command -v jq >/dev/null 2>&1; then
+  echo '{}' | jq '.hooks.PermissionRequest = [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}]' > "$SETTINGS_FILE"
+  ok "Created settings.json with hook config"
+fi
+
+# ─── Step 6: Make scripts executable ─────────────────────────
+chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
+chmod +x "$HOOK_SRC" 2>/dev/null || true
+
+# ─── Step 7: Summary ─────────────────────────────────────────
+echo ""
+echo -e "${CYAN}jjstack v$(cat "$JJSTACK_DIR/VERSION" | tr -d '[:space:]') installed${NC}"
+echo ""
+
+if [ ${#REPLACED[@]} -gt 0 ]; then
+  echo "  Skills (replaced gstack):"
+  for s in "${REPLACED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#NEW[@]} -gt 0 ]; then
+  echo "  Skills (new):"
+  for s in "${NEW[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#INSTALLED[@]} -gt 0 ]; then
+  echo "  Skills (updated):"
+  for s in "${INSTALLED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#SKIPPED[@]} -gt 0 ]; then
+  echo "  Skills (skipped):"
+  for s in "${SKIPPED[@]}"; do echo "    $s"; done
+fi
+
+echo ""
+echo "  Hook: auto-approve-safe.sh ($HOOK_STATUS)"
+echo ""
+echo "  Usage: /plan-ceo-review (now uses jjstack wrapper)"
+echo ""
