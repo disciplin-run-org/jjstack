@@ -15,7 +15,7 @@ output:
 # Paths are absolute or relative to the project repo root.
 dna:
   voice: null                # path to voice DNA file, e.g., ~/ai-personalizations/voice-dna/Voice.md
-  coding: null               # path to coding DNA file, e.g., ~/ai-personalizations/coding-dna/Coding.md
+  coding: ~/.claude/skills/jjstack/references/coding-dna.md   # default jjstack DNA; override with your own
 
 # gstack compatibility — update if gstack changes its output paths
 gstack_compat:

@@ -20,13 +20,15 @@ description: >
 cat ~/.claude/skills/jjstack/jjstack.config.yaml
 ```
 
-Read the `dna.coding` path from the config. If it is not null, read that file in full.
-This is the complete specification of how the user writes Python — structure, naming,
-error handling, philosophy, and anti-patterns. It is not optional and must not be skimmed.
-Every line of Python you produce must match the coding DNA — not generic AI output.
+Read the `dna.coding` path from the config and read that file in full. This is the
+complete specification of how code should be written — structure, naming, error handling,
+philosophy, and anti-patterns. It is not optional and must not be skimmed. Every line of
+Python you produce must match the coding DNA — not generic AI output.
 
-If `dna.coding` is null or the file is not found, use the Quick-Reference Card below
-as the baseline standard.
+A default coding DNA ships with jjstack at `references/coding-dna.md`. Users can
+override it with their own by changing `dna.coding` in `jjstack.config.yaml`.
+
+If the DNA file is not found, use the Quick-Reference Card below as the baseline standard.
 
 ---
 
