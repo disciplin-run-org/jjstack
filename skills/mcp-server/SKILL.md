@@ -239,21 +239,26 @@ services:
     build:
       context: .
       dockerfile: <service>-mcp/Dockerfile
-    ports:
-      - "<host-port>:8000"
+    network_mode: host
     volumes:
       - ./data/<service>:/data
     environment:
       - PYTHONUNBUFFERED=1
       - MCP_TRANSPORT=sse
+      - MCP_PORT=<host-port>
     dns:
       - 8.8.8.8
       - 8.8.4.4
     restart: unless-stopped
 ```
 
-Port allocation convention — each MCP server gets its own host port.
-All containers listen internally on 8000.
+**Networking:** `network_mode: host` for all containers — no port mapping needed, the
+container binds directly to the host network. Set `MCP_PORT` in the environment to
+control which port each service listens on. This simplifies connectivity for AI clients
+and avoids Docker's NAT layer.
+
+Port allocation convention — each MCP server gets its own `MCP_PORT`.
+No `ports:` mapping needed with host networking.
 
 ---
 
@@ -309,7 +314,7 @@ dependencies = [
 3. Dockerfile sets `MCP_TRANSPORT=sse`
 4. Dockerfile build context is monorepo root
 5. `shared/` is copied and installed in Dockerfile
-6. Port 8000 exposed in Dockerfile, mapped to unique host port in docker-compose
+6. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
 7. Tool modules export `get_tools()` and `handle_tool()`
 8. Tool names follow `<service>_<action>` pattern
 9. `.mcp.json` entry added for SSE endpoint
