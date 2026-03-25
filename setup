@@ -185,15 +185,24 @@ fi
 MCP_JSON="$HOME/.mcp.json"
 CONTEXT7_STATUS="skipped"
 
+# Helper: prompt user, default Y. In non-interactive mode, auto-accept.
+ask_yes_no() {
+  if [ -t 0 ] && [ -t 1 ]; then
+    read -r -p "$1 [Y/n] " REPLY < /dev/tty
+    REPLY="${REPLY:-Y}"
+  else
+    REPLY="Y"
+  fi
+  [[ "$REPLY" =~ ^[Yy]$ ]]
+}
+
 if command -v npx >/dev/null 2>&1; then
   if [ -f "$MCP_JSON" ]; then
     if grep -q "context7" "$MCP_JSON" 2>/dev/null; then
       CONTEXT7_STATUS="already installed"
     elif command -v jq >/dev/null 2>&1; then
       info "Context7 provides live library documentation lookups for AI coding."
-      read -r -p "  Install Context7 MCP server? [Y/n] " REPLY < /dev/tty
-      REPLY="${REPLY:-Y}"
-      if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+      if ask_yes_no "  Install Context7 MCP server?"; then
         TMP_MCP=$(mktemp)
         jq '.mcpServers.context7 = {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}' "$MCP_JSON" > "$TMP_MCP"
         mv "$TMP_MCP" "$MCP_JSON"
@@ -208,9 +217,7 @@ if command -v npx >/dev/null 2>&1; then
   else
     # No .mcp.json yet — create one with Context7
     info "Context7 provides live library documentation lookups for AI coding."
-    read -r -p "  Install Context7 MCP server? [Y/n] " REPLY < /dev/tty
-    REPLY="${REPLY:-Y}"
-    if [[ "$REPLY" =~ ^[Yy]$ ]] && command -v jq >/dev/null 2>&1; then
+    if ask_yes_no "  Install Context7 MCP server?" && command -v jq >/dev/null 2>&1; then
       echo '{}' | jq '.mcpServers.context7 = {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}' > "$MCP_JSON"
       CONTEXT7_STATUS="installed"
       ok "Created $MCP_JSON with Context7"
