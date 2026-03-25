@@ -181,11 +181,53 @@ elif command -v jq >/dev/null 2>&1; then
   ok "Created settings.json with hook config"
 fi
 
-# ─── Step 6: Make scripts executable ─────────────────────────
+# ─── Step 6: Install Context7 MCP server ─────────────────────
+MCP_JSON="$HOME/.mcp.json"
+CONTEXT7_STATUS="skipped"
+
+if command -v npx >/dev/null 2>&1; then
+  if [ -f "$MCP_JSON" ]; then
+    if grep -q "context7" "$MCP_JSON" 2>/dev/null; then
+      CONTEXT7_STATUS="already installed"
+    elif command -v jq >/dev/null 2>&1; then
+      info "Context7 provides live library documentation lookups for AI coding."
+      read -r -p "  Install Context7 MCP server? [Y/n] " REPLY < /dev/tty
+      REPLY="${REPLY:-Y}"
+      if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+        TMP_MCP=$(mktemp)
+        jq '.mcpServers.context7 = {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}' "$MCP_JSON" > "$TMP_MCP"
+        mv "$TMP_MCP" "$MCP_JSON"
+        CONTEXT7_STATUS="installed"
+        ok "Context7 added to $MCP_JSON"
+      else
+        CONTEXT7_STATUS="declined"
+      fi
+    else
+      warn "jq not found — add Context7 to $MCP_JSON manually"
+    fi
+  else
+    # No .mcp.json yet — create one with Context7
+    info "Context7 provides live library documentation lookups for AI coding."
+    read -r -p "  Install Context7 MCP server? [Y/n] " REPLY < /dev/tty
+    REPLY="${REPLY:-Y}"
+    if [[ "$REPLY" =~ ^[Yy]$ ]] && command -v jq >/dev/null 2>&1; then
+      echo '{}' | jq '.mcpServers.context7 = {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}' > "$MCP_JSON"
+      CONTEXT7_STATUS="installed"
+      ok "Created $MCP_JSON with Context7"
+    else
+      CONTEXT7_STATUS="declined"
+    fi
+  fi
+else
+  warn "npx not found — Context7 requires Node.js. Install Node.js to enable live docs."
+  CONTEXT7_STATUS="skipped (no npx)"
+fi
+
+# ─── Step 7: Make scripts executable ─────────────────────────
 chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
 chmod +x "$HOOK_SRC" 2>/dev/null || true
 
-# ─── Step 7: Summary ─────────────────────────────────────────
+# ─── Step 8: Summary ─────────────────────────────────────────
 echo ""
 echo -e "${CYAN}jjstack v$(cat "$JJSTACK_DIR/VERSION" | tr -d '[:space:]') installed${NC}"
 echo ""
@@ -212,6 +254,7 @@ fi
 
 echo ""
 echo "  Hook: auto-approve-safe.sh ($HOOK_STATUS)"
+echo "  Context7: $CONTEXT7_STATUS"
 echo ""
 echo "  Usage: /plan-ceo-review (now uses jjstack wrapper)"
 echo ""
