@@ -230,11 +230,73 @@ else
   CONTEXT7_STATUS="skipped (no npx)"
 fi
 
-# ─── Step 7: Make scripts executable ─────────────────────────
+# ─── Step 7: Install Anthropic Verified Plugins ──────────────
+PLUGINS_DIR="$HOME/.claude/plugins"
+PLUGINS_CACHE="$PLUGINS_DIR/cache/claude-plugins-official"
+MARKETPLACE="$PLUGINS_DIR/marketplaces/claude-plugins-official"
+INSTALLED_PLUGINS="$PLUGINS_DIR/installed_plugins.json"
+ANTHROPIC_PLUGINS=("frontend-design" "code-review" "code-simplifier" "feature-dev" "ralph-loop")
+PLUGINS_INSTALLED=()
+PLUGINS_SKIPPED=()
+
+if [ -d "$MARKETPLACE/plugins" ] && command -v jq >/dev/null 2>&1; then
+  # Ensure installed_plugins.json exists
+  if [ ! -f "$INSTALLED_PLUGINS" ]; then
+    echo '{"version": 2, "plugins": {}}' > "$INSTALLED_PLUGINS"
+  fi
+
+  for plugin_name in "${ANTHROPIC_PLUGINS[@]}"; do
+    plugin_key="${plugin_name}@claude-plugins-official"
+    source_dir="$MARKETPLACE/plugins/$plugin_name"
+
+    # Skip if marketplace source doesn't exist
+    if [ ! -d "$source_dir" ]; then
+      PLUGINS_SKIPPED+=("$plugin_name (not in marketplace)")
+      continue
+    fi
+
+    # Skip if already installed
+    if jq -e ".plugins[\"$plugin_key\"]" "$INSTALLED_PLUGINS" >/dev/null 2>&1; then
+      PLUGINS_SKIPPED+=("$plugin_name (already installed)")
+      continue
+    fi
+
+    # Copy to cache
+    cache_dest="$PLUGINS_CACHE/$plugin_name/unknown"
+    mkdir -p "$cache_dest"
+    cp -r "$source_dir/." "$cache_dest/"
+
+    # Add to installed_plugins.json
+    TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    TMP_PLUGINS=$(mktemp)
+    jq --arg key "$plugin_key" \
+       --arg path "$cache_dest" \
+       --arg ts "$TIMESTAMP" \
+       '.plugins[$key] = [{"scope": "user", "installPath": $path, "version": "unknown", "installedAt": $ts, "lastUpdated": $ts}]' \
+       "$INSTALLED_PLUGINS" > "$TMP_PLUGINS"
+    mv "$TMP_PLUGINS" "$INSTALLED_PLUGINS"
+
+    # Enable in settings.json
+    if [ -f "$SETTINGS_FILE" ]; then
+      TMP_SETTINGS=$(mktemp)
+      jq --arg key "$plugin_key" '.enabledPlugins[$key] = true' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+      mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    fi
+
+    PLUGINS_INSTALLED+=("$plugin_name")
+    ok "Installed plugin: $plugin_name"
+  done
+else
+  if [ ! -d "$MARKETPLACE/plugins" ]; then
+    warn "Anthropic plugin marketplace not found. Install plugins manually via /plugin install."
+  fi
+fi
+
+# ─── Step 8: Make scripts executable ─────────────────────────
 chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
 chmod +x "$HOOK_SRC" 2>/dev/null || true
 
-# ─── Step 8: Summary ─────────────────────────────────────────
+# ─── Step 9: Summary ─────────────────────────────────────────
 echo ""
 echo -e "${CYAN}jjstack v$(cat "$JJSTACK_DIR/VERSION" | tr -d '[:space:]') installed${NC}"
 echo ""
@@ -257,6 +319,16 @@ fi
 if [ ${#SKIPPED[@]} -gt 0 ]; then
   echo "  Skills (skipped):"
   for s in "${SKIPPED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#PLUGINS_INSTALLED[@]} -gt 0 ]; then
+  echo "  Anthropic plugins (installed):"
+  for s in "${PLUGINS_INSTALLED[@]}"; do echo "    $s"; done
+fi
+
+if [ ${#PLUGINS_SKIPPED[@]} -gt 0 ]; then
+  echo "  Anthropic plugins (skipped):"
+  for s in "${PLUGINS_SKIPPED[@]}"; do echo "    $s"; done
 fi
 
 echo ""
