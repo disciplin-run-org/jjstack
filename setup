@@ -266,6 +266,9 @@ if [ -d "$MARKETPLACE/plugins" ] && command -v jq >/dev/null 2>&1; then
     mkdir -p "$cache_dest"
     cp -r "$source_dir/." "$cache_dest/"
 
+    # Make any hook scripts executable
+    find "$cache_dest" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+
     # Add to installed_plugins.json
     TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
     TMP_PLUGINS=$(mktemp)
