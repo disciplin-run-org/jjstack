@@ -66,7 +66,11 @@ Follow ALL instructions with output path override: `~/.gstack/projects/$SLUG/` â
 
 ### 3.1 Quality iteration loop
 
-If score < `MIN_SCORE` and iterations < `MAX_ITERATIONS`: dispatch fresh Agent subagent for cold re-review, fix issues, re-review. Never inflate scores.
+```bash
+cat ~/.claude/skills/jjstack/references/quality-loop.md
+```
+
+Follow the quality loop protocol exactly, using the current document as the review target.
 
 ### 3.2 Output verification
 

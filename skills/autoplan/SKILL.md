@@ -61,7 +61,11 @@ Follow ALL instructions with:
 
 ### 3.1 Quality iteration loop
 
-After each sub-review, if score < `MIN_SCORE` and iterations < `MAX_ITERATIONS`: dispatch fresh Agent subagent for cold re-review, fix issues, re-review.
+```bash
+cat ~/.claude/skills/jjstack/references/quality-loop.md
+```
+
+Follow the quality loop protocol exactly. For autoplan, apply the loop to **each sub-review stage independently** (CEO, design, eng) — each gets its own iteration budget.
 
 ### 3.2 Output verification
 

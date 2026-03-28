@@ -78,7 +78,11 @@ Follow ALL instructions with:
 
 ### 3.1 Quality iteration loop
 
-If health score < `MIN_SCORE` and iterations < `MAX_ITERATIONS`: run additional QA passes, fix newly found issues, re-test.
+```bash
+cat ~/.claude/skills/jjstack/references/quality-loop.md
+```
+
+Follow the quality loop protocol exactly, using the QA health score as the review target.
 
 ### 3.2 Cleanup verification
 

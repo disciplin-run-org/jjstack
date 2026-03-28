@@ -142,34 +142,11 @@ After the gstack skill completes, run these steps in order.
 The gstack skill has its own spec review loop (max 3 iterations, typically targeting 8/10).
 After gstack's loop completes, check the final quality score.
 
-If the score is **less than MIN_SCORE** (default: 10):
+```bash
+cat ~/.claude/skills/jjstack/references/quality-loop.md
+```
 
-**Iteration loop** (up to MAX_ITERATIONS additional passes):
-
-1. Use the `Agent` tool to dispatch a **fresh review subagent**. The subagent prompt
-   MUST present the document as a **first-time review** — do NOT include:
-   - The current iteration count
-   - Prior quality scores
-   - Change history or what was "fixed"
-   - Any context that would anchor the reviewer's assessment
-
-   The subagent reviews against these 5 dimensions (same as gstack):
-   - **Completeness** — Requirements addressed? Edge cases?
-   - **Consistency** — Parts agree? Contradictions?
-   - **Clarity** — Can an engineer implement without questions?
-   - **Scope** — Document creep? YAGNI violations?
-   - **Feasibility** — Actually buildable? Hidden complexity?
-
-2. Fix the issues identified by the subagent using the Edit tool.
-
-3. Re-dispatch a new fresh subagent for review (step 1 again).
-
-4. If score >= MIN_SCORE: **DONE**. Report final score.
-
-5. If MAX_ITERATIONS reached and score still < MIN_SCORE:
-   - Save the document as-is with a `## Reviewer Concerns` section listing unresolved issues
-   - Report: "Reached max iterations ({N}). Final score: {X}/10. Remaining issues listed in Reviewer Concerns."
-   - Do **NOT** inflate the score to exit the loop.
+Follow the quality loop protocol exactly, using the current document as the review target.
 
 ### 3.2 Output verification
 

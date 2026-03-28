@@ -78,13 +78,13 @@ Follow ALL instructions in that file with these overrides:
 
 ### 3.1 Quality iteration loop
 
-After gstack's review completes, check the quality score. If < `MIN_SCORE` (default 10) and iterations < `MAX_ITERATIONS` (default 3):
+After gstack's review completes, check the quality score.
 
-1. Dispatch a **fresh Agent subagent** for cold re-review (no prior scores, no iteration context).
-2. Fix identified issues.
-3. Re-dispatch for review.
-4. If score >= MIN_SCORE: **DONE**.
-5. If MAX_ITERATIONS reached: save as-is with `## Reviewer Concerns`, report honestly.
+```bash
+cat ~/.claude/skills/jjstack/references/quality-loop.md
+```
+
+Follow the quality loop protocol exactly, using the current document as the review target.
 
 ### 3.2 Output verification
 
