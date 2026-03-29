@@ -148,22 +148,13 @@ cat ~/.claude/skills/jjstack/references/quality-loop.md
 
 Follow the quality loop protocol exactly, using the current document as the review target.
 
-### 3.2 Output verification
-
-Verify output landed in the right place:
+### 3.2 Output capture
 
 ```bash
-ls {OUTPUT_DIR}/ceo-plans/ 2>/dev/null || echo "NO_OUTPUT"
+cat ~/.claude/skills/jjstack/references/output-capture.md
 ```
 
-If expected output files are missing from `{OUTPUT_DIR}` but present in
-`~/.gstack/projects/$SLUG/ceo-plans/`, move them:
-
-```bash
-mv ~/.gstack/projects/$SLUG/ceo-plans/{filename} {OUTPUT_DIR}/ceo-plans/
-```
-
-And warn: "Output redirect missed — moved files from ~/.gstack/projects/ to {OUTPUT_DIR}. Please report this so the wrapper can be fixed."
+Follow the output capture protocol to copy any files gstack wrote to `~/.gstack/projects/$SLUG/` into `{OUTPUT_DIR}`.
 
 ### 3.3 README maintenance
 

@@ -88,9 +88,13 @@ Follow the quality loop protocol exactly, using the QA health score as the revie
 
 Verify all test data created during QA has been cleaned up. If any remains, clean it and warn.
 
-### 3.3 Output verification
+### 3.3 Output capture
 
-Move any leaked files from `~/.gstack/qa-reports/` to `{OUTPUT_DIR}/qa-reports/`.
+```bash
+cat ~/.claude/skills/jjstack/references/output-capture.md
+```
+
+Follow the output capture protocol. This is a QA skill — the protocol includes Step 3 for capturing `.gstack/qa-reports/` as well.
 
 ### 3.4 README maintenance
 

@@ -66,9 +66,13 @@ Follow ALL instructions with output path override: `~/.gstack/qa-reports/` → `
 
 Verify all test data created during QA has been cleaned up.
 
-### 3.2 Output verification
+### 3.2 Output capture
 
-Move any leaked files from `~/.gstack/qa-reports/` to `{OUTPUT_DIR}/qa-reports/`.
+```bash
+cat ~/.claude/skills/jjstack/references/output-capture.md
+```
+
+Follow the output capture protocol. This is a QA skill — the protocol includes Step 3 for capturing `.gstack/qa-reports/` as well.
 
 ### 3.3 README maintenance
 

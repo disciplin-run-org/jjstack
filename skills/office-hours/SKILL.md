@@ -86,13 +86,13 @@ cat ~/.claude/skills/jjstack/references/quality-loop.md
 
 Follow the quality loop protocol exactly, using the current document as the review target.
 
-### 3.2 Output verification
+### 3.2 Output capture
 
 ```bash
-ls {OUTPUT_DIR}/ 2>/dev/null || echo "NO_OUTPUT"
+cat ~/.claude/skills/jjstack/references/output-capture.md
 ```
 
-If output missing from `{OUTPUT_DIR}` but present in `~/.gstack/projects/$SLUG/`, move it and warn.
+Follow the output capture protocol to copy any files gstack wrote to `~/.gstack/projects/$SLUG/` into `{OUTPUT_DIR}`.
 
 ### 3.3 README maintenance
 

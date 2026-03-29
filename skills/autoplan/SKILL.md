@@ -67,9 +67,13 @@ cat ~/.claude/skills/jjstack/references/quality-loop.md
 
 Follow the quality loop protocol exactly. For autoplan, apply the loop to **each sub-review stage independently** (CEO, design, eng) — each gets its own iteration budget.
 
-### 3.2 Output verification
+### 3.2 Output capture
 
-Move any leaked files from `~/.gstack/projects/$SLUG/` to `{OUTPUT_DIR}`.
+```bash
+cat ~/.claude/skills/jjstack/references/output-capture.md
+```
+
+Follow the output capture protocol.
 
 ### 3.3 README maintenance
 

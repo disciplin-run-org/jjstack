@@ -65,9 +65,13 @@ If a `debug/heal.py` exists in the project, ensure all new diagnostic checks and
 
 If no heal framework exists, suggest running `/heal` to create one.
 
-### 3.2 Output verification
+### 3.2 Output capture
 
-Move any leaked files from `~/.gstack/projects/$SLUG/` to `{OUTPUT_DIR}`.
+```bash
+cat ~/.claude/skills/jjstack/references/output-capture.md
+```
+
+Follow the output capture protocol.
 
 ### 3.3 README maintenance
 
