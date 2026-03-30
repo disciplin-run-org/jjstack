@@ -21,16 +21,12 @@ Every MCP server MUST support both transports, selectable via `MCP_TRANSPORT` en
 
 `MCP_TRANSPORT` defaults to `stdio` so the server works out of the box for local dev.
 
-**Streamable HTTP** replaces SSE as the standard network transport. It supports
-session management, resumability, and both SSE and JSON response modes over a
-single `/mcp` endpoint.
-
 ---
 
 ## Server Structure
 
-Use the low-level `mcp.server.Server` class (not `FastMCP`). This keeps tool registration
-explicit and matches the existing codebase pattern.
+Use **FastMCP** for all MCP servers. It handles tool registration, schema generation,
+session management, and transport selection automatically.
 
 ### Minimal dual-transport server.py
 
@@ -42,164 +38,42 @@ Supports stdio and streamable HTTP transports (MCP_TRANSPORT env var).
 """
 
 # Standard Libraries
-import asyncio
-import logging
 import os
 
 # 3rd party
-import mcp.server.stdio
-import mcp.types as types
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
+from fastmcp import FastMCP
 
 # Local
 from <package>.tools import <module>
 
-log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-server = Server("<server-name>")
-
 SERVER_NAME = "<server-name>"
-SERVER_VERSION = "0.1.0"
+
+mcp = FastMCP(SERVER_NAME)
 
 
 ######################################################################
-# Tool Handlers
+# Tools
 ######################################################################
 
-
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
-    """Return all available tools."""
-    all_tools: list[types.Tool] = []
-    all_tools.extend(<module>.get_tools())
-    return all_tools
-
-
-@server.call_tool()
-async def handle_call_tool(
-    name: str,
-    arguments: dict | None,
-) -> list[types.TextContent]:
-    """Route a tool call to the appropriate handler."""
-    args = arguments or {}
-    log.info("Tool called: %s with args: %s", name, list(args.keys()))
-
-    if name.startswith("<prefix>_"):
-        return await <module>.handle_tool(name, args)
-    # end if
-    raise ValueError(f"Unknown tool: {name}")
+# Import and register tools from tool modules
+<module>.register_tools(mcp)
 
 
 ######################################################################
-# Transport
+# FastAPI App (HTTP transport)
 ######################################################################
 
 
-def _init_options() -> InitializationOptions:
-    """Build MCP initialization options."""
-    return InitializationOptions(
-        server_name=SERVER_NAME,
-        server_version=SERVER_VERSION,
-        capabilities=server.get_capabilities(
-            notification_options=NotificationOptions(),
-            experimental_capabilities={},
-        ),
-    )
-
-
-async def _run_stdio() -> None:
-    """Run MCP server over stdin/stdout."""
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, _init_options())
-    # end with
-    return
-
-
-######################################################################
-# Streamable HTTP Transport
-######################################################################
-
-# Active sessions — keyed by mcp-session-id header
-_transports: dict[str, "StreamableHTTPServerTransport"] = {}
-
-
-async def _run_session(transport: "StreamableHTTPServerTransport") -> None:
-    """Run MCP server for a session's lifetime in the background."""
-    async with transport.connect() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, _init_options())
-    # end with
-    return
-
-
-async def _mcp_asgi_app(scope: dict, receive, send) -> None:
-    """ASGI app that handles streamable HTTP MCP requests."""
-    from mcp.server.streamable_http import StreamableHTTPServerTransport
-    from starlette.requests import Request
-    from uuid import uuid4
-
-    request = Request(scope, receive)
-    session_id = request.headers.get("mcp-session-id")
-
-    # Reuse existing session
-    if session_id and session_id in _transports:
-        transport = _transports[session_id]
-        await transport.handle_request(scope, receive, send)
-        if transport.is_terminated:
-            del _transports[session_id]
-        # end if
-        return
-    # end if
-
-    # Create new session
-    new_sid = uuid4().hex
-    transport = StreamableHTTPServerTransport(
-        mcp_session_id=new_sid,
-        is_json_response_enabled=True,
-    )
-
-    # Start server in background
-    asyncio.create_task(_run_session(transport))
-    await asyncio.sleep(0.05)  # Let connect() initialize
-
-    # Handle first request
-    await transport.handle_request(scope, receive, send)
-
-    # Store for subsequent requests
-    if transport.mcp_session_id:
-        _transports[transport.mcp_session_id] = transport
-    # end if
-    return
-
-
-######################################################################
-# FastAPI App
-######################################################################
-
-
-def create_mcp_routes(app: "FastAPI") -> None:
-    """Mount Streamable HTTP MCP at /mcp on a FastAPI app."""
-    from starlette.routing import Mount
-
-    app.router.routes.insert(0, Mount("/mcp", app=_mcp_asgi_app))
-    return
-
-
-def create_app() -> "FastAPI":
-    """Create the FastAPI app with MCP + landing page."""
+def create_app():
+    """Create FastAPI app with MCP mounted at /mcp."""
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
-    from contextlib import asynccontextmanager
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        create_mcp_routes(app)
-        log.info("MCP mounted at /mcp")
-        yield
-        return
+    port = os.environ.get("MCP_PORT", "8000")
+    mcp_app = mcp.http_app(path="/")
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
+    app.mount("/mcp", mcp_app)
 
     @app.get("/", response_class=HTMLResponse)
     async def root():
@@ -207,29 +81,31 @@ def create_app() -> "FastAPI":
         return f"""
         <h1>{SERVER_NAME}</h1>
         <p>MCP endpoint: <code>/mcp</code></p>
-        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "http://localhost:{os.environ.get('MCP_PORT', '8000')}/mcp"}}}}}}</pre>
+        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "http://localhost:{port}/mcp"}}}}}}</pre>
         """
     # end def
 
     return app
 
 
-async def main() -> None:
+######################################################################
+# Main
+######################################################################
+
+
+def main() -> None:
     """Run the MCP server using the transport selected by MCP_TRANSPORT."""
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
 
     if transport == "stdio":
-        await _run_stdio()
+        mcp.run()
     elif transport == "http":
         import uvicorn
 
         host = os.environ.get("MCP_HOST", "0.0.0.0")
         port = int(os.environ.get("MCP_PORT", "8000"))
         app = create_app()
-        config = uvicorn.Config(app, host=host, port=port, log_level="info")
-        uvicorn_server = uvicorn.Server(config)
-        log.info("Listening on %s:%d (MCP at /mcp)", host, port)
-        await uvicorn_server.serve()
+        uvicorn.run(app, host=host, port=port)
     else:
         raise ValueError(f"Unknown MCP_TRANSPORT: {transport!r}. Use 'stdio' or 'http'.")
     # end if
@@ -237,47 +113,103 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
 # end if
 ```
 
 **Key details:**
-- Every HTTP server is a FastAPI app — MCP at `/mcp`, landing page at `/`
-- Sessions tracked server-side in `_transports` dict, keyed by `mcp-session-id` header
-- Each session gets a background task running `_run_session`
-- Terminated sessions automatically cleaned up
-- `is_json_response_enabled=True` returns JSON (simpler for clients)
-- `create_mcp_routes(app)` can mount MCP on any existing FastAPI app
-- Landing page at `/` shows connection instructions for the MCP endpoint
+- FastMCP handles all transport, session management, and schema generation
+- `mcp.run()` for stdio, `mcp.http_app()` for streamable HTTP — zero boilerplate
+- `mcp_app.lifespan` passed to FastAPI ensures proper session management
+- Landing page at `/` shows connection instructions
 - Add your own routes (OAuth callbacks, web UI, etc.) to the FastAPI app as needed
 
 ---
 
 ## Tool Module Pattern
 
-Each tool module (`tools/<service>.py`) exports exactly two things:
+Each tool module registers tools directly on the FastMCP instance using the
+`@mcp.tool` decorator. Type hints and docstrings become the tool's schema and
+description automatically.
 
 ```python
-def get_tools() -> list[types.Tool]:
-    """Tool definitions with JSON schema."""
-    ...
+"""tools/<service>.py — Tool definitions for <service>."""
 
-async def handle_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    """Dispatch to private _<action> handlers."""
+from fastmcp import FastMCP
+
+
+def register_tools(mcp: FastMCP) -> None:
+    """Register all <service> tools on the MCP server."""
+
+    @mcp.tool
+    def <service>_read(item_id: str) -> dict:
+        """Read a <service> item by ID."""
+        # implementation
+        return {"id": item_id, "name": "example"}
+    # end def
+
+    @mcp.tool
+    def <service>_create(name: str, description: str = "") -> dict:
+        """Create a new <service> item."""
+        # implementation
+        return {"id": "new-id", "name": name}
+    # end def
+
+    @mcp.tool
+    def <service>_list(limit: int = 50) -> list[dict]:
+        """List all <service> items."""
+        # implementation
+        return []
+    # end def
+
+    return
+```
+
+**Key rules:**
+- Tool names follow `<service>_<action>` pattern (e.g., `docs_read`, `sheets_update`)
+- Type hints on parameters and return values are mandatory — FastMCP generates JSON schema from them
+- Docstrings are mandatory — they become the tool description the LLM sees
+- One `register_tools(mcp)` function per module, called from `server.py`
+- No manual schema definitions, no `get_tools()` / `handle_tool()` boilerplate
+
+---
+
+## Mounting MCP on an Existing FastAPI App
+
+For servers that already have a FastAPI app (web UI, OAuth, etc.), mount MCP
+onto the existing app instead of creating a new one:
+
+```python
+from fastapi import FastAPI
+from fastmcp import FastMCP
+
+mcp = FastMCP("My Service")
+
+# ... register tools ...
+
+mcp_app = mcp.http_app(path="/")
+
+# Pass mcp_app.lifespan to your existing app — required for session management
+app = FastAPI(title="My Service", lifespan=mcp_app.lifespan)
+app.mount("/mcp", mcp_app)
+
+# Your existing routes
+@app.get("/settings/auth/github")
+async def github_auth():
     ...
 ```
 
-Private handlers are named `_<service>_<action>(arguments)`.
-
-Tool names use the pattern `<service>_<action>` (e.g., `docs_read`, `sheets_update`).
-The server routes by prefix.
+This gives you a single server on one port:
+- `/mcp` — MCP streamable HTTP (AI agent access)
+- `/` — Web UI or landing page (human access)
+- Any other routes you need (OAuth callbacks, etc.)
 
 ---
 
 ## Dockerfile Pattern
 
 ```dockerfile
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -288,7 +220,7 @@ RUN pip install --no-cache-dir /tmp/shared/ && rm -rf /tmp/shared/
 # Install server dependencies
 COPY <service>-mcp/pyproject.toml ./
 RUN pip install --no-cache-dir \
-    "mcp>=1.26.0" \
+    "fastmcp>=2.0.0" \
     "fastapi>=0.104.0" \
     "uvicorn[standard]>=0.23.0" \
     <additional-deps>
@@ -311,8 +243,8 @@ CMD ["python", "-m", "<package>.server"]
 
 Key points:
 - Build context is always the **monorepo root** (so `shared/` can be copied in).
-- `mcp>=1.26.0` required for streamable HTTP support.
-- `fastapi` and `uvicorn` are required dependencies for HTTP transport (FastAPI includes Starlette).
+- `fastmcp>=2.0.0` handles MCP protocol, streamable HTTP, and session management.
+- `fastapi` and `uvicorn` for the HTTP server.
 - `MCP_TRANSPORT=http` is set in the Dockerfile since containers always use HTTP.
 - Port 8000 is the standard MCP HTTP port.
 
@@ -377,19 +309,13 @@ For local dev (no container):
 }
 ```
 
-**Note:** Streamable HTTP uses a single `/mcp` endpoint (unlike SSE which needed
-separate `/sse` and `/messages/` routes). The client handles session management
-transparently via the `mcp-session-id` header.
-
 ---
 
 ## pyproject.toml Dependencies
 
-Streamable HTTP transport requires these dependencies:
-
 ```toml
 dependencies = [
-    "mcp>=1.26.0",
+    "fastmcp>=2.0.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.23.0",
     # ... service-specific deps
@@ -400,15 +326,16 @@ dependencies = [
 
 ## Checklist — New MCP Server
 
-1. Server supports both stdio and streamable HTTP via `MCP_TRANSPORT` env var
-2. Default transport is `stdio` (local dev friendly)
-3. Dockerfile sets `MCP_TRANSPORT=http`
-4. Dockerfile build context is monorepo root
-5. `shared/` is copied and installed in Dockerfile
-6. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
-7. Tool modules export `get_tools()` and `handle_tool()`
+1. Uses FastMCP with `@mcp.tool` decorator for all tools
+2. Server supports both stdio and streamable HTTP via `MCP_TRANSPORT` env var
+3. Default transport is `stdio` (local dev friendly)
+4. Dockerfile sets `MCP_TRANSPORT=http`
+5. Dockerfile build context is monorepo root
+6. `shared/` is copied and installed in Dockerfile
+7. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
 8. Tool names follow `<service>_<action>` pattern
-9. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-10. `mcp>=1.26.0`, `fastapi`, and `uvicorn` in dependencies
-11. Session tracking via `_transports` dict with cleanup on termination
+9. All tools have type hints and docstrings (FastMCP generates schema from them)
+10. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
+11. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 12. Landing page at `/` with MCP connection instructions
+13. `mcp_app.lifespan` passed to FastAPI app for session management
