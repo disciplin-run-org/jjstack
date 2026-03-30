@@ -222,6 +222,50 @@ if __name__ == "__main__":
 
 ---
 
+## FastAPI Mount Pattern (hybrid servers)
+
+Most real MCP servers also serve a web UI and REST API. In that case, mount MCP
+on an existing FastAPI app instead of running a standalone Starlette server.
+
+This is the pattern used by leanspecs and should be the default for any server
+that has a web interface.
+
+```python
+def create_mcp_routes(app: "FastAPI") -> None:
+    """Mount Streamable HTTP MCP at /mcp on a FastAPI app."""
+    from starlette.routing import Mount
+
+    app.router.routes.insert(0, Mount("/mcp", app=_mcp_asgi_app))
+    return
+```
+
+Call this from your FastAPI lifespan or startup:
+
+```python
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize your application state here
+    create_mcp_routes(app)
+    log.info("MCP mounted at /mcp")
+    yield
+    # Cleanup here
+
+app = FastAPI(lifespan=lifespan)
+```
+
+This gives you a single server on one port that serves:
+- `/mcp` — MCP streamable HTTP (AI agent access)
+- `/api/*` — REST API (programmatic access)
+- `/` — Web UI (human access)
+
+The `_mcp_asgi_app`, `_transports`, and `_run_session` functions from the
+standalone pattern above are reused as-is — only the mount point changes.
+
+---
+
 ## Tool Module Pattern
 
 Each tool module (`tools/<service>.py`) exports exactly two things:
