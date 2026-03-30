@@ -2,7 +2,7 @@
 name: mcp-server
 description: >
   Use this skill when creating, modifying, or dockerizing an MCP server. Trigger on any
-  request involving MCP server setup, MCP transport configuration (stdio, SSE, streamable HTTP),
+  request involving MCP server setup, MCP transport configuration (stdio, streamable HTTP),
   MCP Dockerfiles, or docker-compose services for MCP servers. Also trigger when adding new
   tools to an existing MCP server or wiring up dual-transport support. Do NOT trigger for
   MCP client configuration or general Docker work unrelated to MCP.
@@ -17,9 +17,13 @@ Every MCP server MUST support both transports, selectable via `MCP_TRANSPORT` en
 | Transport | When | Default port |
 |-----------|------|-------------|
 | `stdio` | Claude Code, local dev, piped processes | n/a |
-| `sse` | Docker containers, remote clients, `.mcp.json` | 8000 |
+| `http` | Docker containers, remote clients, `.mcp.json` | 8000 |
 
 `MCP_TRANSPORT` defaults to `stdio` so the server works out of the box for local dev.
+
+**Streamable HTTP** replaces SSE as the standard network transport. It supports
+session management, resumability, and both SSE and JSON response modes over a
+single `/mcp` endpoint.
 
 ---
 
@@ -34,7 +38,7 @@ explicit and matches the existing codebase pattern.
 """<Service Name> MCP server entry point.
 
 Exposes tools via the Model Context Protocol.
-Supports stdio and SSE transports (MCP_TRANSPORT env var).
+Supports stdio and streamable HTTP transports (MCP_TRANSPORT env var).
 """
 
 # Standard Libraries
@@ -113,33 +117,77 @@ async def _run_stdio() -> None:
     return
 
 
-async def _run_sse(host: str, port: int) -> None:
-    """Run MCP server over SSE with Starlette + uvicorn."""
-    from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.routing import Mount, Route
-    import uvicorn
+######################################################################
+# Streamable HTTP Transport
+######################################################################
 
-    sse_transport = SseServerTransport("/messages/")
+# Active sessions — keyed by mcp-session-id header
+_transports: dict[str, "StreamableHTTPServerTransport"] = {}
 
-    async def handle_sse(request):
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send,
-        ) as (read_stream, write_stream):
-            await server.run(read_stream, write_stream, _init_options())
-        # end with
+
+async def _run_session(transport: "StreamableHTTPServerTransport") -> None:
+    """Run MCP server for a session's lifetime in the background."""
+    async with transport.connect() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, _init_options())
+    # end with
+    return
+
+
+async def _mcp_asgi_app(scope: dict, receive, send) -> None:
+    """ASGI app that handles streamable HTTP MCP requests."""
+    from mcp.server.streamable_http import StreamableHTTPServerTransport
+    from starlette.requests import Request
+    from uuid import uuid4
+
+    request = Request(scope, receive)
+    session_id = request.headers.get("mcp-session-id")
+
+    # Reuse existing session
+    if session_id and session_id in _transports:
+        transport = _transports[session_id]
+        await transport.handle_request(scope, receive, send)
+        if transport.is_terminated:
+            del _transports[session_id]
+        # end if
         return
+    # end if
+
+    # Create new session
+    new_sid = uuid4().hex
+    transport = StreamableHTTPServerTransport(
+        mcp_session_id=new_sid,
+        is_json_response_enabled=True,
+    )
+
+    # Start server in background
+    asyncio.create_task(_run_session(transport))
+    await asyncio.sleep(0.05)  # Let connect() initialize
+
+    # Handle first request
+    await transport.handle_request(scope, receive, send)
+
+    # Store for subsequent requests
+    if transport.mcp_session_id:
+        _transports[transport.mcp_session_id] = transport
+    # end if
+    return
+
+
+async def _run_http(host: str, port: int) -> None:
+    """Run MCP server over streamable HTTP with Starlette + uvicorn."""
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+    import uvicorn
 
     app = Starlette(
         routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse_transport.handle_post_message),
+            Mount("/mcp", app=_mcp_asgi_app),
         ],
     )
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     uvicorn_server = uvicorn.Server(config)
-    log.info("SSE transport listening on %s:%d", host, port)
+    log.info("Streamable HTTP transport listening on %s:%d/mcp", host, port)
     await uvicorn_server.serve()
     return
 
@@ -150,12 +198,12 @@ async def main() -> None:
 
     if transport == "stdio":
         await _run_stdio()
-    elif transport == "sse":
+    elif transport == "http":
         host = os.environ.get("MCP_HOST", "0.0.0.0")
         port = int(os.environ.get("MCP_PORT", "8000"))
-        await _run_sse(host, port)
+        await _run_http(host, port)
     else:
-        raise ValueError(f"Unknown MCP_TRANSPORT: {transport!r}. Use 'stdio' or 'sse'.")
+        raise ValueError(f"Unknown MCP_TRANSPORT: {transport!r}. Use 'stdio' or 'http'.")
     # end if
     return
 
@@ -164,6 +212,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 # end if
 ```
+
+**Key details:**
+- Sessions are tracked server-side in `_transports` dict, keyed by `mcp-session-id` header
+- Each session gets a background task running `_run_session`
+- Terminated sessions are automatically cleaned up
+- `is_json_response_enabled=True` returns JSON instead of SSE streams (simpler for clients)
+- Single endpoint: `/mcp` handles all MCP traffic (GET, POST, DELETE)
 
 ---
 
@@ -202,7 +257,7 @@ RUN pip install --no-cache-dir /tmp/shared/ && rm -rf /tmp/shared/
 # Install server dependencies
 COPY <service>-mcp/pyproject.toml ./
 RUN pip install --no-cache-dir \
-    "mcp>=1.0.0" \
+    "mcp>=1.26.0" \
     "starlette>=0.27.0" \
     "uvicorn[standard]>=0.23.0" \
     <additional-deps>
@@ -214,20 +269,21 @@ RUN pip install --no-cache-dir -e .
 # Data volume for credentials / persistent storage
 VOLUME ["/data"]
 
-# SSE transport port
+# Streamable HTTP transport port
 EXPOSE 8000
 
 ENV PYTHONUNBUFFERED=1
-ENV MCP_TRANSPORT=sse
+ENV MCP_TRANSPORT=http
 
 CMD ["python", "-m", "<package>.server"]
 ```
 
 Key points:
 - Build context is always the **monorepo root** (so `shared/` can be copied in).
-- `starlette` and `uvicorn` are required dependencies for SSE transport.
-- `MCP_TRANSPORT=sse` is set in the Dockerfile since containers always use SSE.
-- Port 8000 is the standard MCP SSE port.
+- `mcp>=1.26.0` required for streamable HTTP support.
+- `starlette` and `uvicorn` are required dependencies for HTTP transport.
+- `MCP_TRANSPORT=http` is set in the Dockerfile since containers always use HTTP.
+- Port 8000 is the standard MCP HTTP port.
 
 ---
 
@@ -244,7 +300,7 @@ services:
       - ./data/<service>:/data
     environment:
       - PYTHONUNBUFFERED=1
-      - MCP_TRANSPORT=sse
+      - MCP_TRANSPORT=http
       - MCP_PORT=<host-port>
     dns:
       - 8.8.8.8
@@ -270,8 +326,8 @@ For Claude Code to connect to a running container:
 {
   "mcpServers": {
     "<server-name>": {
-      "type": "sse",
-      "url": "http://localhost:<host-port>/sse"
+      "type": "http",
+      "url": "http://localhost:<host-port>/mcp"
     }
   }
 }
@@ -290,15 +346,19 @@ For local dev (no container):
 }
 ```
 
+**Note:** Streamable HTTP uses a single `/mcp` endpoint (unlike SSE which needed
+separate `/sse` and `/messages/` routes). The client handles session management
+transparently via the `mcp-session-id` header.
+
 ---
 
 ## pyproject.toml Dependencies
 
-SSE transport requires these additional dependencies beyond the base `mcp` package:
+Streamable HTTP transport requires these dependencies:
 
 ```toml
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.26.0",
     "starlette>=0.27.0",
     "uvicorn[standard]>=0.23.0",
     # ... service-specific deps
@@ -309,13 +369,14 @@ dependencies = [
 
 ## Checklist — New MCP Server
 
-1. Server supports both stdio and SSE via `MCP_TRANSPORT` env var
+1. Server supports both stdio and streamable HTTP via `MCP_TRANSPORT` env var
 2. Default transport is `stdio` (local dev friendly)
-3. Dockerfile sets `MCP_TRANSPORT=sse`
+3. Dockerfile sets `MCP_TRANSPORT=http`
 4. Dockerfile build context is monorepo root
 5. `shared/` is copied and installed in Dockerfile
 6. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
 7. Tool modules export `get_tools()` and `handle_tool()`
 8. Tool names follow `<service>_<action>` pattern
-9. `.mcp.json` entry added for SSE endpoint
-10. `starlette` and `uvicorn` in dependencies
+9. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
+10. `mcp>=1.26.0`, `starlette`, and `uvicorn` in dependencies
+11. Session tracking via `_transports` dict with cleanup on termination
