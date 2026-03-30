@@ -173,23 +173,45 @@ async def _mcp_asgi_app(scope: dict, receive, send) -> None:
     return
 
 
-async def _run_http(host: str, port: int) -> None:
-    """Run MCP server over streamable HTTP with Starlette + uvicorn."""
-    from starlette.applications import Starlette
+######################################################################
+# FastAPI App
+######################################################################
+
+
+def create_mcp_routes(app: "FastAPI") -> None:
+    """Mount Streamable HTTP MCP at /mcp on a FastAPI app."""
     from starlette.routing import Mount
-    import uvicorn
 
-    app = Starlette(
-        routes=[
-            Mount("/mcp", app=_mcp_asgi_app),
-        ],
-    )
-
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
-    uvicorn_server = uvicorn.Server(config)
-    log.info("Streamable HTTP transport listening on %s:%d/mcp", host, port)
-    await uvicorn_server.serve()
+    app.router.routes.insert(0, Mount("/mcp", app=_mcp_asgi_app))
     return
+
+
+def create_app() -> "FastAPI":
+    """Create the FastAPI app with MCP + landing page."""
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        create_mcp_routes(app)
+        log.info("MCP mounted at /mcp")
+        yield
+        return
+
+    app = FastAPI(lifespan=lifespan)
+
+    @app.get("/", response_class=HTMLResponse)
+    async def root():
+        """Landing page with MCP connection instructions."""
+        return f"""
+        <h1>{SERVER_NAME}</h1>
+        <p>MCP endpoint: <code>/mcp</code></p>
+        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "http://localhost:{os.environ.get('MCP_PORT', '8000')}/mcp"}}}}}}</pre>
+        """
+    # end def
+
+    return app
 
 
 async def main() -> None:
@@ -199,9 +221,15 @@ async def main() -> None:
     if transport == "stdio":
         await _run_stdio()
     elif transport == "http":
+        import uvicorn
+
         host = os.environ.get("MCP_HOST", "0.0.0.0")
         port = int(os.environ.get("MCP_PORT", "8000"))
-        await _run_http(host, port)
+        app = create_app()
+        config = uvicorn.Config(app, host=host, port=port, log_level="info")
+        uvicorn_server = uvicorn.Server(config)
+        log.info("Listening on %s:%d (MCP at /mcp)", host, port)
+        await uvicorn_server.serve()
     else:
         raise ValueError(f"Unknown MCP_TRANSPORT: {transport!r}. Use 'stdio' or 'http'.")
     # end if
@@ -214,55 +242,14 @@ if __name__ == "__main__":
 ```
 
 **Key details:**
-- Sessions are tracked server-side in `_transports` dict, keyed by `mcp-session-id` header
+- Every HTTP server is a FastAPI app — MCP at `/mcp`, landing page at `/`
+- Sessions tracked server-side in `_transports` dict, keyed by `mcp-session-id` header
 - Each session gets a background task running `_run_session`
-- Terminated sessions are automatically cleaned up
-- `is_json_response_enabled=True` returns JSON instead of SSE streams (simpler for clients)
-- Single endpoint: `/mcp` handles all MCP traffic (GET, POST, DELETE)
-
----
-
-## FastAPI Mount Pattern (hybrid servers)
-
-Most real MCP servers also serve a web UI and REST API. In that case, mount MCP
-on an existing FastAPI app instead of running a standalone Starlette server.
-
-This is the pattern used by leanspecs and should be the default for any server
-that has a web interface.
-
-```python
-def create_mcp_routes(app: "FastAPI") -> None:
-    """Mount Streamable HTTP MCP at /mcp on a FastAPI app."""
-    from starlette.routing import Mount
-
-    app.router.routes.insert(0, Mount("/mcp", app=_mcp_asgi_app))
-    return
-```
-
-Call this from your FastAPI lifespan or startup:
-
-```python
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Initialize your application state here
-    create_mcp_routes(app)
-    log.info("MCP mounted at /mcp")
-    yield
-    # Cleanup here
-
-app = FastAPI(lifespan=lifespan)
-```
-
-This gives you a single server on one port that serves:
-- `/mcp` — MCP streamable HTTP (AI agent access)
-- `/api/*` — REST API (programmatic access)
-- `/` — Web UI (human access)
-
-The `_mcp_asgi_app`, `_transports`, and `_run_session` functions from the
-standalone pattern above are reused as-is — only the mount point changes.
+- Terminated sessions automatically cleaned up
+- `is_json_response_enabled=True` returns JSON (simpler for clients)
+- `create_mcp_routes(app)` can mount MCP on any existing FastAPI app
+- Landing page at `/` shows connection instructions for the MCP endpoint
+- Add your own routes (OAuth callbacks, web UI, etc.) to the FastAPI app as needed
 
 ---
 
@@ -302,7 +289,7 @@ RUN pip install --no-cache-dir /tmp/shared/ && rm -rf /tmp/shared/
 COPY <service>-mcp/pyproject.toml ./
 RUN pip install --no-cache-dir \
     "mcp>=1.26.0" \
-    "starlette>=0.27.0" \
+    "fastapi>=0.104.0" \
     "uvicorn[standard]>=0.23.0" \
     <additional-deps>
 
@@ -325,7 +312,7 @@ CMD ["python", "-m", "<package>.server"]
 Key points:
 - Build context is always the **monorepo root** (so `shared/` can be copied in).
 - `mcp>=1.26.0` required for streamable HTTP support.
-- `starlette` and `uvicorn` are required dependencies for HTTP transport.
+- `fastapi` and `uvicorn` are required dependencies for HTTP transport (FastAPI includes Starlette).
 - `MCP_TRANSPORT=http` is set in the Dockerfile since containers always use HTTP.
 - Port 8000 is the standard MCP HTTP port.
 
@@ -403,7 +390,7 @@ Streamable HTTP transport requires these dependencies:
 ```toml
 dependencies = [
     "mcp>=1.26.0",
-    "starlette>=0.27.0",
+    "fastapi>=0.104.0",
     "uvicorn[standard]>=0.23.0",
     # ... service-specific deps
 ]
@@ -422,5 +409,6 @@ dependencies = [
 7. Tool modules export `get_tools()` and `handle_tool()`
 8. Tool names follow `<service>_<action>` pattern
 9. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-10. `mcp>=1.26.0`, `starlette`, and `uvicorn` in dependencies
+10. `mcp>=1.26.0`, `fastapi`, and `uvicorn` in dependencies
 11. Session tracking via `_transports` dict with cleanup on termination
+12. Landing page at `/` with MCP connection instructions
