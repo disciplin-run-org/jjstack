@@ -121,8 +121,13 @@ if __name__ == "__main__":
 - `mcp.http_app()` creates the streamable HTTP transport — zero boilerplate
 - `mcp_app.lifespan` passed to FastAPI ensures proper session management
 - `MCP_PORT` is mandatory — no default, prevents port collisions
-- Landing page at `/` shows connection instructions
-- Add your own routes (OAuth callbacks, web UI, static SPA) as needed
+
+**What to serve at `/`:**
+- **New/API-only server** (no web UI): use the landing page template above. It shows
+  MCP connection instructions so humans who hit the URL know what the service is and
+  how to connect an AI client.
+- **Server with a web UI**: replace the landing page with your SPA (see "Serving a
+  Web UI" section below). The MCP endpoint at `/mcp` works the same either way.
 
 ---
 
@@ -296,35 +301,53 @@ that unit tests miss.
 
 ---
 
-## Mounting MCP on an Existing FastAPI App
+## Serving a Web UI (SPA or static files)
 
-For servers that already have a FastAPI app (web UI, OAuth, etc.), mount MCP
-onto the existing app instead of creating a new one:
+When your server has a frontend (React, Vue, plain HTML), serve it at `/` alongside
+MCP at `/mcp`. This is the pattern used by leanspecs — one server, one port, both
+AI agents and humans access the same service.
 
 ```python
 from fastapi import FastAPI
-from fastmcp import FastMCP
-
-mcp = FastMCP("My Service")
-
-# ... register tools ...
+from fastapi.staticfiles import StaticFiles
 
 mcp_app = mcp.http_app(path="/")
-
-# Pass mcp_app.lifespan to your existing app — required for session management
-app = FastAPI(title="My Service", lifespan=mcp_app.lifespan)
+app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
 app.mount("/mcp", mcp_app)
 
-# Your existing routes
-@app.get("/settings/auth/github")
-async def github_auth():
-    ...
+# Serve React/Vue SPA — html=True makes index.html the fallback for all routes
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
 ```
 
-This gives you a single server on one port:
-- `/mcp` — MCP streamable HTTP (AI agent access)
-- `/` — Web UI or landing page (human access)
-- Any other routes you need (OAuth callbacks, etc.)
+The `html=True` flag serves `index.html` for any unmatched route — standard SPA
+behavior. The `/mcp` mount takes priority since it's registered first.
+
+**When to use which pattern:**
+
+| Situation | What to serve at `/` |
+|-----------|---------------------|
+| Pure MCP service (no humans use it directly) | Landing page with connection instructions |
+| Service with a web UI (leanspecs, dashboards) | SPA via `StaticFiles(html=True)` |
+| Service needing OAuth callbacks | Landing page or SPA, plus explicit routes for `/auth/*` |
+
+All three patterns use the same MCP mount at `/mcp` — the only difference is
+what humans see when they open the URL in a browser.
+
+### Adding extra routes (OAuth, webhooks, etc.)
+
+Mount MCP and any explicit routes **before** the SPA catch-all:
+
+```python
+app.mount("/mcp", mcp_app)
+
+@app.get("/settings/auth/github")
+async def github_auth():
+    """OAuth callback — can't go through MCP (browser redirect)."""
+    ...
+
+# SPA catch-all last — matches everything else
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+```
 
 ---
 
