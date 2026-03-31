@@ -2,39 +2,42 @@
 name: mcp-server
 description: >
   Use this skill when creating, modifying, or dockerizing an MCP server. Trigger on any
-  request involving MCP server setup, MCP transport configuration (stdio, streamable HTTP),
+  request involving MCP server setup, MCP transport configuration (streamable HTTP),
   MCP Dockerfiles, or docker-compose services for MCP servers. Also trigger when adding new
-  tools to an existing MCP server or wiring up dual-transport support. Do NOT trigger for
-  MCP client configuration or general Docker work unrelated to MCP.
+  tools to an existing MCP server. Do NOT trigger for MCP client configuration or general
+  Docker work unrelated to MCP.
 ---
 
 # MCP Server in Docker — Blueprint
 
-## Core Requirement: Dual Transport
+## Transport: Streamable HTTP via FastMCP
 
-Every MCP server MUST support both transports, selectable via `MCP_TRANSPORT` env var:
+All MCP servers run as Docker containers with `network_mode: host` and communicate
+via **streamable HTTP** on a single `/mcp` endpoint. FastMCP handles session
+management, schema generation, and protocol details automatically.
 
-| Transport | When | Default port |
-|-----------|------|-------------|
-| `stdio` | Claude Code, local dev, piped processes | n/a |
-| `http` | Docker containers, remote clients, `.mcp.json` | 8000 |
+Each server gets its own unique port via the `MCP_PORT` environment variable.
+There is no default port — you must assign one per service to avoid collisions
+when running multiple MCP servers on the same host.
 
-`MCP_TRANSPORT` defaults to `stdio` so the server works out of the box for local dev.
+**Port allocation:** Track assigned ports in your docker-compose file. Each new
+service gets the next available port. Example:
+- leanspecs: 8001
+- google-workspace-mcp: 8002
+- dayplan: 8003
 
 ---
 
 ## Server Structure
 
-Use **FastMCP** for all MCP servers. It handles tool registration, schema generation,
-session management, and transport selection automatically.
+Use **FastMCP** for all MCP servers.
 
-### Minimal dual-transport server.py
+### Minimal server.py
 
 ```python
 """<Service Name> MCP server entry point.
 
-Exposes tools via the Model Context Protocol.
-Supports stdio and streamable HTTP transports (MCP_TRANSPORT env var).
+Exposes tools via the Model Context Protocol over streamable HTTP.
 """
 
 # Standard Libraries
@@ -60,7 +63,7 @@ mcp = FastMCP(SERVER_NAME)
 
 
 ######################################################################
-# FastAPI App (HTTP transport)
+# FastAPI App
 ######################################################################
 
 
@@ -69,7 +72,11 @@ def create_app():
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
 
-    port = os.environ.get("MCP_PORT", "8000")
+    port = os.environ.get("MCP_PORT")
+    if not port:
+        raise RuntimeError("MCP_PORT environment variable is required")
+    # end if
+
     mcp_app = mcp.http_app(path="/")
 
     app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
@@ -94,21 +101,13 @@ def create_app():
 
 
 def main() -> None:
-    """Run the MCP server using the transport selected by MCP_TRANSPORT."""
-    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    """Run the MCP server over streamable HTTP."""
+    import uvicorn
 
-    if transport == "stdio":
-        mcp.run()
-    elif transport == "http":
-        import uvicorn
-
-        host = os.environ.get("MCP_HOST", "0.0.0.0")
-        port = int(os.environ.get("MCP_PORT", "8000"))
-        app = create_app()
-        uvicorn.run(app, host=host, port=port)
-    else:
-        raise ValueError(f"Unknown MCP_TRANSPORT: {transport!r}. Use 'stdio' or 'http'.")
-    # end if
+    host = os.environ.get("MCP_HOST", "0.0.0.0")
+    port = int(os.environ["MCP_PORT"])
+    app = create_app()
+    uvicorn.run(app, host=host, port=port)
     return
 
 
@@ -118,11 +117,12 @@ if __name__ == "__main__":
 ```
 
 **Key details:**
-- FastMCP handles all transport, session management, and schema generation
-- `mcp.run()` for stdio, `mcp.http_app()` for streamable HTTP — zero boilerplate
+- FastMCP handles all session management and schema generation
+- `mcp.http_app()` creates the streamable HTTP transport — zero boilerplate
 - `mcp_app.lifespan` passed to FastAPI ensures proper session management
+- `MCP_PORT` is mandatory — no default, prevents port collisions
 - Landing page at `/` shows connection instructions
-- Add your own routes (OAuth callbacks, web UI, etc.) to the FastAPI app as needed
+- Add your own routes (OAuth callbacks, web UI, static SPA) as needed
 
 ---
 
@@ -354,11 +354,7 @@ RUN pip install --no-cache-dir -e .
 # Data volume for credentials / persistent storage
 VOLUME ["/data"]
 
-# Streamable HTTP transport port
-EXPOSE 8000
-
 ENV PYTHONUNBUFFERED=1
-ENV MCP_TRANSPORT=http
 
 CMD ["python", "-m", "<package>.server"]
 ```
@@ -367,8 +363,8 @@ Key points:
 - Build context is always the **monorepo root** (so `shared/` can be copied in).
 - `fastmcp>=2.0.0` handles MCP protocol, streamable HTTP, and session management.
 - `fastapi` and `uvicorn` for the HTTP server.
-- `MCP_TRANSPORT=http` is set in the Dockerfile since containers always use HTTP.
-- Port 8000 is the standard MCP HTTP port.
+- No `EXPOSE` or default port in Dockerfile — port is set via `MCP_PORT` in docker-compose.
+- No `MCP_TRANSPORT` env var needed — streamable HTTP is the only transport.
 
 ---
 
@@ -385,8 +381,7 @@ services:
       - ./data/<service>:/data
     environment:
       - PYTHONUNBUFFERED=1
-      - MCP_TRANSPORT=http
-      - MCP_PORT=<host-port>
+      - MCP_PORT=<unique-port>
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -394,42 +389,29 @@ services:
 ```
 
 **Networking:** `network_mode: host` for all containers — no port mapping needed, the
-container binds directly to the host network. Set `MCP_PORT` in the environment to
-control which port each service listens on. This simplifies connectivity for AI clients
-and avoids Docker's NAT layer.
+container binds directly to the host network. `MCP_PORT` is mandatory and must be
+unique per service.
 
-Port allocation convention — each MCP server gets its own `MCP_PORT`.
-No `ports:` mapping needed with host networking.
+**Port allocation:** Each MCP server gets its own port. Track them in docker-compose
+and never reuse. No `ports:` mapping needed with host networking.
 
 ---
 
 ## .mcp.json Client Configuration
-
-For Claude Code to connect to a running container:
 
 ```json
 {
   "mcpServers": {
     "<server-name>": {
       "type": "http",
-      "url": "http://localhost:<host-port>/mcp"
+      "url": "http://localhost:<port>/mcp"
     }
   }
 }
 ```
 
-For local dev (no container):
-
-```json
-{
-  "mcpServers": {
-    "<server-name>": {
-      "command": "python",
-      "args": ["-m", "<package>.server"]
-    }
-  }
-}
-```
+Add to `~/.mcp.json` for global access across all Claude sessions, or to
+`{project}/.mcp.json` for project-scoped access.
 
 ---
 
@@ -450,24 +432,23 @@ dependencies = [
 
 ### Infrastructure
 1. Uses FastMCP with `@mcp.tool` decorator for all tools
-2. Server supports both stdio and streamable HTTP via `MCP_TRANSPORT` env var
-3. Default transport is `stdio` (local dev friendly)
-4. Dockerfile sets `MCP_TRANSPORT=http`
-5. Dockerfile build context is monorepo root
-6. `shared/` is copied and installed in Dockerfile
-7. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
-8. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-9. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
-10. Landing page at `/` with MCP connection instructions
-11. `mcp_app.lifespan` passed to FastAPI app for session management
+2. Streamable HTTP transport via FastMCP `http_app()`
+3. `MCP_PORT` set in docker-compose (unique per service, no default)
+4. Dockerfile build context is monorepo root
+5. `shared/` is copied and installed in Dockerfile
+6. `network_mode: host` in docker-compose
+7. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
+8. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
+9. Landing page at `/` with MCP connection instructions
+10. `mcp_app.lifespan` passed to FastAPI app for session management
 
 ### Tool design
-12. Tool names follow `<service>_<action>` pattern
-13. All tools have type hints and docstrings that explain when/how/what
-14. Arguments are flat primitives with sensible defaults — no nested objects
-15. `Literal` types used for constrained choices
-16. Errors returned as descriptive strings, not exceptions
-17. Large results paginated with `limit` parameter (default 20-50)
-18. File/document reads have `max_bytes` guard
-19. No user input passed directly to shell, SQL, or file system without validation
-20. Agent tool selection tested (not just output correctness)
+11. Tool names follow `<service>_<action>` pattern
+12. All tools have type hints and docstrings that explain when/how/what
+13. Arguments are flat primitives with sensible defaults — no nested objects
+14. `Literal` types used for constrained choices
+15. Errors returned as descriptive strings, not exceptions
+16. Large results paginated with `limit` parameter (default 20-50)
+17. File/document reads have `max_bytes` guard
+18. No user input passed directly to shell, SQL, or file system without validation
+19. Agent tool selection tested (not just output correctness)
