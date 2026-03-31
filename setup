@@ -181,6 +181,17 @@ elif command -v jq >/dev/null 2>&1; then
   ok "Created settings.json with hook config"
 fi
 
+# Install MCP auto-reconnect hook
+RECONNECT_HOOK="$JJSTACK_DIR/hooks/mcp-reconnect.sh"
+if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! grep -q "mcp-reconnect" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq '.hooks.PostToolUseFailure = [{"matcher": "mcp__", "hooks": [{"type": "command", "command": ("'"$RECONNECT_HOOK"'")}]}]' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Injected MCP auto-reconnect hook into settings.json"
+  fi
+fi
+
 # ─── Step 6: Install Context7 MCP server ─────────────────────
 MCP_JSON="$HOME/.mcp.json"
 CONTEXT7_STATUS="skipped"
