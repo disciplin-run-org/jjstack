@@ -51,6 +51,10 @@ cat ~/.claude/skills/gstack/design-review/SKILL.md
 
 Follow ALL instructions with output path override: `~/.gstack/projects/$SLUG/` → `{OUTPUT_DIR}`.
 
+**jjstack font rule:** All fonts MUST be free, open-source, and available on
+[Google Fonts](https://fonts.google.com/). Flag any commercial or proprietary fonts
+found during the visual audit and suggest Google Fonts alternatives.
+
 ---
 
 ## Phase 3: Post-enhancement
