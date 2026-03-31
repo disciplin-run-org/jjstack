@@ -335,12 +335,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install shared packages first (build context is monorepo root)
-COPY shared/ /tmp/shared/
-RUN pip install --no-cache-dir /tmp/shared/ && rm -rf /tmp/shared/
-
 # Install server dependencies
-COPY <service>-mcp/pyproject.toml ./
+COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
     "fastmcp>=2.0.0" \
     "fastapi>=0.104.0" \
@@ -348,7 +344,7 @@ RUN pip install --no-cache-dir \
     <additional-deps>
 
 # Copy application source
-COPY <service>-mcp/src/ ./src/
+COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
 # Data volume for credentials / persistent storage
@@ -360,11 +356,10 @@ CMD ["python", "-m", "<package>.server"]
 ```
 
 Key points:
-- Build context is always the **monorepo root** (so `shared/` can be copied in).
 - `fastmcp>=2.0.0` handles MCP protocol, streamable HTTP, and session management.
 - `fastapi` and `uvicorn` for the HTTP server.
-- No `EXPOSE` or default port in Dockerfile — port is set via `MCP_PORT` in docker-compose.
-- No `MCP_TRANSPORT` env var needed — streamable HTTP is the only transport.
+- No `EXPOSE` or default port — port is set via `MCP_PORT` in docker-compose.
+- Streamable HTTP is the only transport — no env var selection needed.
 
 ---
 
@@ -434,9 +429,7 @@ dependencies = [
 1. Uses FastMCP with `@mcp.tool` decorator for all tools
 2. Streamable HTTP transport via FastMCP `http_app()`
 3. `MCP_PORT` set in docker-compose (unique per service, no default)
-4. Dockerfile build context is monorepo root
-5. `shared/` is copied and installed in Dockerfile
-6. `network_mode: host` in docker-compose
+4. `network_mode: host` in docker-compose
 7. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
 8. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 9. Landing page at `/` with MCP connection instructions
