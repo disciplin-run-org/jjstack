@@ -44,11 +44,23 @@ esac
 # ── Get API key ───────────────────────────────────────────────────────────────
 API_KEY="${ANTHROPIC_API_KEY}"
 if [ -z "$API_KEY" ]; then
-  API_KEY=$(cat "$HOME/.claude/anthropic_api_key" 2>/dev/null | tr -d '[:space:]')
+  KEY_FILE="$HOME/.claude/anthropic_api_key"
+  if [ -f "$KEY_FILE" ]; then
+    # Warn if key file is readable by others (should be 600)
+    PERMS=$(stat -c '%a' "$KEY_FILE" 2>/dev/null || stat -f '%Lp' "$KEY_FILE" 2>/dev/null)
+    case "$PERMS" in
+      600|400) ;; # OK
+      *) chmod 600 "$KEY_FILE" 2>/dev/null || true ;;
+    esac
+    API_KEY=$(cat "$KEY_FILE" 2>/dev/null | tr -d '[:space:]')
+  fi
 fi
 
 if [ -z "$API_KEY" ]; then
   # No key — fail-closed: only allow clearly safe read-only commands
+  # Reject commands with shell metacharacters that could chain dangerous operations
+  echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
+  echo "$COMMAND" | grep -qE '\|' && defer
   SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
   echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
   defer
@@ -85,6 +97,9 @@ case "$RISK" in
     ;;
   *)
     # API call failed or unexpected response — fail-closed: only allow safe read-only commands
+    # Reject commands with shell metacharacters that could chain dangerous operations
+    echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
+    echo "$COMMAND" | grep -qE '\|' && defer
     SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
     echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
     defer

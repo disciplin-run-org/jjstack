@@ -282,6 +282,89 @@ def docs_read(path: str, max_bytes: int = 60000) -> str:
 - **If in doubt:** start with fewer tools. You can always split one tool into two;
   merging two tools into one is harder.
 
+### Long-running tools (> 30 seconds)
+
+Any tool that may take longer than 30 seconds must use FastMCP's background task
+support. Claude Code's MCP timeout is 60 seconds and is not reliably configurable.
+Progress notifications (`ctx.report_progress`) are silently ignored by Claude Code.
+
+**Definition:** A tool is "long-running" if it calls external AI APIs, processes
+large datasets, runs batch operations, or performs network-intensive work that
+could exceed 30 seconds under normal load.
+
+**Use FastMCP `task=True`** (requires `fastmcp[tasks]` >= 2.14):
+
+```python
+from fastmcp import FastMCP
+from fastmcp.dependencies import Progress
+
+mcp = FastMCP("MyServer")
+
+@mcp.tool(task=True)
+async def ai_prompt(action: str, scope: str = "all", progress: Progress = Progress()) -> str:
+    """Run an AI-powered batch operation. Returns a task ID for polling.
+
+    Long-running: typically 1-5 minutes depending on scope.
+    Use check_task_status() to poll for results."""
+    items = await get_items(scope)
+    await progress.set_total(len(items))
+    results = []
+    for item in items:
+        await progress.set_message(f"Processing {item.name}")
+        result = await process_with_ai(item, action)
+        results.append(result)
+        await progress.increment()
+    return format_results(results)
+```
+
+The `task=True` decorator makes the tool return immediately with a task ID when
+the client requests background execution. The client polls for results.
+
+**Estimate completion time** in the initial response to help the agent decide
+when to poll:
+
+```python
+@mcp.tool
+async def ai_prompt_start(action: str, scope: str = "all") -> dict:
+    """Start an AI batch operation. Returns task ID and estimated time."""
+    items = await get_items(scope)
+    estimated_seconds = len(items) * 3  # ~3 seconds per item
+    task_id = await launch_background(action, items)
+    return {
+        "task_id": task_id,
+        "estimated_seconds": estimated_seconds,
+        "message": f"Processing {len(items)} items. Use check_task_status('{task_id}') to poll.",
+    }
+
+@mcp.tool
+async def check_task_status(task_id: str) -> dict:
+    """Check status of a background task. Returns progress and result when complete."""
+    status = get_status(task_id)
+    return {
+        "status": status.state,        # "running" | "complete" | "error"
+        "progress": f"{status.done}/{status.total}",
+        "result": status.result if status.state == "complete" else None,
+    }
+```
+
+**When to use which pattern:**
+
+| Pattern | When to use |
+|---------|------------|
+| `@mcp.tool(task=True)` | FastMCP 2.14+, clean integration, automatic task management |
+| Manual start/poll pair | Older FastMCP, or when you need custom job storage (Redis, DB) |
+| Synchronous (no task) | Tools that always complete in < 30 seconds |
+
+**Backend for task persistence:**
+- Default: in-memory (lost on restart, single-process only)
+- Production: Redis/Valkey via `FASTMCP_DOCKET_URL=redis://localhost:6379`
+
+**Important:** Claude Code does NOT display `ctx.report_progress()` or
+`notifications/progress` messages. Do not rely on progress notifications as a
+keep-alive mechanism — they are silently ignored.
+
+---
+
 ### Security: validate all inputs
 
 Never pass user-supplied input directly to shell commands, database queries, or
@@ -449,12 +532,15 @@ Add to `~/.mcp.json` for global access across all Claude sessions, or to
 
 ```toml
 dependencies = [
-    "fastmcp>=2.0.0",
+    "fastmcp[tasks]>=2.14.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.23.0",
     # ... service-specific deps
 ]
 ```
+
+The `[tasks]` extra includes Docket for background task support. If your server
+has no long-running tools, `fastmcp>=2.14.0` (without `[tasks]`) is sufficient.
 
 ---
 
@@ -482,3 +568,5 @@ dependencies = [
 17. File/document reads have `max_bytes` guard
 18. No user input passed directly to shell, SQL, or file system without validation
 19. Agent tool selection tested (not just output correctness)
+20. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
+21. Long-running tools include estimated completion time in initial response
