@@ -82,6 +82,12 @@ def create_app():
     app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
     app.mount("/mcp", mcp_app)
 
+    @app.get("/health")
+    async def health():
+        """Health check for Docker, load balancers, and monitoring."""
+        return {"status": "ok", "service": SERVER_NAME}
+    # end def
+
     @app.get("/", response_class=HTMLResponse)
     async def root():
         """Landing page with MCP connection instructions."""
@@ -382,7 +388,7 @@ Key points:
 - `fastmcp>=2.0.0` handles MCP protocol, streamable HTTP, and session management.
 - `fastapi` and `uvicorn` for the HTTP server.
 - No `EXPOSE` or default port — port is set via `MCP_PORT` in docker-compose.
-- Streamable HTTP is the only transport — no env var selection needed.
+- Healthcheck added in docker-compose (not Dockerfile, since port is dynamic).
 
 ---
 
@@ -400,6 +406,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - MCP_PORT=<unique-port>
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:<unique-port>/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -453,6 +465,8 @@ dependencies = [
 2. Streamable HTTP transport via FastMCP `http_app()`
 3. `MCP_PORT` set in docker-compose (unique per service, no default)
 4. `network_mode: host` in docker-compose
+5. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
+6. Docker healthcheck configured in docker-compose against `/health`
 7. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
 8. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 9. Landing page at `/` with MCP connection instructions
