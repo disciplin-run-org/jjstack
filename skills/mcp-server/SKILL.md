@@ -174,6 +174,128 @@ def register_tools(mcp: FastMCP) -> None:
 
 ---
 
+## Tool Design Principles
+
+These principles are validated against real production MCP servers (leanspecs, PagerDuty,
+Block/Square). They apply to how you design the tools themselves, not the server plumbing.
+
+### Design for outcomes, not operations
+
+Don't mirror REST APIs 1:1. Design tools around what the agent wants to accomplish.
+One tool that orchestrates three internal API calls is better than three tools the
+agent has to chain.
+
+**Exception:** CRUD tools for domain objects (like `spec_create`, `spec_update`,
+`spec_delete`) are necessary when the agent needs granular control. The rule is about
+avoiding unnecessary granularity, not banning all simple operations.
+
+### Flatten arguments
+
+Use top-level primitives with sensible defaults. No nested objects.
+
+```python
+# Good — flat, with defaults and Literal constraints
+@mcp.tool
+def search_orders(
+    email: str,
+    status: Literal["pending", "shipped", "delivered"] = "pending",
+    limit: int = 20,
+) -> list[dict]:
+    """Search orders by customer email. Defaults to pending orders, 20 results."""
+```
+
+```python
+# Bad — nested object, no defaults, no constraints
+@mcp.tool
+def search_orders(filters: dict) -> list[dict]:
+    """Search orders."""
+```
+
+Use `Literal` types to constrain choices — the agent sees valid options directly
+in the schema instead of guessing.
+
+### Docstrings are instructions
+
+Every piece of text in a tool definition consumes agent context tokens. Make them count.
+Docstrings should specify:
+- **When** to use the tool (not just what it does)
+- **How** to format arguments (especially IDs, dates, enums)
+- **What** to expect back
+
+```python
+@mcp.tool
+def spec_create(parent_id: str, owner: str, rationale: str) -> str:
+    """Add a new item. Create capabilities first (no parent_id), then features
+    under them (parent_id='1'), then behaviors under features (parent_id='1.2').
+    Requires owner and rationale."""
+```
+
+### Return descriptive errors, not exceptions
+
+Agents treat errors as observations and self-correct. Return error strings that
+explain what went wrong and what to do instead.
+
+```python
+# Good — agent can recover
+if item is None:
+    return f"Item '{item_id}' not found. Use spec_list() to see available IDs."
+
+# Bad — agent gets a stack trace with no guidance
+raise ValueError(f"Not found: {item_id}")
+```
+
+### Manage response sizes
+
+Large responses bloat the agent's context window. Guard against this:
+- Add `limit` parameters with sensible defaults (20-50 items)
+- For file/document reads, add `max_bytes` parameter
+- Return pagination metadata: `has_more`, `total_count`
+- Prefer summaries over raw data dumps
+
+```python
+@mcp.tool
+def audit_log(limit: int = 50) -> str:
+    """Return recent audit entries. Default 50, max 200."""
+
+@mcp.tool
+def docs_read(path: str, max_bytes: int = 60000) -> str:
+    """Read a document. Truncates at max_bytes with a note if exceeded."""
+```
+
+### Tool count guidance
+
+- **Single-domain servers** (like leanspecs): 20-50 tools is fine. The agent owns
+  the entire context and needs the full surface area.
+- **Multi-server setups** (agent connects to 5+ servers): keep each server to 5-15
+  tools. Total tool descriptions across all servers compete for context tokens.
+- **If in doubt:** start with fewer tools. You can always split one tool into two;
+  merging two tools into one is harder.
+
+### Security: validate all inputs
+
+Never pass user-supplied input directly to shell commands, database queries, or
+file system operations. Validate every parameter against its expected type and range.
+
+```python
+@mcp.tool
+def docs_read(path: str, max_bytes: int = 60000) -> str:
+    """Read a document from the docs directory."""
+    # Validate path — prevent directory traversal
+    safe_path = Path(path).resolve()
+    if not str(safe_path).startswith(str(DOCS_ROOT)):
+        return f"Access denied: path must be within {DOCS_ROOT}"
+    # end if
+```
+
+### Test agent tool selection
+
+Don't just test that tools return correct results. Test that agents **pick the right
+tool** for a given scenario. Feed the agent a user question and verify it selects the
+expected tool with appropriate arguments. This catches naming and description problems
+that unit tests miss.
+
+---
+
 ## Mounting MCP on an Existing FastAPI App
 
 For servers that already have a FastAPI app (web UI, OAuth, etc.), mount MCP
@@ -326,6 +448,7 @@ dependencies = [
 
 ## Checklist — New MCP Server
 
+### Infrastructure
 1. Uses FastMCP with `@mcp.tool` decorator for all tools
 2. Server supports both stdio and streamable HTTP via `MCP_TRANSPORT` env var
 3. Default transport is `stdio` (local dev friendly)
@@ -333,9 +456,18 @@ dependencies = [
 5. Dockerfile build context is monorepo root
 6. `shared/` is copied and installed in Dockerfile
 7. `network_mode: host` in docker-compose, unique `MCP_PORT` per service
-8. Tool names follow `<service>_<action>` pattern
-9. All tools have type hints and docstrings (FastMCP generates schema from them)
-10. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-11. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
-12. Landing page at `/` with MCP connection instructions
-13. `mcp_app.lifespan` passed to FastAPI app for session management
+8. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
+9. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
+10. Landing page at `/` with MCP connection instructions
+11. `mcp_app.lifespan` passed to FastAPI app for session management
+
+### Tool design
+12. Tool names follow `<service>_<action>` pattern
+13. All tools have type hints and docstrings that explain when/how/what
+14. Arguments are flat primitives with sensible defaults — no nested objects
+15. `Literal` types used for constrained choices
+16. Errors returned as descriptive strings, not exceptions
+17. Large results paginated with `limit` parameter (default 20-50)
+18. File/document reads have `max_bytes` guard
+19. No user input passed directly to shell, SQL, or file system without validation
+20. Agent tool selection tested (not just output correctness)
