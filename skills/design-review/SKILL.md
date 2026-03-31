@@ -51,6 +51,9 @@ cat ~/.claude/skills/gstack/design-review/SKILL.md
 
 Follow ALL instructions with output path override: `~/.gstack/projects/$SLUG/` → `{OUTPUT_DIR}`.
 
+**jjstack responsive rule:** All designs MUST be responsive for desktop, tablet, and
+mobile. Flag any desktop-only layouts as issues during the visual audit.
+
 **jjstack font rule:** All fonts MUST be free, open-source, and available on
 [Google Fonts](https://fonts.google.com/). Flag any commercial or proprietary fonts
 found during the visual audit and suggest Google Fonts alternatives.
