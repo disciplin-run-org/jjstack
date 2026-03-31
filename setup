@@ -48,6 +48,49 @@ fi
 GSTACK_VERSION="$(cat "$GSTACK_VERSION_FILE" | tr -d '[:space:]')"
 info "Found gstack v${GSTACK_VERSION}"
 
+# ─── Step 1b: Ensure security review dependencies are installed ──
+# Anthropic official security-review (trusted, auto-updated)
+ANTHROPIC_SEC_DIR="$SKILLS_DIR/anthropic-security-review"
+if [ ! -d "$ANTHROPIC_SEC_DIR/.git" ]; then
+  info "Anthropic security-review not found — installing..."
+  if git clone https://github.com/anthropics/claude-code-security-review.git "$ANTHROPIC_SEC_DIR" 2>/dev/null; then
+    ok "Anthropic security-review installed"
+  else
+    warn "Failed to clone Anthropic security-review. /security-review will work without it."
+  fi
+else
+  # Auto-update: pull latest from Anthropic (trusted unconditionally)
+  git -C "$ANTHROPIC_SEC_DIR" pull --ff-only -q 2>/dev/null && ok "Anthropic security-review updated" || true
+fi
+
+# Sentry security skills (trusted, auto-updated)
+SENTRY_SKILLS_DIR="$SKILLS_DIR/getsentry-skills"
+if [ ! -d "$SENTRY_SKILLS_DIR/.git" ]; then
+  info "Sentry skills not found — installing..."
+  if git clone https://github.com/getsentry/skills.git "$SENTRY_SKILLS_DIR" 2>/dev/null; then
+    ok "Sentry skills installed"
+  else
+    warn "Failed to clone Sentry skills. /security-review will work without it."
+  fi
+else
+  git -C "$SENTRY_SKILLS_DIR" pull --ff-only -q 2>/dev/null && ok "Sentry skills updated" || true
+fi
+
+# agamm OWASP reference (copied into jjstack, not by-reference)
+OWASP_DIR="$SKILLS_DIR/jjstack/references/owasp-security"
+if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
+  OWASP_TMP=$(mktemp -d)
+  if git clone https://github.com/agamm/claude-code-owasp.git "$OWASP_TMP" 2>/dev/null; then
+    mkdir -p "$OWASP_DIR"
+    cp "$OWASP_TMP/.claude/skills/owasp-security/owasp-security/SKILL.md" "$OWASP_DIR/SKILL.md" 2>/dev/null || true
+    rm -rf "$OWASP_TMP"
+    ok "OWASP security reference installed"
+  else
+    warn "Failed to clone OWASP reference. /security-review will work without it."
+    rm -rf "$OWASP_TMP"
+  fi
+fi
+
 # ─── Step 2: Symlink jjstack repo root ────────────────────────
 ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
 ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
@@ -169,7 +212,7 @@ if [ -f "$SETTINGS_FILE" ]; then
   if ! grep -q "auto-approve-safe" "$SETTINGS_FILE" 2>/dev/null; then
     if command -v jq >/dev/null 2>&1; then
       TMP_SETTINGS=$(mktemp)
-      jq '.hooks.PermissionRequest = [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}]' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+      jq '.hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
       mv "$TMP_SETTINGS" "$SETTINGS_FILE"
       ok "Injected hook config into settings.json"
     else
@@ -186,7 +229,7 @@ RECONNECT_HOOK="$JJSTACK_DIR/hooks/mcp-reconnect.sh"
 if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
   if ! grep -q "mcp-reconnect" "$SETTINGS_FILE" 2>/dev/null; then
     TMP_SETTINGS=$(mktemp)
-    jq '.hooks.PostToolUseFailure = [{"matcher": "mcp__", "hooks": [{"type": "command", "command": ("'"$RECONNECT_HOOK"'")}]}]' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    jq --arg hook "$RECONNECT_HOOK" '.hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) + [{"matcher": "mcp__", "hooks": [{"type": "command", "command": $hook}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
     mv "$TMP_SETTINGS" "$SETTINGS_FILE"
     ok "Injected MCP auto-reconnect hook into settings.json"
   fi

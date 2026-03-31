@@ -32,8 +32,10 @@ fi
 # Extract server name from tool name (mcp__servername__toolname → servername)
 SERVER_NAME=$(echo "$TOOL_NAME" | sed 's/^mcp__//' | sed 's/__.*//')
 
-# Track retry count per server
-COUNTER_FILE="/tmp/jjstack-mcp-reconnect-${SERVER_NAME}.count"
+# Track retry count per server (user-specific directory to avoid tampering)
+COUNTER_DIR="$HOME/.jjstack"
+mkdir -p "$COUNTER_DIR" 2>/dev/null || true
+COUNTER_FILE="$COUNTER_DIR/mcp-reconnect-${SERVER_NAME}.count"
 RETRY_COUNT=0
 if [ -f "$COUNTER_FILE" ]; then
   RETRY_COUNT=$(cat "$COUNTER_FILE" 2>/dev/null | tr -d '[:space:]')

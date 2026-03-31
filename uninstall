@@ -84,9 +84,18 @@ fi
 if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
   if grep -q "auto-approve-safe" "$SETTINGS_FILE" 2>/dev/null; then
     TMP_SETTINGS=$(mktemp)
-    jq 'del(.hooks.PermissionRequest)' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    jq '.hooks.PermissionRequest = [.hooks.PermissionRequest[] | select(.hooks | all(.command | test("auto-approve-safe") | not))]
+        | if .hooks.PermissionRequest == [] then del(.hooks.PermissionRequest) else . end' "$SETTINGS_FILE" > "$TMP_SETTINGS"
     mv "$TMP_SETTINGS" "$SETTINGS_FILE"
     ok "Removed hook config from settings.json"
+  fi
+  # Also remove MCP reconnect hook config
+  if grep -q "mcp-reconnect" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq '.hooks.PostToolUseFailure = [.hooks.PostToolUseFailure[] | select(.hooks | all(.command | test("mcp-reconnect") | not))]
+        | if .hooks.PostToolUseFailure == [] then del(.hooks.PostToolUseFailure) else . end' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Removed MCP reconnect hook config from settings.json"
   fi
 fi
 

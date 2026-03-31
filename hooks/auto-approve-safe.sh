@@ -48,9 +48,10 @@ if [ -z "$API_KEY" ]; then
 fi
 
 if [ -z "$API_KEY" ]; then
-  # No key — fall back to simple heuristic
-  echo "DANGEROUS_PATTERNS=$COMMAND" | grep -qE "rm -rf|sudo|git push|git reset --hard|git clean" && defer
-  allow
+  # No key — fail-closed: only allow clearly safe read-only commands
+  SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
+  echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
+  defer
 fi
 
 # ── Build JSON payload safely using jq ───────────────────────────────────────
@@ -83,8 +84,9 @@ case "$RISK" in
     defer
     ;;
   *)
-    # API call failed or unexpected response — fall back to simple heuristic
-    echo "$COMMAND" | grep -qE "rm -rf|sudo|git push|git reset --hard|git clean" && defer
-    allow
+    # API call failed or unexpected response — fail-closed: only allow safe read-only commands
+    SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
+    echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
+    defer
     ;;
 esac
