@@ -71,6 +71,57 @@ but the replacement must be free. Google Fonts has 1,700+ families including
 distinctive options like Space Grotesk, Instrument Serif, Bricolage Grotesque,
 Fraunces, and Playfair Display. There is no reason to use a commercial font.
 
+**jjstack design constraints (enforce during review):**
+
+These are universal web design best practices. Flag violations as issues.
+
+1. **Max 5 colors.** The entire site palette must not exceed 5 colors (primary,
+   secondary, accent, background, text). Tints/shades of the same color are fine.
+   More than 5 distinct colors creates visual noise.
+
+2. **Max 5 fonts.** 2 primary fonts (headings + body) and up to 3 specialty fonts
+   (action buttons, monospace/code, logo). If the design specifies more than 5
+   fonts total, flag it — the site will feel incoherent.
+
+3. **Consistent icon style.** All icons must come from the same family/style
+   (e.g., all Lucide, all Phosphor, all Material). Mixing icon libraries (outlined
+   + filled + hand-drawn) is a design crime.
+
+4. **3 logo versions required.** Every project needs:
+   - Horizontal (main) logo — for headers and wide spaces
+   - Square logo — for social media, app icons, compact spaces
+   - Simplified logo — for favicon, small sizes, monochrome contexts
+
+5. **Logo must work on light AND dark backgrounds.** If only one version exists,
+   flag it. The design should specify both variants or use a version with sufficient
+   contrast on both.
+
+6. **Favicon covers all platforms.** Not just one 16x16 icon — the design must
+   account for browser tabs, mobile home screens, bookmarks, and social previews.
+   A high-res source image (512x512+) is the minimum.
+
+7. **Separation of design and content.** Colors, fonts, spacing, and component
+   styles must be defined as design tokens or CSS variables — not hardcoded per page.
+   Changing the design should not require editing content.
+
+8. **Footer consistency.** The footer should be identical (or near-identical) across
+   all pages. It contains: copyright, privacy/cookie links, social links, and
+   secondary navigation. Flag designs where the footer varies between pages.
+
+9. **NavBar consistency.** The navbar should be consistent across all pages with:
+   - Active state indicator for current page
+   - Scroll behavior (sticky/fixed)
+   - Responsive collapse to hamburger menu on mobile
+   Flag designs missing any of these.
+
+10. **Specialty page types.** The front page may have a unique header/hero, but
+    recurring page types (blog posts, articles, events, products) must have
+    consistent templates with mandatory fields:
+    - Blog/articles: author, publish date
+    - Events: date, location, price/RSVP
+    - Products: ID, price, image
+    Flag designs that don't define templates for recurring content types.
+
 ---
 
 ## Phase 3: Post-enhancement
