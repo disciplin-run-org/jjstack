@@ -50,8 +50,18 @@ from fastmcp import FastMCP
 from <package>.tools import <module>
 
 SERVER_NAME = "<server-name>"
+SERVER_INSTRUCTIONS = """\
+<Service Name>: <one-line description of what the server does>.
 
-mcp = FastMCP(SERVER_NAME)
+Recommended workflow:
+1. <typical first step>
+2. <typical second step>
+3. <typical third step>
+
+Call get_instructions() to re-read these instructions at any time.
+"""
+
+mcp = FastMCP(SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
 
 
 ######################################################################
@@ -146,7 +156,7 @@ description automatically.
 ```python
 """tools/<service>.py — Tool definitions for <service>."""
 
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -173,6 +183,25 @@ def register_tools(mcp: FastMCP) -> None:
         return []
     # end def
 
+    @mcp.tool
+    def get_instructions() -> str:
+        """Return server usage instructions, recommended workflows, and best
+        practices. Call this to re-read instructions at any time — especially
+        after compaction or when unsure how to use the server's tools."""
+        from <package>.server import SERVER_INSTRUCTIONS
+        return SERVER_INSTRUCTIONS
+    # end def
+
+    @mcp.tool
+    async def refresh_tools(ctx: Context) -> str:
+        """Refresh the tool list in Claude Code. Call this after the server
+        has been rebuilt or restarted to pick up new or changed tools.
+        Must be called instead of falling back to curl requests."""
+        from mcp import types as mcp_types
+        await ctx.send_notification(mcp_types.ToolListChangedNotification())
+        return "Tool list refreshed. New and changed tools are now available."
+    # end def
+
     return
 ```
 
@@ -182,6 +211,31 @@ def register_tools(mcp: FastMCP) -> None:
 - Docstrings are mandatory — they become the tool description the LLM sees
 - One `register_tools(mcp)` function per module, called from `server.py`
 - No manual schema definitions, no `get_tools()` / `handle_tool()` boilerplate
+
+---
+
+## Four layers of AI integration
+
+Every MCP server must teach the AI how to use it through three complementary layers:
+
+| Layer | Mechanism | When the AI sees it | Purpose |
+|-------|-----------|-------------------|---------|
+| **1. Tool docstrings** | `@mcp.tool` docstrings and type hints | Always — included in every tool schema | Per-tool: when to use, argument formats, what to expect back |
+| **2. Server instructions** | `FastMCP(name, instructions=...)` | At connection time — injected into context automatically | Server-wide: recommended workflows, domain concepts, tool relationships |
+| **3. get_instructions tool** | A tool that returns the instructions string | On demand — AI calls it after compaction or when confused | Recovery: re-read instructions lost to context compaction |
+| **4. refresh_tools tool** | A tool that sends `ToolListChangedNotification` | After server rebuild/restart — AI calls it to update cached tool list | Development: pick up new tools without manual `/mcp reconnect` |
+
+**All four are mandatory.** Layer 1 alone is insufficient — the AI needs to understand
+workflows and tool relationships, not just individual tools. Layer 2 solves this but
+gets lost during context compaction. Layer 3 is the safety net. Layer 4 prevents
+the AI from falling back to curl after a server restart.
+
+**The instructions content** should include:
+- One-line description of what the server does
+- Recommended workflow (numbered steps for the most common task)
+- Key domain concepts the AI needs to understand
+- Relationships between tools ("call X before Y", "use Z to check results of W")
+- A reminder that `get_instructions()` and `refresh_tools()` exist
 
 ---
 
@@ -546,27 +600,32 @@ has no long-running tools, `fastmcp>=2.14.0` (without `[tasks]`) is sufficient.
 
 ## Checklist — New MCP Server
 
+### AI integration
+1. `instructions=` parameter set on `FastMCP()` with workflows and domain concepts
+2. `get_instructions()` tool registered, returns the same instructions string
+3. `refresh_tools()` tool registered, sends `ToolListChangedNotification` to update cached tool list
+4. All tool docstrings explain when/how/what (not just "does X")
+
 ### Infrastructure
-1. Uses FastMCP with `@mcp.tool` decorator for all tools
-2. Streamable HTTP transport via FastMCP `http_app()`
-3. `MCP_PORT` set in docker-compose (unique per service, no default)
-4. `network_mode: host` in docker-compose
-5. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
-6. Docker healthcheck configured in docker-compose against `/health`
-7. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-8. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
-9. Landing page at `/` with MCP connection instructions
-10. `mcp_app.lifespan` passed to FastAPI app for session management
+5. Uses FastMCP with `@mcp.tool` decorator for all tools
+6. Streamable HTTP transport via FastMCP `http_app()`
+7. `MCP_PORT` set in docker-compose (unique per service, no default)
+8. `network_mode: host` in docker-compose
+9. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
+10. Docker healthcheck configured in docker-compose against `/health`
+11. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
+12. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
+13. Landing page at `/` with MCP connection instructions
+14. `mcp_app.lifespan` passed to FastAPI app for session management
 
 ### Tool design
-11. Tool names follow `<service>_<action>` pattern
-12. All tools have type hints and docstrings that explain when/how/what
-13. Arguments are flat primitives with sensible defaults — no nested objects
-14. `Literal` types used for constrained choices
-15. Errors returned as descriptive strings, not exceptions
-16. Large results paginated with `limit` parameter (default 20-50)
-17. File/document reads have `max_bytes` guard
-18. No user input passed directly to shell, SQL, or file system without validation
-19. Agent tool selection tested (not just output correctness)
-20. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
-21. Long-running tools include estimated completion time in initial response
+15. Tool names follow `<service>_<action>` pattern
+16. Arguments are flat primitives with sensible defaults — no nested objects
+17. `Literal` types used for constrained choices
+18. Errors returned as descriptive strings, not exceptions
+19. Large results paginated with `limit` parameter (default 20-50)
+20. File/document reads have `max_bytes` guard
+21. No user input passed directly to shell, SQL, or file system without validation
+22. Agent tool selection tested (not just output correctness)
+23. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
+24. Long-running tools include estimated completion time in initial response
