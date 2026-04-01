@@ -10,11 +10,23 @@ description: >
 
 # MCP Server in Docker — Blueprint
 
-## Transport: Streamable HTTP via FastMCP
+## Transport: Streamable HTTPS via FastMCP
 
 All MCP servers run as Docker containers with `network_mode: host` and communicate
-via **streamable HTTP** on a single `/mcp` endpoint. FastMCP handles session
+via **streamable HTTPS** on a single `/mcp` endpoint. FastMCP handles session
 management, schema generation, and protocol details automatically.
+
+**TLS is the default.** Servers auto-detect `/data/server.crt` and `/data/server.key`
+at startup — HTTPS if present, HTTP fallback if not. Generate a self-signed cert
+for local development:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
+  -days 3650 -nodes -subj '/CN=localhost'
+```
+
+Place the cert files in the data volume (`data/<service>/server.crt` and
+`data/<service>/server.key`). They survive container rebuilds.
 
 Each server gets its own unique port via the `MCP_PORT` environment variable.
 There is no default port — you must assign one per service to avoid collisions
@@ -104,7 +116,7 @@ def create_app():
         return f"""
         <h1>{SERVER_NAME}</h1>
         <p>MCP endpoint: <code>/mcp</code></p>
-        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "http://localhost:{port}/mcp"}}}}}}</pre>
+        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "https://localhost:{port}/mcp"}}}}}}</pre>
         """
     # end def
 
@@ -117,13 +129,32 @@ def create_app():
 
 
 def main() -> None:
-    """Run the MCP server over streamable HTTP."""
+    """Run the MCP server over streamable HTTP(S).
+
+    Serves HTTPS if /data/server.crt and /data/server.key exist,
+    otherwise falls back to HTTP.
+    """
     import uvicorn
+    from pathlib import Path
 
     host = os.environ.get("MCP_HOST", "0.0.0.0")
     port = int(os.environ["MCP_PORT"])
     app = create_app()
-    uvicorn.run(app, host=host, port=port)
+
+    ssl_certfile = Path("/data/server.crt")
+    ssl_keyfile = Path("/data/server.key")
+
+    if ssl_certfile.exists() and ssl_keyfile.exists():
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            ssl_certfile=str(ssl_certfile),
+            ssl_keyfile=str(ssl_keyfile),
+        )
+    else:
+        uvicorn.run(app, host=host, port=port)
+    # end if
     return
 
 
@@ -134,9 +165,10 @@ if __name__ == "__main__":
 
 **Key details:**
 - FastMCP handles all session management and schema generation
-- `mcp.http_app()` creates the streamable HTTP transport — zero boilerplate
+- `mcp.http_app()` creates the streamable HTTP(S) transport — zero boilerplate
 - `mcp_app.lifespan` passed to FastAPI ensures proper session management
 - `MCP_PORT` is mandatory — no default, prevents port collisions
+- TLS auto-detected from `/data/server.crt` + `/data/server.key` — no config flag needed
 
 **What to serve at `/`:**
 - **New/API-only server** (no web UI): use the landing page template above. It shows
@@ -571,14 +603,15 @@ and never reuse. No `ports:` mapping needed with host networking.
   "mcpServers": {
     "<server-name>": {
       "type": "http",
-      "url": "http://localhost:<port>/mcp"
+      "url": "https://localhost:<port>/mcp"
     }
   }
 }
 ```
 
-Add to `~/.mcp.json` for global access across all Claude sessions, or to
-`{project}/.mcp.json` for project-scoped access.
+Use `https://` when TLS certs are configured (the default), `http://` only as
+fallback when no certs exist. Add to `~/.mcp.json` for global access across all
+Claude sessions, or to `{project}/.mcp.json` for project-scoped access.
 
 ---
 
@@ -608,24 +641,25 @@ has no long-running tools, `fastmcp>=2.14.0` (without `[tasks]`) is sufficient.
 
 ### Infrastructure
 5. Uses FastMCP with `@mcp.tool` decorator for all tools
-6. Streamable HTTP transport via FastMCP `http_app()`
-7. `MCP_PORT` set in docker-compose (unique per service, no default)
-8. `network_mode: host` in docker-compose
-9. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
-10. Docker healthcheck configured in docker-compose against `/health`
-11. `.mcp.json` entry added with `"type": "http"` and `/mcp` endpoint
-12. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
-13. Landing page at `/` with MCP connection instructions
-14. `mcp_app.lifespan` passed to FastAPI app for session management
+6. Streamable HTTPS transport via FastMCP `http_app()` + TLS auto-detect
+7. Self-signed cert generated and placed in data volume (`/data/server.crt`, `/data/server.key`)
+8. `MCP_PORT` set in docker-compose (unique per service, no default)
+9. `network_mode: host` in docker-compose
+10. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
+11. Docker healthcheck configured in docker-compose against `/health`
+12. `.mcp.json` entry added with `"type": "http"` and `https://` URL
+13. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
+14. Landing page at `/` with MCP connection instructions
+15. `mcp_app.lifespan` passed to FastAPI app for session management
 
 ### Tool design
-15. Tool names follow `<service>_<action>` pattern
-16. Arguments are flat primitives with sensible defaults — no nested objects
-17. `Literal` types used for constrained choices
-18. Errors returned as descriptive strings, not exceptions
-19. Large results paginated with `limit` parameter (default 20-50)
-20. File/document reads have `max_bytes` guard
-21. No user input passed directly to shell, SQL, or file system without validation
-22. Agent tool selection tested (not just output correctness)
-23. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
-24. Long-running tools include estimated completion time in initial response
+16. Tool names follow `<service>_<action>` pattern
+17. Arguments are flat primitives with sensible defaults — no nested objects
+18. `Literal` types used for constrained choices
+19. Errors returned as descriptive strings, not exceptions
+20. Large results paginated with `limit` parameter (default 20-50)
+21. File/document reads have `max_bytes` guard
+22. No user input passed directly to shell, SQL, or file system without validation
+23. Agent tool selection tested (not just output correctness)
+24. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
+25. Long-running tools include estimated completion time in initial response
