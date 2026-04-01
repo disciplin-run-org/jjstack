@@ -31,7 +31,12 @@ git clone https://github.com/JesperJurcenoks/jjstack.git ~/.claude/skills/jjstac
 cd ~/.claude/skills/jjstack && ./setup
 ```
 
-This installs gstack automatically if not present, downloads security review dependencies (Anthropic, Sentry, OWASP), then creates symlinks in `~/.claude/skills/` so jjstack skills are available in every Claude Code session.
+You can also clone to a different location (e.g., `~/Projects/jjstack`) — setup
+will create a symlink from `~/.claude/skills/jjstack` to wherever you cloned it.
+
+Setup installs gstack automatically if not present, downloads security review
+dependencies (Anthropic, Sentry, OWASP), and creates symlinks in `~/.claude/skills/`
+so jjstack skills are available in every Claude Code session.
 
 ## Uninstall
 

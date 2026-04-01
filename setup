@@ -92,11 +92,17 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
 fi
 
 # ─── Step 2: Symlink jjstack repo root ────────────────────────
-if [ "$JJSTACK_DIR" != "$SKILLS_DIR/jjstack" ]; then
+JJSTACK_REAL=$(cd "$JJSTACK_DIR" && pwd -P)
+TARGET_REAL="$SKILLS_DIR/jjstack"
+[ -e "$TARGET_REAL" ] && TARGET_REAL=$(cd "$TARGET_REAL" && pwd -P 2>/dev/null || echo "$TARGET_REAL")
+
+if [ "$JJSTACK_REAL" = "$TARGET_REAL" ]; then
+  ok "jjstack already at $SKILLS_DIR/jjstack (no symlink needed)"
+elif [ -d "$SKILLS_DIR/jjstack" ] && [ ! -L "$SKILLS_DIR/jjstack" ]; then
+  warn "$SKILLS_DIR/jjstack is a real directory — cannot create symlink. This is fine if you cloned jjstack directly there."
+else
   ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
   ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
-else
-  ok "jjstack already at $SKILLS_DIR/jjstack (no symlink needed)"
 fi
 
 # ─── Step 3: Create state directory ──────────────────────────
