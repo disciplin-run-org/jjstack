@@ -92,8 +92,12 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
 fi
 
 # ─── Step 2: Symlink jjstack repo root ────────────────────────
-ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
-ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
+if [ "$JJSTACK_DIR" != "$SKILLS_DIR/jjstack" ]; then
+  ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
+  ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
+else
+  ok "jjstack already at $SKILLS_DIR/jjstack (no symlink needed)"
+fi
 
 # ─── Step 3: Create state directory ──────────────────────────
 mkdir -p "$STATE_DIR"
