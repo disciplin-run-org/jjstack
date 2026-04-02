@@ -74,6 +74,12 @@ Keep these in working memory as a checklist while writing code:
 
 ## Project Setup (new projects only)
 
+### pyproject.toml is mandatory
+
+Every Python project must have a `pyproject.toml`. It is the single source of
+truth for project metadata, dependencies, and tool configuration. Usually created
+by `uv init`, but if you don't use uv then create one anyway.
+
 ### UV — Preferred Python Tooling
 
 Use `uv` instead of `pip`, `pip-tools`, `venv`, and `pip install` wherever possible:
