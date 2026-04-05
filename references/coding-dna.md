@@ -277,6 +277,10 @@ Permissive licenses only. Third-party dependencies must use permissive licenses 
 
 ## 9. Debugging
 
+**The Two Whys Rule.** Before fixing any bug, ask "why?" at least twice. The first answer is the symptom. The second answer is closer to the root cause. A trivial fix that addresses only the symptom will break again — or mask a deeper design flaw. If the second "why" reveals a structural issue, fix that instead.
+
+Example: "This function returns None" → Why? "The API call fails silently" → Why? "There is no error handling on the HTTP client." Fix the error handling pattern, not just this one call site.
+
 Three steps, in order:
 
 **Step 1: Reproduce.** If you can reproduce it, the fix is usually obvious. Build the minimal reproduction case. Most bugs die here.
