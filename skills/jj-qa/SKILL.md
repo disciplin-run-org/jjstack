@@ -94,20 +94,26 @@ When you identify a remedial action to fix an issue:
 
 ## Rule 5: Kano-Level Test Depth
 
-Not all features deserve the same testing depth. Match test investment to feature importance:
+Not all features deserve the same testing depth. Match test investment to feature importance.
 
-| Kano Level | Category | Test Depth | Quality Tolerance |
-|-----------|----------|-----------|-------------------|
-| 1 | Security | 100% use + 100% corner cases | Zero — disable feature if broken |
-| 2 | Core | 100% use + 95% corner cases | Zero |
-| 3 | Auxiliary | 100% use + 75% corner cases | Broken 1-2 days ok |
-| 4 | Performance | Lab + production measurement | 10% dip ok for 2 weeks |
-| 5 | Bells & Whistles | 100% use + 50% corner cases | Broken 5 days ok |
-| 6-10 | Lower priority | 100% use cases minimum | Varies |
+**CRITICAL: These numbers are MINIMUMS, not targets.** The table below defines the
+absolute floor — the least amount of testing acceptable before shipping. More testing
+is always encouraged. An AI or developer who stops at these numbers is doing the bare
+minimum. Exceed them whenever possible.
 
-When writing tests, ask: "What Kano level is this feature?" and calibrate test depth
-accordingly. Security and core features get exhaustive coverage. Nice-to-haves get
-happy-path coverage only.
+| Kano Level | Category | MINIMUM Test Depth (floor, not ceiling) | Quality Tolerance |
+|-----------|----------|----------------------------------------|-------------------|
+| 1 | Security | AT LEAST 100% use cases + 100% corner cases | Zero — disable feature if broken |
+| 2 | Core | AT LEAST 100% use cases + 95% corner cases | Zero |
+| 3 | Auxiliary | AT LEAST 100% use cases + 75% corner cases | Broken 1-2 days ok |
+| 4 | Performance | AT LEAST lab + production measurement | 10% dip ok for 2 weeks |
+| 5 | Bells & Whistles | AT LEAST 100% use cases + 50% corner cases | Broken 5 days ok |
+| 6-10 | Lower priority | AT LEAST 100% use cases | Varies |
+
+When writing tests, ask: "What Kano level is this feature?" and use the table to
+determine the **minimum** test depth. Then consider: what additional tests would
+catch bugs that the minimum would miss? Add those too. The table sets the floor —
+your job is to build above it.
 
 ---
 

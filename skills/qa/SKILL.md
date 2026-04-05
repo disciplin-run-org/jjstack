@@ -57,7 +57,7 @@ Load DNA files if configured.
 cat ~/.claude/skills/jjstack/skills/jj-qa/SKILL.md
 ```
 
-Apply all jj-qa operational rules (cleanup, Docker-first, framework debugging, Kano depth) throughout this session.
+Apply all jj-qa operational rules (cleanup, Docker-first, framework debugging, Kano depth) throughout this session. Remember: Kano test depth numbers are MINIMUMS (floors), not targets — always exceed them when possible.
 
 ---
 
