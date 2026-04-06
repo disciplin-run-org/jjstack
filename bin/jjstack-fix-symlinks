@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# jjstack-fix-symlinks — re-assert jjstack symlinks over gstack.
+#
+# Fast check: for each jjstack skill, verify the symlink in ~/.claude/skills/
+# points to jjstack (not gstack). Fixes silently if gstack overwrote them
+# (e.g., after a gstack auto-update).
+#
+# Output: one line per fix, or nothing if all OK.
+
+JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SKILLS_DIR="$HOME/.claude/skills"
+FIXED=0
+
+for skill_dir in "$JJSTACK_DIR"/skills/*/; do
+  [ ! -d "$skill_dir" ] && continue
+  skill_name="$(basename "$skill_dir")"
+  [ ! -f "$skill_dir/SKILL.md" ] && continue
+  [ "$skill_name" = "jjstack" ] && continue
+
+  target="$SKILLS_DIR/$skill_name"
+  jj_target="$JJSTACK_DIR/skills/$skill_name"
+
+  # Case 1: symlink pointing to gstack — replace
+  if [ -L "$target" ]; then
+    current="$(readlink "$target")"
+    if echo "$current" | grep -q "gstack/" && ! echo "$current" | grep -q "jjstack/"; then
+      ln -snf "$jj_target" "$target"
+      FIXED=$((FIXED + 1))
+    fi
+  # Case 2: gstack dir+symlink pattern — replace
+  elif [ -d "$target" ] && [ -L "$target/SKILL.md" ]; then
+    inner="$(readlink "$target/SKILL.md")"
+    if echo "$inner" | grep -q "gstack/"; then
+      rm "$target/SKILL.md"
+      rmdir "$target" 2>/dev/null || rm -rf "$target"
+      ln -snf "$jj_target" "$target"
+      FIXED=$((FIXED + 1))
+    fi
+  fi
+done
+
+[ "$FIXED" -gt 0 ] && echo "SYMLINKS_FIXED $FIXED"
+exit 0

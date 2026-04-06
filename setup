@@ -174,6 +174,25 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
       SKIPPED+=("$skill_name")
     fi
 
+  elif [ -d "$target_link" ] && [ -L "$target_link/SKILL.md" ]; then
+    # gstack pattern: real directory with symlinked SKILL.md inside
+    inner_target="$(readlink "$target_link/SKILL.md")"
+    if echo "$inner_target" | grep -q "gstack/"; then
+      original="$inner_target"
+      if [ -n "${EXISTING_ORIGINALS[$skill_name]:-}" ]; then
+        original="${EXISTING_ORIGINALS[$skill_name]}"
+      fi
+      rm "$target_link/SKILL.md"
+      rmdir "$target_link" 2>/dev/null || rm -rf "$target_link"
+      ln -snf "$jj_target" "$target_link"
+      MANIFEST_LINES+=("$skill_name|$original|$jj_target")
+      REPLACED+=("$skill_name")
+      ok "Replaced $skill_name (was gstack dir+symlink)"
+    else
+      warn "SKIPPED: $skill_name has unexpected SKILL.md symlink: $inner_target"
+      SKIPPED+=("$skill_name")
+    fi
+
   elif [ -e "$target_link" ]; then
     # Real directory or file — don't touch
     warn "SKIPPED: $skill_name is a real directory/file. Remove it manually to use jjstack's version."

@@ -70,6 +70,9 @@ check_snooze() {
   return 1  # snooze expired
 }
 
+# ─── Step 0: Fix symlinks if gstack overwrote them ──────────
+"$JJSTACK_DIR/bin/jjstack-fix-symlinks" 2>/dev/null || true
+
 # ─── Step 1: Read local version ──────────────────────────────
 LOCAL=""
 if [ -f "$VERSION_FILE" ]; then
