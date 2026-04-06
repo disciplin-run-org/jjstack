@@ -93,6 +93,7 @@ def create_app():
     """Create FastAPI app with MCP mounted at /mcp."""
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
+    from pathlib import Path
 
     port = os.environ.get("MCP_PORT")
     if not port:
@@ -104,10 +105,17 @@ def create_app():
     app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
     app.mount("/mcp", mcp_app)
 
+    # Read version from VERSION file (baked into Docker image)
+    _version = "dev"
+    for vpath in [Path("/app/VERSION"), Path(__file__).parents[2] / "VERSION"]:
+        if vpath.exists():
+            _version = vpath.read_text().strip()
+            break
+
     @app.get("/health")
     async def health():
         """Health check for Docker, load balancers, and monitoring."""
-        return {"status": "ok", "service": SERVER_NAME}
+        return {"status": "ok", "service": SERVER_NAME, "version": _version}
     # end def
 
     @app.get("/", response_class=HTMLResponse)
@@ -508,6 +516,36 @@ behavior. The `/mcp` mount takes priority since it's registered first.
 All three patterns use the same MCP mount at `/mcp` — the only difference is
 what humans see when they open the URL in a browser.
 
+### SPA cache headers (prevent stale frontends)
+
+After a container rebuild, users may see the old frontend because the browser
+cached `index.html`. Fix this with cache-control middleware:
+
+```python
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import Request
+
+class NoCacheIndexMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith(".html"):
+            # Always revalidate — users get the new frontend after rebuild
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        elif "/assets/" in path:
+            # Vite hashed filenames — changed code gets a new URL, safe to cache forever
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+app.add_middleware(NoCacheIndexMiddleware)
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+```
+
+**Why this works:** `index.html` always revalidates (no-cache), so the browser
+fetches the latest after every rebuild. JS/CSS assets under `/assets/` have
+content hashes in their filenames (Vite default) — changed code gets a new
+filename, unchanged assets are cached forever. Users never need to hard-refresh.
+
 ### Adding extra routes (OAuth, webhooks, etc.)
 
 Mount MCP and any explicit routes **before** the SPA catch-all:
@@ -541,8 +579,9 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.23.0" \
     <additional-deps>
 
-# Copy application source
+# Copy application source and version
 COPY src/ ./src/
+COPY VERSION /app/VERSION
 RUN pip install --no-cache-dir -e .
 
 # Data volume for credentials / persistent storage
@@ -596,6 +635,64 @@ and never reuse. No `ports:` mapping needed with host networking.
 
 ---
 
+## Dev Mode — Live Reload
+
+During development, volume-mount your source code over the installed package
+and run uvicorn with `--reload`. Save a file, the server restarts automatically.
+No container rebuild needed.
+
+**How it works:** Docker Compose automatically merges `docker-compose.override.yml`
+on top of `docker-compose.yml` when you run `docker compose up` with no `-f` flags.
+Put dev overrides in the override file and your default workflow is dev mode.
+
+### docker-compose.override.yml
+
+```yaml
+# Dev mode: volume-mount source + uvicorn --reload
+# Applied automatically by `docker compose up` (no flags needed).
+# Skip with: docker compose -f docker-compose.yml up
+services:
+  <service>-mcp:
+    volumes:
+      - ./<service>-mcp/src/<package>:/app/src/<package>
+    entrypoint: >-
+      sh -c "uvicorn <package>.server:create_app --factory
+      --host 0.0.0.0 --port $${MCP_PORT}
+      --reload --reload-dir /app/src/<package>"
+```
+
+### Running dev vs prod
+
+| Mode | Command | What happens |
+|------|---------|-------------|
+| **Dev** (default) | `docker compose up` | Override auto-applied: source mounted, `--reload` active |
+| **Prod** | `docker compose -f docker-compose.yml up` | Override skipped: baked image, no mounts |
+| **Rebuild** | `docker compose up --build` | Rebuild image, then run in dev mode |
+
+### Key details
+
+- **Volume mount target** must match where the Dockerfile puts the source. The
+  skill template uses `COPY src/ ./src/` with `pip install -e .`, so the target
+  is `/app/src/<package>`. If your Dockerfile installs to site-packages instead,
+  mount to `/usr/local/lib/python3.12/site-packages/<package>`.
+
+- **`--reload-dir`** must point to the same directory as the mount target. Without
+  it, uvicorn watches the entire container filesystem and reloads on unrelated
+  file changes (like writes to `/data`).
+
+- **`--factory`** flag is needed when the app is created by a factory function
+  (`create_app`). The skill template uses a factory, so include it. If your
+  server exports the app directly as a module-level variable, drop `--factory`.
+
+- **`$$` escaping:** Docker Compose interprets `$` as variable substitution.
+  To pass `${MCP_PORT}` to the shell inside the container, write `$${MCP_PORT}`
+  in the YAML.
+
+- **The Dockerfile does not change** between dev and prod. Dev mode is purely a
+  compose-level concern — the image is always production-ready.
+
+---
+
 ## .mcp.json Client Configuration
 
 ```json
@@ -631,6 +728,131 @@ has no long-running tools, `fastmcp>=2.14.0` (without `[tasks]`) is sufficient.
 
 ---
 
+## Version Tracking
+
+Every MCP server tracks its version via a `VERSION` file at the repo root containing
+a semver string (e.g., `1.0.0`). This is the single source of truth. Version bumps
+are automated via GitHub Actions on merge to main.
+
+```
+VERSION          ← semver string, e.g., "1.0.0" (single source of truth)
+pyproject.toml   ← updated automatically by CI
+Dockerfile       ← COPY VERSION /app/VERSION
+/health          ← returns {"version": "1.0.0", ...}
+UI sidebar       ← shows "v1.0.0" below Settings (if server has a web UI)
+```
+
+### Automatic version bumps (GitHub Action)
+
+Create `.github/workflows/version-bump.yml`:
+
+```yaml
+name: Version Bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Skip if the push was from the version bump itself
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine bump type from commits
+        id: bump
+        run: |
+          # Get commits since last tag (or all commits if no tags)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --format="%s" --no-merges)
+          else
+            COMMITS=$(git log "$LAST_TAG"..HEAD --format="%s" --no-merges)
+          fi
+
+          # No commits since last tag = no bump needed
+          if [ -z "$COMMITS" ]; then
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check for breaking changes first
+          if echo "$COMMITS" | grep -qiE "^.*!:|BREAKING CHANGE"; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.*\))?:"; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          elif echo "$COMMITS" | grep -qE "^(fix|refactor|perf|style|docs|chore)(\(.*\))?:"; then
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump version
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          CURRENT=$(cat VERSION 2>/dev/null || echo "0.0.0")
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "${{ steps.bump.outputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW="$MAJOR.$MINOR.$PATCH"
+          echo "$NEW" > VERSION
+
+          # Sync pyproject.toml if it exists
+          if [ -f pyproject.toml ]; then
+            sed -i "s/^version = \".*\"/version = \"$NEW\"/" pyproject.toml
+          fi
+
+          echo "Bumped $CURRENT -> $NEW (${{ steps.bump.outputs.bump }})"
+
+      - name: Commit and tag
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          NEW=$(cat VERSION)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION pyproject.toml
+          git commit -m "chore: bump version to $NEW [skip ci]"
+          git tag "v$NEW"
+          git push origin main --tags
+```
+
+**How it works:**
+1. On every push to main, scans commit messages since the last `vX.Y.Z` tag
+2. `feat:` commits trigger a minor bump, `fix:`/`refactor:`/etc. trigger a patch bump
+3. `BREAKING CHANGE` or `!:` in commit message triggers a major bump
+4. Updates `VERSION` file and `pyproject.toml`, commits with `[skip ci]` to prevent loops
+5. Creates a git tag (`v1.2.3`) for the new version
+6. If no conventional commits found, does nothing
+
+**Bump rules:**
+- `fix:`, `refactor:`, `perf:`, `style:`, `docs:`, `chore:` -> **patch** (1.0.0 -> 1.0.1)
+- `feat:` -> **minor** (1.0.0 -> 1.1.0)
+- `BREAKING CHANGE` or `!:` -> **major** (1.0.0 -> 2.0.0)
+- No conventional prefix -> no bump
+
+**Health endpoint** must include the version:
+```python
+return {"status": "ok", "service": SERVER_NAME, "version": _version}
+```
+
+**Web UI** (if present) should display the version in the sidebar below Settings,
+styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
+
+---
+
 ## Checklist — New MCP Server
 
 ### AI integration
@@ -645,21 +867,28 @@ has no long-running tools, `fastmcp>=2.14.0` (without `[tasks]`) is sufficient.
 7. Self-signed cert generated and placed in data volume (`/data/server.crt`, `/data/server.key`)
 8. `MCP_PORT` set in docker-compose (unique per service, no default)
 9. `network_mode: host` in docker-compose
-10. `/health` endpoint returns `{"status": "ok", "service": "<name>"}`
+10. `/health` endpoint returns `{"status": "ok", "service": "<name>", "version": "<semver>"}`
 11. Docker healthcheck configured in docker-compose against `/health`
 12. `.mcp.json` entry added with `"type": "http"` and `https://` URL
 13. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 14. Landing page at `/` with MCP connection instructions
 15. `mcp_app.lifespan` passed to FastAPI app for session management
+16. `VERSION` file at repo root with semver string (e.g., `1.0.0`)
+17. `VERSION` copied into Docker image at `/app/VERSION`
+18. `pyproject.toml` version field matches `VERSION` file
+19. `.github/workflows/version-bump.yml` installed for automatic semver bumps
+20. Web UI (if present) displays version in sidebar below Settings
+21. `docker-compose.override.yml` with volume mount + `--reload` for dev mode
+22. SPA cache headers: index.html no-cache, /assets/* immutable (if server has web UI)
 
 ### Tool design
-16. Tool names follow `<service>_<action>` pattern
-17. Arguments are flat primitives with sensible defaults — no nested objects
-18. `Literal` types used for constrained choices
-19. Errors returned as descriptive strings, not exceptions
-20. Large results paginated with `limit` parameter (default 20-50)
-21. File/document reads have `max_bytes` guard
-22. No user input passed directly to shell, SQL, or file system without validation
-23. Agent tool selection tested (not just output correctness)
-24. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
-25. Long-running tools include estimated completion time in initial response
+23. Tool names follow `<service>_<action>` pattern
+24. Arguments are flat primitives with sensible defaults — no nested objects
+25. `Literal` types used for constrained choices
+26. Errors returned as descriptive strings, not exceptions
+27. Large results paginated with `limit` parameter (default 20-50)
+28. File/document reads have `max_bytes` guard
+29. No user input passed directly to shell, SQL, or file system without validation
+30. Agent tool selection tested (not just output correctness)
+31. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
+32. Long-running tools include estimated completion time in initial response
