@@ -16,6 +16,8 @@ Data model is king. Before writing a line of code, define the data: what comes i
 
 Lowest cost of execution. An extra index is never as good as fixing the query. Fewer CPU cycles, less data transfer, fewer AI tokens. This is not optimization theater - it is a design constraint applied from line one.
 
+Algorithm first, inference last. Never use AI/LLM inference for work that deterministic code can handle. If a result has a known structure — templates, formatting, file I/O, data transformation, validation — build it in Python. Only reach for the LLM when the task genuinely requires natural language understanding, creative generation, or judgment that cannot be expressed as rules. A function that assembles 90% of its output from templates and calls the LLM for the remaining 10% is correct. A function that sends the entire task to the LLM and hopes for the best is lazy, slow, expensive, and non-deterministic.
+
 Primitives over frameworks. If the standard library solves it, use the standard library. A framework is debt with interest. A primitive is paid in full. When the stdlib has a clean solution - `dataclasses` for fixed schemas, `collections.defaultdict` for grouped data, `itertools` for iteration patterns - use it instead of hand-rolling the equivalent.
 
 Retain option-value. Play the long game. If refactoring is coming down the road, design for it now. Placeholders and comments that signal future modules are cheap insurance. Pay a little extra today to keep options open tomorrow.
