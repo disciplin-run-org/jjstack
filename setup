@@ -359,8 +359,25 @@ else
   fi
 fi
 
-# ─── Step 8: Make scripts executable ─────────────────────────
+# ─── Step 8: Install statusline ──────────────────────────────
+STATUSLINE_SRC="$JJSTACK_DIR/bin/statusline.sh"
+STATUSLINE_STATUS="skipped"
+
+if [ -f "$STATUSLINE_SRC" ] && [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! grep -q "statusline" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq --arg cmd "bash $STATUSLINE_SRC" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    STATUSLINE_STATUS="installed"
+    ok "Statusline installed (model, git, context bar, usage bar)"
+  else
+    STATUSLINE_STATUS="already configured"
+  fi
+fi
+
+# ─── Step 9: Make scripts executable ─────────────────────────
 chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/bin/statusline.sh" 2>/dev/null || true
 chmod +x "$HOOK_SRC" 2>/dev/null || true
 
 # ─── Step 9: Summary ─────────────────────────────────────────
@@ -400,6 +417,7 @@ fi
 
 echo ""
 echo "  Hook: auto-approve-safe.sh ($HOOK_STATUS)"
+echo "  Statusline: $STATUSLINE_STATUS"
 echo "  Context7: $CONTEXT7_STATUS"
 echo ""
 echo "  Usage: /plan-ceo-review (now uses jjstack wrapper)"
