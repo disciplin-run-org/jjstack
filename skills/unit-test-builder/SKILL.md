@@ -1,9 +1,12 @@
 ---
 name: unit-test-builder
 description: >
-  Generate TDD test suites for Python projects. Tests first, implementation second.
-  Trigger on: "write tests", "add test coverage", "TDD", "unit tests for",
-  "test this module", "create test suite", or before implementing a new module.
+  Generate TDD test suites using adversarial thinking and systematic test design.
+  Language-agnostic strategy: boundary analysis, equivalence partitioning, mutation
+  testing, property-based testing. Tests first, implementation second. For
+  Python/pytest-specific mechanics, see /python-coder. Trigger on: "write tests",
+  "add test coverage", "TDD", "unit tests for", "test this module", "create test
+  suite", or before implementing a new module.
 allowed-tools:
   - Read
   - Grep
@@ -16,24 +19,88 @@ allowed-tools:
 
 # Unit Test Builder — jjstack Skill
 
-Generate TDD test suites for Python projects following the jjstack coding DNA.
-Tests first, implementation second.
+Generate TDD test suites grounded in adversarial thinking and systematic test
+design. Tests first, implementation second. Philosophy first, mechanics second.
 
 ## When to Use
 
 Invoke `/unit-test-builder` when:
 - Starting a new module and need tests written before implementation
-- Adding test coverage for existing Pydantic models, FastMCP tools, or async tasks
-- Need fixture factories or conftest patterns for a test suite
+- Adding test coverage for existing code
+- Reviewing whether a test suite is thorough enough
+- Running mutation testing to find blind spots
 
 ## Mandatory Pre-Steps
 
-1. Read the coding DNA: `cat ~/.claude/skills/jjstack/jjstack.config.yaml` then read the `dna.coding` file.
-2. Read any LeanSpecs Gherkin for the module if available (each test should trace to a behavior ID).
-3. Read any existing `conftest.py` to avoid duplicating fixtures.
-4. Read `pyproject.toml` to understand the project's test framework and dependencies.
+1. **Load the testing philosophy:**
 
-## Test File Structure
+```bash
+cat ~/.claude/skills/jjstack/references/unit-test-philosophy.md
+```
+
+2. **Read the coding DNA:** `cat ~/.claude/skills/jjstack/jjstack.config.yaml`
+   then read the `dna.coding` file.
+
+3. **Read any LeanSpecs Gherkin** for the module if available (each test should
+   trace to a behavior ID).
+
+4. **Read any existing `conftest.py`** to avoid duplicating fixtures.
+
+5. **Read `pyproject.toml`** to understand the project's test framework and
+   dependencies.
+
+## Test Strategy Workflow
+
+After loading the philosophy, apply this workflow for every module:
+
+### Step 1: Identify Kano Level
+
+What Kano level is this feature? Use `/kano-model` to determine minimum test
+depth. Remember: Kano depths are FLOORS, not ceilings.
+
+### Step 2: Map BDD to Tests
+
+Each Gherkin scenario → at least one test:
+- **Given** → test setup / fixture
+- **When** → call the function under test
+- **Then** → assertions
+
+### Step 3: Apply Adversarial Thinking
+
+For every function, ask:
+1. What inputs did I NOT think about when writing this?
+2. What state can the caller be in that I assumed they wouldn't be?
+3. What happens when a dependency returns something unexpected?
+
+### Step 4: Systematic Test Case Design
+
+- **Equivalence partitioning** — divide input space into classes, one test
+  per class
+- **Boundary value analysis** — test at edges (min-1, min, min+1, max-1,
+  max, max+1, empty, None)
+- **Decision tables** — enumerate boolean condition combinations
+- **State transitions** — test every valid AND invalid state change
+
+### Step 5: Write Negative Tests
+
+Test what should NOT happen. Invalid inputs, wrong states, missing fields,
+injection attempts. The negative tests are where bugs live.
+
+### Step 6: Test Error Messages
+
+Assert specific text in error messages, not just that errors occur. Especially
+critical for MCP tools where vague errors cause LLM retry loops.
+
+### Step 7: Verify with Mutation Testing
+
+After writing tests, run mutation testing to find surviving mutants. Each
+survivor is a blind spot. The loop:
+```
+Write tests → run mutation testing → kill survivors →
+add property-based tests → re-run → iterate
+```
+
+## Test File Structure (Python Example)
 
 ```python
 """Tests for {module} — {description}.
@@ -65,156 +132,34 @@ class Test{ModelOrFunction}:
         ...
         return
 
-    def test_{validation_error}(self) -> None:
+    def test_{boundary_case}(self) -> None:
+        ...
+        return
+
+    def test_{invalid_input_rejected}(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
             ...
         #end with
         assert "{field}" in str(exc_info.value)
         return
-
-    def test_{json_round_trip}(self) -> None:
-        json_str = model_instance.model_dump_json()
-        restored = ModelClass.model_validate_json(json_str)
-        assert restored == model_instance
-        return
 ```
 
-## Pattern Catalog
-
-### 1. Pydantic Model Validation Testing
-
-Test every model with:
-- **Happy path**: valid construction, field access
-- **Required field missing**: `pytest.raises(ValidationError)`, check field name in error
-- **Field constraints**: `ge=`, `le=`, `pattern=` — test boundary values
-- **Defaults**: verify `None` defaults, `False` defaults, empty list defaults
-- **JSON round-trip**: `model_dump_json()` -> `model_validate_json()` -> assert equality
-- **Enum constraints**: verify exact values AND count (`len(MyEnum) == N`)
-
-```python
-def test_kano_level_must_be_positive(self) -> None:
-    with pytest.raises(ValidationError):
-        BehaviorSpec(
-            behavior_id="1.1.1",
-            summary="Invalid kano",
-            kano_level=0,  # Field(ge=1) should reject
-            ...
-        )
-    #end with
-    return
-```
-
-### 2. Fixture Factory Pattern (conftest.py)
-
-Each model gets a `sample_{model_name}` fixture returning a populated instance.
-Fixtures compose: `sample_run_report` depends on `sample_scorecard` and `sample_test_result`.
-
-```python
-@pytest.fixture
-def sample_behavior_spec():
-    """A representative approved BehaviorSpec for testing."""
-    from iris_qa.models import BehaviorSpec
-
-    return BehaviorSpec(
-        behavior_id="3.3.1",
-        summary="Builds BehaviorSpec list",
-        ...
-    )
-```
-
-Import inside the fixture body to avoid import errors when conftest loads before
-the package is installed.
-
-### 3. Workspace Fixture Pattern
-
-For modules that read/write files (spec_loader, test_runner, scorecard):
-
-```python
-@pytest.fixture
-def workspace_dir(tmp_path: Path) -> Path:
-    """Temporary workspace with standard iris-qa directory layout."""
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (tmp_path / "tests" / "generated").mkdir(parents=True)
-    (tmp_path / "tests" / "custom").mkdir(parents=True)
-    (tmp_path / "results").mkdir(parents=True)
-    return tmp_path
-```
-
-### 4. Enum Completeness Testing
-
-Always test enum member count to catch accidental additions/removals:
-
-```python
-def test_only_two_values(self) -> None:
-    assert len(ReleaseStatus) == 2
-    return
-```
-
-### 5. FastMCP Tool Testing (Phase 3+)
-
-Mock the FastMCP server, test tool functions directly:
-
-```python
-@pytest.fixture
-def mcp_server():
-    """FastMCP server instance for tool testing."""
-    from fastmcp import FastMCP
-    mcp = FastMCP("{server-name}-test")
-    # Register tools on the test server
-    from {package}.mcp_server import register_tools
-    register_tools(mcp)
-    return mcp
-```
-
-For `@mcp.tool(task=True)` async tools, test the underlying function directly
-(bypassing the task wrapper) since FastMCP task lifecycle is tested by FastMCP itself.
-
-### 6. Async Task Testing (Phase 3+)
-
-```python
-@pytest.mark.asyncio
-async def test_iris_qa_run_returns_scorecard() -> None:
-    """Test the async tool function directly."""
-    result = await my_async_tool(workspace="test", scope="smoke")
-    assert result["status"] in ("success", "error")
-    return
-```
-
-### 7. pytest Marker Convention
-
-Tests trace to LeanSpecs behaviors via docstrings when available:
-
-```python
-def test_launch_status(self) -> None:
-    """LeanSpecs 4.5.1: LAUNCH when all categories pass."""
-    ...
-```
-
-### 8. Subprocess Mock Pattern (Phase 4: test_runner)
-
-```python
-@pytest.fixture
-def mock_pytest_subprocess(mocker):
-    """Mock subprocess.run for pytest invocation."""
-    mock_run = mocker.patch("{package}.test_runner.subprocess.run")
-    mock_run.return_value = mocker.Mock(
-        returncode=0,
-        stdout='{"tests": [...]}',
-    )
-    return mock_run
-```
+For Python/pytest-specific patterns (fixtures, parametrize, Hypothesis,
+mutmut, conftest), see `/python-coder`.
 
 ## Self-Review Checklist
 
-Before delivering tests:
-1. Every test has explicit `return` at the end
-2. `#end with` / `#end for` on significant blocks
-3. Imports grouped: Standard Libraries / 3rd party / Local
-4. ASCII section separators between test classes
-5. No generic variable names (`data`, `result`, `items`)
-6. Each test class has a docstring citing LeanSpecs behavior ID
-7. JSON round-trip test for every Pydantic model
-8. Validation error tests check field name in error message
-9. No mocking of internal code — only mock at boundaries
-10. Fixtures compose (use other fixtures, not duplicate setup)
+Before delivering tests, apply the self-interrogation checklist from the
+philosophy reference:
+
+1. Every test traces to a BDD scenario, requirement, or documented risk
+2. Boundaries tested (not just happy-path midpoints)
+3. Negative cases tested (invalid input, missing data, wrong state)
+4. No test depends on another test's side effects
+5. Mocks only at system boundaries
+6. No tautological tests (tests define behavior, not mirror implementation)
+7. Test names describe the requirement, not the method being called
+8. Kano-appropriate depth met or exceeded
+9. Error messages assert specific text, not just error type
+10. For MCP tools: schema stability and chaos input tested
+11. Mutation testing considered — surviving mutants reviewed
