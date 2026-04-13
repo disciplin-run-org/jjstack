@@ -205,6 +205,44 @@ machine-readable enforcement — stricter than natural language.
 **The spec is the single source of truth.** If it's not in the Gherkin, it
 doesn't exist. If the code doesn't match the Gherkin, the code is wrong.
 
+**One scenario per behavior.** Each behavior maps to exactly one
+Given/When/Then scenario — one testable assertion. If a behavior needs
+multiple scenarios, split it into separate behaviors. Multi-scenario
+behaviors confuse QA test generation (which test failed?) and make failure
+classification harder (is it a code bug or a spec bug?). One scenario =
+one assertion = one verdict.
+
+**Four-bucket failure triage.** When a QA test fails, the failure is
+classified into exactly one bucket:
+- **target_bug** — product code is wrong
+- **spec_quality** — Gherkin is vague or incorrect
+- **iris_qa_bug** — test generator produced bad code
+- **setup_data** — test environment wasn't in the expected state (setup
+  failed silently, stale clone, missing fixtures, leftover data from a
+  prior run)
+
+This classification determines routing: target_bug and spec_quality go to
+the product worker, iris_qa_bug goes to the QA worker, setup_data goes to
+the orchestrator (infrastructure fix, not a code fix). LLM transients are
+retried, not triaged. The triage discipline matters because it prevents
+"fix the test to make it pass" when the real problem is the product, the
+spec, or the environment.
+
+**Status is computed, never declared.** Draft/review/approved status is
+derived from data completeness: empty Gherkin or missing Kano = draft,
+regardless of what anyone says. This eliminates "approved but empty" —
+the system enforces that approval means the work is actually done. No
+manual transitions, no workflow gates. The PM's job is to fill in the
+data; the system computes the status.
+
+**Position vs Intent — a recurring practice.** Specs describe WHY (outcome),
+not HOW (implementation). API names, endpoint paths, protocol details,
+UI element lists — these are implementation details that belong in
+Technical Specifications (Cap 10), not in the product spec hierarchy.
+This is not a one-time rewrite; it's a standing review action. LeanSpecs
+template `02-position-vs-intent.md` automates this as a recurring scan
+that flags items prescribing HOW when they should say WHY.
+
 ---
 
 ## 7. Product Scaffold — Standard Structure
@@ -226,6 +264,15 @@ Every product follows the standard capability layout. Reference
 **"MCP is the product."** Every user action = MCP tool call. CLI wraps it.
 Web UI calls the same tools. No behavior exists only in the GUI.
 
+**Active boundary enforcement.** Items naturally drift into the wrong
+capability — a developer writes a "feature" that's really a tech decision,
+or a designer adds a "behavior" that's really a UI pattern. The standard
+scaffold is only useful if it's enforced. LeanSpecs templates
+`12-relocate-tech-specs.md` and `13-relocate-design-items.md` scan the
+product hierarchy and flag items that belong in Technical Specifications
+(Cap 10) or Design System (Cap 11) instead of product capabilities. This
+is a recurring PM hygiene action, not a one-time cleanup.
+
 ---
 
 ## 8. Build Order — API First, CLI, GUI
@@ -242,7 +289,67 @@ to every developer, agent, and automation in the ecosystem.
 
 ---
 
-## 9. Scope Control — The Adversarial Toolbox
+## 9. Spec Refinement Pipeline
+
+Writing specs is the first step. Refinement is where the value is. LeanSpecs
+codifies 12 AI-assisted refinement actions that run in a deliberate order:
+
+**Phase 1 — Clean language:**
+1. **Mechanical Checks** — typos, grammar errors, debug tags
+2. **Position vs Intent** — rewrite HOW → WHY
+
+**Phase 2 — Challenge structure:**
+3. **Musk Simplify** — delete, merge, demote, consolidate, challenge
+4. **Consolidate** — find sibling items describing the same thing
+5. **Remove Redundancies** — children that restate their parent
+
+**Phase 3 — Sharpen content:**
+6. **Sharpen Details** — vague descriptions → specific, testable statements
+7. **Strengthen Rationales** — tie each rationale to a KR or kill the item
+
+**Phase 4 — Classify and generate:**
+8. **Suggest Kano** — assign Extended Kano levels to unclassified items
+9. **Generate Gherkin** — write Given/When/Then for items with empty Gherkin
+10. **Validate Hierarchy** — check child Gherkin doesn't contradict parent
+
+**Phase 5 — Boundary enforcement:**
+12. **Relocate Tech Specs** — flag items that are tech decisions, not behaviors
+13. **Relocate Design** — flag items that are UI/UX decisions, not behaviors
+
+**The ordering is deliberate.** Clean up language before challenging structure
+(otherwise you're simplifying messy text). Challenge structure before sharpening
+details (otherwise you're polishing items that should be deleted). Classify
+and generate Gherkin after the structure is stable (otherwise generated Gherkin
+is immediately invalidated by structural changes).
+
+The PM runs this pipeline after every major spec import or quarterly review.
+Individual actions can be run standalone for spot fixes.
+
+---
+
+## 10. Spec Cleanliness — Continuous PM Metric
+
+Spec quality isn't a review-time-only assessment. LeanSpecs tracks a
+continuous **cleanliness score** across 4 weighted dimensions:
+
+| Dimension | Weight | What it measures |
+|-----------|--------|-----------------|
+| **Structural integrity** | 25% | Duplicate IDs, orphaned items, ID convention ordering |
+| **Content completeness** | 25% | Empty Gherkin, missing Kano, TBD owners, empty descriptions |
+| **Content quality** | 25% | Vague descriptions, truncated names, items without detail |
+| **Data hygiene** | 25% | Soft-deleted clutter, stale audit trail entries |
+
+Target: **100% clean.** Displayed in the status bar — visible on every page
+load, not buried in a report. This makes spec quality a first-class metric
+alongside feature count and test coverage.
+
+The PM monitors cleanliness as a leading indicator. A drop in cleanliness
+means new items were added without completing them — scope is expanding
+without quality keeping up. Address before the spec gets unwieldy.
+
+---
+
+## 11. Scope Control — The Adversarial Toolbox
 
 ### RICE Scoring
 
@@ -285,7 +392,7 @@ A feature should be killed or deferred if:
 
 ---
 
-## 10. Agentic Product Management (2026)
+## 12. Agentic Product Management (2026)
 
 Products must be both human-usable AND agent-usable. The PM is becoming
 "Manager of Robots."
@@ -305,3 +412,28 @@ want X," define the outcome: "Optimize checkout drop-off to < 20% within
 
 **Every product in our ecosystem** exposes MCP tools as its primary
 interface. CLI and GUI are convenience layers. The API is the product.
+
+**Destructive operations require target declaration.** Static confirmation
+guards (`confirm="yes"`) are theater — every automated caller learns the
+convention and always passes it. Destructive operations must require the
+caller to name the target (e.g., `product_delete(repo="litmus")`), and the
+server validates the name against the active session. This is the only guard
+that prevents destroying workspace A when the caller thought they were on B.
+
+**Mechanical spec transforms are algorithm, not AI.** When specs need bulk
+text changes (renaming IDs across 40 behaviors, updating a parameter
+signature in all Gherkin), write a Python script with regex substitution.
+This follows the "Algorithm First, Inference Last" principle — LLM calls for
+deterministic transforms waste tokens, introduce non-determinism, and are
+harder to verify.
+
+**Spec propagation across agents is multi-step.** In a multi-agent ecosystem,
+specs live in one service's data volume. Other services have independent
+copies (git clones, container volumes). After any spec change, the
+orchestrator must propagate: push to GitHub, then update each consumer's
+copy. Skipping propagation means agents generate tests from stale Gherkin.
+
+**Canary before scale.** Before running QA across an entire capability (N
+behaviors), test one behavior end-to-end first. Infrastructure bugs
+(missing headers, session expiry, env vars, stale clones) produce N
+identical failures. The canary catches them at cost 1 instead of cost N.

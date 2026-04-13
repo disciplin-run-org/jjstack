@@ -169,13 +169,21 @@ features consuming engineering time. No kill list from prior reviews.
 - Gherkin at every level (Capability/Feature/Behavior)?
 - Parent Gherkin constrains children (no contradictions)?
 - Behaviors are testable (concrete Given/When/Then)?
+- **One scenario per behavior?** Multi-scenario behaviors must be split.
 - Spec is single source of truth (not duplicated in docs/Jira/README)?
 - Every behavior has a summary, Kano level, and OKR link?
-- Computed status: are there draft items that should be approved?
+- **Status is computed from data completeness** (not manually declared)?
+  Empty Gherkin or missing Kano = draft, automatically.
+- **Intent, not implementation?** Specs describe WHY (outcomes), not HOW
+  (API names, endpoint paths, protocol details). HOW belongs in Tech Specs.
+- **Cleanliness score tracked?** 4 dimensions: structural integrity, content
+  completeness, content quality, data hygiene. Target 100%.
 
-**Red flags:** Empty Gherkin fields (= draft status). Behaviors without
-Given/When/Then. Capability Rules that don't actually constrain. Specs
-duplicated across multiple systems.
+**Red flags:** Empty Gherkin fields (= forced draft status). Behaviors with
+multiple scenarios (split them). Specs prescribing implementation details
+instead of outcomes. Capability Rules that don't actually constrain. Items
+with manually-set "approved" status but incomplete data. Cleanliness below
+95%.
 
 ### Pass 5: Architecture Alignment (0-10)
 
@@ -184,10 +192,13 @@ duplicated across multiple systems.
 - MCP tools are the product (no GUI-only behavior)?
 - Foundation capabilities imported from shared library, not duplicated?
 - Agent-usable (MCP tools have clear descriptions, structured schemas)?
+- Destructive ops use target declaration? No `confirm="yes"` guards —
+  destructive tools require the caller to name the target, server validates.
 
 **Red flags:** GUI features with no corresponding MCP tool. Custom
 implementations of Foundation capabilities. Tool descriptions that an
-LLM couldn't parse. Non-standard capability ordering.
+LLM couldn't parse. Non-standard capability ordering. Destructive tools
+guarded by static confirmation instead of target declaration.
 
 ### Pass 6: Customer Job Clarity (0-10)
 
@@ -286,10 +297,19 @@ After scoring and iteration, provide:
 
 1. **Immediate actions** — things that can be fixed now (missing Kano levels,
    empty Gherkin, OKR links to add)
-2. **Strategic recommendations** — structural changes (capability reorg,
+2. **Refinement pipeline run** — recommend which of the 12 LeanSpecs AI
+   templates to run based on gaps found (see PM Philosophy Section 9).
+   Typical post-review sequence: Musk Simplify → Strengthen Rationales →
+   Suggest Kano → Generate Gherkin → Validate Hierarchy.
+3. **QA canary test** — before running full-capability QA, test one behavior
+   as a canary to catch infrastructure issues at cost 1 instead of cost N.
+4. **Spec propagation checklist** — after spec changes, verify all consumer
+   services have the updated product.json (push to GitHub + docker cp or
+   reconnect for each consumer).
+5. **Strategic recommendations** — structural changes (capability reorg,
    feature kills, scope reduction)
-3. **Next quarter planning** — what OKRs should target based on gaps found
-4. **Process improvements** — how to prevent these issues from recurring
+6. **Next quarter planning** — what OKRs should target based on gaps found
+7. **Process improvements** — how to prevent these issues from recurring
 
 End with the kill list prominently displayed. The kill list is the most
 valuable output of a PM review.
