@@ -178,6 +178,35 @@ if __name__ == "__main__":
 - `MCP_PORT` is mandatory — no default, prevents port collisions
 - TLS auto-detected from `/data/server.crt` + `/data/server.key` — no config flag needed
 
+**⚠️ Never pass `stateless_http=True` to `http_app()`.**
+
+FastMCP's default is stateful (`stateless_http=False`), which is what you want.
+Stateless mode looks attractive ("new transport per request, no session bookkeeping")
+but silently breaks two critical features:
+
+1. **`refresh_tools` stops delivering `notifications/tools/list_changed`.** Stateless
+   mode rejects `GET /mcp` with 405 — there's no persistent SSE channel for the
+   server to push notifications onto. `ctx.send_notification()` queues into a
+   dead transport and returns success, but nothing ever reaches the client.
+2. **Claude Code can't detect server restarts.** In stateful mode, CC keeps a
+   long-lived `GET /mcp` open. When the server dies (e.g., a container rebuild),
+   that connection closes, CC notices, and silently re-initializes the session.
+   In stateless mode there's no channel to break, so CC keeps sending tool
+   calls with a dead session ID until the user manually runs `/mcp`.
+
+Verified in `leanspecs/debug/refresh_test/` — a 4×2 matrix of
+`stateless_http × json_response` across the real `register_refresh_tool`
+implementation. Only stateful configs deliver notifications. Re-run that
+harness after any FastMCP upgrade to catch regressions.
+
+**Session contextvars caveat.** Stateful mode means one MCP session corresponds
+to one logical client, living across many HTTP requests. If your server uses
+`contextvars.ContextVar` to track per-request state (e.g., the current user
+or workspace), make sure the lifecycle matches FastMCP's session boundaries
+rather than individual POSTs — otherwise state leaks across tool calls in the
+same session. LeanSpecs' `state.py` is the canonical example to study before
+writing your own session-scoped state.
+
 **What to serve at `/`:**
 - **New/API-only server** (no web UI): use the landing page template above. It shows
   MCP connection instructions so humans who hit the URL know what the service is and
@@ -241,6 +270,12 @@ def register_tools(mcp: FastMCP) -> None:
         await ctx.send_notification(mcp_types.ToolListChangedNotification())
         return "Tool list refreshed. New and changed tools are now available."
     # end def
+    # ⚠️ The `ctx: Context` annotation is mandatory on FastMCP 3.x.
+    # Without it, FastMCP treats ctx as a required user argument and pydantic
+    # rejects every call with "Missing required argument". The tool will look
+    # registered but every invocation will fail silently with isError=true.
+    # Also: for this notification to reach the client, the server MUST be
+    # mounted with stateful transport — see http_app() guidance above.
 
     return
 ```
@@ -269,6 +304,16 @@ Every MCP server must teach the AI how to use it through three complementary lay
 workflows and tool relationships, not just individual tools. Layer 2 solves this but
 gets lost during context compaction. Layer 3 is the safety net. Layer 4 prevents
 the AI from falling back to curl after a server restart.
+
+**Layer 4 has two non-obvious prerequisites** — both must be true or the tool is
+a silent no-op:
+1. The `ctx` parameter on the `refresh_tools` function must be annotated as
+   `ctx: Context` (FastMCP 3.x injection requirement)
+2. `mcp.http_app()` must NOT pass `stateless_http=True` (stateful mode is the
+   only one with a GET SSE channel that can carry the notification)
+
+Both are covered by following the templates in this skill exactly. If you copy
+patterns from older MCP servers, double-check those two things first.
 
 **The instructions content** should include:
 - One-line description of what the server does
@@ -494,6 +539,8 @@ AI agents and humans access the same service.
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+# Do NOT pass stateless_http=True here — it silently breaks refresh_tools
+# and CC auto-reconnect. See "Never pass stateless_http=True" above.
 mcp_app = mcp.http_app(path="/")
 app = FastAPI(title=SERVER_NAME, lifespan=mcp_app.lifespan)
 app.mount("/mcp", mcp_app)
@@ -859,7 +906,8 @@ styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
 1. `instructions=` parameter set on `FastMCP()` with workflows and domain concepts
 2. `get_instructions()` tool registered, returns the same instructions string
 3. `refresh_tools()` tool registered, sends `ToolListChangedNotification` to update cached tool list
-4. All tool docstrings explain when/how/what (not just "does X")
+4. `refresh_tools` parameter is typed `ctx: Context` — untyped ctx fails silently on FastMCP 3.x
+5. All tool docstrings explain when/how/what (not just "does X")
 
 ### Infrastructure
 5. Uses FastMCP with `@mcp.tool` decorator for all tools
@@ -873,6 +921,7 @@ styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
 13. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 14. Landing page at `/` with MCP connection instructions
 15. `mcp_app.lifespan` passed to FastAPI app for session management
+15a. `http_app()` called WITHOUT `stateless_http=True` (stateful default required for refresh_tools and CC auto-reconnect)
 16. `VERSION` file at repo root with semver string (e.g., `1.0.0`)
 17. `VERSION` copied into Docker image at `/app/VERSION`
 18. `pyproject.toml` version field matches `VERSION` file
@@ -892,3 +941,63 @@ styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
 30. Agent tool selection tested (not just output correctness)
 31. Tools that may exceed 30 seconds use `task=True` or manual start/poll pattern
 32. Long-running tools include estimated completion time in initial response
+
+---
+
+## Follow-up: consolidate `mcp.http_app()` into shared helper
+
+**Status:** not started — park until no service is mid-task  
+**Why:** leanspecs, iris-qa, and google-workspace-mcp each call `mcp.http_app()`
+directly with their own kwargs. Two of them shipped `stateless_http=True` which
+silently broke `refresh_tools` and CC auto-reconnect (see `leanspecs/debug/
+refresh_test/README.md` for the 2026-04-11 postmortem). The fix was a 1-line
+drop in each service, but the trap remains — any future service (or a revert)
+can reintroduce it.
+
+**Proposed change:** add `shared/mcp/http_app.py`:
+
+```python
+"""Shared FastMCP http_app constructor with safe defaults."""
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+def create_http_app(mcp: FastMCP, *, path: str = "/", json_response: bool = True):
+    """Build the FastMCP streamable-HTTP ASGI app.
+
+    Intentionally does NOT expose stateless_http. Stateless mode breaks
+    refresh_tools notification delivery and Claude Code auto-reconnect.
+    If you think you need it, read leanspecs/debug/refresh_test/README.md.
+    """
+    return mcp.http_app(path=path, json_response=json_response)
+```
+
+Then each service collapses from:
+
+```python
+def get_mcp_app():
+    return mcp.http_app(path="/", json_response=True)
+```
+
+to:
+
+```python
+from shared.mcp.http_app import create_http_app
+
+def get_mcp_app():
+    return create_http_app(mcp)
+```
+
+**Scope:** 4 files across 3 repos + 1 new file in shared
+- `shared/mcp/http_app.py` (new)
+- `leanspecs/src/leanspecs/mcp_server.py`
+- `iris-qa/iris_qa/mcp_server.py`
+- `google-workspace-mcp/src/google_workspace_mcp/server.py`
+
+**When to do it:** next time all three services are idle (no in-progress feature
+branches touching mcp_server.py). Single sweep, one commit per repo, test with
+`debug/refresh_test/run_matrix.py` after.
+
+**Also update this skill:** replace the bare `mcp.http_app(path="/")` examples
+with `create_http_app(mcp)` once the shared helper exists.
