@@ -99,9 +99,15 @@ default to `uv`.
 
 ## Testing — Python/pytest Mechanics
 
-For test STRATEGY and PHILOSOPHY (what to test, adversarial thinking, boundary
-analysis, mutation testing), use `/unit-test-builder`. This section covers
-pytest-specific MECHANICS that implement the philosophy.
+**When writing or reviewing tests, load the testing philosophy first:**
+
+```bash
+cat ~/.claude/skills/jjstack/references/unit-test-philosophy.md
+```
+
+This injects adversarial thinking, boundary analysis, MCP-specific traps,
+mutation testing strategy, and the self-interrogation checklist. The patterns
+below are the pytest MECHANICS that implement that philosophy.
 
 ### Pattern 1: Pydantic Model Validation Testing
 
