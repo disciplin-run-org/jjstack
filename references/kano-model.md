@@ -44,6 +44,29 @@ should exist. Two motions: fulfill the promise (bugs) or expand it (features).
 **Behind the Scenes (honorable mention):** Invisible to customers. Internal
 ops, cost reduction. QA as needed. No satisfaction impact.
 
+## Capability-level Kano mapping
+
+When organizing a product spec into capabilities, Kano levels map to
+capability tiers. Use the backup analogy to decide where a feature belongs:
+
+- **Cap 1 (Core / Kano 1-2):** The ability to make a single backup right now.
+  Without this, the product is **broken** — completely useless.
+- **Cap 2 (Auxiliary / Kano 3):** The ability to schedule the backup to run
+  during the night. Without this, the product **works but is tedious** — every
+  operation is manual.
+- **Cap 3 (Extended / Kano 4+):** Intelligence that suggests what to back up
+  based on change frequency. Without this, the product works but the user
+  **has to figure everything out themselves**.
+
+**Purchase decision:** Cap 1 and Cap 2 are table stakes — the customer takes
+for granted that they exist and work. Nobody buys a product because it can
+make a backup; they assume it can. Cap 3+ are the delighters that drive the
+purchase decision — the intelligence, the UI, the workflow shortcuts. The
+customer shops for Cap 3; they complain about Cap 1-2.
+
+**Litmus test:** If this feature didn't exist, would the product be broken
+(Cap 1), annoying (Cap 2), or just less helpful (Cap 3)?
+
 ---
 
 ## Feature lifecycle
