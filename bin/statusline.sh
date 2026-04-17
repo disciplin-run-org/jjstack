@@ -12,7 +12,8 @@ input=$(cat)
 model=$(echo "$input" | jq -r '.model.display_name // "unknown"')
 
 # -- Effort level (read from settings; NOT exposed via statusline input JSON).
-# settings.local.json wins over settings.json if both are set. Unset → hidden. --
+# settings.local.json wins over settings.json. Null/missing → "auto" (the
+# Claude Code default — let the model pick per task). --
 effort=""
 for f in "$HOME/.claude/settings.local.json" "$HOME/.claude/settings.json"; do
     [ -f "$f" ] || continue
@@ -22,6 +23,7 @@ for f in "$HOME/.claude/settings.local.json" "$HOME/.claude/settings.json"; do
         break
     fi
 done
+[ -z "$effort" ] && effort="auto"
 
 # -- Current folder (basename of cwd) --
 cwd=$(echo "$input" | jq -r '.cwd // .workspace.current_dir // ""')
@@ -159,6 +161,7 @@ if [ -n "$effort" ]; then
         medium) ecolor="\033[93m" ;;  # bright yellow
         low)    ecolor="\033[92m" ;;  # bright green
         xhigh)  ecolor="\033[95m" ;;  # bright magenta
+        auto)   ecolor="\033[2m"  ;;  # dim (neutral default)
         *)      ecolor="\033[2m"  ;;  # dim (unknown)
     esac
     effort_part=" \033[2m·\033[0m${ecolor}${effort}${RESET}"
