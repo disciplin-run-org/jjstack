@@ -121,6 +121,20 @@ Smart permission gate using Claude Haiku for risk classification:
 - Fail-closed fallback when API is unavailable: only safe read-only commands are auto-approved; commands with shell metacharacters (`;`, `&&`, `|`, backticks) are always deferred
 - Auto-fixes API key file permissions to 600
 
+### Prompt-injection guard (`injection-guard.sh`)
+
+PreToolUse hook on `Write`/`Edit` that scans content headed for `.md` / `.markdown` files and blocks high-confidence prompt-injection patterns before they land on disk:
+
+- "ignore previous/prior/above instructions" family
+- "disregard previous/prior/above" family
+- Fake system-reminder tags
+- Fake `system:` / `<system>` / `<|system|>` line-start framing
+- Unicode tag characters (U+E0000–U+E007F) used for steganographic injection
+- Role-reprogramming phrases ("you are now a different assistant")
+- Imperative tool-invocation instructions ("you must execute the following command")
+
+High-precision / medium-recall by design: false positives annoy humans but are rephraseable; false negatives let injections land where later model reads will execute them. Non-markdown files are skipped entirely. The block surfaces a reason string that explains which pattern matched and how to rephrase.
+
 ### MCP auto-reconnect hook (`mcp-reconnect.sh`)
 
 Automatically reconnects MCP servers on disconnection:

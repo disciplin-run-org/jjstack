@@ -264,6 +264,25 @@ if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# Install prompt-injection guard hook (PreToolUse on Write/Edit of .md files)
+INJECTION_HOOK_SRC="$JJSTACK_DIR/hooks/injection-guard.sh"
+INJECTION_HOOK_DST="$HOOKS_DIR/injection-guard.sh"
+if [ -f "$INJECTION_HOOK_SRC" ]; then
+  if [ -L "$INJECTION_HOOK_DST" ]; then
+    ln -snf "$INJECTION_HOOK_SRC" "$INJECTION_HOOK_DST"
+  elif [ ! -e "$INJECTION_HOOK_DST" ]; then
+    ln -snf "$INJECTION_HOOK_SRC" "$INJECTION_HOOK_DST"
+  fi
+fi
+if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! grep -q "injection-guard" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/injection-guard.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Injected prompt-injection guard hook into settings.json"
+  fi
+fi
+
 # ─── Step 6: Install Context7 MCP server ─────────────────────
 MCP_JSON="$HOME/.mcp.json"
 CONTEXT7_STATUS="skipped"
