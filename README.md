@@ -88,6 +88,8 @@ Restores original gstack symlinks and removes only jjstack-specific hook entries
 | `/two-stage-review` | Review in two passes: spec compliance first (did you build what was asked?), then code quality (is it good code?). Adapted from obra/superpowers |
 | `/worktrees` | Git worktree workflow for parallel branches — isolated trees for subagents, experiments, and concurrent workstreams. Adapted from obra/superpowers |
 | `/verify-before-done` | Mandatory pre-completion verification gate — captures test/type/lint/health output in the session before any "done" claim. Adapted from obra/superpowers |
+| `/writing-skills` | Meta-skill for authoring new jjstack skills: file layout, frontmatter schema, trigger language, HARD-GATE usage, install-manifest integration, attribution conventions. Adapted from obra/superpowers |
+| `/receiving-code-review` | Companion to /review — systematic processing of review feedback (triage by severity, agree/disagree with explicit reasoning, close the loop). Prevents silent capitulation and silent stonewalling. Adapted from obra/superpowers |
 
 ### /security-review
 
@@ -190,6 +192,29 @@ jjstack uses a **wrapper pattern**: each skill reads its own config, optionally 
 The `/security-review` skill uses a **layered pattern** instead: it loads three reference methodologies (Anthropic, Sentry, OWASP) at runtime, then runs its own 10-phase assessment pipeline with sub-agent verification.
 
 The install script replaces gstack's symlinks in `~/.claude/skills/` with jjstack symlinks. Same command names, enhanced behavior. Uninstall restores the originals.
+
+## Related tools
+
+jjstack intentionally does not ship the full `obra/superpowers`
+methodology — several superpowers skills (`brainstorming`,
+`writing-plans`, `executing-plans`, `requesting-code-review`,
+`finishing-a-development-branch`) overlap with jjstack's own variants
+(`/office-hours`, `/plan-*-review`, `/ship`, `/review`, `/land-and-deploy`)
+and carry more differentiated jjstack conventions. jjstack has borrowed
+the patterns it finds most valuable (`/two-stage-review`, `/worktrees`,
+`/verify-before-done`, `/writing-skills`, `/receiving-code-review`, the
+HARD-GATE convention) with attribution.
+
+If you want the full superpowers methodology in parallel with jjstack,
+install it from Anthropic's official marketplace:
+
+```bash
+/plugin install superpowers@claude-plugins-official
+```
+
+Both distributions coexist — superpowers' skills live under its plugin
+namespace and jjstack's skills live under jjstack's. Pick either one
+per task; use both when the workflows compose.
 
 ## License
 
