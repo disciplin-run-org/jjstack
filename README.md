@@ -85,6 +85,7 @@ Restores original gstack symlinks and removes only jjstack-specific hook entries
 | `/work-order` | Structured Context/Deliverables/Verify/Done template for delegating tasks to sub-agents, workers, PRs, or plan items |
 | `/state-doc` | Maintains a repo-root `STATE.md` — live "where we are right now" doc that survives `/clear`, `/compact`, and restarts |
 | `/lean` | Cost-lean execution mode: explicit tool-call budget, one-shot writes, no polishing, no iteration loops. For QA loops, ralph-loop, and agent pipelines where every call compounds |
+| `/two-stage-review` | Review in two passes: spec compliance first (did you build what was asked?), then code quality (is it good code?). Adapted from obra/superpowers |
 
 ### /security-review
 

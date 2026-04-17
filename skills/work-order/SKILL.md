@@ -98,6 +98,15 @@ any task a specialist worker will run in a long-lived session).
 
 ## Usage
 
+<HARD-GATE>
+Do NOT send a work order (via qm_send, Agent, PR body, or any other
+channel) until the Context, Deliverables, Verify, and Done-when sections
+are all present. A work order missing any of these four sections is a
+defect. This applies to EVERY work order regardless of perceived
+simplicity. See references/hard-gate-convention.md for the semantics of
+this tag.
+</HARD-GATE>
+
 When a user asks to delegate a task, draft the work order in this shape
 *before* sending it. Show the user the draft, adjust based on their feedback,
 then deliver it (via `qm_send`, `Agent`, PR body, etc.).
