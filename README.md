@@ -82,6 +82,8 @@ Restores original gstack symlinks and removes only jjstack-specific hook entries
 | `/smart-context7` | Intelligent Context7 invocation (avoids wasted API calls) |
 | `/smart-review` | Auto-invokes code review plugin before PR creation |
 | `/smart-simplify` | Auto-invokes code simplifier after significant changes |
+| `/work-order` | Structured Context/Deliverables/Verify/Done template for delegating tasks to sub-agents, workers, PRs, or plan items |
+| `/state-doc` | Maintains a repo-root `STATE.md` — live "where we are right now" doc that survives `/clear`, `/compact`, and restarts |
 
 ### /security-review
 
