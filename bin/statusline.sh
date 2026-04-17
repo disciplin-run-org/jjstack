@@ -11,6 +11,18 @@ input=$(cat)
 # -- Model display name (cyan) --
 model=$(echo "$input" | jq -r '.model.display_name // "unknown"')
 
+# -- Effort level (read from settings; NOT exposed via statusline input JSON).
+# settings.local.json wins over settings.json if both are set. Unset → hidden. --
+effort=""
+for f in "$HOME/.claude/settings.local.json" "$HOME/.claude/settings.json"; do
+    [ -f "$f" ] || continue
+    val=$(jq -r '.effortLevel // empty' "$f" 2>/dev/null)
+    if [ -n "$val" ] && [ "$val" != "null" ]; then
+        effort="$val"
+        break
+    fi
+done
+
 # -- Current folder (basename of cwd) --
 cwd=$(echo "$input" | jq -r '.cwd // .workspace.current_dir // ""')
 folder=$(basename "$cwd")
@@ -139,7 +151,20 @@ SEP="\033[2m | \033[0m"
 CYAN="\033[36m"
 RESET="\033[0m"
 
-line="${CYAN}${model}${RESET}${SEP}${folder}"
+# Effort suffix: dim dot + color-coded level, attached to model with no pipe
+effort_part=""
+if [ -n "$effort" ]; then
+    case "$effort" in
+        high)   ecolor="\033[91m" ;;  # bright red
+        medium) ecolor="\033[93m" ;;  # bright yellow
+        low)    ecolor="\033[92m" ;;  # bright green
+        xhigh)  ecolor="\033[95m" ;;  # bright magenta
+        *)      ecolor="\033[2m"  ;;  # dim (unknown)
+    esac
+    effort_part=" \033[2m·\033[0m${ecolor}${effort}${RESET}"
+fi
+
+line="${CYAN}${model}${RESET}${effort_part}${SEP}${folder}"
 [ -n "$git_part" ]   && line="${line}${SEP}${git_part}"
 [ -n "$context_bar" ] && line="${line}${SEP}${context_bar}"
 line="${line}${SEP}${usage_bar}"
