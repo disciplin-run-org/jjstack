@@ -283,6 +283,25 @@ if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# Install error-detector hook (PostToolUse on Bash — logs failed commands)
+ERROR_HOOK_SRC="$JJSTACK_DIR/hooks/error-detector.sh"
+ERROR_HOOK_DST="$HOOKS_DIR/error-detector.sh"
+if [ -f "$ERROR_HOOK_SRC" ]; then
+  if [ -L "$ERROR_HOOK_DST" ]; then
+    ln -snf "$ERROR_HOOK_SRC" "$ERROR_HOOK_DST"
+  elif [ ! -e "$ERROR_HOOK_DST" ]; then
+    ln -snf "$ERROR_HOOK_SRC" "$ERROR_HOOK_DST"
+  fi
+fi
+if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! grep -q "error-detector" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": "~/.claude/hooks/error-detector.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Injected error-detector hook into settings.json"
+  fi
+fi
+
 # ─── Step 6: Install Context7 MCP server ─────────────────────
 MCP_JSON="$HOME/.mcp.json"
 CONTEXT7_STATUS="skipped"
