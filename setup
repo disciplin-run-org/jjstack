@@ -431,10 +431,18 @@ if [ -f "$STATUSLINE_SRC" ] && [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/nu
     fi
 
   else
-    # A different statusline exists — ask before clobbering
+    # A different statusline exists — ask before clobbering.
+    # Explicit [y/N] default for this prompt: existing statusline belongs
+    # to the user; we should not clobber it without an affirmative choice.
     info "An existing statusLine is configured:"
     echo "    $EXISTING_CMD"
-    if ask_yes_no "  Replace it with jjstack's statusline?"; then
+    REPLY_OVERWRITE=""
+    if [ -t 0 ] && [ -t 1 ]; then
+      read -r -p "  Replace it with jjstack's statusline? [y/N] " REPLY_OVERWRITE < /dev/tty
+    else
+      REPLY_OVERWRITE="N"
+    fi
+    if [[ "$REPLY_OVERWRITE" =~ ^[Yy]$ ]]; then
       install_statusline
       STATUSLINE_STATUS="installed (overwrote existing)"
       ok "Statusline replaced with jjstack's"
