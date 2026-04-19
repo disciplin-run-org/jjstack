@@ -2,13 +2,15 @@
 name: state-doc
 description: >
   Lightweight live-state document per working directory — a STATE.md that records
-  what is currently in flight, what decisions were made, what's blocking, and what
-  the next action is. Complements /checkpoint (snapshot at a moment) with a
-  continuously updated pointer to "where we are right now." Use when starting a
-  non-trivial work session, after a key decision, when hitting a blocker, or
-  before handing off. Trigger on: "update state", "what's in flight", "current
-  state of the work", "update STATE.md", "record this decision", or when
-  returning to a project after a break.
+  what is currently in flight, what decisions were made, what's blocking, the
+  next action, and branch-scoped learnings (short-lived wisdom that isn't
+  general enough for CLAUDE.md). Complements /checkpoint (snapshot at a moment)
+  with a continuously updated pointer to "where we are right now." Use when
+  starting a non-trivial work session, after a key decision, when hitting a
+  blocker, when discovering a branch-specific gotcha, or before handing off.
+  Trigger on: "update state", "what's in flight", "current state of the
+  work", "update STATE.md", "record this decision", "note this learning",
+  "log this quirk", or when returning to a project after a break.
 allowed-tools:
   - Read
   - Grep
@@ -41,19 +43,19 @@ a `/compact`, a `/clear`, a restart — all lose it. STATE.md survives.
 
 ## The shape
 
-Keep it short. Four sections, no ceremony.
+Keep it short. Five sections, no ceremony.
 
 ```markdown
 # STATE
 
-_Last updated: 2026-04-16 by quartermaster-qm_
+_Last updated: 2026-04-19 by quartermaster-qm_
 
 ## Now
 <One paragraph. What we're actively doing this session.>
 
 ## Decisions
-- <2026-04-16: decided X because Y. Alternative was Z — ruled out because ...>
-- <2026-04-15: agreed to postpone the big refactor until after v0.5 ships>
+- <2026-04-19: decided X because Y. Alternative was Z — ruled out because ...>
+- <2026-04-18: agreed to postpone the big refactor until after v0.5 ships>
 
 ## Blocked on
 - <Exactly one thing, if anything. Who owns the unblock. What's needed.>
@@ -61,6 +63,12 @@ _Last updated: 2026-04-16 by quartermaster-qm_
 ## Next
 - [ ] <Concrete next action>
 - [ ] <Next next action>
+
+## Learnings
+- <Short-lived, branch-scoped wisdom. "The integration test at tests/foo is
+  flaky on this branch — skip via -k 'not foo' until we fix." "Docker rebuild
+  needed after editing shared/ — doesn't hot-reload like the rest." These are
+  not general enough for CLAUDE.md but are expensive to rediscover mid-branch.>
 ```
 
 Add sections only when genuinely useful. Cut sections that are empty.
@@ -83,9 +91,13 @@ touch STATE.md
 - Decisions older than the current phase → move to a postmortem or delete
 - Completed "next" items → delete (not check off — STATE is not a changelog)
 - Resolved blockers → delete
+- Learnings that no longer apply (flaky test fixed, quirk resolved) → delete
+- Learnings that have recurred 3+ times AND generalize → promote to CLAUDE.md
+  per `references/memory-promotion.md`, then delete from STATE.md
 
 **Delete** STATE.md when the phase/work is done and everything in it has
-either shipped, moved to another doc, or become irrelevant.
+either shipped, moved to another doc, or become irrelevant. Before deleting,
+review the Learnings section one more time for promotion candidates.
 
 ## Rules
 
@@ -109,8 +121,29 @@ either shipped, moved to another doc, or become irrelevant.
 | /checkpoint output | Moment | Exact state at one point in time |
 | Commit messages | Permanent | What shipped |
 | Memory (~/.claude/.../memory/) | Cross-session | User preferences, lessons |
+| STATE.md Learnings | Branch-scoped | Gotchas worth capturing but not permanent |
 
 STATE.md fills the gap between a plan (days-weeks) and a checkpoint (a moment).
+
+## Where does a given learning belong?
+
+Three places can hold what-we-learned knowledge. Use this decision table:
+
+| Where | When | Time horizon |
+|---|---|---|
+| **STATE.md Learnings** | This gotcha applies while we're on this branch. "Tests are flaky after the dependency bump — avoid running them in parallel until we upgrade pytest-xdist." | Days to weeks |
+| **Memory (user/feedback type)** | This lesson applies across sessions, any project, for this user. "User prefers terse responses." | Cross-session |
+| **CLAUDE.md** | This rule applies to every contributor working on this project, forever. "Never use `.catch(() => {})`." | Permanent |
+
+Pattern: capture new lessons in STATE.md Learnings first (low commitment, easy
+to prune). If the same lesson recurs in later branches, promote per
+`references/memory-promotion.md`:
+- If user-specific → memory
+- If project-specific → CLAUDE.md
+- If mechanizable → a hook
+
+The error-detector hook (`~/.jjstack/command-failures.jsonl`) is the raw
+signal source for "has this recurred enough to warrant promotion."
 
 ## When to load STATE.md into context
 

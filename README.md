@@ -141,6 +141,25 @@ PreToolUse hook on `Write`/`Edit` that scans content headed for `.md` / `.markdo
 
 High-precision / medium-recall by design: false positives annoy humans but are rephraseable; false negatives let injections land where later model reads will execute them. Non-markdown files are skipped entirely. The block surfaces a reason string that explains which pattern matched and how to rephrase.
 
+### Error detector (`error-detector.sh`)
+
+PostToolUse hook on `Bash` that records failed commands to
+`~/.jjstack/command-failures.jsonl` for later recurrence analysis. Silent on
+success, logs only non-zero exits and explicit interrupts. Rotates at 500
+entries. Schema per entry: `{ts, cwd, command, exit_code, interrupted, stderr}`.
+
+Feeds the `/state-doc` Learnings section and the memory-promotion rule
+(`references/memory-promotion.md`): patterns that recur 3+ times are
+promotion candidates. Query with:
+
+```bash
+jq -r '.command' ~/.jjstack/command-failures.jsonl | sort | uniq -c | sort -rn | head
+```
+
+Privacy note: tool output can contain sensitive strings (paths, API error
+bodies). Intended for personal dev machines; do not enable in shared contexts
+without reviewing what lands in the log.
+
 ### MCP auto-reconnect hook (`mcp-reconnect.sh`)
 
 Automatically reconnects MCP servers on disconnection:
