@@ -398,18 +398,50 @@ else
 fi
 
 # ─── Step 8: Install statusline ──────────────────────────────
+# Three cases:
+#   1. No statusLine configured     → install jjstack's
+#   2. jjstack statusline already   → silently update command (handles path moves)
+#   3. Different statusline exists  → prompt user Y/N to overwrite, default No
 STATUSLINE_SRC="$JJSTACK_DIR/bin/statusline.sh"
 STATUSLINE_STATUS="skipped"
+STATUSLINE_CMD="bash $STATUSLINE_SRC"
+
+install_statusline() {
+  TMP_SETTINGS=$(mktemp)
+  jq --arg cmd "$STATUSLINE_CMD" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+  mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+}
 
 if [ -f "$STATUSLINE_SRC" ] && [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
-  if ! grep -q "statusline" "$SETTINGS_FILE" 2>/dev/null; then
-    TMP_SETTINGS=$(mktemp)
-    jq --arg cmd "bash $STATUSLINE_SRC" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$TMP_SETTINGS"
-    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+  EXISTING_CMD=$(jq -r '.statusLine.command // empty' "$SETTINGS_FILE" 2>/dev/null)
+
+  if [ -z "$EXISTING_CMD" ]; then
+    install_statusline
     STATUSLINE_STATUS="installed"
-    ok "Statusline installed (model, git, context bar, usage bar)"
+    ok "Statusline installed (model, effort, git, context bar, usage/cost bar)"
+
+  elif echo "$EXISTING_CMD" | grep -q "jjstack/bin/statusline.sh"; then
+    # Already jjstack's — silently update the command in case the path changed
+    if [ "$EXISTING_CMD" != "$STATUSLINE_CMD" ]; then
+      install_statusline
+      STATUSLINE_STATUS="updated (path refreshed)"
+      ok "Statusline path refreshed"
+    else
+      STATUSLINE_STATUS="already installed"
+    fi
+
   else
-    STATUSLINE_STATUS="already configured"
+    # A different statusline exists — ask before clobbering
+    info "An existing statusLine is configured:"
+    echo "    $EXISTING_CMD"
+    if ask_yes_no "  Replace it with jjstack's statusline?"; then
+      install_statusline
+      STATUSLINE_STATUS="installed (overwrote existing)"
+      ok "Statusline replaced with jjstack's"
+    else
+      STATUSLINE_STATUS="skipped (kept existing)"
+      warn "Kept existing statusline. Remove .statusLine from $SETTINGS_FILE to install jjstack's later."
+    fi
   fi
 fi
 
