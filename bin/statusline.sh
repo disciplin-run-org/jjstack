@@ -94,11 +94,24 @@ if [ -n "$used_pct" ]; then
     context_bar=$(create_progress_bar "$used_pct" "context")
 fi
 
-# -- Usage bar: real 5-hour utilization from Anthropic OAuth API (cached) --
-usage_pct=0
+# -- Auth mode detection: OAuth (Claude Max/Pro) vs API key (pay-per-token).
+# OAuth users get rate-limited on a 5h window (show utilization %).
+# API-key users pay per token (show session dollar spend).
+# The two are mutually exclusive — pick one, render accordingly. --
+AUTH_MODE="api_key"
+if [ -f "$CREDENTIALS_FILE" ] && jq -e '.claudeAiOauth.accessToken' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
+    AUTH_MODE="oauth"
+fi
 
-get_usage_from_api() {
-    python3 - "$CREDENTIALS_FILE" <<'PYEOF'
+# -- Trailing segment: usage bar (OAuth) or cost label (API key) --
+trailing_segment=""
+
+if [ "$AUTH_MODE" = "oauth" ]; then
+    # OAuth path: 5-hour utilization from Anthropic API (cached)
+    usage_pct=0
+
+    get_usage_from_api() {
+        python3 - "$CREDENTIALS_FILE" <<'PYEOF'
 import sys, json, urllib.request, urllib.error
 
 creds_file = sys.argv[1]
@@ -124,29 +137,47 @@ except Exception as e:
     print(f"ERROR: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
-}
+    }
 
-# Check cache freshness — never block the statusline waiting for the API.
-# If cache is stale, kick off a background refresh and use the stale value for now.
-cache_valid=false
-if [ -f "$USAGE_CACHE_FILE" ]; then
-    cache_age=$(( $(date +%s) - $(date -r "$USAGE_CACHE_FILE" +%s 2>/dev/null || echo 0) ))
-    [ "$cache_age" -lt "$USAGE_CACHE_TTL" ] && cache_valid=true
+    # Check cache freshness — never block the statusline waiting for the API.
+    cache_valid=false
+    if [ -f "$USAGE_CACHE_FILE" ]; then
+        cache_age=$(( $(date +%s) - $(date -r "$USAGE_CACHE_FILE" +%s 2>/dev/null || echo 0) ))
+        [ "$cache_age" -lt "$USAGE_CACHE_TTL" ] && cache_valid=true
+    fi
+
+    if [ "$cache_valid" = false ]; then
+        ( get_usage_from_api > "${USAGE_CACHE_FILE}.tmp" 2>/dev/null \
+            && mv "${USAGE_CACHE_FILE}.tmp" "$USAGE_CACHE_FILE" ) &
+        disown
+    fi
+
+    if [ -f "$USAGE_CACHE_FILE" ]; then
+        usage_pct=$(jq -r '.five_hour.utilization // 0' "$USAGE_CACHE_FILE" 2>/dev/null | awk '{printf "%d", $1}')
+    fi
+
+    [ -z "$usage_pct" ] && usage_pct=0
+    trailing_segment=$(create_progress_bar "$usage_pct" "usage")
+
+else
+    # API-key path: session dollar spend from statusline input JSON.
+    # Thresholds: <$1 green, $1-5 yellow, >=$5 red. Bar label shows amount.
+    cost_usd=$(echo "$input" | jq -r '.cost.total_cost_usd // 0' 2>/dev/null)
+    [ -z "$cost_usd" ] && cost_usd=0
+
+    # Format to 2 decimals (awk handles scientific-notation + missing values)
+    cost_str=$(awk -v c="$cost_usd" 'BEGIN{printf "$%.2f", c+0}')
+
+    # Color by magnitude (5 and 1 USD thresholds)
+    cost_cmp=$(awk -v c="$cost_usd" 'BEGIN{if ((c+0)>=5) print 2; else if ((c+0)>=1) print 1; else print 0}')
+    case "$cost_cmp" in
+        2) cost_color="\033[91m" ;;  # bright red   >= $5
+        1) cost_color="\033[93m" ;;  # bright yellow >= $1
+        *) cost_color="\033[92m" ;;  # bright green < $1
+    esac
+
+    trailing_segment="${cost_color}${cost_str}\033[0m"
 fi
-
-if [ "$cache_valid" = false ]; then
-    # Refresh in background — statusline returns immediately with cached/0% value
-    ( get_usage_from_api > "${USAGE_CACHE_FILE}.tmp" 2>/dev/null \
-        && mv "${USAGE_CACHE_FILE}.tmp" "$USAGE_CACHE_FILE" ) &
-    disown
-fi
-
-if [ -f "$USAGE_CACHE_FILE" ]; then
-    usage_pct=$(jq -r '.five_hour.utilization // 0' "$USAGE_CACHE_FILE" 2>/dev/null | awk '{printf "%d", $1}')
-fi
-
-[ -z "$usage_pct" ] && usage_pct=0
-usage_bar=$(create_progress_bar "$usage_pct" "usage")
 
 # -- Assemble --
 SEP="\033[2m | \033[0m"
@@ -170,6 +201,6 @@ fi
 line="${CYAN}${model}${RESET}${effort_part}${SEP}${folder}"
 [ -n "$git_part" ]   && line="${line}${SEP}${git_part}"
 [ -n "$context_bar" ] && line="${line}${SEP}${context_bar}"
-line="${line}${SEP}${usage_bar}"
+[ -n "$trailing_segment" ] && line="${line}${SEP}${trailing_segment}"
 
 echo -e "$line"
