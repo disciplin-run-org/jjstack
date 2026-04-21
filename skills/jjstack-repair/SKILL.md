@@ -43,13 +43,33 @@ Report what happened:
   if they want jjstack's instead. Do NOT force-overwrite without
   their explicit confirmation.
 
-## Step 3: Check for updates
+## Step 3: Check for updates and auto-upgrade
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-update-check --force
 ```
 
-Report the result.
+If output starts with `UPGRADE_AVAILABLE`, automatically run the
+upgrade helper:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-upgrade
+```
+
+Report what happened:
+
+- `UPGRADED <old> → <new>` — pulled cleanly; skills re-symlinked;
+  statusline path refreshed
+- `UPGRADED (version unchanged)` — doc-only or chore commits merged;
+  no VERSION bump (still worth the pull)
+- `already up-to-date` — jjstack-update-check was stale; nothing to do
+- `ABORT: ...` — a safety precondition failed. Surface the exact reason
+  (working tree dirty, on non-default branch, diverged from origin)
+  and DO NOT try to work around it — that's a manual decision for the
+  maintainer.
+
+If update-check reported no upgrade, report "up to date" and skip this
+step entirely.
 
 ## Step 4: Show status
 

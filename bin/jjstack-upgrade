@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# jjstack-upgrade — pull the latest jjstack from GitHub.
+#
+# Safe preconditions (all required; skips with a reason otherwise):
+#   - The jjstack working tree is clean (no uncommitted changes).
+#   - The current branch is main (or whatever remote HEAD points at).
+#   - Local is not ahead of origin — the pull would be a fast-forward.
+#
+# On a successful pull, also:
+#   - Writes the pre-upgrade version to ~/.jjstack/just-upgraded-from so
+#     the next jjstack-update-check run reports JUST_UPGRADED <old> <new>.
+#   - Re-runs the setup step that re-symlinks skills and refreshes hooks,
+#     so a new skill introduced in the pulled commits becomes active
+#     without the user having to re-run ./setup manually.
+#
+# Usage:
+#   jjstack-upgrade              # safe auto-pull with preconditions
+#   jjstack-upgrade --check      # dry-run: only report what WOULD happen
+
+set -euo pipefail
+
+JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}"
+MARKER_FILE="$STATE_DIR/just-upgraded-from"
+VERSION_FILE="$JJSTACK_DIR/VERSION"
+
+CHECK_ONLY=false
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK_ONLY=true ;;
+    -h|--help)
+      sed -n '2,/^set/p' "$0" | sed 's/^# //; s/^#//' | head -n -1
+      exit 0 ;;
+    *)
+      echo "unknown arg: $arg (use --help)" >&2
+      exit 2 ;;
+  esac
+done
+
+cd "$JJSTACK_DIR"
+
+# ─── Precondition: inside a git repo ──────────────────────────
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "ABORT: $JJSTACK_DIR is not a git repo"
+  exit 1
+fi
+
+# ─── Precondition: working tree clean ─────────────────────────
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+  echo "ABORT: working tree has uncommitted changes. Commit or stash first."
+  git status --short
+  exit 1
+fi
+
+# ─── Precondition: on the default branch ──────────────────────
+DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
+CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+  echo "ABORT: on branch '$CURRENT_BRANCH', not '$DEFAULT_BRANCH'. Switch branches first."
+  exit 1
+fi
+
+# ─── Fetch latest refs ────────────────────────────────────────
+git fetch --quiet origin "$DEFAULT_BRANCH" || {
+  echo "ABORT: git fetch failed"
+  exit 1
+}
+
+# ─── Precondition: fast-forward only ──────────────────────────
+LOCAL_SHA=$(git rev-parse HEAD)
+REMOTE_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH")
+
+if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+  echo "already up-to-date"
+  exit 0
+fi
+
+# Local should be an ancestor of remote (fast-forward). If not, the local
+# branch has commits not on origin — merge/push is the maintainer's job.
+if ! git merge-base --is-ancestor "$LOCAL_SHA" "$REMOTE_SHA"; then
+  echo "ABORT: local $DEFAULT_BRANCH is ahead of origin or diverged. Resolve manually."
+  exit 1
+fi
+
+# ─── Dry-run mode: show what would happen, exit ───────────────
+if [ "$CHECK_ONLY" = true ]; then
+  COMMITS_BEHIND=$(git rev-list --count "${LOCAL_SHA}..${REMOTE_SHA}")
+  echo "WOULD_UPGRADE $COMMITS_BEHIND commits ($LOCAL_SHA → $REMOTE_SHA)"
+  exit 0
+fi
+
+# ─── Stash the pre-upgrade version for the JUST_UPGRADED marker ─
+OLD_VERSION=""
+if [ -f "$VERSION_FILE" ]; then
+  OLD_VERSION="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+
+# ─── Fast-forward pull ────────────────────────────────────────
+git pull --ff-only --quiet origin "$DEFAULT_BRANCH"
+
+NEW_VERSION=""
+if [ -f "$VERSION_FILE" ]; then
+  NEW_VERSION="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+
+# Drop the marker so the next update-check can say "JUST_UPGRADED"
+mkdir -p "$STATE_DIR"
+if [ -n "$OLD_VERSION" ]; then
+  echo "$OLD_VERSION" > "$MARKER_FILE"
+fi
+
+# ─── Re-symlink skills so any new skills become active ────────
+if [ -x "$JJSTACK_DIR/bin/jjstack-fix-symlinks" ]; then
+  "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
+fi
+
+# Also refresh the statusline path (handles relocated clones)
+if [ -x "$JJSTACK_DIR/bin/jjstack-statusline-install" ]; then
+  "$JJSTACK_DIR/bin/jjstack-statusline-install" >/dev/null 2>&1 || true
+fi
+
+if [ -n "$OLD_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+  echo "UPGRADED $OLD_VERSION → $NEW_VERSION"
+else
+  echo "UPGRADED (version unchanged — doc-only or chore commits)"
+fi
