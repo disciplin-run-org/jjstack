@@ -8,10 +8,75 @@
 #      - MEDIUM/HIGH → defer to user
 #   3. Fallback heuristic if API unavailable → block dangerous patterns, allow rest
 #
-# Requires: jq, curl
+# Requires: jq, curl (python3 for the QM dispatch path below)
 # API key: set ANTHROPIC_API_KEY env var, or store in ~/.claude/anthropic_api_key
+#
+# ── QM dispatch ─────────────────────────────────────────────────────────────
+# When running inside a Quartermaster worker (claude-qm), the qm-tubemail
+# forwarder runs its own risk policy AND knows the request_id of each
+# permission_request it forwarded to the hub. Delegating to the forwarder
+# lets it resolve the hub-side pending entry atomically with the approval,
+# instead of leaving a stale pending behind. Non-QM sessions skip this block.
+#
+# We detect QM by QM_WORKER_NAME + the presence of the forwarder's unix
+# socket. If anything fails (socket stale, forwarder wedged, timeout), we
+# fall through to the normal logic below — the hook never blocks Claude.
 
 INPUT=$(cat)
+
+# Temporary diagnostic — logs every hook invocation, prune after bridge smoke-test is done.
+echo "$(date -Iseconds) worker=${QM_WORKER_NAME:-<none>} tool=$(echo "$INPUT" | jq -r '.tool_name // "?"')" \
+  >> /tmp/auto-approve-hook.log 2>/dev/null
+
+if [ -n "$QM_WORKER_NAME" ]; then
+  QM_HOOK_SOCK="/tmp/qm-hook-${QM_WORKER_NAME}.sock"
+  if [ -S "$QM_HOOK_SOCK" ]; then
+    # Short-circuit read-only tools locally even in QM mode — saves a round
+    # trip for the common case and keeps the socket dedicated to Bash etc.
+    case "$(echo "$INPUT" | jq -r '.tool_name // empty')" in
+      Read|Glob|Grep|Search|WebSearch|WebFetch)
+        jq -n '{hookSpecificOutput: {hookEventName: "PermissionRequest", decision: {behavior: "allow"}}}'
+        exit 0
+        ;;
+    esac
+
+    # Script passed via -c so stdin stays available for the hook JSON.
+    # A heredoc here would hijack stdin and send empty bytes to the socket.
+    QM_DISPATCH_PY='
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(2.0)
+try:
+    s.connect(sys.argv[1])
+    s.sendall(sys.stdin.buffer.read())
+    s.shutdown(socket.SHUT_WR)
+    buf = bytearray()
+    while True:
+        chunk = s.recv(8192)
+        if not chunk:
+            break
+        buf.extend(chunk)
+    sys.stdout.buffer.write(bytes(buf))
+except Exception:
+    pass
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+'
+    QM_RESPONSE=$(printf '%s' "$INPUT" | python3 -c "$QM_DISPATCH_PY" "$QM_HOOK_SOCK" 2>/dev/null)
+    if [ -n "$QM_RESPONSE" ]; then
+      # Forwarder responded — relay its JSON to Claude and exit.
+      # An empty JSON object `{}` from the server means 'defer' (let the
+      # normal prompt appear), which is a valid hook response.
+      printf '%s' "$QM_RESPONSE"
+      exit 0
+    fi
+    # Socket present but no response (timeout, crash) — fall through.
+  fi
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
