@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# jjstack-statusline-install — install or refresh the jjstack statusline in
+# ~/.claude/settings.json.
+#
+# Three cases, handled automatically:
+#   1. No statusLine configured       → install jjstack's (silent)
+#   2. jjstack statusline already set → silent no-op, OR refresh the command
+#                                       path if the jjstack clone moved
+#   3. A different statusline exists  → prompt [y/N] to overwrite if stdin is
+#                                       a tty; default N if non-interactive
+#                                       (i.e. called from a Claude Code
+#                                       Bash tool). --force overrides and
+#                                       clobbers unconditionally with no prompt.
+#
+# Output: one line describing what happened.
+# Exit 0 on success (including the skip cases), non-zero on hard failure
+# (settings.json unreadable, jq missing, etc.).
+#
+# Usage:
+#   jjstack-statusline-install          # smart install
+#   jjstack-statusline-install --force  # unconditional overwrite
+
+set -euo pipefail
+
+FORCE=false
+for arg in "$@"; do
+  case "$arg" in
+    --force) FORCE=true ;;
+    -h|--help)
+      sed -n '2,/^set/p' "$0" | sed 's/^# //; s/^#//' | head -n -1
+      exit 0 ;;
+    *)
+      echo "unknown arg: $arg (use --help)" >&2
+      exit 2 ;;
+  esac
+done
+
+JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+STATUSLINE_SRC="$JJSTACK_DIR/bin/statusline.sh"
+STATUSLINE_CMD="bash $STATUSLINE_SRC"
+
+# Preconditions
+command -v jq >/dev/null 2>&1 || { echo "jq not found — install jq first" >&2; exit 1; }
+[ -f "$STATUSLINE_SRC" ] || { echo "jjstack statusline missing at $STATUSLINE_SRC" >&2; exit 1; }
+[ -f "$SETTINGS_FILE" ] || { echo "settings.json missing at $SETTINGS_FILE" >&2; exit 1; }
+
+install_statusline() {
+  local tmp
+  tmp=$(mktemp)
+  jq --arg cmd "$STATUSLINE_CMD" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$tmp"
+  mv "$tmp" "$SETTINGS_FILE"
+}
+
+# --force: unconditional
+if [ "$FORCE" = true ]; then
+  install_statusline
+  echo "installed (force)"
+  exit 0
+fi
+
+EXISTING_CMD=$(jq -r '.statusLine.command // empty' "$SETTINGS_FILE" 2>/dev/null || true)
+
+if [ -z "$EXISTING_CMD" ]; then
+  install_statusline
+  echo "installed"
+  exit 0
+fi
+
+if echo "$EXISTING_CMD" | grep -q "jjstack/bin/statusline.sh"; then
+  if [ "$EXISTING_CMD" != "$STATUSLINE_CMD" ]; then
+    install_statusline
+    echo "refreshed (path changed)"
+  else
+    echo "already installed"
+  fi
+  exit 0
+fi
+
+# Different statusline — prompt [y/N] when interactive; default N otherwise.
+echo "existing statusLine command: $EXISTING_CMD"
+REPLY_OVERWRITE=""
+if [ -t 0 ] && [ -t 1 ]; then
+  read -r -p "Replace with jjstack's statusline? [y/N] " REPLY_OVERWRITE < /dev/tty
+else
+  REPLY_OVERWRITE="N"
+fi
+
+if [[ "$REPLY_OVERWRITE" =~ ^[Yy]$ ]]; then
+  install_statusline
+  echo "installed (overwrote existing)"
+  exit 0
+else
+  echo "skipped (kept existing) — re-run with --force to overwrite"
+  exit 0
+fi
