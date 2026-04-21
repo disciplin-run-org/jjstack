@@ -77,6 +77,21 @@ if echo "$EXISTING_CMD" | grep -q "jjstack/bin/statusline.sh"; then
   exit 0
 fi
 
+# Known-legacy paths: earlier jjstack statuslines shipped as standalone
+# scripts at these well-known locations before the jjstack repo existed.
+# Treat them as "jjstack-adjacent" and silent-upgrade without prompting.
+KNOWN_LEGACY=(
+  "bash $HOME/.claude/statusline-command.sh"
+  "$HOME/.claude/statusline-command.sh"
+)
+for legacy_cmd in "${KNOWN_LEGACY[@]}"; do
+  if [ "$EXISTING_CMD" = "$legacy_cmd" ]; then
+    install_statusline
+    echo "migrated (legacy $legacy_cmd → jjstack)"
+    exit 0
+  fi
+done
+
 # Different statusline — prompt [y/N] when interactive; default N otherwise.
 echo "existing statusLine command: $EXISTING_CMD"
 REPLY_OVERWRITE=""
