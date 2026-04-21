@@ -1,15 +1,44 @@
 #!/usr/bin/env bash
-# jjstack-fix-symlinks — re-assert jjstack symlinks over gstack.
+# jjstack-fix-symlinks — re-assert jjstack symlinks at ~/.claude/skills/.
 #
-# Fast check: for each jjstack skill, verify the symlink in ~/.claude/skills/
-# points to jjstack (not gstack). Fixes silently if gstack overwrote them
-# (e.g., after a gstack auto-update).
+# For each jjstack skill, verify the entry in ~/.claude/skills/<name>/ is a
+# symlink to the jjstack source. Fixes three failure modes:
 #
-# Output: one line per fix, or nothing if all OK.
+#   1. Symlink pointing to gstack (gstack overwrote it in an auto-update)
+#   2. Real directory holding a symlinked SKILL.md that points to gstack
+#      (gstack's alternate install pattern)
+#   3. Real directory holding a stale copy of the jjstack SKILL.md (the
+#      symlink was replaced by a real file at some point — some tools write
+#      through symlinks by copy-then-replace). Detected by matching the
+#      SKILL.md frontmatter `name:` field against the jjstack skill's name.
+#      If the name matches, treat as a stale jjstack copy and replace.
+#      If the name differs or there's no frontmatter, the directory belongs
+#      to someone else — skip with a warning instead of clobbering.
+#
+# Output: one line per fix, one line per skip-with-reason, or nothing if
+# everything is already correct.
 
 JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SKILLS_DIR="$HOME/.claude/skills"
 FIXED=0
+SKIPPED=0
+
+# Extract `name:` from a SKILL.md's YAML frontmatter. Prints the value or
+# empty string if not found. Handles both `name: foo` and `name: "foo"`.
+read_name_frontmatter() {
+  local file="$1"
+  [ -f "$file" ] || return
+  awk '
+    /^---[[:space:]]*$/ { in_fm = !in_fm; next }
+    in_fm && /^name:/ {
+      sub(/^name:[[:space:]]*/, "")
+      gsub(/["\x27]/, "")
+      sub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$file"
+}
 
 for skill_dir in "$JJSTACK_DIR"/skills/*/; do
   [ ! -d "$skill_dir" ] && continue
@@ -27,8 +56,11 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
       ln -snf "$jj_target" "$target"
       FIXED=$((FIXED + 1))
     fi
+    continue
+  fi
+
   # Case 2: gstack dir+symlink pattern — replace
-  elif [ -d "$target" ] && [ -L "$target/SKILL.md" ]; then
+  if [ -d "$target" ] && [ -L "$target/SKILL.md" ]; then
     inner="$(readlink "$target/SKILL.md")"
     if echo "$inner" | grep -q "gstack/"; then
       rm "$target/SKILL.md"
@@ -36,8 +68,31 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
       ln -snf "$jj_target" "$target"
       FIXED=$((FIXED + 1))
     fi
+    continue
+  fi
+
+  # Case 3: real directory with a real (non-symlink) SKILL.md.
+  # Could be a stale jjstack copy (replace) or a user-custom skill that
+  # happens to share a name (skip with warning — don't clobber).
+  if [ -d "$target" ] && [ -f "$target/SKILL.md" ] && [ ! -L "$target/SKILL.md" ]; then
+    existing_name="$(read_name_frontmatter "$target/SKILL.md")"
+    jjstack_name="$(read_name_frontmatter "$skill_dir/SKILL.md")"
+
+    if [ -n "$existing_name" ] && [ "$existing_name" = "$jjstack_name" ]; then
+      # Names match → stale jjstack copy. Replace with symlink.
+      rm -rf "$target"
+      ln -snf "$jj_target" "$target"
+      FIXED=$((FIXED + 1))
+      echo "FIXED_STALE_COPY $skill_name"
+    else
+      # Names differ or no frontmatter → belongs to someone else. Warn.
+      echo "SKIPPED_CONFLICT $skill_name (existing name='$existing_name', jjstack name='$jjstack_name')"
+      SKIPPED=$((SKIPPED + 1))
+    fi
+    continue
   fi
 done
 
 [ "$FIXED" -gt 0 ] && echo "SYMLINKS_FIXED $FIXED"
+[ "$SKIPPED" -gt 0 ] && echo "CONFLICTS $SKIPPED — see SKIPPED_CONFLICT lines above"
 exit 0
