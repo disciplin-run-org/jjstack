@@ -81,6 +81,9 @@ Claude: [architecture: FastMCP 0.3+, streamable HTTP, Docker, no DB]
         [ASCII diagram: client → /mcp POST → tool dispatcher → /proc reads]
         [failure modes: /proc unreadable, parse edge cases, timeout]
         [10/10 after 2 iterations]
+        Recommend following up with /plan-devex-review — this is a
+        developer-facing service (MCP tool schemas ARE the public API)
+        and eng-review covers internals, not the outward surface.
 ```
 
 ```
