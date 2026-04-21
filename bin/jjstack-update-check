@@ -131,11 +131,25 @@ if [ -f "$CACHE_FILE" ]; then
 fi
 
 # ─── Step 4: Slow path — fetch remote version ────────────────
+# Strategy: prefer `git show origin/<default>:VERSION` over the raw
+# URL so private repos work too (curl to raw.githubusercontent.com
+# 404s for private repos). Fall back to curl if the jjstack directory
+# isn't a git clone (e.g. someone installed from a tarball).
 mkdir -p "$STATE_DIR"
 
 REMOTE=""
-REMOTE="$(curl -sf --max-time 5 "$REMOTE_URL" 2>/dev/null || true)"
-REMOTE="$(echo "$REMOTE" | tr -d '[:space:]')"
+
+if git -C "$JJSTACK_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  DEFAULT_BRANCH="$(git -C "$JJSTACK_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
+  git -C "$JJSTACK_DIR" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
+  REMOTE="$(git -C "$JJSTACK_DIR" show "origin/$DEFAULT_BRANCH:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+fi
+
+# Fall back to curl (works for public repos installed by tarball)
+if [ -z "$REMOTE" ]; then
+  REMOTE="$(curl -sf --max-time 5 "$REMOTE_URL" 2>/dev/null || true)"
+  REMOTE="$(echo "$REMOTE" | tr -d '[:space:]')"
+fi
 
 # Validate: must look like a version number (reject HTML error pages)
 if ! echo "$REMOTE" | grep -qE '^[0-9]+\.[0-9.]+$'; then
