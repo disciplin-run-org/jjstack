@@ -3,8 +3,9 @@
 One running session. One project. All the skills you actually type.
 
 **The project**: a tiny standalone MCP server that reports system status
-(`uptime`, `load_average`, `meminfo`) over HTTP. You publish it to your
-own GitHub and wire it into your own `~/.mcp.json`. 2-3 hours end to end.
+(`uptime`, `meminfo`) over HTTP, plus a dashboard page that graphs uptime
+history. You publish it to your own GitHub and wire it into your own
+`~/.mcp.json`. 2-3 hours end to end.
 
 ## Who this is for
 
@@ -62,13 +63,18 @@ Claude: You said "uptime MCP." You described a system-status MCP. The
         tools (`disk`, `iostat`, `who`). Pick three now, ship, then
         add the fourth only if you reach for it.
         [5 questions; 3 implementation approaches with effort estimates]
-        RECOMMENDATION: FastMCP + streamable HTTP + Docker. Three tools,
-        no config UI (you'll tune the refresh interval twice ever).
+        One thing hidden in your answers: you don't just want a snapshot
+        of right-now — you want to see whether the server was struggling
+        at 3am. That's a history feature, and it deserves a dashboard
+        page, not just another tool call. The graph IS the product.
+        RECOMMENDATION: FastMCP + streamable HTTP + Docker. Three system
+        tools + in-memory ring buffer for uptime history + dashboard
+        page at `/` that graphs the last 24h.
         → your-repo/jjstack/office-hours-2026-04-21.md
 ```
 
 ```
-You:    Agreed on three tools, skip the config page. Next.
+You:    Agreed — tools plus the dashboard. Next.
 You:    /plan-ceo-review
 Claude: [10-section strategic pass, iterates to 10/10]
         Verdict: ships. Small scope, real pain, no OKR ambiguity.
@@ -99,6 +105,52 @@ Claude: The tool schema IS the public API. Scrutinizing:
 
 ```
 You:    Agreed — drop load_average. Keep meminfo. Add `since`.
+```
+
+```
+You:    /plan-design-review
+Claude: The dashboard is narrow product surface — one page, one graph —
+        but every state needs a plan:
+          - empty state (server just started, no history yet)
+          - error state (backend unreachable, stale data)
+          - degraded state (one sample missing, gap in the line)
+          - mobile (uptime ops from a phone during an incident)
+        Also: time axis resolution (seconds? minutes? 5-min buckets?)
+        Bucket at 1-min — matches the 60s sampler, keeps the SVG under
+        1440 points over 24h.
+        [iterates to 10/10]
+```
+
+```
+You:    /design-consultation
+Claude: [builds a mini design system for the dashboard]
+        Palette: background neutral, uptime line single accent color,
+        degraded-sample markers in a warning color. Two typefaces max:
+        system UI for chrome, mono for numeric labels. 8/16/24 spacing
+        scale.
+        → your-repo/jjstack/design-system.md
+```
+
+```
+You:    /design-shotgun
+Claude: [three variants]
+        → variant-a: single wide sparkline, current uptime as big number
+        → variant-b: area chart with 1-hr gridlines, legend below
+        → variant-c: calendar heatmap (each cell = 1 hour)
+        Variant A wins — matches "glance, not analyze" usage.
+```
+
+```
+You:    /design-html
+Claude: [finalizes Pretext-native HTML + CSS + inline SVG chart]
+        → your-repo/dashboard/index.html  (18 KB)
+        → your-repo/dashboard/style.css   (4 KB)
+        No JS frameworks, no chart libraries — SVG built from /history
+        JSON with ~40 lines of inline script. Text reflows, heights
+        compute correctly on resize.
+```
+
+```
 You:    Approve plan. Exit plan mode.
 ```
 
@@ -106,6 +158,10 @@ You:    Approve plan. Exit plan mode.
 You:    /mcp-server
 Claude: [scaffolds FastMCP + streamable HTTP + Dockerfile +
          docker-compose + /healthz + first tool: uptime()]
+        [also: GET / serves the dashboard HTML from /design-html's output,
+         GET /history returns the ring-buffer samples as JSON, and a
+         background thread writes a sample every 60s into an in-memory
+         1440-slot ring buffer — 24h of history per process]
         [/smart-context7 fires automatically to fetch FastMCP 0.3 API —
          you didn't type it; it runs when the agent needs versioned docs]
 ```
@@ -151,8 +207,14 @@ Claude: [notices docker-compose.yml; generates per-service debug scripts]
 ```
 You:    /qa http://localhost:8003
 Claude: [browser QA — imports cookies via /setup-browser-cookies]
-        [hits /healthz, calls each tool, cleans up snapshot state after]
+        [loads /, confirms the graph renders, scrubs for 5 min to watch
+         live samples append, resizes to mobile width, confirms /history
+         endpoint, calls each tool, cleans up snapshot state after]
         FOUND: meminfo() 500s when /proc/meminfo has trailing whitespace
+        FOUND: dashboard Y-axis clips labels when uptime stays > 99.5%
+               (tick labels collide with the line)
+        FOUND: empty state reads "undefined hours" before the first sample
+               lands — should say "waiting for first sample…"
         [writes bug report to your-repo/jjstack/qa-2026-04-21.md]
 ```
 
@@ -232,9 +294,6 @@ project didn't need:
   anomaly watch; `/retro` captures what worked and what didn't;
   `/learn` manages accumulated project learnings. Pull them in on
   real production ships.
-- **UI-heavy work** → `/plan-design-review`, `/design-consultation`,
-  `/design-shotgun`, `/design-html`. Skipped here because a
-  two-tool MCP has no UI.
 - **Philosophy loaders** → `/dev-philosophy`, `/kano-model`. Load
   either when you want the frameworks explicit in the session; plan
   skills already reference them implicitly.
