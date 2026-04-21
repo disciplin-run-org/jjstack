@@ -96,16 +96,7 @@ Claude: The tool schema IS the public API. Scrutinizing:
 
 ```
 You:    Agreed — drop load_average. Keep meminfo. Add `since`.
-You:    /work-order for the implementation
-Claude: [drafts Context / Deliverables / Verify / Done-when]
-        [HARD-GATE refuses to continue until all four sections present]
-        → work-order-impl-001.md
-```
-
-```
 You:    Approve plan. Exit plan mode.
-Claude: [creates STATE.md at repo root via /state-doc]
-        [creates worktree ../uptime-mcp-wt/build-001 via /worktrees]
 ```
 
 ```
@@ -145,6 +136,16 @@ Claude: [HARD-GATE: refuses "done" without captured evidence]
 ```
 
 ```
+You:    /heal
+Claude: [notices docker-compose.yml; generates per-service debug scripts]
+        → debug/mcp-server.sh      (health probe, logs, restart)
+        → debug/run.sh             (master orchestrator: binary-search
+                                    fault isolation across services)
+        Now when something goes sideways in prod, you do not start from
+        zero — the scaffolding is already there.
+```
+
+```
 You:    /qa http://localhost:8003
 Claude: [browser QA — imports cookies via /setup-browser-cookies]
         [hits /healthz, calls each tool, cleans up snapshot state after]
@@ -161,7 +162,7 @@ Claude: [re-runs pytest — adds regression test first per TDD]
 
 ```
 You:    /two-stage-review
-Claude: Stage 1 spec compliance vs work-order-impl-001.md:
+Claude: Stage 1 spec compliance vs the approved eng-review plan:
           deliverables [x] uptime [x] meminfo [x] /healthz [x] Docker
           scope creep: none. PASS.
         Stage 2 code quality (fresh subagent):
@@ -188,22 +189,14 @@ Claude: [loads Anthropic + Sentry + OWASP + jjstack MCP-specific CWE]
 ```
 
 ```
-You:    /careful
-        /ship
-Claude: [PR via /github-setup-created repo on your GitHub account]
+You:    /ship
+Claude: [/smart-review fires automatically before the PR is opened —
+         no blockers]
+        [creates PR on your GitHub repo]
         → github.com/you/uptime-mcp/pull/1
         Description: Context / Deliverables / Verify / Security notes
-                     pulled from the work order + security review.
+                     pulled from the planning docs and security review.
         Tests: 20. CI configured via your semver-auto-bump Action.
-```
-
-```
-You:    /land-and-deploy
-Claude: [/smart-review fired automatically, no new blockers]
-        [merges; CI green in 2m]
-        [deploys to your configured platform via /setup-deploy]
-        [/canary runs for 5m — no console errors, no regressions]
-        Live at https://uptime-mcp.your-domain.com/mcp. 200 healthy.
 ```
 
 ```
@@ -214,41 +207,28 @@ Claude: [edits ~/.mcp.json]
         [the injection-guard hook scans the write — clean]
 ```
 
-```
-You:    /retro
-Claude: [writes retro — what worked, what didn't, what to change]
-        → your-repo/jjstack/retro-2026-04-21.md
-          Worked: devex review killed a redundant tool before it shipped.
-          Didn't: security-review found a bigger issue than expected —
-                  consider running it earlier next time, before /ship.
-          Change: add security pass between verify and two-stage-review.
-```
-
-```
-You:    $ jq -r '.command' ~/.jjstack/command-failures.jsonl \
-          | sort | uniq -c | sort -rn | head
-        3 docker compose up --build
-        1 pytest tests/test_uptime.py::test_since_param
-```
-
-`docker compose up --build` failing three times is a recurrence. The
-fix (add Docker layer caching config or increase build resources) is a
-candidate for promotion to CLAUDE.md per
-`references/memory-promotion.md`.
-
-```
-You:    /learn
-Claude: [shows current STATE.md Learnings + memory entries]
-        [you promote the docker-build note to CLAUDE.md]
-```
-
 ---
 
 ## What we didn't exercise
 
-Skills you'll reach for when the context calls for them but the uptime
-MCP didn't need:
+Skills you'll reach for when the context calls for them but this
+project didn't need:
 
+- **Structured delegation** → `/work-order` formalizes hand-offs to
+  sub-agents or PR bodies into Context / Deliverables / Verify /
+  Done-when shape. Useful when delegating; unnecessary when you're
+  driving the session yourself.
+- **Session state and branch isolation** → `/state-doc` keeps a live
+  `STATE.md` at repo root that survives `/clear` and session
+  restarts; `/worktrees` creates isolated worktrees when you need to
+  run multiple branches in parallel. Both pay off on multi-day
+  efforts; overkill for a two-hour build.
+- **Post-ship flow** → `/careful` enables destructive-command
+  warnings when touching prod; `/land-and-deploy` merges + waits for
+  CI + deploys + runs canary; `/canary` does standalone post-deploy
+  anomaly watch; `/retro` captures what worked and what didn't;
+  `/learn` manages accumulated project learnings. Pull them in on
+  real production ships.
 - **UI-heavy work** → `/plan-design-review`, `/design-consultation`,
   `/design-shotgun`, `/design-html`. Skipped here because a
   two-tool MCP has no UI.
