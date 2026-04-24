@@ -76,3 +76,71 @@ Follow the output capture protocol.
 ### 3.3 README maintenance
 
 Create or update `{repo_root}/README.md` if session changes affect it.
+
+---
+
+## Phase 4: Verified Contributing-Factors Tree
+
+Load the jjstack RCA method and apply it on top of gstack's output.
+This is the step that separates "found a plausible cause" from "found
+the actionable root that prevents the class of failure."
+
+```bash
+cat ~/.claude/skills/jjstack/references/root-cause-analysis.md
+```
+
+Apply the four rules in order:
+
+1. **Scope before explain** — write PROBLEM SCOPE with IS / IS NOT /
+   STARTED before any causal reasoning. If gstack's investigation
+   already produced causes without this scope, reconstruct the scope
+   first and re-evaluate whether each claimed cause survives the
+   IS-NOT filter.
+
+2. **Every effect has at least two causes** (action + condition). If
+   gstack produced a single-chain RCA, branch it into action and
+   condition nodes. Any leaf that cannot be split this way is
+   incomplete.
+
+3. **Every claim carries evidence and confidence**. For each node in
+   the tree, fill in `claim` / `evidence` / `confidence`. Evidence
+   must be inspectable (log line, git-blame line, failing test, diff,
+   reproducible command). Anything without evidence is marked
+   `hypothesis` — not allowed as a terminal stop.
+
+4. **Stop at the class boundary**. Write the regression test that
+   would catch the CLASS of failure, not just this incident. Record
+   it literally in the output. If you can't write the test, you
+   haven't found the actionable root — keep going.
+
+Write the resulting tree to `{OUTPUT_DIR}/rca-{YYYY-MM-DD}.md` in
+the exact shape documented in `references/root-cause-analysis.md`:
+`PROBLEM SCOPE`, `FAILURE` with action/condition branches, optional
+AND-BRANCHES section for multi-cause conjunctions, and a `STOP CHECK`
+section with the regression test plus class-boundary sentence.
+
+If gstack's own investigation already reached an actionable root and
+you can write the class-catching test, this phase formalizes the
+output. If not, it surfaces the gap and continues the analysis.
+
+### 4.1 Heal framework integration (revisited)
+
+The regression test from STOP CHECK belongs in the heal framework.
+If `debug/heal.py` exists, add the test there. If no heal framework
+exists, suggest running `/heal` to create one — and include the
+regression test as the first entry.
+
+### 4.2 Promotion to memory
+
+If this failure pattern has occurred before (check
+`~/.jjstack/command-failures.jsonl` and any prior
+`rca-*.md` in the repo), the pattern may be promotable to a
+permanent rule per `references/memory-promotion.md`. Suggest
+promotion when:
+
+- The same action+condition combination has appeared 3+ times across
+  2+ sessions, AND
+- The class boundary is generalizable (not a single-function fix).
+
+Do not promote automatically — surface the suggestion and let the
+user decide.
