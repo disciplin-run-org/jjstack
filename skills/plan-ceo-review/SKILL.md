@@ -137,6 +137,49 @@ This dual-lookup ensures compatibility with design docs created before jjstack w
 
 After the gstack skill completes, run these steps in order.
 
+### 3.0.5 Product Identity audit (REQUIRED axis)
+
+Before the quality loop, score the design doc on two axes that are
+non-negotiable for any product going through `leanspecs/mcp:3.2 docs_import`:
+
+```bash
+cat ~/.claude/skills/jjstack/references/product-identity.md
+```
+
+Then audit the design doc:
+
+1. **Purpose Clarity (score 1-10)** — Does a stranger reading the design
+   doc know what this product does in one sentence? The doc must contain a
+   `## Product Identity > Main Purpose` block. Score using:
+     - 10: Sentence names user, job-to-be-done, and a distinctive mechanism.
+       Stranger could explain to a third party after reading once.
+     - 7-9: Names two of the three. Stranger gets the gist but waves hands
+       on one dimension.
+     - 4-6: Generic ("X is a tool that helps people do Y"). No mechanism
+       named.
+     - 1-3: Block is missing or content is placeholder ("TBD",
+       "we'll figure this out").
+
+2. **Cap 1 Alignment (score 1-10)** — Does the proposed Cap 1 actually
+   match the stated Main Purpose? Independently nominate Cap 1 yourself
+   from the design body (apply the nomination challenge: "if I deleted this
+   capability, would the product still be the same product?"). Compare your
+   nomination to the doc's stated Cap 1 candidate. Score using:
+     - 10: Doc nominates the same Cap 1 you would, with a stance-led
+       justification.
+     - 7-9: Doc nominates a defensible Cap 1 but justification is weak,
+       or you and the doc disagree by one rank.
+     - 4-6: Doc names a Cap 1 that's clearly a feature OF the real Cap 1
+       ("Saved Flows" when the real product is the channel transport).
+     - 1-3: No Cap 1 nominated, or the nomination is incoherent with the
+       Main Purpose.
+
+For any axis scoring below 8, fail the iteration and require the writer
+to amend the Identity block before continuing the regular quality loop.
+Provide concrete redlines: what the rewritten Main Purpose sentence
+should say, and which capability you nominate as Cap 1 with one-clause
+justification.
+
 ### 3.1 Quality iteration loop
 
 The gstack skill has its own spec review loop (max 3 iterations, typically targeting 8/10).

@@ -60,6 +60,36 @@ Load DNA files if configured. Apply voice/coding standards to all output.
 
 ---
 
+## Phase 1.5: Product Identity preamble (REQUIRED)
+
+Before delegating to gstack, capture the Product Identity block. This is
+the input that `leanspecs/mcp:3.2 docs_import` reads first to decide which
+capability is Cap 1 (the central concern of the product). Without it, the
+importer falls back to extraction-order numbering and silently
+misrepresents the product.
+
+```bash
+cat ~/.claude/skills/jjstack/references/product-identity.md
+```
+
+Run the critical-thinking prompts in that reference verbatim. Don't accept
+the first answer — apply the stress test (Main Purpose), nomination
+challenge (Cap 1), KPI sanity check (no vibes), kill-criteria reality
+check, and why-now temporal interrogation. Iterate with the user until
+each section passes.
+
+**Output:** at the end of Phase 1.5, you have a fully-filled
+`## Product Identity` markdown block held in memory. You will inject this
+block at the top of the design doc gstack produces in Phase 2 (immediately
+after the title/front matter, before the design body).
+
+If the user is amending an existing product whose design doc already
+carries an Identity block, read the existing block, present it for
+confirmation, and only re-run the prompts for sections the user wants to
+change.
+
+---
+
 ## Phase 2: Delegate to gstack
 
 ```bash
@@ -85,6 +115,21 @@ cat ~/.claude/skills/jjstack/references/quality-loop.md
 ```
 
 Follow the quality loop protocol exactly, using the current document as the review target.
+
+### 3.1.5 Verify Product Identity block in output
+
+After the quality loop converges, verify the design doc gstack wrote contains
+the Product Identity block from Phase 1.5 at the very top (after title/front
+matter, before any other heading).
+
+If the block is missing or partial:
+1. Inject the block from memory at the correct location.
+2. Re-run the quality loop one more pass to make sure the body still aligns
+   with the Identity block.
+
+The Identity block is non-negotiable — design docs are the input to
+`docs_import` and the importer needs the Main Purpose / Cap 1 candidate /
+KPIs / kill criteria to reason correctly about the product.
 
 ### 3.2 Output capture
 
