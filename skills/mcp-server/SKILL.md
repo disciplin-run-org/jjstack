@@ -40,6 +40,54 @@ service gets the next available port. Example:
 
 ---
 
+## Mandatory Requirements
+
+Non-negotiable for every MCP server scaffolded by this skill.
+
+### Source code is bind-mounted in dev mode
+
+The container's source path is overridable via a docker-compose volume
+mount so code changes take effect on save without an image rebuild.
+Required artifacts for every MCP server:
+
+1. A `docker-compose.override.yml` at the project root that mounts the
+   source directory over the installed-package path inside the
+   container.
+2. The override entrypoint runs uvicorn with `--reload --reload-dir`
+   pointing at the same path as the mount target.
+3. The Dockerfile installs the package at a canonical location so the
+   mount target is predictable — either `/app/src/<package>` for
+   editable installs (`pip install -e .`) or
+   `/usr/local/lib/python<ver>/site-packages/<package>` for
+   non-editable installs (`pip install .`).
+
+Without this, the dev loop is "edit → rebuild image → restart
+container" (~30s per cycle) instead of "edit → uvicorn auto-reload"
+(~1s). Compounded across a dev session, that's hours of pure friction
+for zero benefit. Every existing MCP server in the canonical reference
+ecosystem uses this pattern.
+
+The Dockerfile does not change between dev and prod — dev mode is
+purely a compose-level concern. Prod is selected with
+`docker compose -f docker-compose.yml up` (skips the override).
+
+See "Dev Mode — Live Reload" below for the concrete YAML and a
+table of dev/prod/rebuild commands.
+
+<HARD-GATE>
+Do NOT mark an MCP server scaffold complete until BOTH conditions
+hold: a docker-compose.override.yml exists with the bind mount AND
+the bind mount has been verified end to end by editing a source
+file and observing the uvicorn reload line in the container logs.
+A scaffold without working live-reload is the single most expensive
+trap this skill prevents and is unacceptable as a deliverable. This
+applies to EVERY MCP server scaffolded with this skill regardless of
+perceived size or one-off-ness. See
+references/hard-gate-convention.md for the semantics of this tag.
+</HARD-GATE>
+
+---
+
 ## Server Structure
 
 Use **FastMCP** for all MCP servers.
@@ -682,15 +730,19 @@ and never reuse. No `ports:` mapping needed with host networking.
 
 ---
 
-## Dev Mode — Live Reload
+## Dev Mode — Live Reload (required)
 
-During development, volume-mount your source code over the installed package
-and run uvicorn with `--reload`. Save a file, the server restarts automatically.
-No container rebuild needed.
+This is the concrete implementation of the bind-mount requirement above.
+Every MCP server scaffolded with this skill ships with a working
+override file out of the gate.
+
+Volume-mount the source code over the installed package and run uvicorn
+with `--reload`. Save a file, the server restarts automatically. No
+container rebuild needed.
 
 **How it works:** Docker Compose automatically merges `docker-compose.override.yml`
 on top of `docker-compose.yml` when you run `docker compose up` with no `-f` flags.
-Put dev overrides in the override file and your default workflow is dev mode.
+Dev overrides live in the override file and the default workflow is dev mode.
 
 ### docker-compose.override.yml
 
