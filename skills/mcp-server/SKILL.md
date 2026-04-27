@@ -10,23 +10,30 @@ description: >
 
 # MCP Server in Docker — Blueprint
 
-## Transport: Streamable HTTPS via FastMCP
+## Transport: Streamable HTTP via FastMCP
 
 All MCP servers run as Docker containers with `network_mode: host` and communicate
-via **streamable HTTPS** on a single `/mcp` endpoint. FastMCP handles session
+via **streamable HTTP** on a single `/mcp` endpoint. FastMCP handles session
 management, schema generation, and protocol details automatically.
 
-**TLS is the default.** Servers auto-detect `/data/server.crt` and `/data/server.key`
-at startup — HTTPS if present, HTTP fallback if not. Generate a self-signed cert
-for local development:
+### TLS policy
 
-```bash
-openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
-  -days 3650 -nodes -subj '/CN=localhost'
-```
+- **Localhost (development):** plain HTTP. No certs, no openssl, no
+  browser warning click-throughs. Self-signed certs add zero security
+  on a loopback interface — traffic never leaves the host, and a
+  self-signed cert isn't trusted anyway. Skipping TLS removes friction
+  with no real security loss.
+- **Non-localhost (anything reachable from another machine):** TLS is
+  required. Use a real certificate — Let's Encrypt for a public
+  hostname, an internal CA for a corporate network, or a reverse
+  proxy (Caddy, Traefik, nginx) that terminates TLS in front of the
+  MCP server. Do not expose plain HTTP off the loopback.
 
-Place the cert files in the data volume (`data/<service>/server.crt` and
-`data/<service>/server.key`). They survive container rebuilds.
+The server detects TLS material at `/data/server.crt` and
+`/data/server.key` at startup — HTTPS if both files exist, HTTP
+otherwise. Localhost dev: leave them absent. Production: place real
+certs there (or terminate at a reverse proxy and run the MCP server
+on HTTP behind it).
 
 Each server gets its own unique port via the `MCP_PORT` environment variable.
 There is no default port — you must assign one per service to avoid collisions
@@ -172,7 +179,7 @@ def create_app():
         return f"""
         <h1>{SERVER_NAME}</h1>
         <p>MCP endpoint: <code>/mcp</code></p>
-        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "https://localhost:{port}/mcp"}}}}}}</pre>
+        <pre>{{"mcpServers": {{"{SERVER_NAME}": {{"type": "http", "url": "http://localhost:{port}/mcp"}}}}}}</pre>
         """
     # end def
 
@@ -799,15 +806,18 @@ services:
   "mcpServers": {
     "<server-name>": {
       "type": "http",
-      "url": "https://localhost:<port>/mcp"
+      "url": "http://localhost:<port>/mcp"
     }
   }
 }
 ```
 
-Use `https://` when TLS certs are configured (the default), `http://` only as
-fallback when no certs exist. Add to `~/.mcp.json` for global access across all
-Claude sessions, or to `{project}/.mcp.json` for project-scoped access.
+Use `http://` for localhost (the default — no certs, no warnings, no
+friction; loopback traffic never leaves the host). Use `https://` only
+when the MCP server is exposed off the loopback interface (in which
+case TLS termination is mandatory; see the Transport section's TLS
+policy). Add to `~/.mcp.json` for global access across all Claude
+sessions, or to `{project}/.mcp.json` for project-scoped access.
 
 ---
 
@@ -963,13 +973,13 @@ styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
 
 ### Infrastructure
 5. Uses FastMCP with `@mcp.tool` decorator for all tools
-6. Streamable HTTPS transport via FastMCP `http_app()` + TLS auto-detect
-7. Self-signed cert generated and placed in data volume (`/data/server.crt`, `/data/server.key`)
+6. Streamable HTTP transport via FastMCP `http_app()`. Auto-upgrades to HTTPS only if both `/data/server.crt` and `/data/server.key` are present (production deployments behind a real cert or a reverse proxy)
+7. Localhost dev: no cert files. Production-only: real certs, never self-signed
 8. `MCP_PORT` set in docker-compose (unique per service, no default)
 9. `network_mode: host` in docker-compose
 10. `/health` endpoint returns `{"status": "ok", "service": "<name>", "version": "<semver>"}`
 11. Docker healthcheck configured in docker-compose against `/health`
-12. `.mcp.json` entry added with `"type": "http"` and `https://` URL
+12. `.mcp.json` entry added with `"type": "http"` and `http://localhost:<port>/mcp` URL (https only for non-loopback deployments)
 13. `fastmcp`, `fastapi`, and `uvicorn` in dependencies
 14. Landing page at `/` with MCP connection instructions
 15. `mcp_app.lifespan` passed to FastAPI app for session management
