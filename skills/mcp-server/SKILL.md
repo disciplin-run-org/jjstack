@@ -476,17 +476,38 @@ def docs_read(path: str, max_bytes: int = 60000) -> str:
 - **If in doubt:** start with fewer tools. You can always split one tool into two;
   merging two tools into one is harder.
 
-### Long-running tools (> 30 seconds)
+### Long-running tools — one canonical pattern
 
-Any tool that may take longer than 30 seconds must use FastMCP's background task
-support. Claude Code's MCP timeout is 60 seconds and is not reliably configurable.
-Progress notifications (`ctx.report_progress`) are silently ignored by Claude Code.
+Claude Code's MCP timeout is 60 seconds and is not reliably configurable.
+Any tool that **could occasionally** exceed 30 seconds — even if the
+typical case is fast — must use FastMCP's background-task support. The
+threshold is tail-latency, not average. A tool that runs in 5s normally
+and 45s on the slow path qualifies.
 
-**Definition:** A tool is "long-running" if it calls external AI APIs, processes
-large datasets, runs batch operations, or performs network-intensive work that
-could exceed 30 seconds under normal load.
+**Definition.** A tool is long-running if it does any of:
+- Calls an external AI API (LLMs, embeddings, generation)
+- Calls another network service whose latency you don't control
+- Processes a dataset whose size scales with input
+- Runs batch operations over N items
+- Performs file I/O on potentially-large files
+- Anything else where you cannot bound the worst case under 30s
 
-**Use FastMCP `task=True`** (requires `fastmcp[tasks]` >= 2.14):
+When in doubt, treat it as long-running. The cost of using `task=True`
+on a tool that always completes in 5s is one extra round-trip; the cost
+of NOT using it on a tool that occasionally takes 45s is a hard timeout
+the agent cannot recover from.
+
+<HARD-GATE>
+Do NOT register a synchronous (`@mcp.tool`, no `task=True`) handler for
+any operation that could occasionally exceed 30s — including any
+external-AI call, any unbounded loop over input items, and any network
+call to a service whose latency is not strictly controlled. Async with
+`task=True` is the only correct pattern for these cases. This applies
+to EVERY tool regardless of perceived typical-case speed. See
+references/hard-gate-convention.md for the semantics of this tag.
+</HARD-GATE>
+
+**The one canonical pattern: `@mcp.tool(task=True)`.**
 
 ```python
 from fastmcp import FastMCP
@@ -496,10 +517,11 @@ mcp = FastMCP("MyServer")
 
 @mcp.tool(task=True)
 async def ai_prompt(action: str, scope: str = "all", progress: Progress = Progress()) -> str:
-    """Run an AI-powered batch operation. Returns a task ID for polling.
+    """Run an AI-powered batch operation.
 
-    Long-running: typically 1-5 minutes depending on scope.
-    Use check_task_status() to poll for results."""
+    Returns a task ID immediately; the client polls for the final result
+    via the standard MCP task-status protocol.
+    """
     items = await get_items(scope)
     await progress.set_total(len(items))
     results = []
@@ -511,51 +533,46 @@ async def ai_prompt(action: str, scope: str = "all", progress: Progress = Progre
     return format_results(results)
 ```
 
-The `task=True` decorator makes the tool return immediately with a task ID when
-the client requests background execution. The client polls for results.
+That is it. No manual `start_xxx` / `check_xxx_status` pair, no custom
+job table, no hand-rolled polling protocol. The `task=True` decorator
+returns a task ID inside the 60s budget, runs the work in the background
+via Docket, and exposes the standard MCP task-status interface that
+Claude Code already speaks. One pattern, one review heuristic, one
+agent-side contract.
 
-**Estimate completion time** in the initial response to help the agent decide
-when to poll:
+**Why this skill no longer documents a "manual start/poll pair":**
 
-```python
-@mcp.tool
-async def ai_prompt_start(action: str, scope: str = "all") -> dict:
-    """Start an AI batch operation. Returns task ID and estimated time."""
-    items = await get_items(scope)
-    estimated_seconds = len(items) * 3  # ~3 seconds per item
-    task_id = await launch_background(action, items)
-    return {
-        "task_id": task_id,
-        "estimated_seconds": estimated_seconds,
-        "message": f"Processing {len(items)} items. Use check_task_status('{task_id}') to poll.",
-    }
+- The old justification ("older FastMCP versions") is dead — pyproject
+  pins `fastmcp[tasks]>=2.14.0`, which always supports `task=True`.
+- The other old justification ("custom job storage") is covered by
+  Docket's pluggable backend — keep the same `task=True` surface, swap
+  the storage layer underneath.
+- Two patterns means every reviewer has to evaluate which is correct
+  for the case and every author has to relearn the difference. One
+  pattern eliminates that tax.
 
-@mcp.tool
-async def check_task_status(task_id: str) -> dict:
-    """Check status of a background task. Returns progress and result when complete."""
-    status = get_status(task_id)
-    return {
-        "status": status.state,        # "running" | "complete" | "error"
-        "progress": f"{status.done}/{status.total}",
-        "result": status.result if status.state == "complete" else None,
-    }
-```
-
-**When to use which pattern:**
-
-| Pattern | When to use |
-|---------|------------|
-| `@mcp.tool(task=True)` | FastMCP 2.14+, clean integration, automatic task management |
-| Manual start/poll pair | Older FastMCP, or when you need custom job storage (Redis, DB) |
-| Synchronous (no task) | Tools that always complete in < 30 seconds |
+Existing services on the manual start/poll pair from before this rule
+should migrate when next touched. New tools use only `task=True`.
 
 **Backend for task persistence:**
-- Default: in-memory (lost on restart, single-process only)
-- Production: Redis/Valkey via `FASTMCP_DOCKET_URL=redis://localhost:6379`
+- Default: in-memory (Docket's default — lost on restart, single-process only). Fine for dev.
+- Production: Redis/Valkey via `FASTMCP_DOCKET_URL=redis://localhost:6379`. Required for any service that must survive a container restart with jobs in flight.
+- Custom storage (postgres, custom DB, etc.): implement a Docket backend; the `task=True` surface stays the same.
 
-**Important:** Claude Code does NOT display `ctx.report_progress()` or
-`notifications/progress` messages. Do not rely on progress notifications as a
-keep-alive mechanism — they are silently ignored.
+### Common mistakes this pattern protects against
+
+1. **Treating `ctx.report_progress()` as a keep-alive.** Claude Code
+   silently drops progress notifications — they do not extend the 60s
+   timeout. Use `task=True` and let polling drive progress visibility.
+2. **In-memory persistence in production.** Default Docket storage is
+   in-memory. A container restart loses every in-flight job. Set
+   `FASTMCP_DOCKET_URL` for anything that ships.
+3. **Polling at 1-second intervals.** Burns your 60s budget on
+   overhead. First poll ≥ the tool's `estimated_seconds`, then
+   exponential backoff (e.g., 5s → 10s → 20s → 30s).
+4. **Faking long-running with whitespace streaming.** Some libraries
+   keep a connection alive by streaming spaces. Claude Code does not
+   honor that pattern — you will race the 60s timeout regardless.
 
 ---
 
