@@ -88,16 +88,18 @@ import urllib.request
 HEAL = "--debugonly" not in sys.argv  # heal by default, --debugonly skips fixes
 
 # ── Colors ────────────────────────────────────────────────────────────────────
-GREEN  = "\033[92m"
-YELLOW = "\033[93m"
-RED    = "\033[91m"
-CYAN   = "\033[96m"
-BOLD   = "\033[1m"
-RESET  = "\033[0m"
+# Never red on black — unreadable on dark terminals. Use bright magenta for
+# errors, yellow for warnings.
+GREEN   = "\033[92m"
+YELLOW  = "\033[93m"
+MAGENTA = "\033[95m"
+CYAN    = "\033[96m"
+BOLD    = "\033[1m"
+RESET   = "\033[0m"
 
 def ok(msg):      print(f"  {GREEN}✓{RESET} {msg}")
 def warn(msg):    print(f"  {YELLOW}⚠{RESET} {msg}")
-def fail(msg):    print(f"  {RED}✗{RESET} {msg}")
+def fail(msg):    print(f"  {MAGENTA}✗{RESET} {msg}")
 def header(msg):  print(f"\n{BOLD}{msg}{RESET}")
 def healing(msg): print(f"  {CYAN}⚕{RESET} {BOLD}HEAL:{RESET} {msg}")
 
@@ -371,7 +373,7 @@ def main():
     else:
         fail(f"Could not heal: {fault_result['error']}")
         if not fault_result.get("healed"):
-            print(f"\n{RED}Manual intervention required.{RESET}")
+            print(f"\n{MAGENTA}Manual intervention required.{RESET}")
         return 1
 
 if __name__ == "__main__":

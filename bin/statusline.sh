@@ -171,9 +171,9 @@ else
     # Color by magnitude (5 and 1 USD thresholds)
     cost_cmp=$(awk -v c="$cost_usd" 'BEGIN{if ((c+0)>=5) print 2; else if ((c+0)>=1) print 1; else print 0}')
     case "$cost_cmp" in
-        2) cost_color="\033[91m" ;;  # bright red   >= $5
-        1) cost_color="\033[93m" ;;  # bright yellow >= $1
-        *) cost_color="\033[92m" ;;  # bright green < $1
+        2) cost_color="\033[95m" ;;  # bright magenta >= $5 (avoid red on black)
+        1) cost_color="\033[93m" ;;  # bright yellow  >= $1
+        *) cost_color="\033[92m" ;;  # bright green   < $1
     esac
 
     trailing_segment="${cost_color}${cost_str}\033[0m"
@@ -188,10 +188,10 @@ RESET="\033[0m"
 effort_part=""
 if [ -n "$effort" ]; then
     case "$effort" in
-        high)   ecolor="\033[91m" ;;  # bright red
+        high)   ecolor="\033[95m" ;;  # bright magenta (avoid red on black)
         medium) ecolor="\033[93m" ;;  # bright yellow
         low)    ecolor="\033[92m" ;;  # bright green
-        xhigh)  ecolor="\033[95m" ;;  # bright magenta
+        xhigh)  ecolor="\033[96m" ;;  # bright cyan
         auto)   ecolor="\033[2m"  ;;  # dim (neutral default)
         *)      ecolor="\033[2m"  ;;  # dim (unknown)
     esac
