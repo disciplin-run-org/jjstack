@@ -1,182 +1,240 @@
-# jjstack
+<h1 align="center">jjstack</h1>
 
-A derived distribution of [gstack](https://github.com/garrytan/gstack) that enhances Claude Code workflows with higher quality thresholds, repo-local output, and new skills.
+<p align="center">
+  <strong>Claude Code, with the lessons baked in.</strong><br>
+  A curated UX layer on top of <a href="https://github.com/garrytan/gstack">gstack</a> that turns hard-won product knowledge into reusable skills, references, and quality floors.
+</p>
 
-jjstack wraps gstack skills with the same command names — no new commands to learn. Type `/plan-ceo-review` and get jjstack's enhanced version transparently.
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.12.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/Claude%20Code-skills-orange" alt="claude code">
+  <img src="https://img.shields.io/badge/skills-42-purple" alt="42 skills">
+</p>
 
-## What it changes
+---
 
-| Enhancement | gstack default | jjstack |
-|-------------|---------------|---------|
-| Review quality target | 8/10 | 10/10 (configurable) |
-| Quality iterations | 3 max | 3 additional passes with fresh reviewer |
-| Output location | `~/.gstack/projects/` (local, invisible) | `{repo}/jjstack/` (version-controlled) |
-| DNA injection | None | Pluggable voice + coding standards |
-| README maintenance | None | Auto-create/update after every skill run |
-| Permission friction | Manual approve | Smart auto-approve hook (Haiku risk classification) |
-| MCP resilience | Manual reconnect | Auto-reconnect hook with retry tracking |
-| Auto-updates | gstack-only | jjstack checks for updates on first use |
+## Why jjstack
 
-## Prerequisites
+After two decades of shipping security and AI products, I noticed every team
+relearns the same lessons the hard way:
 
-- [gstack](https://github.com/garrytan/gstack) >= 0.11.0 (installed automatically if missing)
-- [Claude Code](https://claude.ai/claude-code) with skills support
-- `jq` and `curl` (for the auto-approve hook)
-- Git repo (for repo-local output; falls back to `~/.gstack/projects/` outside repos)
+- "Don't ship without an OKR for it."
+- "Test the corner cases at Kano level 1, not just the happy path."
+- "Production truth beats staging confidence beats local hope."
+- "The PM who kills 10 features did more than the PM who shipped 15."
 
-## Install
+These are not opinions — they're scars. **jjstack encodes them as skills,
+references, and quality gates so every Claude Code session inherits them
+automatically.** No more re-explaining your testing standards in every
+prompt. No more 8/10 reviews shipping as good enough.
+
+jjstack does not replace gstack — it stands on its shoulders. Same command
+names you already know (`/review`, `/qa`, `/ship`), enhanced behavior, plus
+a library of original skills the gstack base doesn't ship.
+
+---
+
+## The Three Pillars
+
+jjstack ships three deeply integrated knowledge bases — each with a
+**philosophy reference** (the why) and an **adversarial review skill**
+(the audit). They cross-reference each other but never duplicate.
+
+| Discipline | Philosophy Reference | Review Skill | What it audits |
+|------------|---------------------|--------------|----------------|
+| **Product** | `product-management.md` (12 sections) | `/product-manager-review` | OKR alignment, Kano, scope, JTBD, kill list |
+| **QA** | `qa-philosophy.md` (11 sections) | `/qa-review` | Test depth, type balance, production verification, mutation score |
+| **Code** | `coding-dna.md` + `unit-test-philosophy.md` | `/unit-test-builder` + `/python-coder` | Coding DNA, adversarial testing, mutation testing |
+
+Together they implement the full vision-to-code stack:
+
+```
+Vision (century)
+  └─ Mission (decade, BHAG)
+       └─ SMAC Recipe (years)
+            └─ Product-Led OKRs (quarterly: 3 KRs — Quantity / Quality / Efficiency)
+                 └─ KPIs (daily measurement, visible to all)
+                      └─ Extended Kano Model (10 levels, Steam Train)
+                           └─ BDD Gherkin Hierarchy (Capability → Feature → Behavior)
+                                └─ API First → CLI → GUI
+                                     └─ Primitives Over Frameworks
+                                          └─ Test-Driven Development
+                                               └─ Coding DNA (security-first, cost-efficient)
+```
+
+Load it any time with `/dev-philosophy`. Apply a layer with `/kano-model`,
+`/product-manager-review`, `/qa-review`, or `/unit-test-builder`.
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/JesperJurcenoks/jjstack.git ~/.claude/skills/jjstack
 cd ~/.claude/skills/jjstack && ./setup
 ```
 
-You can also clone to a different location (e.g., `~/Projects/jjstack`) — setup
-will create a symlink from `~/.claude/skills/jjstack` to wherever you cloned it.
+Setup auto-installs gstack if missing, downloads security review references
+(Anthropic, Sentry, OWASP), and links every jjstack skill into
+`~/.claude/skills/`. Open Claude Code in any repo and start shipping.
 
-Setup installs gstack automatically if not present, downloads security review
-dependencies (Anthropic, Sentry, OWASP), and creates symlinks in `~/.claude/skills/`
-so jjstack skills are available in every Claude Code session.
+**Prerequisites:** [Claude Code](https://claude.ai/claude-code), `git`,
+`jq`, `curl`. No build step. No daemon. No dependencies you don't already
+have on a developer machine.
 
-## Uninstall
+---
 
-```bash
-cd ~/.claude/skills/jjstack && ./uninstall
-```
+## What it changes vs gstack
 
-Restores original gstack symlinks and removes only jjstack-specific hook entries (preserves other hooks). Your project output (`{repo}/jjstack/`) and config files are left intact.
+| Enhancement | gstack | jjstack |
+|-------------|--------|---------|
+| Review quality target | 8/10 | **10/10** (configurable) |
+| Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
+| Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
+| DNA injection | None | Pluggable voice + coding standards |
+| README maintenance | None | Auto-create/update after every skill run |
+| Permission friction | Manual approve every time | Smart auto-approve with Haiku risk classifier |
+| MCP resilience | Manual reconnect | Auto-reconnect with retry tracking |
+| Auto-updates | gstack-only | jjstack checks on every skill use |
+| Prompt-injection guard | None | PreToolUse hook scans markdown writes |
+| Failure log | None | PostToolUse hook records non-zero bash exits for promotion |
 
-## Available skills
+Wrapper skills keep gstack's command names — `/plan-ceo-review`,
+`/plan-eng-review`, `/qa`, `/review`, `/ship`, etc. — and add the
+enhancements transparently.
 
-### Wrapper skills (override gstack)
+---
 
-| Skill | What it adds |
-|-------|-------------|
-| `/plan-ceo-review` | Quality loop to 10/10, repo-local output, DNA injection |
-| `/plan-eng-review` | Same enhancements for engineering review |
-| `/plan-design-review` | Same enhancements for design plan review |
-| `/office-hours` | Output redirect to repo, quality loop, DNA injection |
-| `/review` | Deeper adversarial passes (configurable, default 2) |
-| `/design-review` | Responsive design rules, Google Fonts-only |
-| `/design-consultation` | Design system saved to repo, DNA injection |
-| `/qa` | QA reports to repo, jj-qa rules, quality loop |
-| `/qa-only` | QA report-only with jj-qa rules |
-| `/cso` | Security audit to repo, quality loop, DNA injection |
-| `/ship` | Ship workflow with jjstack conventions |
-| `/investigate` | Root cause analysis to repo, DNA injection |
-| `/retro` | Retrospective to repo, DNA injection |
-| `/document-release` | Post-ship docs to repo, DNA injection |
-| `/autoplan` | Auto-review pipeline to repo, quality loop |
+## Skills
 
-### New skills (jjstack originals)
+42 skills across product, QA, code, security, ops, and meta. Highlights:
 
+### Product Management
 | Skill | What it does |
-|-------|-------------|
-| `/security-review` | Comprehensive security review combining Anthropic, Sentry, and OWASP methodologies with MCP-specific CWE assessment, secret detection, supply chain analysis, and STRIDE threat mapping |
-| `/heal` | Modular debug/heal framework generator for containerized projects |
-| `/mcp-server` | MCP server scaffolding with FastMCP and streamable HTTP |
-| `/github-setup` | GitHub repo initialization with semver auto-bump Actions |
-| `/python-coder` | Python coding with project conventions |
-| `/jj-qa` | QA philosophy and operational rules for testing |
-| `/jj-code` | Implementation skill for filling the plan-to-QA gap |
-| `/smart-context7` | Intelligent Context7 invocation (avoids wasted API calls) |
-| `/smart-review` | Auto-invokes code review plugin before PR creation |
-| `/smart-simplify` | Auto-invokes code simplifier after significant changes |
-| `/work-order` | Structured Context/Deliverables/Verify/Done template for delegating tasks to sub-agents, workers, PRs, or plan items |
-| `/state-doc` | Maintains a repo-root `STATE.md` — live "where we are right now" doc that survives `/clear`, `/compact`, and restarts |
-| `/lean` | Cost-lean execution mode: explicit tool-call budget, one-shot writes, no polishing, no iteration loops. For QA loops, ralph-loop, and agent pipelines where every call compounds |
-| `/two-stage-review` | Review in two passes: spec compliance first (did you build what was asked?), then code quality (is it good code?). Adapted from obra/superpowers |
-| `/worktrees` | Git worktree workflow for parallel branches — isolated trees for subagents, experiments, and concurrent workstreams. Adapted from obra/superpowers |
-| `/verify-before-done` | Mandatory pre-completion verification gate — captures test/type/lint/health output in the session before any "done" claim. Adapted from obra/superpowers |
-| `/writing-skills` | Meta-skill for authoring new jjstack skills: file layout, frontmatter schema, trigger language, HARD-GATE usage, install-manifest integration, attribution conventions. Adapted from obra/superpowers |
-| `/receiving-code-review` | Companion to /review — systematic processing of review feedback (triage by severity, agree/disagree with explicit reasoning, close the loop). Prevents silent capitulation and silent stonewalling. Adapted from obra/superpowers |
+|-------|--------------|
+| `/product-manager-review` | Adversarial PM audit across 8 dimensions. Outputs kill list. |
+| `/kano-model` | Loads Extended Kano Model (Steam Train, 10 levels). |
+| `/dev-philosophy` | Loads the full 11-layer Vision-to-Code framework. |
+| `/office-hours` | Design doc workflow with quality loop and DNA injection. |
 
-### /security-review
+### QA & Testing
+| Skill | What it does |
+|-------|--------------|
+| `/qa-review` | QA health audit across 8 dimensions. Outputs test kill list. |
+| `/unit-test-builder` | Generate TDD test suites with adversarial thinking. |
+| `/jj-qa` | QA operational rules: cleanup, Docker-first, Kano-driven depth. |
+| `/qa` / `/qa-only` | Wrapper skills with jj-qa rules and quality loop. |
 
-The flagship security skill, built from analyzing 24 community security skills and cherry-picking the best from each:
+### Security & Code Review
+| Skill | What it does |
+|-------|--------------|
+| `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
+| `/cso` | Adversarial security audit with quality loop to 10/10. |
+| `/review` | Pre-landing review with deeper adversarial passes. |
+| `/two-stage-review` | Spec compliance first, then code quality. |
+| `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
-**Sources (loaded at runtime):**
-- **Anthropic** official security-review (by-reference, auto-updated) — confidence scoring, 17 exclusion rules, 12 precedent rules, sub-task false-positive verification
-- **Sentry** security-review (by-reference, auto-updated) — investigation-first methodology, 17 vulnerability reference files, 5 language guides, 5 infrastructure guides
-- **OWASP** Top 10:2025 + ASVS 5.0 + Agentic AI ASI01-10 (by-copy from agamm) — 20 language-specific security quirks
+### Engineering & Ops
+| Skill | What it does |
+|-------|--------------|
+| `/python-coder` | Python coding with embedded test mechanics (Hypothesis, mutmut). |
+| `/heal` | Infrastructure heal framework — your senior Ops Manager. |
+| `/mcp-server` | Scaffolds FastMCP servers with streamable HTTP. |
+| `/github-setup` | Repo init with semver auto-bump GitHub Actions. |
+| `/ship` / `/land-and-deploy` | Full ship-and-verify workflow. |
+| `/investigate` | Root cause analysis with verified contributing-factors tree. |
+| `/canary` | Post-deploy monitoring against production baselines. |
 
-**Modes:** `full` (default), `diff`, `diff:BRANCH`, `focus:auth`, `focus:secrets`, `focus:mcp`, `focus:supply-chain`
+### Meta & Workflow
+| Skill | What it does |
+|-------|--------------|
+| `/state-doc` | Live `STATE.md` that survives `/clear`, `/compact`, restarts. |
+| `/work-order` | Context/Deliverables/Verify/Done template for sub-agent delegation. |
+| `/lean` | Cost-lean execution — explicit budgets, no polishing loops. |
+| `/worktrees` | Git worktrees for parallel branches and isolated experiments. |
+| `/verify-before-done` | Mandatory pre-completion gate that captures real test/lint output. |
+| `/writing-skills` | Meta-skill for authoring new jjstack skills. |
+| `/jjstack-repair` | Repairs symlinks after gstack updates overwrite them. |
 
-**Assessment coverage (10 check categories):**
-1. MCP-specific CWE assessment (information disclosure, agentic AI risks)
-2. Secret detection (14+ format-specific regex patterns: AWS, GitHub, Stripe, Twilio, SendGrid, Slack, PEM keys, database connection strings)
-3. Git history secret scanning (searches ALL commits, not just deleted files)
-4. CWE checks (injection, path traversal, SSRF, deserialization, sensitive logging)
-5. Insecure defaults detection (fail-open patterns, fallback secrets, debug modes)
-6. Entry point analysis (HTTP, MCP, WebSocket, CLI, queues, webhooks)
-7. Supply chain risk (single maintainer, unmaintained, suspicious lifecycle scripts)
-8. Cryptographic algorithm review (correct vs incorrect algorithm selection table)
-9. Security headers check (6 headers for web apps)
-10. Claude config self-audit (settings.json, CLAUDE.md, .mcp.json, hooks)
+Plus wrapper enhancements for `/plan-ceo-review`, `/plan-eng-review`,
+`/plan-design-review`, `/plan-devex-review`, `/design-review`,
+`/design-consultation`, `/design-shotgun`, `/design-html`, `/document-release`,
+`/retro`, `/autoplan`, `/checkpoint`, `/codex`, `/freeze`, `/guard`, `/learn`,
+`/medical-translation-qa`, `/setup-deploy`, `/setup-browser-cookies`,
+`/gdocs-writer`, `/devex-review`, and more.
 
-**Output:** STRIDE threat summary, confidence-scored findings (>= 0.8 only), auto-fix for Critical/High.
+Run any skill in Claude Code. The descriptions trigger automatically on
+relevant phrases.
+
+---
+
+## The Reference Library
+
+jjstack ships 14 reference documents — the encoded knowledge each skill
+loads. Read them directly or let skills load them for you.
+
+| Reference | What's inside |
+|-----------|--------------|
+| `dev-philosophy.md` | The 11-layer Vision → Mission → SMAC → OKRs → KPIs → BDD → API-first → Primitives → TDD → DNA stack |
+| `coding-dna.md` | 32 Always rules, 23 Never rules, 18 Anti-AI Tells. Calibration anchors with real examples. |
+| `kano-model.md` | Extended Kano (Steam Train, 10 levels) for feature prioritization and kill discipline |
+| `product-management.md` | 4P:90 framework, OKR Quantity/Quality/Efficiency, JTBD, RICE, scope control toolbox, agentic PM |
+| `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
+| `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
+| `product-scaffold.md` | Standard capability layout (MCP Core / Auxiliary / Extended / Foundation / CLI / Web UI / Tech / Design) |
+| `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
+| `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
+| `spec-cleanup-playbook.md` | Five smell tests for capability-level spec cleanup before the QA loop |
+| `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
+| `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
+| `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
+| `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
+
+These references are the durable layer. Skills come and go; the philosophy
+stays.
+
+---
 
 ## Hooks
 
-### Auto-approve hook (`auto-approve-safe.sh`)
+jjstack ships four optional hooks that ride along with every Claude Code
+session.
 
-Smart permission gate using Claude Haiku for risk classification:
-- Read-only tools (Read, Glob, Grep, etc.) are always approved
-- Bash commands are sent to Haiku for LOW/MEDIUM/HIGH risk rating
-- LOW commands are auto-approved; MEDIUM/HIGH defer to the user
-- Fail-closed fallback when API is unavailable: only safe read-only commands are auto-approved; commands with shell metacharacters (`;`, `&&`, `|`, backticks) are always deferred
-- Auto-fixes API key file permissions to 600
+**`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
+pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
+classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
+Fail-closed when the API is unreachable.
 
-### Prompt-injection guard (`injection-guard.sh`)
+**`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
+markdown headed for disk and blocks high-confidence prompt-injection
+patterns before they land in a file that a future model read might execute.
+Categories blocked include override-instruction phrases, fake system-tag
+framing, Unicode tag steganography (U+E0000 range), role-reprogramming
+language, and imperative tool-invocation framing. High-precision by design;
+non-markdown writes are skipped entirely.
 
-PreToolUse hook on `Write`/`Edit` that scans content headed for `.md` / `.markdown` files and blocks high-confidence prompt-injection patterns before they land on disk:
-
-- "ignore previous/prior/above instructions" family
-- "disregard previous/prior/above" family
-- Fake system-reminder tags
-- Fake `system:` / `<system>` / `<|system|>` line-start framing
-- Unicode tag characters (U+E0000–U+E007F) used for steganographic injection
-- Role-reprogramming phrases ("you are now a different assistant")
-- Imperative tool-invocation instructions ("you must execute the following command")
-
-High-precision / medium-recall by design: false positives annoy humans but are rephraseable; false negatives let injections land where later model reads will execute them. Non-markdown files are skipped entirely. The block surfaces a reason string that explains which pattern matched and how to rephrase.
-
-### Error detector (`error-detector.sh`)
-
-PostToolUse hook on `Bash` that records failed commands to
-`~/.jjstack/command-failures.jsonl` for later recurrence analysis. Silent on
-success, logs only non-zero exits and explicit interrupts. Rotates at 500
-entries. Schema per entry: `{ts, cwd, command, exit_code, interrupted, stderr}`.
-
-Feeds the `/state-doc` Learnings section and the memory-promotion rule
-(`references/memory-promotion.md`): patterns that recur 3+ times are
-promotion candidates. Query with:
+**`error-detector.sh`** — A PostToolUse hook on `Bash` that records every
+non-zero exit to `~/.jjstack/command-failures.jsonl`. Patterns recurring
+3+ times become candidates for promotion to memory or a skill. Query with:
 
 ```bash
 jq -r '.command' ~/.jjstack/command-failures.jsonl | sort | uniq -c | sort -rn | head
 ```
 
-Privacy note: tool output can contain sensitive strings (paths, API error
-bodies). Intended for personal dev machines; do not enable in shared contexts
-without reviewing what lands in the log.
+**`mcp-reconnect.sh`** — A PostToolUseFailure hook that reconnects MCP
+servers automatically on disconnection. Up to 3 retries before escalating.
 
-### MCP auto-reconnect hook (`mcp-reconnect.sh`)
-
-Automatically reconnects MCP servers on disconnection:
-- Detects disconnection patterns in MCP tool failures
-- Retries up to 3 times before escalating to the user
-- Tracks retry count per server in `~/.jjstack/` (user-specific, not `/tmp/`)
+---
 
 ## Configuration
 
-### Global defaults
-
-`jjstack.config.yaml` in the jjstack repo root:
+Global defaults in `jjstack.config.yaml`:
 
 ```yaml
 review:
   min_score: 10           # quality target (gstack default: 8)
-  max_iterations: 3       # additional passes after gstack's own loop
+  max_iterations: 3       # additional passes after gstack's loop
   adversarial_passes: 2   # review depth (gstack default: 1)
 
 output:
@@ -184,57 +242,110 @@ output:
   repo_subdir: jjstack    # subdirectory name in repo
 
 dna:
-  voice: null             # path to voice DNA file
+  voice: null             # path to voice DNA file (optional)
   coding: ~/.claude/skills/jjstack/references/coding-dna.md
 ```
 
-### Per-project override
+Per-project override in `.jjstack.config.yaml` at your repo root. Keys
+merge on top of global defaults — set `min_score: 8` in a prototype to
+ease the gate, leave it at 10 in production code.
 
-Create `.jjstack.config.yaml` in your project root. Keys merge on top of global defaults.
-
-```yaml
-# Example: lower the quality bar for a prototype
-review:
-  min_score: 8
-```
-
-## Auto-updates
-
-jjstack checks for updates on first skill use (cached for 60 minutes). When a new version is available, you'll be asked to upgrade. Updates are a `git pull` — symlinks resolve to new content immediately.
-
-Security review dependencies (Anthropic, Sentry) are also auto-updated on each `./setup` run via `git pull --ff-only`.
+---
 
 ## How it works
 
-jjstack uses a **wrapper pattern**: each skill reads its own config, optionally loads DNA files, then delegates to the corresponding gstack skill by reading its SKILL.md. After gstack completes, jjstack runs post-enhancement steps (quality loop, output verification, README maintenance).
+Two architectural patterns:
 
-The `/security-review` skill uses a **layered pattern** instead: it loads three reference methodologies (Anthropic, Sentry, OWASP) at runtime, then runs its own 10-phase assessment pipeline with sub-agent verification.
+**Wrapper skills** (most of the catalog) — read jjstack config, optionally
+load DNA files, then delegate to the corresponding gstack skill via
+`cat`. After gstack completes, jjstack runs post-enhancement: quality loop
+to 10/10, output capture into `{repo}/jjstack/`, README maintenance.
 
-The install script replaces gstack's symlinks in `~/.claude/skills/` with jjstack symlinks. Same command names, enhanced behavior. Uninstall restores the originals.
+**Layered skills** (`/security-review`, `/product-manager-review`,
+`/qa-review`, `/unit-test-builder`) — pure jjstack skills that load
+multiple reference documents and run their own multi-phase pipelines with
+sub-agent verification.
+
+Install replaces gstack's symlinks in `~/.claude/skills/` with jjstack
+symlinks. Same command names. Enhanced behavior. Uninstall restores the
+originals.
+
+---
+
+## Auto-updates
+
+jjstack checks for updates on first skill use (cached 60 minutes). When a
+new version is available, you're asked to upgrade. Updates are a
+`git pull` — symlinks resolve to new content immediately. Security review
+references (Anthropic, Sentry) auto-update on each `./setup` run via
+`git pull --ff-only`.
+
+---
+
+## Battle-tested
+
+jjstack powers an active multi-product ecosystem:
+
+- **LeanSpecs** — hierarchical product spec framework with BDD generation
+- **Iris-QA** — hybrid QA framework (pytest-bdd + AI augmentation)
+- **Quartermaster** — engineering-manager orchestrator routing work between
+  Claude Code workers
+- **TubeMail** — transport layer for inter-session work routing
+- **Actuatrix** — independent KPI engine
+
+Every spec, every test, every commit in those repos passes through jjstack
+skills. The friction it removes is real. The discipline it enforces is real.
+
+---
 
 ## Related tools
 
-jjstack intentionally does not ship the full `obra/superpowers`
-methodology — several superpowers skills (`brainstorming`,
-`writing-plans`, `executing-plans`, `requesting-code-review`,
-`finishing-a-development-branch`) overlap with jjstack's own variants
+jjstack intentionally does not ship the full
+[`obra/superpowers`](https://github.com/obra/superpowers) methodology —
+several superpowers skills overlap with jjstack's own variants
 (`/office-hours`, `/plan-*-review`, `/ship`, `/review`, `/land-and-deploy`)
 and carry more differentiated jjstack conventions. jjstack has borrowed
-the patterns it finds most valuable (`/two-stage-review`, `/worktrees`,
+the patterns it found most valuable (`/two-stage-review`, `/worktrees`,
 `/verify-before-done`, `/writing-skills`, `/receiving-code-review`, the
 HARD-GATE convention) with attribution.
 
-If you want the full superpowers methodology in parallel with jjstack,
-install it from Anthropic's official marketplace:
+If you want the full superpowers methodology in parallel:
 
 ```bash
 /plugin install superpowers@claude-plugins-official
 ```
 
-Both distributions coexist — superpowers' skills live under its plugin
-namespace and jjstack's skills live under jjstack's. Pick either one
-per task; use both when the workflows compose.
+Both distributions coexist. Pick either per task; use both when the
+workflows compose.
+
+---
+
+## Acknowledgments
+
+- [gstack](https://github.com/garrytan/gstack) by Garry Tan — the foundation jjstack stands on
+- [obra/superpowers](https://github.com/obra/superpowers) — patterns borrowed and attributed
+- [Anthropic](https://github.com/anthropics) — official security-review methodology
+- [Sentry](https://github.com/getsentry) — investigation-first security methodology
+- [agamm/owasp-security](https://github.com/agamm/skill-owasp-security) — OWASP Top 10:2025 + Agentic AI ASI
+- Andrej Karpathy — for the prompt that started this: "I don't think I've typed like a line of code probably since December"
+
+---
+
+## Uninstall
+
+```bash
+cd ~/.claude/skills/jjstack && ./uninstall
+```
+
+Restores original gstack symlinks. Removes only jjstack-specific hook
+entries (preserves your other hooks). Your project output
+(`{repo}/jjstack/`) and config files are left intact.
+
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+Use it. Fork it. Make it your own. If you ship something cool with it,
+let me know.
