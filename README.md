@@ -71,7 +71,7 @@ Load it any time with `/dev-philosophy`. Apply a layer with `/kano-model`,
 ## Quick Start
 
 ```bash
-git clone https://github.com/JesperJurcenoks/jjstack.git ~/.claude/skills/jjstack
+git clone https://github.com/Disciplin-run-org/jjstack.git ~/.claude/skills/jjstack
 cd ~/.claude/skills/jjstack && ./setup
 ```
 

@@ -18,7 +18,7 @@ CACHE_FILE="$STATE_DIR/last-update-check"
 MARKER_FILE="$STATE_DIR/just-upgraded-from"
 SNOOZE_FILE="$STATE_DIR/update-snoozed"
 VERSION_FILE="$JJSTACK_DIR/VERSION"
-REMOTE_URL="${JJSTACK_REMOTE_URL:-https://raw.githubusercontent.com/JesperJurcenoks/jjstack/main/VERSION}"
+REMOTE_URL="${JJSTACK_REMOTE_URL:-https://raw.githubusercontent.com/Disciplin-run-org/jjstack/main/VERSION}"
 
 # ─── Force flag (busts cache for upgrade flow) ──────────────
 if [ "${1:-}" = "--force" ]; then

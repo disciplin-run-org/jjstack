@@ -17,7 +17,7 @@ README — this is a path.
 ## Prep (5 minutes)
 
 ```bash
-git clone https://github.com/JesperJurcenoks/jjstack.git ~/.claude/skills/jjstack
+git clone https://github.com/Disciplin-run-org/jjstack.git ~/.claude/skills/jjstack
 cd ~/.claude/skills/jjstack && ./setup
 ```
 
