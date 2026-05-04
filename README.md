@@ -227,6 +227,32 @@ servers automatically on disconnection. Up to 3 retries before escalating.
 
 ---
 
+## Statusline + Recap
+
+jjstack ships a Claude Code statusline that packs model, project, branch,
+context %, usage %, auto-mode, and contextual hints into one band — plus
+an inline recap of the last completed task above the prompt.
+
+<p align="center">
+  <img src="docs/images/jjstack-statusline.png" alt="jjstack statusline showing model Opus 4.7 with xhigh effort, project jjstack, branch main with dirty/untracked counts, context 43%, usage 0%, auto mode on, and a recap of the previous completed task with commit hash" width="100%">
+</p>
+
+What you see above:
+
+- **Statusline (lower band)** — model + reasoning effort, project, git
+  branch with dirty/untracked counts, context usage %, API usage %,
+  auto-mode indicator with keyboard cycle hint, save-tokens hint when
+  context fills up.
+- **Recap (upper band)** — one-line summary of the last completed task
+  with the commit hash. Auto-recap is on by default; disable via
+  `/config`.
+- **Worker label** (top right, `jjstack-tm` here) — tubemail-channel
+  name when running as a worker session.
+
+Configure defaults at install time or by editing `~/.jjstack/config`.
+
+---
+
 ## Configuration
 
 Global defaults in `jjstack.config.yaml`:
