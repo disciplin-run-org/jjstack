@@ -1,14 +1,18 @@
 ---
 name: product-manager-review
-version: 0.1.0
+version: 0.2.0
 description: |
-  Adversarial product management review. Loads the full PM philosophy (4P:90,
-  Extended Kano, OKR Quantity/Quality/Efficiency, JTBD, scope control) and puts
-  every product through the wringer across 8 dimensions. Kills features, tightens
-  scope, enforces OKR alignment. The backbone of PM knowledge for the ecosystem.
-  Trigger on: "product review", "PM review", "product manager", "is this feature
-  worth building", "scope review", "kill list", "prioritize features", "OKR review",
-  "Kano audit", "product health".
+  Adversarial product management review AND spec-cleanup execution. Loads the
+  full PM philosophy (4P:90, Extended Kano, OKR Quantity/Quality/Efficiency,
+  JTBD, scope control) AND the spec-cleanup playbook (smell tests, layer
+  framing, layer-migration recipe, CRUD pattern, one-test-per-behavior,
+  Gherkin generation rules). Reviews a product across 8 dimensions and, when
+  the user asks for action, executes the cleanup against LeanSpecs MCP.
+  Trigger on review intent ("product review", "PM review", "product manager",
+  "is this feature worth building", "scope review", "kill list", "prioritize
+  features", "OKR review", "Kano audit", "product health") OR cleanup intent
+  ("clean up spec", "spec cleanup", "fix iris-qa specs", "fix <product>
+  specs", "migrate to layer template", "layer migration cleanup").
 allowed-tools:
   - Read
   - Grep
@@ -21,10 +25,18 @@ allowed-tools:
   - Write
 ---
 
-# Product Manager Review
+# Product Manager Review + Spec Cleanup
 
-Adversarial product management review. Your job is to make the product leaner,
-not bigger. Every feature justifies its existence or gets killed.
+This skill has TWO modes selected by the user's intent:
+
+- **Review mode** (default) — score the product across 8 dimensions, produce a kill list, recommend cleanup. Does NOT mutate the spec.
+- **Cleanup mode** — execute the spec-cleanup playbook against LeanSpecs MCP: layer migration, cap reordering, OKR linkage, Rule: gherkin authoring, name-the-MCP-tool feature renames. Mutates the spec.
+
+Pick the mode at the start: if the user said "review" / "audit" / "PM" / "kill list" / "Kano", run Review mode (Phases 1-7 below). If they said "clean up" / "fix specs" / "migrate to layer template" / "spec cleanup", jump to **Cleanup mode** at the bottom of this file. If ambiguous, run a quick Review first and ask the user before mutating.
+
+## Adversarial PM voice (both modes)
+
+Your job is to make the product leaner, not bigger. Every feature justifies its existence or gets killed.
 
 ## Phase 1: Load PM Knowledge
 
@@ -48,13 +60,42 @@ cat ~/.claude/skills/jjstack/references/kano-model.md
 cat ~/.claude/skills/jjstack/references/dev-philosophy.md
 ```
 
-**4. Product Scaffold:**
+**4. Spec Cleanup Playbook (smell tests, layer framing, layer-migration recipe, Gherkin rules):**
 
 ```bash
-cat ~/.claude/skills/jjstack/references/product-scaffold.md
+cat ~/PycharmProjects/jjstack/references/spec-cleanup-playbook.md
 ```
 
-**5. jjstack config:**
+This is the single source of truth for **how to clean up a LeanSpecs product spec**. The 7-layer template, cap themes, smell tests, CRUD pattern, one-test-per-behavior discipline, AI-Gherkin red flags, and layer-migration recipe all live here. **Load it before any spec-cleanup work, not just review.**
+
+**5. Memory cross-reference (jump to live worker-specific learnings):**
+
+The leanspecs memory directory accumulates per-session feedback that refines the playbook. Before authoring or moving any spec item, scan:
+
+```bash
+ls ~/.claude/projects/-home-jesper-PycharmProjects-disciplin-run-leanspecs/memory/ | grep -E "spec|gherkin|layer|kano|cleanup|shared|cap"
+```
+
+Key memories to read for spec-cleanup work (all live there):
+
+- `feedback_one_mcp_tool_one_feature.md` — 1 feature = 1 MCP tool, named after the tool
+- `feedback_nl_before_gherkin.md` — sharpen NL fields before generating Gherkin
+- `feedback_spec_tidy_renumber_blast_radius.md` — `spec_tidy` renumbers; tests bind to names
+- `feedback_iris_qa_gherkin_authoring_playbook.md` + `feedback_iris_qa_gherkin_no_compound_steps.md` — Gherkin authoring rules iris-qa actually accepts
+- `feedback_ai_gherkin_tends_ui_flavored.md` — AI Gherkin defaults to UI-flavored; flip for API behaviors
+- `feedback_align_gherkin_to_tool_schema.md` — Gherkin steps must match the tool schema iris-qa loads via ToolSearch
+- `feedback_spec_first_then_code.md` — three-step workflow: update spec → write code → apply MCP call
+- `feedback_shared_specs_originate_in_architrix.md` + `project_shared_layer_materializer.md` — shared layer is materialized from Architrix; never hand-author
+- `project_layer_migration_initiative.md` + `project_layer_migration_progress_2026_04_23.md` — historical context for the April-2026 layer migration
+- `project_spec_import_2026_05_02.md` + `project_spec_groom_factoring.md` + `project_spec_sharpen_live.md` — the AI tools available for cleanup
+
+**6. Product Scaffold (canonical layer template):**
+
+```bash
+cat ~/.claude/projects/-home-jesper-PycharmProjects-disciplin-run/memory/Standard_spec_template.md
+```
+
+**7. jjstack config:**
 
 ```bash
 cat ~/.claude/skills/jjstack/jjstack.config.yaml
@@ -313,3 +354,85 @@ After scoring and iteration, provide:
 
 End with the kill list prominently displayed. The kill list is the most
 valuable output of a PM review.
+
+---
+
+# Cleanup Mode — execute the spec-cleanup playbook
+
+Trigger when the user says "clean up spec", "spec cleanup", "fix iris-qa specs", "fix <product> specs", "migrate to layer template", "layer migration cleanup", or any equivalent phrasing that signals MUTATION intent rather than review.
+
+## Phase A: Load the playbook
+
+The single source of truth is the spec-cleanup playbook reference loaded in Phase 1 above. **Re-read it now if you skipped to Cleanup mode** — it has the 7-layer template, cap themes, smell tests, layer-migration recipe, CRUD pattern, one-test-per-behavior discipline, Gherkin generation red flags, and "When in doubt" questions.
+
+```bash
+cat ~/PycharmProjects/jjstack/references/spec-cleanup-playbook.md
+```
+
+Also scan the product's auto-memory directory for accumulated worker-specific feedback. For leanspecs:
+
+```bash
+ls ~/.claude/projects/-home-jesper-PycharmProjects-disciplin-run-leanspecs/memory/ \
+  | grep -E "spec|gherkin|layer|kano|cleanup|shared|cap|gate"
+```
+
+Read every match before authoring. The user has paid for each of these rules in past sessions.
+
+## Phase B: Survey the product
+
+```python
+mcp__leanspecs__spec_info(repo=<product>, branch=main)
+mcp__leanspecs__spec_read(repo=<product>, branch=main, depth="list")  # whole tree, layers + cap shells
+```
+
+Identify:
+- Schema version (v0 = pre-layer, v1 = post-layer). Migration may be needed.
+- Layer distribution (caps per layer, what's in `unmapped`).
+- Behavior count, status mix (draft vs approved vs review).
+- Existing OKR/KR linkage rate.
+- Visible vs hidden layers — empty layers should be hidden, populated ones visible.
+
+If everything is in `unmapped`, this is a fresh layer-migration cleanup. Use the layer-migration recipe in the playbook.
+
+If structure is mostly correct but smells are present (junk-drawer features, multi-scenario behaviors, descriptive feature titles instead of tool names), use the smell tests + cleanup sequence (Phases 1-10) in the playbook.
+
+## Phase C: Plan before mutating
+
+Write the plan to `~/.claude/plans/<product>-spec-cleanup-<date>.md`. Cover:
+- Target cap structure (slot → name → Kano → which tools/features land here)
+- Specific MCP calls in execution order (spec_create / spec_move / spec_merge / spec_reorder / spec_tidy / spec_update / spec_import)
+- Capability-level Rule: gherkin lines per cap (one Rule per architectural invariant)
+- OKR linkage strategy by cap (default rule from playbook)
+- Deferred items (what stays in `unmapped`, what becomes a follow-up WO)
+
+**Get user approval before mutating.** Show the plan, ask for go-ahead. Cross-worker dispatches require per-dispatch approval (see `feedback_ask_before_dispatching.md`).
+
+## Phase D: Execute
+
+Follow the layer-migration recipe in the playbook. Maintain a movement log file (`~/.claude/plans/<product>-spec-cleanup-movement-log.md`) capturing every move/rename — the product's code worker will need it to update test scaffolding.
+
+## Phase E: Verify
+
+```python
+spec_read(item_id="<layer>", depth="list")  # one call per layer
+spec_info(repo=<product>, branch=main)
+spec_validate(repo=<product>, branch=main)
+cleanliness_review(repo=<product>, branch=main)
+```
+
+## Phase F: Handoff
+
+Draft a self-contained handoff message for the product's code worker (their context may have been cleared). Cover: new cap structure, tool-name renames the spec now expects, stale test scaffolding warning, suggested next steps, references to plan + movement log.
+
+**Ask the user before sending.** Per the per-dispatch approval rule.
+
+---
+
+## Common mistakes to avoid (paid for in past sessions)
+
+1. **Reinventing the playbook.** This skill loads `spec-cleanup-playbook.md` for a reason — read it before authoring. If a session-specific lesson is missing from the playbook, add it there (not as a one-off memory or duplicate skill).
+2. **Duplicating memories.** Before writing a new memory file, `ls` the memory directory and grep for the topic. `feedback_one_mcp_tool_one_feature.md` already exists — don't write a new memory for the same rule.
+3. **Cross-worker dispatch without approval.** Every tubemail message and every QM work order to another worker needs explicit per-dispatch approval. See `feedback_ask_before_dispatching.md`.
+4. **Cap themes drifting from slot numbers.** The user expects `mcp:1 = Core`, `mcp:2 = Aux Lifecycle`, `mcp:3 = Help & Assist`, `mcp:4 = Foundation` by slot ID. If `spec_tidy` lands caps in the wrong slots, use `spec_reorder` + product-level `spec_tidy` to align — don't just rename labels.
+5. **Spec-id tokens in narrative fields.** The `spec_id_in_text_field` gate rejects any `mcp:N`-style token in name / description / rationale / detail. Use the referenced item's current name.
+6. **Stale rationale after restructure.** When you merge/move/split features, summaries get updated but rationales get stranded. Re-read rationales after any structural change.

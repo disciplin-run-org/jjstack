@@ -58,24 +58,38 @@ If it describes setup and verification as separate assertions, check for two tes
 
 ---
 
-## Capability-level framing
+## Layer-level framing (current — post April-2026 layer migration)
 
-Every product spec in the ecosystem follows the Kano-aligned template. Place every feature accordingly:
+Every product spec in the ecosystem follows the 7-layer template. Place every capability accordingly. Source of truth: `CONTROLLED_LAYER_VOCABULARY` in `leanspecs/src/leanspecs/models/product.py`. Canonical live example: LeanSpecs's own `product.json`.
 
-| Cap | Kano | Role | Litmus test |
-|-----|------|------|-------------|
-| 1 | 1-2 | Core | Product is broken without it |
-| 2 | 3 | Aux | Product works but is tedious/manual without it |
-| 3 | 4+ | Extended (PM assist) | Product works but user has to figure things out |
-| 4 | 6 | CLI | Intermediate interface (may be deliberate "no") |
-| 5 | 5 | Web UI | Delighter interface |
-| 6 | 5 | Shared components | Platform library opt-ins |
-| 7 | 8 | Debug | Operator diagnostics, not daily user use |
-| 10 | — | Technical Specifications | Infrastructure, security, testing ADRs |
-| 11 | — | Design Specs | UI/UX rules |
-| 12 | — | QA Specs | Test setup/teardown/contract |
+| Layer | Role | Litmus test |
+|-------|------|-------------|
+| `mcp` | The product's MCP backend — every tool the agent calls | If you'd point an MCP client at it, it belongs here. Four Kano-first cap themes inside (see below). |
+| `cli` | Product-specific CLI commands | Often empty — Claude Code is the CLI for most ecosystem modules; framework lives in `shared:18 Universal CLI`. |
+| `ui` | Web SPA — mirrors `mcp` cap-by-cap + a `ui:N+1 Web UI specifics` cap | If a human clicks it in a browser, it belongs here. |
+| `installation` | How the product is installed / deployed: installers, container images, operator runbooks | Empty by default. Sits AFTER cli/ui and BEFORE infrastructure. Layer-ordering invariant. |
+| `infrastructure` | Tech Specs (ADRs) + QA Specs (test setup/teardown) + Design Specs (layout, colors, typography) | Non-testable items that inform but are not behaviors. |
+| `shared` | Cross-product caps materialized from Architrix via `source` pointer | NO hand-authored caps in consumer products — Architrix owns the bodies. Edit upstream; the materializer ripples. |
+| `unmapped` | PM triage parking lot | Anything that doesn't fit cleanly until you decide where it belongs. Empty by default. |
 
-**Deliberate "no" capabilities:** if you've decided NOT to build something, that's a Kano 6 ("Less is More") decision and deserves a capability with no features, just a description explaining the decision. Example: Cap 4 "CLI — no CLI at this time, all interaction via MCP API or Web UI."
+### `mcp` cap themes (Kano-first inside the layer)
+
+| Cap | Kano | Theme | Examples |
+|-----|------|-------|----------|
+| `mcp:1` | 2 | **Core MCP** — primary CRUD verbs | spec_create, spec_read, spec_update, spec_delete; test_run, test_status |
+| `mcp:2` | 2 | **Aux MCP** — Lifecycle / supporting | github_save, spec_validate, spec_tidy, okr_close, settings_update |
+| `mcp:3` | 4 | **Help & Assist** — AI-assisted (Performance Kano) | spec_sharpen, spec_dedup, spec_groom, gherkin_generate, doc_import |
+| `mcp:4` | 2 | **Foundation MCP** — Server Discovery | tools_list, get_instructions, refresh_tools, server_info, spec_schema |
+
+### Layer-ordering invariant
+
+`mcp → cli → ui → installation → infrastructure → shared → unmapped` in `LAYER_VOCABULARY`. Enforced in three places that must stay in sync:
+- `CONTROLLED_LAYER_VOCABULARY` in `leanspecs/src/leanspecs/models/product.py`
+- `_ensure_v1_layers` in `leanspecs/src/leanspecs/mcp_docs_engine.py`
+- `LAYER_VOCABULARY` in `leanspecs/frontend/src/App.tsx`
+Plus mirrors in `debug/migrate_to_layers/schema_v1.py` and `code_import_engine.py:SPEC_SHAPE_RULES`. Tests pin the invariant.
+
+**Deliberate "no" capabilities:** if you've decided NOT to build something, that's a Kano 6 ("Less is More") decision and deserves a capability with no features, just a description explaining the decision. Example: `cli:1 CLI — no CLI at this time, all interaction via MCP and Web UI.`
 
 **Capability backup analogy (from kano-model.md):**
 - Cap 1 = make a single backup right now
@@ -99,6 +113,32 @@ State-management behaviors frequently mix scopes. Untangle them:
 **Fix:** split into two tools (settings_read/update for global, workspace_settings_read/update for per-workspace). Or at minimum, separate the spec behaviors so each one is unambiguous about scope.
 
 ---
+
+## Layer migration recipe (when a spec is all-in-unmapped)
+
+When a product was migrated wholesale to `unmapped` by an earlier pass (e.g. PR 3 of the April-2026 layer migration), follow this recipe to reshape it to the canonical layer template:
+
+1. **Safety snapshot.** Try `github_save`; if it fails because no `github_repo` is configured, fall back to disk copy:
+   ```bash
+   docker exec disciplin-run-leanspecs-1 cp \
+     /data/<org>/<product>/leanspecs/product.json \
+     /data/<org>/<product>/leanspecs/product.json.before-cleanup-YYYYMMDD
+   ```
+2. **Create cap shells** in `mcp / ui / infrastructure` with `spec_create(parent_id="root", layer=<layer>, name=…, kano_level=…)`. Gate-bug warning: `name`/`description`/`rationale`/`detail` fields reject any `mcp:N`-style spec-id tokens (`spec_id_in_text_field` gate). Use names, not ids.
+3. **Wire shared layer** to Architrix via `spec_update(item_id="shared", source={"repo":"architrix","branch":"main","path":"leanspecs/product.json","selector":"shared"})`. If the `shared` layer doesn't exist yet (default `_ensure_v1_layers` doesn't emit it), create a transient placeholder cap with `spec_create(layer="shared", name="_placeholder", …)` to force layer creation, then set the source pointer. The materializer auto-pulls Architrix's shared caps on the next `spec_read`.
+4. **Bulk move + merge.** `spec_move(item_id="unmapped:N", new_layer="mcp")` moves a cap into the target layer (auto-renumbers within destination). Then `spec_merge(source_id=<source>, target_id=<shell>)` folds content into the right Kano-themed shell. spec_merge soft-deletes the source.
+5. **Flip layer visibility.** Newly-populated layers may have `hidden=true` from earlier migration; flip via `spec_update(item_id="<layer>", visible=true)`.
+6. **Cap-theme-to-slot alignment.** If `spec_tidy` lands caps in the wrong slots (creation order didn't match Kano theme order), use `spec_reorder(item_id="<old-id>", position=<target>)` for each cap, then `spec_tidy(repo, branch)` at product root to compact IDs based on lifecycle_order.
+7. **Rule: gherkin at each cap.** `spec_update(<cap_id>, gherkin="Rule: …")` covering hard architectural rules from the product's `CLAUDE.md`.
+8. **OKR linkage by cap rule.** Default rule (override per-behavior when obviously wrong): mcp:1 (Core) → KR2 quality; mcp:2 (Aux) → KR1 quantity; mcp:3 (Help & Assist) → KR3 efficiency; mcp:4 (Foundation) → KR1 quantity; ui:*, infrastructure:*, shared:*, cli:* → blank.
+9. **spec_import augment pass.** `spec_import(repo, branch, run_groom="structural", drift_report=True)` auto-detects `jjstack/` docs + source code. Augment-only — new items carry `owner="Spec_import <iso8601>"`. Long-running (~26 min on a 45-file codebase); blocks the server for read/write during heavy phases. Poll via `docs_import_status(job_id)`.
+10. **Verify.** `spec_read(item_id="<layer>", depth="list")` per layer; `spec_info`; `spec_validate`; `cleanliness_review`.
+
+**Gotchas (paid for in past sessions, do not repeat):**
+- `spec_update` on a layer with many caps returns response >100KB and gets saved to a file — the mutation still applies on disk; verify via `docker exec disciplin-run-leanspecs-1 python -c "..."`.
+- `spec_import` blocks the server during long phases — `spec_update` and `spec_read` time out at 1s. Wait or `ScheduleWakeup`.
+- `spec_tidy` parks soft-deleted source caps in the 100-series after merges — that's expected.
+- Empty cap shells get compacted away by `spec_tidy`. Pre-create them when needed AND fill quickly, or fill the content first, then create shells.
 
 ## CRUD pattern for CRUD-like features
 
