@@ -162,6 +162,38 @@ Every behavior must be testable by exactly one test scenario. Indicators that a 
 **When splitting:** one behavior per outcome. For outcome-driven operations like scoring, each outcome is its own test:
 - Scoring: achieved (all met), partial (some met), missed (none met), error (dependency unreachable) = 4 behaviors
 
+### Split, don't throw
+
+When you find a behavior with multiple `Scenario:` blocks in its gherkin, the
+correct fix is to **split it into N sibling behaviors** — one scenario per
+behavior. Never "trim" by keeping one scenario and discarding the others.
+
+Every scenario captures a distinct testable contract that the PM previously
+approved. The one-scenario-per-behavior rule exists to make every contract
+individually testable, not to compress contracts out of existence.
+
+Splitting recipe:
+1. Pick which scenario stays in the original behavior — usually the one that
+   best matches the existing summary.
+2. For each remaining scenario, `spec_create` a new sibling behavior under
+   the same parent feature. Author its own `summary`, `rationale`, `detail`,
+   and single-scenario `gherkin`.
+3. `spec_create` does not accept `okr_kr` directly — follow up with
+   `spec_update` to set it to match the original behavior.
+4. `spec_tidy` the parent feature to compact ids.
+
+Refuse to delete a scenario whose Then-clause is not already covered by
+another active behavior's gherkin or a feature-level `Rule:`. If you are
+tempted to "fold the illustration into a Rule", you are compressing a
+contract — write the behavior instead.
+
+Paid for during the iris-qa C2 cleanup on 2026-05-27: a multi-scenario
+push_mode behavior was trimmed from 3 scenarios to 1, on the grounds that
+the review-mode and direct-mode scenarios were "redundant illustrations of
+the configurable Rule." They were not redundant — each scenario was the
+contract for one mode. The trimmed scenarios were restored as two new
+sibling behaviors. Don't repeat the mistake.
+
 ---
 
 ## Feature-level Gherkin is stale by default
