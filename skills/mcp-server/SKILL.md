@@ -10,6 +10,36 @@ description: >
 
 # MCP Server in Docker — Blueprint
 
+## Step 0: Pick the server's category (mandatory)
+
+Before touching code, classify the server. The ecosystem standard at `ai-agents/jjstack/20260428-mcp-server-categories.md` defines exactly three categories — pick one before writing any tool. The shared library refuses to boot a server that violates its declared category.
+
+| Category | When to pick | Factory |
+|---|---|---|
+| `multi_repo` | Server holds per-repo state; each call operates on one named repo | `shared.mcp.app_factory.create_multi_repo_app(...)` |
+| `repo_agnostic` | No repo concept; transport, auth, or external-system integration | `shared.mcp.app_factory.create_repo_agnostic_app(...)` |
+| `pan_repo` | Global state across all repos; `repo` only as a query filter | `shared.mcp.app_factory.create_pan_repo_app(...)` |
+
+Decision tree:
+
+```
+Q1: Does my server hold state about specific user products / projects?
+    │
+    ├── No → Q2: Does it need to know which repo something belongs to?
+    │              │
+    │              ├── No  → repo_agnostic
+    │              └── Yes → continue to Q3
+    │
+    └── Yes → Q3: Per-repo state (one product.json per repo) or one global?
+                  │
+                  ├── per-repo → multi_repo
+                  └── global   → pan_repo (also pick pan_repo_writes)
+```
+
+Once classified, use the matching factory. Read the standard for the full contract — it specifies exactly which parameters are required, forbidden, or filter-only on each category's tool schemas. Boot-time validation enforces this.
+
+---
+
 ## Transport: Streamable HTTP via FastMCP
 
 All MCP servers run as Docker containers with `network_mode: host` and communicate
@@ -91,6 +121,57 @@ trap this skill prevents and is unacceptable as a deliverable. This
 applies to EVERY MCP server scaffolded with this skill regardless of
 perceived size or one-off-ness. See
 references/hard-gate-convention.md for the semantics of this tag.
+</HARD-GATE>
+
+### Frontend dist is bind-mounted in dev mode (servers with a SPA)
+
+Every MCP server that ships a React/Vue/etc. SPA must also overlay
+the built `frontend/dist` directory over the container's static path
+in the same `docker-compose.override.yml`. Without this, Python
+hot-reloads via uvicorn but the SPA is frozen at whatever the image
+was last built with — "edit → npm run build → docker compose build
+→ docker compose up" (~30-60s) instead of "edit → npm run build"
+(~1s, container picks up the new bundle on next request because the
+mount is live).
+
+Required artifacts for every MCP server with a SPA:
+
+1. The override mounts the host-side `<service>/frontend/dist`
+   directory over the container's static directory read-only:
+   `- ./<service>/frontend/dist:/app/static:ro`
+   (path-target may differ — match whatever the Dockerfile's `COPY
+   --from=frontend ... /app/static` line wrote to; e.g. tubemail
+   uses `/app/frontend/dist`).
+2. The host-side `<service>/frontend/dist` must exist before the
+   container starts. If it does not, Docker silently creates an empty
+   directory and the SPA returns 404 or a blank index. Build once
+   on first checkout: `npm install --prefix <service>/frontend &&
+   npm --prefix <service>/frontend run build`.
+3. `<service>/frontend/dist/` belongs in `.gitignore` — it is a
+   per-developer build artifact, not source.
+
+The dev loop for SPA changes becomes:
+
+```
+# Edit .tsx/.ts/.css
+npm --prefix <service>/frontend run build   # ~1s
+# Refresh the browser — new bundle is live, no container restart.
+```
+
+The image is still production-self-contained: the Dockerfile's
+`COPY --from=frontend /build/dist /app/static` continues to bake the
+SPA into the image so `docker compose -f docker-compose.yml up`
+(prod, no override) ships a working SPA without any host build.
+
+<HARD-GATE>
+Do NOT mark an MCP server scaffold complete if the server has a SPA
+and the `frontend/dist` overlay is missing from
+`docker-compose.override.yml`. A SPA-bearing server without the dist
+overlay is a guaranteed dev-loop trap: every frontend tweak forces a
+30-60s container rebuild, the AI assistant ends up looking at stale
+SPA code while it iterates, and the resulting "why doesn't my change
+show up" wastes hours per week. This applies to EVERY SPA-bearing MCP
+server regardless of perceived rebuild frequency.
 </HARD-GATE>
 
 ---
@@ -778,6 +859,12 @@ services:
   <service>-mcp:
     volumes:
       - ./<service>-mcp/src/<package>:/app/src/<package>
+      # SPA dist overlay — required for every server that ships a web UI.
+      # Without this, frontend edits force a full image rebuild and the AI
+      # ends up iterating on stale SPA code. Build dist once on checkout:
+      #   npm install --prefix <service>-mcp/frontend
+      #   npm --prefix <service>-mcp/frontend run build
+      - ./<service>-mcp/frontend/dist:/app/static:ro
     entrypoint: >-
       sh -c "uvicorn <package>.server:create_app --factory
       --host 0.0.0.0 --port $${MCP_PORT}
@@ -813,6 +900,17 @@ services:
 
 - **The Dockerfile does not change** between dev and prod. Dev mode is purely a
   compose-level concern — the image is always production-ready.
+
+- **SPA dist overlay path** must match the directory the Dockerfile's
+  `COPY --from=frontend ... <target>` line wrote to. Most ecosystem services
+  use `/app/static`; tubemail uses `/app/frontend/dist`. Read the runtime
+  stage of the Dockerfile to confirm the target before adding the overlay.
+
+- **The dist directory must exist on the host** before `docker compose up`,
+  or Docker silently creates an empty one and the SPA returns 404 / blank
+  index. First-checkout bootstrap is `npm install --prefix
+  <service>/frontend && npm --prefix <service>/frontend run build`. Add
+  `<service>/frontend/dist/` to `.gitignore` — it is a build artifact.
 
 ---
 
@@ -1007,6 +1105,8 @@ styled as subtle gray text (e.g., `v1.0.0`). Fetch from `/health` on page load.
 19. `.github/workflows/version-bump.yml` installed for automatic semver bumps
 20. Web UI (if present) displays version in sidebar below Settings
 21. `docker-compose.override.yml` with volume mount + `--reload` for dev mode
+21a. **`frontend/dist:/app/static:ro` overlay in `docker-compose.override.yml` (mandatory for any server with a SPA — see HARD-GATE in Mandatory Requirements)**
+21b. `frontend/dist/` listed in `.gitignore` and built once on first checkout (`npm install --prefix <service>/frontend && npm --prefix <service>/frontend run build`)
 22. SPA cache headers: index.html no-cache, /assets/* immutable (if server has web UI)
 
 ### Tool design
