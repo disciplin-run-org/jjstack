@@ -1,0 +1,168 @@
+#!/bin/bash
+# jjstack-skill-miss-report — summarize skill-miss telemetry collected by
+# hooks/skill-miss-detect.sh + hooks/skill-fired-clear.sh.
+#
+# Three time windows: last 24h, last 72h, lifetime. For each:
+#   - total miss count by type (trigger_miss / user_correction / wrong_skill)
+#   - top 5 most-missed skills (expected_skills + user_pointed_to + referenced)
+#   - confusion matrix entries (previous_skill → referenced_skill)
+#
+# Decision flags (the council's exit criteria):
+#   - HOT  — ≥10 misses concentrated in ≤5 skills in the last 24h
+#   - WARM — ≥20 misses concentrated in ≤5 skills in the last 72h
+#   - COLD — fewer than HOT/WARM thresholds — description sharpening is working
+#
+# Output: human-readable to stdout. Pipe to a file for archiving.
+# Usage: jjstack-skill-miss-report [--json]
+
+set -uo pipefail
+
+LOG_FILE="${JJSTACK_STATE_DIR:-$HOME/.jjstack}/skill-misses.jsonl"
+JSON_MODE=0
+[ "${1:-}" = "--json" ] && JSON_MODE=1
+
+if [ ! -f "$LOG_FILE" ]; then
+    echo "No miss log yet at $LOG_FILE — hooks may not be wired or no misses observed."
+    exit 0
+fi
+
+NOW=$(date -u +%s)
+CUTOFF_24H=$((NOW - 86400))
+CUTOFF_72H=$((NOW - 259200))
+
+# Filter helpers — pull lines whose ts is newer than a cutoff.
+filter_window() {
+    local cutoff="$1"
+    jq -c --argjson c "$cutoff" 'select((.ts | fromdateiso8601) >= $c)' "$LOG_FILE" 2>/dev/null
+}
+
+count_misses() {
+    local lines="$1"
+    echo "$lines" | wc -l | tr -d ' '
+}
+
+# Aggregate by skill from any of the relevant fields. Each event may surface
+# the missed skill under one of three keys.
+top_skills() {
+    local lines="$1"
+    local n="${2:-5}"
+    echo "$lines" | jq -r '
+        (.expected_skills // []) as $exp
+        | (.user_pointed_to // null) as $up
+        | (.referenced_skill // null) as $ref
+        | ($exp + (if $up then [$up] else [] end) + (if $ref then [$ref] else [] end))
+        | .[]
+        | select(. != null and . != "")
+    ' 2>/dev/null | sort | uniq -c | sort -rn | head -n "$n"
+}
+
+confusion_matrix() {
+    local lines="$1"
+    echo "$lines" | jq -r '
+        select(.type == "wrong_skill" and .previous_skill != null and .previous_skill != "")
+        | "\(.previous_skill) -> \(.referenced_skill // "(unknown)")"
+    ' 2>/dev/null | sort | uniq -c | sort -rn | head -10
+}
+
+decision_flag() {
+    local lines="$1"
+    local hot_threshold="$2"  # min total misses to even consider
+    local count
+    count=$(count_misses "$lines")
+    [ "$count" -lt "$hot_threshold" ] && return 1
+    # Are the misses concentrated in ≤5 skills?
+    local top5_total
+    top5_total=$(top_skills "$lines" 5 | awk '{s+=$1} END {print s+0}')
+    local concentration=0
+    if [ "$count" -gt 0 ]; then
+        concentration=$((top5_total * 100 / count))
+    fi
+    # >=70% of misses in top 5 = concentrated.
+    [ "$concentration" -ge 70 ]
+}
+
+# ─── 24h window ───
+LINES_24=$(filter_window "$CUTOFF_24H" 2>/dev/null || echo "")
+COUNT_24=$(count_misses "$LINES_24")
+
+# ─── 72h window ───
+LINES_72=$(filter_window "$CUTOFF_72H" 2>/dev/null || echo "")
+COUNT_72=$(count_misses "$LINES_72")
+
+# ─── Lifetime ───
+COUNT_ALL=$(wc -l < "$LOG_FILE" | tr -d ' ')
+
+# ─── Output ───
+
+if [ "$JSON_MODE" = "1" ]; then
+    jq -n \
+        --argjson c24 "$COUNT_24" \
+        --argjson c72 "$COUNT_72" \
+        --argjson call "$COUNT_ALL" \
+        '{
+          window_24h: {total: $c24},
+          window_72h: {total: $c72},
+          lifetime:   {total: $call}
+        }'
+    exit 0
+fi
+
+echo "═══════════════════════════════════════════════════════════════"
+echo "  jjstack skill-miss trend report"
+echo "  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+
+print_window() {
+    local label="$1"
+    local lines="$2"
+    local total="$3"
+    echo "── $label ──"
+    if [ "$total" = "0" ]; then
+        echo "  (no events in this window)"
+        echo ""
+        return
+    fi
+    echo "  Total miss events: $total"
+    echo ""
+    echo "  By type:"
+    echo "$lines" | jq -r '.type' 2>/dev/null | sort | uniq -c | sort -rn | sed 's/^/    /'
+    echo ""
+    echo "  Top missed skills:"
+    top_skills "$lines" 5 | sed 's/^/    /' || echo "    (none)"
+    echo ""
+    cm=$(confusion_matrix "$lines")
+    if [ -n "$cm" ]; then
+        echo "  Confusion matrix (fired → should have fired):"
+        echo "$cm" | sed 's/^/    /'
+        echo ""
+    fi
+}
+
+print_window "Last 24 hours" "$LINES_24" "$COUNT_24"
+print_window "Last 72 hours" "$LINES_72" "$COUNT_72"
+echo "── Lifetime ──"
+echo "  Total miss events: $COUNT_ALL"
+echo ""
+
+echo "═══════════════════════════════════════════════════════════════"
+echo "  Decision"
+echo "═══════════════════════════════════════════════════════════════"
+
+if decision_flag "$LINES_24" 10; then
+    top5_24=$(top_skills "$LINES_24" 5 | awk '{print $2}' | tr '\n' ' ')
+    echo "  🔥 HOT — ≥10 misses concentrated in ≤5 skills in 24h"
+    echo "     Cluster: $top5_24"
+    echo "     Recommendation: build jj-skill-router for THIS cluster"
+elif decision_flag "$LINES_72" 20; then
+    top5_72=$(top_skills "$LINES_72" 5 | awk '{print $2}' | tr '\n' ' ')
+    echo "  🟡 WARM — ≥20 misses concentrated in ≤5 skills in 72h"
+    echo "     Cluster: $top5_72"
+    echo "     Recommendation: build jj-skill-router for this cluster within the week"
+else
+    echo "  🟢 COLD — miss rate below router threshold"
+    echo "     Recommendation: description sharpening is working / sufficient. Continue monitoring."
+fi
+echo ""
+echo "  Re-run any time: jjstack-skill-miss-report"
+echo "  Council thresholds: HOT = ≥10 in 24h, WARM = ≥20 in 72h, both with ≥70% concentration in top-5 skills."

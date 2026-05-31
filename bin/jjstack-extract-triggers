@@ -1,0 +1,97 @@
+#!/bin/bash
+# jjstack-extract-triggers — build ~/.jjstack/skill-triggers.json from every
+# SKILL.md installed under ~/.claude/skills/.
+#
+# Trigger sources extracted per skill:
+#   1. The skill name itself (slug form and human form: "qa-review", "qa review")
+#   2. Every quoted phrase in the description ("..." or '...'). These are
+#      treated as authored trigger phrases. False positives (quoted examples
+#      that aren't really triggers) are tolerated — they just widen the
+#      detection net.
+#
+# Output schema:
+#   {
+#     "extracted_at": "2026-05-30T...",
+#     "skill_count": 87,
+#     "skills": {
+#       "qa-review": {
+#         "path": "/home/jesper/.claude/skills/qa-review/SKILL.md",
+#         "triggers": ["qa-review", "qa review", "QA review", "test health", ...]
+#       },
+#       ...
+#     }
+#   }
+#
+# Run from jjstack/setup. Re-run any time a skill is added.
+
+set -euo pipefail
+
+SKILLS_DIR="${JJSTACK_SKILLS_DIR:-$HOME/.claude/skills}"
+OUT_DIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}"
+OUT_FILE="$OUT_DIR/skill-triggers.json"
+
+mkdir -p "$OUT_DIR"
+
+# Find every SKILL.md, resolving symlinks. Each entry-point skill at
+# ~/.claude/skills/<name>/SKILL.md (top level). Plugin skills nested deeper
+# under .claude-plugin/ are also picked up.
+declare -a SKILL_FILES
+while IFS= read -r path; do
+    SKILL_FILES+=("$path")
+done < <(find -L "$SKILLS_DIR" -maxdepth 4 -name "SKILL.md" -type f 2>/dev/null)
+
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Build a JSON document by accumulating per-skill entries.
+TMPFILE=$(mktemp)
+echo '{"extracted_at":"'"$TS"'","skill_count":0,"skills":{}}' > "$TMPFILE"
+
+count=0
+for skill_md in "${SKILL_FILES[@]}"; do
+    # Extract YAML frontmatter (between first two --- markers).
+    frontmatter=$(awk '/^---$/{p++; next} p==1' "$skill_md" 2>/dev/null || echo "")
+    [ -z "$frontmatter" ] && continue
+
+    # Skill name (the slug). Skip if missing.
+    name=$(echo "$frontmatter" | grep -E '^name:[[:space:]]*' | head -1 | sed 's/^name:[[:space:]]*//; s/^["'\'']\(.*\)["'\'']$/\1/')
+    [ -z "$name" ] && continue
+
+    # Description block. Handles both inline (description: foo) and block
+    # (description: |\n  foo) styles by extracting everything between the
+    # description line and the next top-level key.
+    desc=$(awk '
+        /^description:/ {capture=1; sub(/^description:[[:space:]]*\|?>?[[:space:]]*/, ""); print; next}
+        capture && /^[a-zA-Z_-]+:/ {capture=0}
+        capture {print}
+    ' "$skill_md" 2>/dev/null || echo "")
+
+    # Triggers: skill name (slug + space-form) + every quoted phrase in
+    # the description.
+    triggers=()
+    triggers+=("$name")
+    space_form="${name//-/ }"
+    if [ "$space_form" != "$name" ]; then
+        triggers+=("$space_form")
+    fi
+
+    # Pull quoted phrases. Both double-quoted and single-quoted.
+    while IFS= read -r phrase; do
+        [ -n "$phrase" ] && triggers+=("$phrase")
+    done < <(echo "$desc" | grep -oE '"[^"]+"|'\''[^'\'']+'\''' 2>/dev/null | sed 's/^["'\'']\(.*\)["'\'']$/\1/' | grep -vE '^[[:space:]]*$' | sort -u)
+
+    # Build the triggers JSON array.
+    trigger_json=$(printf '%s\n' "${triggers[@]}" | jq -R . | jq -s 'unique')
+
+    # Insert into the output JSON.
+    jq --arg n "$name" --arg p "$skill_md" --argjson t "$trigger_json" \
+       '.skills[$n] = {path: $p, triggers: $t}' \
+       "$TMPFILE" > "$TMPFILE.next" && mv "$TMPFILE.next" "$TMPFILE"
+
+    count=$((count + 1))
+done
+
+# Update skill_count.
+jq --argjson c "$count" '.skill_count = $c' "$TMPFILE" > "$OUT_FILE"
+rm -f "$TMPFILE"
+
+echo "Wrote $OUT_FILE — $count skills indexed."

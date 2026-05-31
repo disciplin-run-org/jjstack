@@ -443,9 +443,25 @@ fi
 # ─── Step 9: Make scripts executable ─────────────────────────
 chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/bin/statusline.sh" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/bin/jjstack-extract-triggers" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/bin/jjstack-skill-miss-report" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/hooks/skill-miss-detect.sh" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/hooks/skill-fired-clear.sh" 2>/dev/null || true
 chmod +x "$HOOK_SRC" 2>/dev/null || true
 
-# ─── Step 9: Summary ─────────────────────────────────────────
+# ─── Step 10: Build skill-trigger index ──────────────────────
+# Powers the skill-miss-detect hook. Re-run on every setup so newly
+# installed skills are picked up.
+TRIGGER_STATUS="skipped"
+if [ -x "$JJSTACK_DIR/bin/jjstack-extract-triggers" ]; then
+    if "$JJSTACK_DIR/bin/jjstack-extract-triggers" >/dev/null 2>&1; then
+        TRIGGER_STATUS="indexed"
+    else
+        TRIGGER_STATUS="failed"
+    fi
+fi
+
+# ─── Step 11: Summary ────────────────────────────────────────
 echo ""
 echo -e "${CYAN}jjstack v$(cat "$JJSTACK_DIR/VERSION" | tr -d '[:space:]') installed${NC}"
 echo ""
@@ -483,6 +499,7 @@ fi
 echo ""
 echo "  Hook: auto-approve-safe.sh ($HOOK_STATUS)"
 echo "  Statusline: $STATUSLINE_STATUS"
+echo "  Skill-trigger index: $TRIGGER_STATUS"
 echo "  Context7: $CONTEXT7_STATUS"
 echo ""
 echo "  Usage: /plan-ceo-review (now uses jjstack wrapper)"
