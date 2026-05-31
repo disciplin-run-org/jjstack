@@ -132,11 +132,84 @@ automatically.
 - **MEMORY.md** — when a memory is retired after promotion, remove its
   index line. Keep MEMORY.md honest.
 
+## Shape × Frequency Ladder (graduation, not just promotion)
+
+The rule above promotes a memory to a *destination* (CLAUDE.md, reference,
+hook). The graduation ladder extends this by also choosing the destination
+based on the memory's *shape*. Three shapes, three destinations:
+
+| Shape | When it fits | Destination |
+|-------|--------------|-------------|
+| **Fact** | Static piece of context the agent occasionally needs ("Architrix runs on port 8090") | Stays a **memory** - retrieved on demand via gbrain or grep |
+| **Procedure** | A sequence of steps the agent runs repeatedly ("how to restore product.json after QA pollution") | Graduates to a **skill** - invokable, parameterizable, indexed |
+| **Rule** | Always-needed constraint the agent must obey ("never commit secrets") | Graduates to **CLAUDE.md** - always-loaded, never missed |
+
+**Frequency decides whether it climbs the ladder.** A fact that is rarely
+needed stays a memory. A procedure that fires three times a week is a skill
+candidate. A rule that must never be skipped goes to CLAUDE.md regardless of
+frequency.
+
+**The signal for "frequency":**
+- For memories that already exist: `recurrence_count` in the frontmatter
+- For skills already invoked: the `~/.jjstack/skill-misses.jsonl` and the
+  `last-fired` log from `hooks/skill-fired-clear.sh`
+- For commands: `~/.jjstack/command-failures.jsonl`
+
+**Graduation moves to make:**
+- Memory → Skill: take a procedural memory, write a `SKILL.md` with the
+  steps, add to `~/.claude/skills/<name>/`, delete the source memory or
+  flag with `promoted: true`. Index in the skill-trigger extractor on
+  next setup.
+- Memory → CLAUDE.md: take a rule memory, rewrite as a single-sentence
+  constraint, append to the relevant CLAUDE.md, retire the memory entry.
+- Skill → CLAUDE.md: skills that fire on every task become a rule. Rare;
+  most skills should stay invokable, not always-loaded.
+
+**Direction is one-way.** A skill that becomes irrelevant gets retired
+(file deleted, symlink removed). A CLAUDE.md rule that becomes contextual
+gets demoted back to a memory. Demotion is rare; promotion is the typical
+move.
+
+---
+
+## Gbrain-Assisted Clustering
+
+The `pattern_key` discipline above relies on the author remembering to
+grep for an existing key before saving a new memory. In practice that
+discipline drifts. Gbrain similarity search fixes this without requiring
+better human discipline.
+
+**The replacement signal:** before save-and-clear writes a new memory,
+it queries gbrain for the nearest existing memory by vector similarity.
+If similarity is above threshold (typical: `>= 0.85`), the new memory is
+merged into the existing one - `recurrence_count` increments,
+`last_seen` updates, the new context appends to the body if it adds
+information.
+
+**Why this beats `pattern_key`:** the human doesn't have to guess what
+slug another memory might have used months ago. Two memories about the
+same topic written in different words still cluster by their embeddings.
+
+**The fallback when gbrain is unavailable:** the original `pattern_key`
+grep still works. Both can coexist - manually-set `pattern_key` is a
+hard match; gbrain similarity is a soft match. The save path tries
+`pattern_key` first (precise), then gbrain (recall), then creates new.
+
+**Promotion candidates surface from gbrain too.** A `/groom memory` run
+can ask gbrain: "show me clusters of >= 3 memories within similarity
+0.9 of each other across >= 2 sessions." Each cluster is a candidate
+for consolidation under one `pattern_key`, and a candidate for
+promotion if the recurrence threshold is met.
+
+---
+
 ## Attribution
 
 Pattern adapted from `pskoett/self-improving-agent`'s
 recurrence-promotion rule: `Recurrence-Count >= 3` across `2+` tasks
 triggers promotion. jjstack-specific additions include the
 `pattern_key` convention, the `command-failures.jsonl` signal source,
-and the four-target promotion map (CLAUDE.md / reference doc / flagged
-memory / hook).
+the four-target promotion map (CLAUDE.md / reference doc / flagged
+memory / hook), the shape × frequency graduation ladder, and gbrain-
+assisted clustering for recurrence detection without manual
+`pattern_key` discipline.
