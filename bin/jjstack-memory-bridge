@@ -22,6 +22,14 @@
 #                                                       on each entry so gbrain query finds them
 #                                                       without waiting for gstack-memory-ingest.
 #                                                       Requires the `gbrain` CLI on PATH.
+#   jjstack-memory-bridge --ecosystem <name>          # add the ecosystem:<name> tag to every page
+#                                                       bridged in this run. Use only when the
+#                                                       owner of the project is explicitly
+#                                                       promoting its memories ecosystem-wide
+#                                                       (rare). Default is no auto-promotion;
+#                                                       ecosystem: tag comes from per-memory
+#                                                       frontmatter or from this flag — never
+#                                                       from the slug name.
 #
 # Idempotent: rewrites the target jsonl file each run; --ingest upserts
 # each entry into gbrain (overwriting any previous version of the same
@@ -35,6 +43,7 @@ ALL=0
 SELF_TEST=0
 DRY_RUN=0
 INGEST=0
+FORCE_ECOSYSTEM=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --slug) SLUG="$2"; shift 2 ;;
@@ -42,7 +51,8 @@ while [ $# -gt 0 ]; do
         --self-test) SELF_TEST=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --ingest) INGEST=1; shift ;;
-        --help|-h) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --ecosystem) FORCE_ECOSYSTEM="$2"; shift 2 ;;
+        --help|-h) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
@@ -85,11 +95,20 @@ field() {
 }
 
 is_ecosystem_scope() {
+    # Apply `ecosystem:<name>` tag ONLY on explicit owner promotion:
+    #   - frontmatter scope: ecosystem
+    #   - frontmatter promoted: true
+    #   - frontmatter ecosystem: <name>   (lists the ecosystem the memory belongs to)
+    # The slug-contains heuristic was wrong (disciplin-run-tm bug report 2026-05-31):
+    # it auto-tagged every project-local memory in any slug containing
+    # "disciplin-run", defeating the selective-promotion design in plan A2 /
+    # decision #6. Project-local memories should stay project-scoped until
+    # /groom's ecosystem-promotion step (or this bridge's --ecosystem flag)
+    # explicitly promotes them.
     local fm="$1"
-    local slug="$2"
     if echo "$fm" | grep -qE '^[[:space:]]*scope:[[:space:]]*ecosystem' 2>/dev/null; then return 0; fi
     if echo "$fm" | grep -qE '^promoted:[[:space:]]*true' 2>/dev/null; then return 0; fi
-    if echo "$slug" | grep -q "disciplin-run"; then return 0; fi
+    if echo "$fm" | grep -qE '^ecosystem:[[:space:]]*' 2>/dev/null; then return 0; fi
     return 1
 }
 
@@ -136,8 +155,16 @@ bridge_project() {
 
         local tags_array
         tags_array=$(jq -n --arg s "$slug" --arg t "${memory_type:-feedback}" '["project:" + $s, "memory-type:" + $t]')
-        if is_ecosystem_scope "$fm" "$slug"; then
-            tags_array=$(echo "$tags_array" | jq '. + ["ecosystem:disciplin-run"]')
+        # Per-memory ecosystem promotion (frontmatter scope/promoted/ecosystem fields):
+        if is_ecosystem_scope "$fm"; then
+            local fm_ecosystem
+            fm_ecosystem=$(echo "$fm" | grep -E '^ecosystem:' | head -1 | sed -E 's/^ecosystem:[[:space:]]*//; s/^["'\'']|["'\'']$//g')
+            local eco_name="${fm_ecosystem:-disciplin-run}"
+            tags_array=$(echo "$tags_array" | jq --arg e "ecosystem:$eco_name" '. + [$e]')
+        fi
+        # Bridge-time forced ecosystem promotion (rare; explicit owner override):
+        if [ -n "$FORCE_ECOSYSTEM" ]; then
+            tags_array=$(echo "$tags_array" | jq --arg e "ecosystem:$FORCE_ECOSYSTEM" '. + [$e] | unique')
         fi
 
         jq -nc \
