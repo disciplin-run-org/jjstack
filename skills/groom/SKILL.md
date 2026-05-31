@@ -57,6 +57,37 @@ differs.
   can propose graduations across the memory to skill to CLAUDE.md
   boundary.
 
+### Default scope = current worker's own project
+
+`--slug` defaults to the current cwd's project slug. The "Over-reach"
+rule in `~/.claude/CLAUDE.md` says each worker grooms only its own
+memories - so the safe path is the default. Derive the slug from cwd:
+
+```bash
+pwd | sed 's|^/|-|; s|/|-|g'
+# /home/jesper/PycharmProjects/jjstack → -home-jesper-PycharmProjects-jjstack
+```
+
+When the user invokes `/groom memory` with NO `--slug` flag, the skill
+uses this derived slug. No surprise cross-project grooming.
+
+### Cross-slug invocations require explicit confirmation
+
+If `--slug <X>` names a project whose memory dir is NOT the cwd's, the
+skill MUST:
+
+1. Print a warning naming both slugs ("you are in PROJECT A but
+   grooming PROJECT B's memories").
+2. Cite the over-reach rule from CLAUDE.md.
+3. Use AskUserQuestion to require explicit "yes, groom B from A"
+   confirmation.
+4. Only proceed on explicit approval.
+
+The mechanism allows it (sometimes there is a legitimate reason - e.g.
+an orchestrator running `/groom` on a worker's memory). The policy
+lives in CLAUDE.md. This step makes the boundary visible at
+invocation, so over-reach is never accidental.
+
 ## Mandatory pre-steps
 
 1. **Load the promotion philosophy** so graduation decisions match the
