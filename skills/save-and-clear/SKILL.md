@@ -119,7 +119,70 @@ ask:
 Aim for 3-8 memory entries from a typical end-of-session sweep. More than 10
 usually means you're saving noise.
 
-### 3. Write each memory file
+### 2.5. Dedup check before writing (gbrain-assisted)
+
+For each candidate memory, check whether a near-duplicate already exists
+**before** creating a new file. This is the structural fix for memory
+sprawl - the 477-file problem is what happens when every save creates a
+fresh file even when an existing memory covers the same ground.
+
+Two detection layers, tried in order. The first match wins; only fall
+through if the prior layer returns nothing.
+
+**Layer A - pattern_key grep (precise, no dependencies).**
+If the candidate has an obvious `pattern_key` slug (e.g.
+`docker-first-always`, `no-silent-catches`), grep the project memory
+dir for any file with that key in its frontmatter:
+
+```bash
+grep -l "pattern_key:.*<slug>" ~/.claude/projects/<slug>/memory/*.md
+```
+
+If a file matches, that is the canonical memory. Proceed to **merge**
+(below), not create.
+
+**Layer B - gbrain similarity (recall, when available).**
+If Layer A returned nothing and `gbrain` is on PATH, query gbrain for
+the project's pages and check the top hit's similarity:
+
+```bash
+gbrain query "<candidate title or first 100 chars of body>" --json 2>/dev/null \
+  | jq -r '.results[] | select(.tags[] == "project:<slug>") | "\(.score) \(.slug)"' \
+  | head -1
+```
+
+If the top hit scores **>= 0.85**, treat it as a near-duplicate.
+Resolve the gbrain slug back to a memory file path (the bridge writes
+slugs as `<short-slug>/<title-kebab>`; the source file is recorded in
+the corresponding `~/.gstack/projects/<slug>/learnings.jsonl` entry
+under `source_file`). Proceed to **merge**.
+
+If Layer B is unavailable (no `gbrain` binary, no PGLite at
+`~/.gbrain/brain.pglite`, or the project has never been bridged), skip
+this layer cleanly and proceed to create. **Do not block save-and-clear
+on gbrain availability** - the skill must keep working in environments
+without gbrain installed.
+
+**Merge action.** When either layer returns a match:
+
+1. Read the existing memory file.
+2. Increment `recurrence_count` in the frontmatter (default 1 if absent,
+   so first merge produces `recurrence_count: 2`).
+3. Update `last_seen` to today's date (or add the field if absent).
+4. If the new context adds information the existing body does not have,
+   append it under a `## <Today's date> update` heading. If the new
+   context is just another instance of the same lesson, do not append -
+   the increment in `recurrence_count` is enough signal.
+5. Report the merge in the Step 5 summary as `🔁 Merged into existing`
+   instead of `✅ Saved`.
+
+**Promotion candidate flag.** After incrementing, if
+`recurrence_count >= 3` AND the date span across observations covers
+2+ sessions, append a one-line note to the file under `## Promotion
+candidate` per `references/memory-promotion.md`. Do NOT auto-promote;
+the user runs `/groom all` to act on flagged candidates.
+
+### 3. Write each memory file (when dedup found no match)
 
 One file per memory, named semantically by topic (not chronologically). Use
 this frontmatter:
@@ -158,8 +221,11 @@ matters. Lines after about 200 entries get truncated.
 Print a summary in this exact shape:
 
 ```
-✅ Saved (N entries):
+✅ Saved (N new entries):
   - <file.md> — <one-line hook>
+
+🔁 Merged into existing (M entries):
+  - <file.md> — recurrence_count now <N>  [+ "promotion candidate" if N>=3 across 2+ sessions]
 
 ⏭️  Skipped intentionally:
   - <category> — <why> (e.g. "specific edits applied — captured in audit_log + git")
