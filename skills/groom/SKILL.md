@@ -97,23 +97,86 @@ invocation, so over-reach is never accidental.
    cat ~/.claude/skills/jjstack/references/memory-promotion.md
    ```
 
-2. **Confirm gbrain is installed and reachable:**
+2. **Check the PHI / no-gbrain opt-out marker for the target slug**:
+
+   ```bash
+   MEM_DIR="$HOME/.claude/projects/<slug>/memory"
+   [ -f "$MEM_DIR/.no-gbrain" ] && echo "OPTED_OUT (no-gbrain file)"
+   grep -lE '^sensitivity:[[:space:]]*phi' "$MEM_DIR"/*.md 2>/dev/null | head -1 && echo "OPTED_OUT (sensitivity: phi)"
+   ```
+
+   If EITHER marker is present, this slug is opted out of gbrain (per
+   `~/.claude/CLAUDE.md` "Sensitive data stays off the shared index").
+   Skip step 3 below; use the **No-gbrain native fallback** mode (see
+   that section). The bridge will refuse to ingest this slug; do not
+   try to bypass.
+
+3. **Confirm gbrain is installed and reachable** (only for non-opted-
+   out slugs):
 
    ```bash
    command -v gbrain && gbrain doctor --fast --json 2>&1 | jq -r '.engine, .pages'
    ```
 
-   If gbrain is absent: stop and report `BLOCKED - gbrain not installed.
-   Run /setup-gbrain --pglite first.`
+   If gbrain is absent AND the slug is NOT opted out: stop and report
+   `BLOCKED - gbrain not installed. Run /setup-gbrain --pglite first,
+   OR mark this slug opted-out if it carries sensitive data.`
 
-3. **Confirm the bridge has already populated gbrain** for the target
-   slug. If not, the skill calls `jjstack-memory-bridge --slug <slug> --ingest`
-   before clustering.
+   If gbrain is absent AND the slug IS opted out: that is the expected
+   path. Proceed via the no-gbrain native fallback.
 
-4. **Mandatory backup** before any apply step. The skill creates a
+4. **Confirm the bridge has already populated gbrain** for the target
+   slug (gbrain mode only). If not, the skill calls
+   `jjstack-memory-bridge --slug <slug> --ingest` before clustering.
+
+5. **Mandatory backup** before any apply step. The skill creates a
    timestamped snapshot of the target directory under
    `~/.jjstack/backups/<target>-<YYYYMMDD-HHMMSS>/`. Without a successful
-   backup, apply is blocked.
+   backup, apply is blocked. Applies to both gbrain and native modes.
+
+## No-gbrain native fallback
+
+When the target slug is opted out of gbrain (PHI marker present) OR
+gbrain is unavailable AND the user explicitly authorizes a native
+groom, the skill switches to a local-only path that never reads or
+writes the shared index.
+
+### Phase 1 (native) — Discover clusters
+
+Read all memory files in `~/.claude/projects/<slug>/memory/*.md`
+directly. Pick clustering method by corpus size:
+
+- **<= 20 entries**: model-judgment clustering. Read all entries into
+  context, propose near-duplicate pairs based on topical overlap. No
+  external embedding service involved.
+- **> 20 entries**: lexical similarity. Compute a TF-IDF or Jaccard
+  similarity matrix over `title + body` tokens. Threshold same as
+  gbrain mode (0.85 for memory, 0.90 for skills).
+
+Either path produces the same cluster artifact — a list of file
+groups that are candidates for merge.
+
+### Phases 2-5 (native) — Same flow
+
+Propose, human-review, apply, DNA-tighten exactly as in gbrain mode.
+The artifacts (`~/.jjstack/groom-proposals/<target>-<date>.md`,
+backups, applied merges) are identical.
+
+### Phase 6 (native) — Rebuild MEMORY.md only
+
+Re-derive `MEMORY.md` from the surviving memory files. **No bridge
+call. No gbrain put. No --sync.** The slug remains native-only by
+design.
+
+```bash
+# Example MEMORY.md rebuild — sketch only; the model fills in headings
+# and one-line hooks per the file's name/description frontmatter.
+ls ~/.claude/projects/<slug>/memory/*.md
+```
+
+The native path produces no gbrain side effects. If gbrain later
+becomes available AND the project removes its opt-out marker, the
+user can manually invoke the bridge — never automatic.
 
 ## The shared algorithm
 
@@ -294,6 +357,12 @@ fix the proposal logic before running on a larger corpus.
   <=5 skills, >=70% share), prefer description tightening (already
   shipped for the QA + /review clusters) over running `/groom
   skills`. The skill stays available for explicit invocation.
+- **PHI / sensitive data NEVER touches gbrain.** Opt-out markers
+  (`.no-gbrain` file or `sensitivity: phi` frontmatter) take the slug
+  through the native fallback path. The bridge refuses opted-out
+  slugs with exit 4 — defense in depth so a PHI bridge cannot happen
+  by accident. Per `~/.claude/CLAUDE.md` "Sensitive data stays off
+  the shared index."
 
 ## Data flow
 

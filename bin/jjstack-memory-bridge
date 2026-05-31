@@ -17,6 +17,16 @@
 #     NEVER applied based on slug substring. Per-project memories stay
 #     project-scoped until the owner explicitly promotes them.
 #
+# PHI / sensitive-data refusal:
+#   gbrain is a single shared local vector index across all projects.
+#   PHI and personal records MUST NEVER be bridged into it. The bridge
+#   refuses any slug whose memory dir carries an opt-out marker:
+#     * presence of `~/.claude/projects/<slug>/memory/.no-gbrain` file
+#     * any memory file with frontmatter `sensitivity: phi`
+#     * MEMORY.md with frontmatter `sensitivity: phi`
+#   Refusal is exit code 4 with a clear message. The /groom skill
+#   detects the same markers and uses a native no-gbrain path.
+#
 # Usage:
 #   jjstack-memory-bridge --slug <project-slug>      # one project
 #   jjstack-memory-bridge --all                       # every project under ~/.claude/projects/
@@ -112,6 +122,30 @@ field() {
     '
 }
 
+is_slug_opted_out() {
+    # Defense in depth against bridging PHI into the shared gbrain index.
+    # Returns 0 (true) if any opt-out marker is present in the slug's
+    # memory dir; the caller MUST refuse the bridge in that case.
+    #
+    # Markers (any one is sufficient):
+    #   1. ~/.claude/projects/<slug>/memory/.no-gbrain       — file present
+    #   2. MEMORY.md frontmatter has `sensitivity: phi`
+    #   3. any *.md frontmatter has `sensitivity: phi`
+    local slug="$1"
+    local mem_dir="$MEMORY_ROOT/$slug/memory"
+    [ ! -d "$mem_dir" ] && return 1
+
+    [ -f "$mem_dir/.no-gbrain" ] && return 0
+
+    if [ -f "$mem_dir/MEMORY.md" ]; then
+        grep -qE '^[[:space:]]*sensitivity:[[:space:]]*phi' "$mem_dir/MEMORY.md" 2>/dev/null && return 0
+    fi
+
+    grep -lE '^[[:space:]]*sensitivity:[[:space:]]*phi' "$mem_dir"/*.md 2>/dev/null | head -1 | grep -q . && return 0
+
+    return 1
+}
+
 is_ecosystem_scope() {
     # Apply `ecosystem:<name>` tag ONLY on explicit owner promotion:
     #   - frontmatter scope: ecosystem
@@ -140,6 +174,16 @@ bridge_project() {
     if [ ! -d "$memory_dir" ]; then
         echo "  [skip] $slug — no memory dir at $memory_dir" >&2
         return 0
+    fi
+
+    # PHI / sensitive-data refusal. Defense in depth: never bridge a slug
+    # carrying an opt-out marker into the shared gbrain index.
+    if is_slug_opted_out "$slug"; then
+        echo "  [REFUSED] $slug — opted out of gbrain (sensitivity marker present)" >&2
+        echo "  Markers checked: $memory_dir/.no-gbrain ; *.md frontmatter sensitivity: phi" >&2
+        echo "  This slug's memories stay native-only. Use /groom with the no-gbrain fallback." >&2
+        REFUSED_SLUGS+=("$slug")
+        return 4
     fi
 
     local md_files
@@ -296,6 +340,8 @@ $content"
 
 # ─── Main ────────────────────────────────────────────────────────────
 
+REFUSED_SLUGS=()
+
 echo "jjstack-memory-bridge starting…"
 echo "  memory_root:    $MEMORY_ROOT"
 echo "  learnings_root: $LEARNINGS_ROOT"
@@ -315,3 +361,11 @@ echo ""
 echo "Bridge complete. Next step (after gbrain install):"
 echo "  gbrain query \"<a known fact from your memories>\""
 echo "  Expect: returns the bridged memory as a learning page."
+
+if [ "${#REFUSED_SLUGS[@]}" -gt 0 ]; then
+    echo ""
+    echo "REFUSED slugs (PHI/sensitive opt-out): ${#REFUSED_SLUGS[@]}"
+    for s in "${REFUSED_SLUGS[@]}"; do echo "  - $s"; done
+    echo "Use /groom with the no-gbrain fallback for these projects."
+    exit 4
+fi
