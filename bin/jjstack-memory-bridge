@@ -1,0 +1,238 @@
+#!/bin/bash
+# jjstack-memory-bridge — bridge curated Claude memory files into gbrain
+# as learning pages.
+#
+# Reads ~/.claude/projects/<slug>/memory/*.md and writes each as a JSON
+# entry to ~/.gstack/projects/<slug>/learnings.jsonl, which gbrain's
+# native ingest picks up.
+#
+# Tagging:
+#   - project:<slug>            applied to every memory
+#   - ecosystem:disciplin-run   applied if the memory has either:
+#       * metadata.scope: ecosystem
+#       * promoted: true
+#       * the slug contains "disciplin-run"
+#
+# Usage:
+#   jjstack-memory-bridge --slug <project-slug>      # one project
+#   jjstack-memory-bridge --all                       # every project under ~/.claude/projects/
+#   jjstack-memory-bridge --self-test                 # bridge ONLY jjstack's own memory (~6 files)
+#   jjstack-memory-bridge --dry-run                   # print what would be written, do not write
+#   jjstack-memory-bridge --ingest                    # after writing jsonl, also call `gbrain put`
+#                                                       on each entry so gbrain query finds them
+#                                                       without waiting for gstack-memory-ingest.
+#                                                       Requires the `gbrain` CLI on PATH.
+#
+# Idempotent: rewrites the target jsonl file each run; --ingest upserts
+# each entry into gbrain (overwriting any previous version of the same
+# slug).
+
+set -uo pipefail
+
+# ─── Parse args ──────────────────────────────────────────────────────
+SLUG=""
+ALL=0
+SELF_TEST=0
+DRY_RUN=0
+INGEST=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --slug) SLUG="$2"; shift 2 ;;
+        --all) ALL=1; shift ;;
+        --self-test) SELF_TEST=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --ingest) INGEST=1; shift ;;
+        --help|-h) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$SELF_TEST" = "1" ]; then
+    SLUG="-home-jesper-PycharmProjects-jjstack"
+fi
+
+if [ -z "$SLUG" ] && [ "$ALL" = "0" ]; then
+    echo "Specify --slug <project-slug>, --all, or --self-test." >&2
+    exit 2
+fi
+
+MEMORY_ROOT="$HOME/.claude/projects"
+LEARNINGS_ROOT="$HOME/.gstack/projects"
+
+# ─── Helpers ─────────────────────────────────────────────────────────
+
+extract_frontmatter() {
+    local file="$1"
+    awk '/^---$/{p++; next} p==1' "$file" 2>/dev/null
+}
+
+extract_body() {
+    local file="$1"
+    awk '/^---$/{p++; next} p>=2' "$file" 2>/dev/null
+}
+
+field() {
+    local fm="$1"
+    local key="$2"
+    echo "$fm" | awk -v k="$key" '
+        $0 ~ "^" k ":" {
+            sub("^" k ":[[:space:]]*", "")
+            gsub(/^["'\'']|["'\'']$/, "")
+            print
+            exit
+        }
+    '
+}
+
+is_ecosystem_scope() {
+    local fm="$1"
+    local slug="$2"
+    if echo "$fm" | grep -qE '^[[:space:]]*scope:[[:space:]]*ecosystem' 2>/dev/null; then return 0; fi
+    if echo "$fm" | grep -qE '^promoted:[[:space:]]*true' 2>/dev/null; then return 0; fi
+    if echo "$slug" | grep -q "disciplin-run"; then return 0; fi
+    return 1
+}
+
+# ─── Build one project's learnings.jsonl ─────────────────────────────
+bridge_project() {
+    local slug="$1"
+    local memory_dir="$MEMORY_ROOT/$slug/memory"
+    local out_dir="$LEARNINGS_ROOT/$slug"
+    local out_file="$out_dir/learnings.jsonl"
+
+    if [ ! -d "$memory_dir" ]; then
+        echo "  [skip] $slug — no memory dir at $memory_dir" >&2
+        return 0
+    fi
+
+    local md_files
+    md_files=$(find "$memory_dir" -maxdepth 1 -name "*.md" -not -name "MEMORY.md" 2>/dev/null | sort)
+    if [ -z "$md_files" ]; then
+        echo "  [skip] $slug — no memory files" >&2
+        return 0
+    fi
+
+    local count=0
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    while IFS= read -r mfile; do
+        [ -z "$mfile" ] && continue
+
+        local fm body name desc memory_type ts ts_iso
+        fm=$(extract_frontmatter "$mfile")
+        body=$(extract_body "$mfile")
+
+        name=$(field "$fm" "name")
+        desc=$(field "$fm" "description")
+        memory_type=$(echo "$fm" | awk '/^[[:space:]]*type:/{sub("^[[:space:]]*type:[[:space:]]*",""); gsub(/^["'\'']|["'\'']$/,""); print; exit}')
+
+        if [ -z "$name" ]; then
+            name=$(basename "$mfile" .md)
+        fi
+
+        ts=$(stat -c '%Y' "$mfile" 2>/dev/null || stat -f '%m' "$mfile" 2>/dev/null || echo 0)
+        ts_iso=$(date -u -d "@$ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
+
+        local tags_array
+        tags_array=$(jq -n --arg s "$slug" --arg t "${memory_type:-feedback}" '["project:" + $s, "memory-type:" + $t]')
+        if is_ecosystem_scope "$fm" "$slug"; then
+            tags_array=$(echo "$tags_array" | jq '. + ["ecosystem:disciplin-run"]')
+        fi
+
+        jq -nc \
+            --arg name "$name" \
+            --arg desc "$desc" \
+            --arg body "$body" \
+            --arg ts "$ts_iso" \
+            --arg src "$mfile" \
+            --argjson tags "$tags_array" \
+            '{
+              type: "learning",
+              title: $name,
+              description: $desc,
+              content: $body,
+              tags: $tags,
+              captured_at: $ts,
+              source_file: $src
+            }' >> "$tmpfile"
+
+        count=$((count + 1))
+    done <<< "$md_files"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "  [dry-run] $slug — would write $count entries to $out_file"
+        if [ "$count" -gt 0 ]; then
+            echo "  Sample (first entry):"
+            head -1 "$tmpfile" | jq '{title, tags}'
+        fi
+        rm -f "$tmpfile"
+        return 0
+    fi
+
+    mkdir -p "$out_dir"
+    mv "$tmpfile" "$out_file"
+    echo "  [done] $slug — wrote $count entries to $out_file"
+
+    # ── Direct ingest path: call gbrain put for each entry. ───────────
+    if [ "$INGEST" = "1" ]; then
+        if ! command -v gbrain >/dev/null 2>&1; then
+            echo "  [warn] --ingest requested but gbrain CLI not on PATH; skipping ingest" >&2
+            return 0
+        fi
+        local ok=0 fail=0
+        local short_slug
+        short_slug=$(echo "$slug" | sed 's|^-home-jesper-PycharmProjects-||')
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            local title desc content gbslug tags_yaml page
+            title=$(echo "$line" | jq -r '.title')
+            desc=$(echo "$line" | jq -r '.description // empty')
+            content=$(echo "$line" | jq -r '.content')
+            gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
+            # Build YAML tag list from the JSONL tags array.
+            tags_yaml=$(echo "$line" | jq -r '.tags[] | "  - " + .')
+            # Build the page with YAML frontmatter (gbrain reads tags from it).
+            page="---
+type: learning
+tags:
+$tags_yaml
+---
+
+# $title
+
+$desc
+
+$content"
+            if echo "$page" | gbrain put "$gbslug" >/dev/null 2>&1; then
+                ok=$((ok + 1))
+            else
+                fail=$((fail + 1))
+                echo "  [ingest-fail] $gbslug" >&2
+            fi
+        done < "$out_file"
+        echo "  [ingest] $slug — ok=$ok fail=$fail"
+    fi
+}
+
+# ─── Main ────────────────────────────────────────────────────────────
+
+echo "jjstack-memory-bridge starting…"
+echo "  memory_root:    $MEMORY_ROOT"
+echo "  learnings_root: $LEARNINGS_ROOT"
+[ "$DRY_RUN" = "1" ] && echo "  mode:           DRY-RUN (no writes)"
+echo ""
+
+if [ "$ALL" = "1" ]; then
+    while IFS= read -r dir; do
+        slug=$(basename "$dir")
+        bridge_project "$slug"
+    done < <(find "$MEMORY_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+else
+    bridge_project "$SLUG"
+fi
+
+echo ""
+echo "Bridge complete. Next step (after gbrain install):"
+echo "  gbrain query \"<a known fact from your memories>\""
+echo "  Expect: returns the bridged memory as a learning page."
