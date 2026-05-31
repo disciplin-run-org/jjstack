@@ -39,6 +39,30 @@ mkdir -p "$STATE_DIR"
 
 PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]')
 
+# ─── Orchestration / status / channel messages are not skill territory ───
+# tubemail <channel> blocks, <task-notification> blocks, <system-reminder>
+# blocks, Quartermaster reminders, and worker-status one-liners ("X is idle",
+# "X seems done") are the bulk of inbound prompts in an orchestrated session
+# but never warrant a skill. Counting them as trigger misses inflated the
+# metric with false positives and hid real signal, so they do NOT set a
+# pending expectation (Step 4) nor count as wrong-skill corrections (Step 3).
+is_orchestration() {
+    case "$PROMPT" in
+        *"<channel"*|*"<task-notification"*|*"<system-reminder"*) return 0 ;;
+    esac
+    # Worker-status one-liners: "<name> is idle", "<name> seems done", etc.
+    if printf '%s' "$PROMPT_LOWER" | grep -qE '\b(is|seems|looks|appears)[[:space:]]+(idle|done|busy|finished|stuck|offline|online|ready|awaiting)\b'; then
+        return 0
+    fi
+    # Quartermaster orchestration reminders.
+    if printf '%s' "$PROMPT_LOWER" | grep -qE 'quartermaster (reminder|has flagged)|awaiting (your )?review|queue item #'; then
+        return 0
+    fi
+    return 1
+}
+ORCHESTRATION=0
+is_orchestration && ORCHESTRATION=1
+
 log_event() {
     # log_event <type> <json-fragment-of-extra-fields>
     local type="$1"
@@ -59,19 +83,31 @@ log_event() {
 # A pending expectation that survives until the NEXT user prompt means: we
 # matched triggers, no Skill fired between turns. Log it.
 if [ -f "$PENDING_FILE" ]; then
-    pending_ts=$(jq -r '.set_at_epoch // 0' "$PENDING_FILE" 2>/dev/null)
     expected=$(jq -c '.expected_skills // []' "$PENDING_FILE" 2>/dev/null)
     matched_trigger=$(jq -r '.matched_trigger // empty' "$PENDING_FILE" 2>/dev/null)
     pending_prompt=$(jq -r '.prompt // empty' "$PENDING_FILE" 2>/dev/null)
+    pending_cwd=$(jq -r '.cwd // empty' "$PENDING_FILE" 2>/dev/null)
 
     # Anything pending at this point is from a prior turn (this hook just
     # fired on a new prompt). Log it as a miss and clear.
+    #
+    # Aliasing fix: the row's `prompt` and `cwd` are those of the prompt that
+    # MATCHED the triggers (held in pending), not the current prompt that
+    # merely revealed the miss by arriving. The current prompt is recorded
+    # separately as `flushed_by`. Previously the row's `prompt` was the
+    # next-turn prompt while `matched_trigger`/`expected_skills` were computed
+    # against the pending prompt (logged as `original_prompt`) — so `prompt`
+    # and `matched_trigger` never aligned, which read as a capture bug.
     if [ -n "$expected" ] && [ "$expected" != "[]" ] && [ "$expected" != "null" ]; then
-        log_event "trigger_miss" "$(jq -nc \
+        jq -nc \
+            --arg ts "$TS" \
+            --arg cwd "$pending_cwd" \
+            --arg prompt "$pending_prompt" \
             --argjson exp "$expected" \
             --arg trig "$matched_trigger" \
-            --arg pp "$pending_prompt" \
-            '{expected_skills:$exp, matched_trigger:$trig, original_prompt:$pp}')"
+            --arg flushed "$(printf '%s' "$PROMPT" | head -c 300)" \
+            '{ts:$ts, type:"trigger_miss", cwd:$cwd, prompt:$prompt, expected_skills:$exp, matched_trigger:$trig, flushed_by:$flushed}' \
+            >> "$LOG_FILE" 2>/dev/null || true
     fi
     rm -f "$PENDING_FILE"
 fi
@@ -87,7 +123,8 @@ fi
 
 # ─── Step 3: Wrong-skill correction pattern ───
 # Look for negative-feedback patterns that follow a recently-fired skill.
-if [ -f "$LAST_FIRED_FILE" ]; then
+# Skip orchestration/channel prompts — they are not user corrections.
+if [ -f "$LAST_FIRED_FILE" ] && [ "$ORCHESTRATION" = "0" ]; then
     last_skill=$(jq -r '.skill // empty' "$LAST_FIRED_FILE" 2>/dev/null)
     last_fired_epoch=$(jq -r '.at_epoch // 0' "$LAST_FIRED_FILE" 2>/dev/null)
     age=$((TS_EPOCH - last_fired_epoch))
@@ -108,47 +145,56 @@ if [ -f "$LAST_FIRED_FILE" ]; then
 fi
 
 # ─── Step 4: Trigger-phrase matching (set new pending) ───
-[ ! -f "$TRIGGERS_FILE" ] && exit 0
-
-# Find skills whose trigger phrases appear in the lowercased prompt. Use
-# substring matching against the trigger (also lowercased). Skip very-short
-# triggers (≤3 chars) to reduce noise.
-matched_skills=$(jq -r --arg p "$PROMPT_LOWER" '
-    .skills | to_entries[]
-    | .key as $sk
-    | .value.triggers[]
-    | select(length > 3)
-    | ascii_downcase
-    | select(. as $t | $p | contains($t))
-    | $sk
-' "$TRIGGERS_FILE" 2>/dev/null | sort -u)
-
-if [ -n "$matched_skills" ]; then
-    # Pick the longest matched trigger as the representative (more specific).
-    matched_trigger=$(jq -r --arg p "$PROMPT_LOWER" '
-        .skills[].triggers[]
+# Skip for orchestration/channel prompts (Step 2 filter) and when no trigger
+# index exists. Matching is WORD-BOUNDARY, not substring: a trigger only
+# matches when delimited by non-alphanumeric edges, so "port" no longer hits
+# "important", "lean" no longer hits "leanspecs", "ship" no longer hits
+# "relationship". Combined with the extractor's junk/stopword filter, a prompt
+# now matches 0-1 relevant skills instead of 5-9.
+if [ "$ORCHESTRATION" = "0" ] && [ -f "$TRIGGERS_FILE" ]; then
+    matched_skills=$(jq -r --arg p "$PROMPT_LOWER" '
+        def esc: gsub("(?<c>[.*+?()\\[\\]{}^$|\\\\-])"; "\\\(.c)");
+        .skills | to_entries[]
+        | .key as $sk
+        | .value.triggers[]
         | select(length > 3)
         | ascii_downcase
-        | select(. as $t | $p | contains($t))
-    ' "$TRIGGERS_FILE" 2>/dev/null | sort -u | awk '{print length, $0}' | sort -rn | head -1 | cut -d' ' -f2-)
+        | . as $t
+        | select($p | test("(^|[^a-z0-9])" + ($t|esc) + "([^a-z0-9]|$)"))
+        | $sk
+    ' "$TRIGGERS_FILE" 2>/dev/null | sort -u)
 
-    expected_json=$(printf '%s\n' "$matched_skills" | jq -R . | jq -s .)
+    if [ -n "$matched_skills" ]; then
+        # Pick the longest matched trigger as the representative (more specific).
+        matched_trigger=$(jq -r --arg p "$PROMPT_LOWER" '
+            def esc: gsub("(?<c>[.*+?()\\[\\]{}^$|\\\\-])"; "\\\(.c)");
+            .skills[].triggers[]
+            | select(length > 3)
+            | ascii_downcase
+            | . as $t
+            | select($p | test("(^|[^a-z0-9])" + ($t|esc) + "([^a-z0-9]|$)"))
+        ' "$TRIGGERS_FILE" 2>/dev/null | sort -u | awk '{print length, $0}' | sort -rn | head -1 | cut -d' ' -f2-)
 
-    jq -nc \
-        --arg ts "$TS" \
-        --argjson set_at_epoch "$TS_EPOCH" \
-        --argjson exp "$expected_json" \
-        --arg trig "$matched_trigger" \
-        --arg cwd "$CWD" \
-        --arg prompt "$(printf '%s' "$PROMPT" | head -c 300)" \
-        '{set_at:$ts, set_at_epoch:$set_at_epoch, expected_skills:$exp, matched_trigger:$trig, cwd:$cwd, prompt:$prompt}' \
-        > "$PENDING_FILE" 2>/dev/null || true
+        expected_json=$(printf '%s\n' "$matched_skills" | jq -R . | jq -s .)
+
+        jq -nc \
+            --arg ts "$TS" \
+            --argjson set_at_epoch "$TS_EPOCH" \
+            --argjson exp "$expected_json" \
+            --arg trig "$matched_trigger" \
+            --arg cwd "$CWD" \
+            --arg prompt "$(printf '%s' "$PROMPT" | head -c 300)" \
+            '{set_at:$ts, set_at_epoch:$set_at_epoch, expected_skills:$exp, matched_trigger:$trig, cwd:$cwd, prompt:$prompt}' \
+            > "$PENDING_FILE" 2>/dev/null || true
+    fi
 fi
 
 # ─── Step 5: Log rotation ───
-LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
-if [ "$LINES" -gt 500 ]; then
-    tail -500 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE"
+if [ -f "$LOG_FILE" ]; then
+    LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$LINES" -gt 500 ]; then
+        tail -500 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE"
+    fi
 fi
 
 exit 0

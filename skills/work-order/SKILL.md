@@ -8,6 +8,9 @@ description: >
   write a task in a plan. Trigger on: "write a work order", "draft a task for", "send
   this to <worker>", "task for <agent>", "structured task", or before invoking Agent
   with a non-trivial prompt.
+  Do NOT trigger for: executing a task yourself (just do the work), a TDD/QA
+  delegation to iris-qa (use /qa-loop), or status updates about an existing
+  work order (no skill — that is orchestration, not authoring).
 allowed-tools:
   - Read
   - Grep
