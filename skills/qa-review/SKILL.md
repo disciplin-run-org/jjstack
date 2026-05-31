@@ -2,12 +2,17 @@
 name: qa-review
 version: 0.1.0
 description: |
-  QA health review across 8 dimensions. Loads the full QA philosophy (test
-  taxonomy, testing trophy, Kano depth, four-bucket triage, AI/MCP traps,
-  production QA, regression gates) and audits whether the test suite actually
-  catches bugs — not just whether tests exist. Trigger on: "QA review",
-  "test health", "test audit", "are our tests good enough", "QA score",
-  "regression health", "mutation score", "test coverage audit", "QA check".
+  Adversarial audit of the test suite across 8 dimensions: Kano depth,
+  test-type balance, production verification, failure triage, regression
+  gates, test quality (mutation score), AI/MCP traps, infrastructure
+  health. Loads the full QA philosophy. Audits whether the tests catch
+  bugs, not whether they exist.
+  Trigger on: "QA review", "test health", "test audit", "are our tests
+  good enough", "QA score", "regression health", "mutation score",
+  "test coverage audit", "QA check", "audit the test suite".
+  Do NOT trigger for: browser QA execution (use /qa or /qa-only), TDD
+  loop between iris-qa and a code worker (use /qa-loop), or loading QA
+  operational rules (use /jj-qa).
 allowed-tools:
   - Read
   - Grep

@@ -2,8 +2,17 @@
 name: review
 version: 0.1.0
 description: |
-  Enhanced pre-landing review — deeper adversarial passes, saves to repo, injects DNA.
-  jjstack wrapper around gstack's review.
+  Pre-landing review of staged or recent changes: deeper adversarial passes
+  than gstack default, saves findings to {repo}/jjstack/, injects DNA. Use
+  on the diff that is about to merge.
+  Trigger on: "review my changes", "pre-landing review", "review the diff",
+  "review before merge", "review this PR", "adversarial review", "deep review
+  of changes".
+  Do NOT trigger for: a specific PR by number (use /smart-review or the
+  code-review plugin), security-focused review (use /security-review),
+  two-stage spec-then-quality review (use /two-stage-review), processing
+  incoming review feedback (use /receiving-code-review), or design/UI review
+  (use /design-review).
 allowed-tools:
   - Read
   - Grep

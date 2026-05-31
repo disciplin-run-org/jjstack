@@ -1,16 +1,17 @@
 ---
 name: qa-loop
-description: >
-  TDD QA-loop between the QA owner (iris-qa-tm) and a product-code worker.
-  Subject can be ANY product in the ai-agents ecosystem — leanspecs, iris-qa
-  itself, quartermaster, tubemail, actuatrix, etc. The loop is bidirectional:
-  when the test surface needs better tools to test a behavior, iris-qa is the
-  subject; when product code needs to match approved Gherkin, the product is
-  the subject. Enforces the non-negotiable order: QA generates the failing
-  test suite FIRST, that raw output is the authoritative work order, the
-  subject's code worker implements to green, QA reruns. Trigger whenever the
-  user asks for a QA loop, TDD, or "implement specs X Y Z via iris-qa" on any
-  product in the ecosystem.
+description: |
+  TDD loop between iris-qa (QA owner) and a product-code worker. iris-qa
+  generates the failing test suite FIRST, raw output becomes the authoritative
+  work order, the code worker implements to green, iris-qa reruns. Bidirectional:
+  either iris-qa OR the product can be the subject (any ai-agents ecosystem
+  member: leanspecs, iris-qa, quartermaster, tubemail, actuatrix).
+  Trigger on: "QA loop", "TDD loop", "implement specs X Y Z via iris-qa",
+  "iris-qa loop", "TDD via iris-qa", "fail-first then implement", "implement
+  via iris-qa".
+  Do NOT trigger for: browser QA on a deployed UI (use /qa or /qa-only),
+  test-suite health audit (use /qa-review), or loading QA operational rules
+  (use /jj-qa).
 allowed-tools:
   - Read
   - Grep

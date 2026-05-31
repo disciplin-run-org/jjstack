@@ -2,8 +2,14 @@
 name: qa
 version: 0.1.0
 description: |
-  Enhanced QA — saves reports to repo, applies jj-qa rules, iterates to 10/10.
-  jjstack wrapper around gstack's qa.
+  Browser QA execution: run gstack /qa with jjstack enhancements, save reports
+  to {repo}/jjstack/, apply jj-qa operational rules, iterate the quality loop
+  to 10/10, AND auto-fix issues found.
+  Trigger on: "run QA", "test the site", "QA this feature", "fix QA findings",
+  "QA the deployed app", "QA with fixes", "QA loop with fixes", "run QA loop".
+  Do NOT trigger for: report-only QA (use /qa-only), TDD loop between iris-qa
+  and a code worker (use /qa-loop), adversarial audit of the test suite
+  (use /qa-review), or loading QA operational rules (use /jj-qa).
 allowed-tools:
   - Read
   - Grep

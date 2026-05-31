@@ -1,10 +1,15 @@
 ---
 name: jj-qa
-description: >
-  QA philosophy and operational rules that apply to all testing work. Enforces cleanup
-  discipline, Docker-first execution, framework-driven debugging, and Kano-level test
-  depth. Use alongside gstack's /qa for browser testing, or standalone for API/integration
-  testing. Trigger on any QA, testing, or quality assurance work.
+description: |
+  QA OPERATIONAL RULES reference: load cleanup discipline, Docker-first
+  execution, framework-driven debugging, and Kano-level test depth floors.
+  This is a rules-of-engagement reference, NOT a QA execution skill.
+  Trigger on: "/jj-qa", "jj-qa", "QA rules", "load QA operational rules",
+  "Kano test depth", "QA philosophy", "what are our QA rules", "QA cleanup
+  rules", "Docker-first QA".
+  Do NOT trigger for: running browser QA (use /qa or /qa-only), TDD loop
+  between iris-qa and a code worker (use /qa-loop), or auditing test-suite
+  health (use /qa-review).
 allowed-tools:
   - Read
   - Grep

@@ -2,8 +2,15 @@
 name: qa-only
 version: 0.1.0
 description: |
-  Enhanced QA report-only — saves reports to repo, applies jj-qa rules.
-  jjstack wrapper around gstack's qa-only.
+  Browser QA execution, REPORT ONLY: run gstack /qa-only, save reports to
+  {repo}/jjstack/, apply jj-qa operational rules. No auto-fix, no iteration -
+  findings written down, then stop.
+  Trigger on: "QA report only", "QA without fixes", "QA findings only",
+  "report-only QA", "test and report only", "QA report", "test the site and
+  report".
+  Do NOT trigger for: QA with auto-fix (use /qa), TDD loop between iris-qa
+  and a code worker (use /qa-loop), adversarial audit of the test suite
+  (use /qa-review), or loading QA operational rules (use /jj-qa).
 allowed-tools:
   - Read
   - Grep
