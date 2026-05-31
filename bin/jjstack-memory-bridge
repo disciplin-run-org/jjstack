@@ -34,6 +34,13 @@
 #                                                       ecosystem: tag comes from per-memory
 #                                                       frontmatter or from this flag — never
 #                                                       from the slug name.
+#   jjstack-memory-bridge --sync                      # after --ingest, also DELETE gbrain pages
+#                                                       tagged project:<slug> that have no
+#                                                       corresponding source file. Catches the
+#                                                       rename/delete/merge case where --ingest
+#                                                       alone leaves orphan pages polluting
+#                                                       query results. Requires --ingest. Use
+#                                                       this in /groom Phase 6 re-index.
 #
 # Idempotent: rewrites the target jsonl file each run; --ingest upserts
 # each entry into gbrain (overwriting any previous version of the same
@@ -47,6 +54,7 @@ ALL=0
 SELF_TEST=0
 DRY_RUN=0
 INGEST=0
+SYNC=0
 FORCE_ECOSYSTEM=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -55,11 +63,17 @@ while [ $# -gt 0 ]; do
         --self-test) SELF_TEST=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --ingest) INGEST=1; shift ;;
+        --sync) SYNC=1; shift ;;
         --ecosystem) FORCE_ECOSYSTEM="$2"; shift 2 ;;
-        --help|-h) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
+
+if [ "$SYNC" = "1" ] && [ "$INGEST" = "0" ]; then
+    echo "--sync requires --ingest (otherwise there's no gbrain side to sync against)" >&2
+    exit 2
+fi
 
 if [ "$SELF_TEST" = "1" ]; then
     SLUG="-home-jesper-PycharmProjects-jjstack"
@@ -243,6 +257,40 @@ $content"
             fi
         done < "$out_file"
         echo "  [ingest] $slug — ok=$ok fail=$fail"
+
+        # ── Sync path: delete gbrain pages whose source file is gone. ────
+        # Catches the rename/delete/merge case where --ingest alone leaves
+        # orphans that pollute query/similarity results. Diffs the set of
+        # gbrain pages tagged project:<slug> against the slugs we just put
+        # in this run; anything in gbrain but not in the put-set is an
+        # orphan. (Reported by iris-qa-tm during its post-groom cleanup;
+        # 11 orphans had to be hand-purged with comm + gbrain delete.)
+        if [ "$SYNC" = "1" ]; then
+            local expected_slugs purged=0
+            expected_slugs=$(mktemp)
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                local title gbslug
+                title=$(echo "$line" | jq -r '.title')
+                gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
+                echo "$gbslug" >> "$expected_slugs"
+            done < "$out_file"
+
+            while IFS= read -r live_slug; do
+                [ -z "$live_slug" ] && continue
+                if ! grep -qFx "$live_slug" "$expected_slugs"; then
+                    if gbrain delete "$live_slug" >/dev/null 2>&1; then
+                        purged=$((purged + 1))
+                        echo "  [orphan-purge] deleted $live_slug"
+                    else
+                        echo "  [orphan-purge-fail] $live_slug" >&2
+                    fi
+                fi
+            done < <(gbrain list --tag "project:$slug" 2>/dev/null | awk -F'\t' '{print $1}')
+
+            rm -f "$expected_slugs"
+            echo "  [sync] $slug — purged=$purged"
+        fi
     fi
 }
 

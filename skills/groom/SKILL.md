@@ -182,15 +182,23 @@ Run the canonical writing-DNA over each survivor's description / body:
 - For skill descriptions: also add "Do NOT trigger for" boundaries
   naming the closest sibling skills
 
-### Phase 6 - Re-index
+### Phase 6 - Re-index AND orphan-purge
 
-Re-run the bridge + extractor so gbrain and the trigger index reflect
-the new state:
+Re-run the bridge with `--sync` so gbrain reflects the post-groom
+state, then re-extract the trigger index:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-memory-bridge --slug <slug> --ingest
+~/.claude/skills/jjstack/bin/jjstack-memory-bridge --slug <slug> --ingest --sync
 ~/.claude/skills/jjstack/bin/jjstack-extract-triggers
 ```
+
+`--sync` is mandatory here, not optional. Every groom that deletes,
+merges, or renames a memory leaves orphan gbrain pages whose source
+file is gone - `--ingest` alone is upsert, not true sync. The orphans
+pollute query/similarity results until purged. `--sync` diffs the
+current put-set against gbrain's `project:<slug>` page list and
+deletes the difference. (Surfaced by iris-qa-tm during its post-groom
+cleanup: 11 hand-purged orphans before this was baked into the skill.)
 
 Update `MEMORY.md` to reflect retired entries.
 
@@ -304,8 +312,9 @@ gbrain pages tagged project:<slug>        (index)
             v  human review
 applied merges -> updated SKILL.md or memory files
             |
-            v  Phase 6 re-index
+            v  Phase 6 re-index --ingest --sync
 gbrain + skill-triggers.json reflect new state
+            (orphan pages from renamed/merged/deleted sources are purged)
 ```
 
 ## What this skill does NOT do
