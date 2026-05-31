@@ -8,10 +8,14 @@
 #
 # Tagging:
 #   - project:<slug>            applied to every memory
-#   - ecosystem:disciplin-run   applied if the memory has either:
-#       * metadata.scope: ecosystem
-#       * promoted: true
-#       * the slug contains "disciplin-run"
+#   - memory-type:<type>        from the memory file's frontmatter `type` field
+#   - ecosystem:<name>          applied ONLY on explicit owner promotion:
+#       * frontmatter scope: ecosystem      → ecosystem:disciplin-run
+#       * frontmatter promoted: true        → ecosystem:disciplin-run
+#       * frontmatter ecosystem: <name>     → ecosystem:<name>
+#       * bridge invoked with --ecosystem <name>  → ecosystem:<name>
+#     NEVER applied based on slug substring. Per-project memories stay
+#     project-scoped until the owner explicitly promotes them.
 #
 # Usage:
 #   jjstack-memory-bridge --slug <project-slug>      # one project
