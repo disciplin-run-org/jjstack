@@ -445,9 +445,18 @@ chmod +x "$JJSTACK_DIR/bin/jjstack-update-check" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/bin/statusline.sh" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/bin/jjstack-extract-triggers" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/bin/jjstack-skill-miss-report" 2>/dev/null || true
+chmod +x "$JJSTACK_DIR/bin/jjstack-plan" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/hooks/skill-miss-detect.sh" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/hooks/skill-fired-clear.sh" 2>/dev/null || true
 chmod +x "$HOOK_SRC" 2>/dev/null || true
+
+# Put jjstack-plan on PATH so `! jjstack-plan ...` works in the user's terminal.
+# The /plan-edit skill's display commands (view/diff) are run by the user via
+# the ! prefix; a bare command keeps that friction low.
+if mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+  ln -snf "$JJSTACK_DIR/bin/jjstack-plan" "$HOME/.local/bin/jjstack-plan" 2>/dev/null \
+    && ok "PATH: jjstack-plan linked into ~/.local/bin" || true
+fi
 
 # ─── Step 10: Build skill-trigger index ──────────────────────
 # Powers the skill-miss-detect hook. Re-run on every setup so newly
