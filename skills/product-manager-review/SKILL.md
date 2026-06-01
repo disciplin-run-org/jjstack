@@ -1,6 +1,6 @@
 ---
 name: product-manager-review
-version: 0.2.0
+version: 0.3.0
 description: |
   Adversarial product management review AND spec-cleanup execution. Loads the
   full PM philosophy (4P:90, Extended Kano, OKR Quantity/Quality/Efficiency,
@@ -67,6 +67,20 @@ cat ~/PycharmProjects/jjstack/references/spec-cleanup-playbook.md
 ```
 
 This is the single source of truth for **how to clean up a LeanSpecs product spec**. The 7-layer template, cap themes, smell tests, CRUD pattern, one-test-per-behavior discipline, AI-Gherkin red flags, and layer-migration recipe all live here. **Load it before any spec-cleanup work, not just review.**
+
+**4b. Perfect Spec Definition (MCP-tool repos — the ratified STRUCTURAL target):**
+
+For any product whose value is a set of MCP tools (leanspecs, iris-qa, tubemail, quartermaster, architrix, actuatrix), load the ratified definition of a perfect spec. It is leanspecs-owned; load the newest copy:
+
+```bash
+ls -t ~/PycharmProjects/disciplin-run/leanspecs/jjstack/*-perfect-mcp-spec-definition.md 2>/dev/null | head -1 | xargs --no-run-if-empty cat
+```
+
+If nothing prints, this is a non-MCP product (or leanspecs is absent) — skip the MCP-specific checks (Pass 9, the cap-theme rule in Pass 5) and review on the general 8 dimensions only.
+
+When it loads, it is the **structural** target for the MCP/UI layers: one feature per tool named after the tool, ascending-Kano caps with Foundation appended last, rationale answers "why" in ≤80 chars with a stance verb, one scenario per behavior, no implementation leak, clean NL, 1-1 UI mirror, OKR scaffolded. Its machine-checkable twin is `debug/spec_import_competition/rubric.py`, and the same gates run live as leanspecs MCP (`gate_check` / `cleanliness_review` / `spec_validate` / `coverage_check`) — Pass 9 calls those.
+
+**Critical scoping — structure vs maturation.** The definition describes the *import tool's* end-state: a "born groomed" spec, complete in every field **except gherkin**, sitting at `draft` on purpose. That blank-gherkin draft is correct *for `spec_import`* and says nothing about the PM target. **PM-review still flags and fixes missing gherkin and unreached approval** — `spec_import` not writing gherkin is irrelevant. So: score the *structure* against this definition, and score *gherkin + approval* as the maturation gap to close (Pass 4). Never exempt missing gherkin because the import does not write it.
 
 **5. Memory cross-reference (jump to live worker-specific learnings):**
 
@@ -226,10 +240,30 @@ instead of outcomes. Capability Rules that don't actually constrain. Items
 with manually-set "approved" status but incomplete data. Cleanliness below
 95%.
 
+**MCP repos — structure vs maturation.** Split "done" into two layers and
+score both. (1) **Structure**: conformance to the perfect-spec definition
+loaded in Phase 1 — one feature per tool named after the tool, rationale-why
+in ≤80 chars with a stance verb, one scenario per behavior, no impl leak. A
+freshly imported spec is "born groomed": it can be structurally perfect and
+still ship with blank gherkin at `draft` by design. (2) **Maturation**:
+gherkin authored at every level and the item driven to `approved`. **Empty
+gherkin is still a defect to flag and fix here** — `spec_import` leaving it
+blank is its correct end-state, not the PM target. Recommend `gherkin_generate`
+after the NL fields are sharp, then approval. Do not give missing gherkin a
+pass because the import does not write it.
+
 ### Pass 5: Architecture Alignment (0-10)
 
 - API-first ordering respected (MCP tools before CLI before GUI)?
 - Product scaffold followed (standard capability structure)?
+- **Cap themes by ascending Kano, Foundation last (perfect-spec Rule 2)?**
+  Security (1, only if a real security floor like PHI exists), Core (2,
+  broken without it), Aux (2-3, tedious without it), Performance (4,
+  diagnostics / health / speed) — **"Help & Assist" tools (AI assistance,
+  suggestions, instructions) are the AI-tool flavor of the Performance cap** —
+  Bells & Whistles (5), then the long Kano tail. **Slots float; the Foundation
+  cap is appended LAST, not locked to `mcp:4`.** This supersedes any fixed
+  `mcp:3 = Help & Assist` / `mcp:4 = Foundation` slot convention.
 - MCP tools are the product (no GUI-only behavior)?
 - Foundation capabilities imported from shared library, not duplicated?
 - Agent-usable (MCP tools have clear descriptions, structured schemas)?
@@ -281,6 +315,37 @@ Identify:
 
 **A product with an empty kill list is not well-managed — it's unexamined.**
 
+### Pass 9: Perfect-Spec Conformance (MCP repos only, 0-10)
+
+Skip this pass for non-MCP products (the definition did not load in Phase 1).
+
+This is the **deterministic** half of "perfect" — do NOT re-implement
+`rubric.py`. The same gates run live as leanspecs MCP. Call them and read the
+result; the algorithm does the checking, you do the judgment.
+
+```python
+mcp__leanspecs__coverage_check(repo=<product>, branch=main)      # every tool placed once
+mcp__leanspecs__gate_check(repo=<product>, branch=main)          # name/desc/rationale/NL gates
+mcp__leanspecs__cleanliness_review(repo=<product>, branch=main)  # 4-dimension cleanliness
+mcp__leanspecs__spec_validate(repo=<product>, branch=main)       # hierarchy + schema
+```
+
+Report, mapped to the definition:
+- **Hard fails (disqualifiers, fix first):** a tool missing or duplicated in
+  the mcp layer, a feature not named after a tool, an authored `shared` cap,
+  or gherkin on an item the import created. Any of these caps the spec — score
+  ≤3 until cleared.
+- **Soft conformance:** cap order, rationale-why, descriptions, behavior
+  detail, 1-1 UI mirror, OKR scaffold, Kano set, NL hygiene, born-groomed (no
+  dup feature names). Score the gate pass-rate 0-10.
+
+Note: a clean Pass 9 confirms the **structure** is perfect. It says nothing
+about gherkin or approval — those are scored in Pass 4 (maturation). A
+born-groomed import scores high here and still needs gherkin authored.
+
+In Cleanup mode this pass is the gate: **drive hard fails to zero**, then lift
+soft conformance, then hand off for gherkin authoring.
+
 ---
 
 ## Phase 5: Scoring & Report
@@ -297,9 +362,12 @@ Identify:
 | 6 | Customer Job Clarity | /10 | |
 | 7 | Metric Hygiene | /10 | |
 | 8 | Kill List | /10 | |
+| 9 | Perfect-Spec Conformance (MCP repos) | /10 | |
 | | **Overall PM Health** | **/10** | |
 
-Overall = average of 8 dimensions (no weighting — all matter equally).
+Overall = average of the applicable dimensions (no weighting — all matter
+equally). Pass 9 is included only for MCP-tool repos; for other products,
+average the 8 general dimensions.
 
 ### Output Report
 
@@ -433,7 +501,7 @@ Draft a self-contained handoff message for the product's code worker (their cont
 1. **Reinventing the playbook.** This skill loads `spec-cleanup-playbook.md` for a reason — read it before authoring. If a session-specific lesson is missing from the playbook, add it there (not as a one-off memory or duplicate skill).
 2. **Duplicating memories.** Before writing a new memory file, `ls` the memory directory and grep for the topic. `feedback_one_mcp_tool_one_feature.md` already exists — don't write a new memory for the same rule.
 3. **Cross-worker dispatch without approval.** Every tubemail message and every QM work order to another worker needs explicit per-dispatch approval. See `feedback_ask_before_dispatching.md`.
-4. **Cap themes drifting from slot numbers.** The user expects `mcp:1 = Core`, `mcp:2 = Aux Lifecycle`, `mcp:3 = Help & Assist`, `mcp:4 = Foundation` by slot ID. If `spec_tidy` lands caps in the wrong slots, use `spec_reorder` + product-level `spec_tidy` to align — don't just rename labels.
+4. **Cap themes by Kano, not by fixed slot (per perfect-spec Rule 2).** Caps sort by **ascending Kano** — Security (1, only if a real security floor exists), Core (2), Aux (2-3), Performance (4), Bells & Whistles (5), tail — and the **Foundation cap is appended LAST**, after the highest-Kano product cap. **Slots float**: Foundation is `mcp:4` for tubemail but `mcp:5` once a Bells & Whistles cap exists. "Help & Assist" tools (AI assistance, suggestions, instructions) are the AI-tool flavor of the **Performance** cap, not a separate slot. This supersedes the old fixed `mcp:3 = Help & Assist` / `mcp:4 = Foundation` convention. If `spec_tidy` lands caps out of Kano order, use `spec_reorder` + product-level `spec_tidy` to align — don't just rename labels.
 5. **Spec-id tokens in narrative fields.** The `spec_id_in_text_field` gate rejects any `mcp:N`-style token in name / description / rationale / detail. Use the referenced item's current name.
 6. **Stale rationale after restructure.** When you merge/move/split features, summaries get updated but rationales get stranded. Re-read rationales after any structural change.
 7. **Trimming multi-scenario behaviors instead of splitting.** If a behavior carries multiple `Scenario:` blocks, the fix is to SPLIT into N sibling behaviors — never trim by keeping one scenario and discarding the rest. Each scenario is an approved contract. Folding scenarios into a feature-level `Rule:` compresses contracts out of existence; write the behavior instead. See the "Split, don't throw" recipe in `spec-cleanup-playbook.md` (under "One Behavior, One Test").
