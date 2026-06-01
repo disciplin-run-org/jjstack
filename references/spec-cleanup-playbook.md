@@ -72,14 +72,21 @@ Every product spec in the ecosystem follows the 7-layer template. Place every ca
 | `shared` | Cross-product caps materialized from Architrix via `source` pointer | NO hand-authored caps in consumer products — Architrix owns the bodies. Edit upstream; the materializer ripples. |
 | `unmapped` | PM triage parking lot | Anything that doesn't fit cleanly until you decide where it belongs. Empty by default. |
 
-### `mcp` cap themes (Kano-first inside the layer)
+### `mcp` cap themes (ascending Kano, Foundation appended last)
 
-| Cap | Kano | Theme | Examples |
-|-----|------|-------|----------|
-| `mcp:1` | 2 | **Core MCP** — primary CRUD verbs | spec_create, spec_read, spec_update, spec_delete; test_run, test_status |
-| `mcp:2` | 2 | **Aux MCP** — Lifecycle / supporting | github_save, spec_validate, spec_tidy, okr_close, settings_update |
-| `mcp:3` | 4 | **Help & Assist** — AI-assisted (Performance Kano) | spec_sharpen, spec_dedup, spec_groom, gherkin_generate, doc_import |
-| `mcp:4` | 2 | **Foundation MCP** — Server Discovery | tools_list, get_instructions, refresh_tools, server_info, spec_schema |
+Caps sort by **ascending Kano**; the Foundation cap is pulled out of that sort and **appended last** (it is framework plumbing, not product value). **Slots float** — Foundation is not locked to `mcp:4`; it lands after the highest-Kano product cap. This matches the ratified Perfect Spec Definition Rule 2 (`leanspecs/jjstack/<date>-perfect-mcp-spec-definition.md`).
+
+| Theme | Kano | Present when | Examples |
+|-------|------|--------------|----------|
+| **Security** | 1 | a real security floor exists (PHI/HIPAA) | only for products with it; most omit |
+| **Core MCP** — primary CRUD verbs | 2 | always | spec_create, spec_read, spec_update, spec_delete; test_run, test_status |
+| **Aux MCP** — lifecycle / supporting | 2-3 | works without it but tedious | github_save, spec_validate, spec_tidy, okr_close, settings_update |
+| **Performance / Help & Assist** | 4 | diagnostics, health, speed — and AI-assist tools (the AI-tool flavor of Performance) | spec_sharpen, spec_dedup, spec_groom, gherkin_generate, doc_import |
+| **Bells & Whistles** | 5 | attractive delighters exist | the real "slot-5" theme; many products omit |
+| tail | 6-10 | rarely | Less-is-More (6), Me-Too (7), Nice-to-have (8), Single-customer (9), Show-Horse (10) |
+| **Foundation MCP** — Server Discovery | n/a | always, **appended LAST** | tools_list, get_instructions, refresh_tools, server_info, spec_schema |
+
+For a product with no security floor and no Kano-5+ family (e.g. tubemail): Core=`mcp:1`, Aux=`mcp:2`, Performance=`mcp:3`, Foundation=`mcp:4`. Add a Bells & Whistles cap and Foundation slides to `mcp:5`. Never lock Foundation to a fixed slot number.
 
 ### Layer-ordering invariant
 
@@ -130,7 +137,7 @@ When a product was migrated wholesale to `unmapped` by an earlier pass (e.g. PR 
 5. **Flip layer visibility.** Newly-populated layers may have `hidden=true` from earlier migration; flip via `spec_update(item_id="<layer>", visible=true)`.
 6. **Cap-theme-to-slot alignment.** If `spec_tidy` lands caps in the wrong slots (creation order didn't match Kano theme order), use `spec_reorder(item_id="<old-id>", position=<target>)` for each cap, then `spec_tidy(repo, branch)` at product root to compact IDs based on lifecycle_order.
 7. **Rule: gherkin at each cap.** `spec_update(<cap_id>, gherkin="Rule: …")` covering hard architectural rules from the product's `CLAUDE.md`.
-8. **OKR linkage by cap rule.** Default rule (override per-behavior when obviously wrong): mcp:1 (Core) → KR2 quality; mcp:2 (Aux) → KR1 quantity; mcp:3 (Help & Assist) → KR3 efficiency; mcp:4 (Foundation) → KR1 quantity; ui:*, infrastructure:*, shared:*, cli:* → blank.
+8. **OKR linkage by cap THEME rule** (key on theme, not slot — slots float). Default rule (override per-behavior when obviously wrong): Core → KR2 quality; Aux → KR1 quantity; Performance / Help & Assist → KR3 efficiency; Foundation → KR1 quantity; ui:*, infrastructure:*, shared:*, cli:* → blank.
 9. **spec_import augment pass.** `spec_import(repo, branch, run_groom="structural", drift_report=True)` auto-detects `jjstack/` docs + source code. Augment-only — new items carry `owner="Spec_import <iso8601>"`. Long-running (~26 min on a 45-file codebase); blocks the server for read/write during heavy phases. Poll via `docs_import_status(job_id)`.
 10. **Verify.** `spec_read(item_id="<layer>", depth="list")` per layer; `spec_info`; `spec_validate`; `cleanliness_review`.
 
