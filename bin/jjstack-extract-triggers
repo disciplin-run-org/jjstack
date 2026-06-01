@@ -32,6 +32,71 @@ OUT_FILE="$OUT_DIR/skill-triggers.json"
 
 mkdir -p "$OUT_DIR"
 
+# ─── Trigger validity filter ──────────────────────────────────────────────
+# Descriptions contain far more quoted strings than authored trigger phrases:
+# ANSI escapes (\033[0m), API field names (paragraphStyle, endIndex), SQL
+# examples (SELECT * FROM ...), code tokens (__main__, src/, 1.1.1), and
+# generic single words (status, port, test). Naively treating every quoted
+# string as a trigger produced 5-9 skills matching a common word, so nothing
+# fired reliably. is_valid_trigger keeps only natural-language phrases and
+# slash-commands, dropping code-shaped junk and generic standalone words.
+#
+# A trigger is KEPT iff it is either:
+#   - a slash command (/groom, /clear), OR
+#   - 4-40 chars, 1-6 words, letters/space/apostrophe/hyphen only, not
+#     camelCase, no ALL-CAPS word >4 chars, and not a single generic stopword.
+
+# Generic standalone words that match unrelated prose. A multi-word phrase
+# containing these (e.g. "work order", "make pdf") is still kept — only a
+# trigger that IS exactly one of these whole words is dropped.
+STOPWORDS=" test tests status spec specs port ports result results health healthy"
+STOPWORDS+=" done merge merged default location text work order pull push build builds"
+STOPWORDS+=" run runs running fix fixes fixed check checks plan plans update updates"
+STOPWORDS+=" commit commits code data file files setup start stop retry continue value"
+STOPWORDS+=" values param params parameter error errors success auto custom smoke"
+STOPWORDS+=" protocol generated all yes no ok lets let's we us src main init review lean"
+STOPWORDS+=" fail pass names logs compose restart index type fields field range unit"
+STOPWORDS+=" offset contents about home page key convert names result"
+
+is_valid_trigger() {
+    local t="$1"
+    local lc
+    lc=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')
+
+    # Slash-command form is always a valid, specific trigger (/groom, /clear).
+    if [[ "$t" =~ ^/[a-z][a-z0-9-]+$ ]]; then return 0; fi
+
+    # Length bounds: too short = noise, too long = a captured sentence.
+    local len=${#t}
+    if (( len < 4 || len > 40 )); then return 1; fi
+
+    # Allowed charset: letters, space, apostrophe, hyphen; must start AND end
+    # with a letter. Rejects ANSI, SQL, paths, regex, format strings, digits,
+    # underscores, punctuation fragments (", or ").
+    local re="^[A-Za-z][A-Za-z '-]*[A-Za-z]$"
+    if [[ ! "$t" =~ $re ]]; then return 1; fi
+
+    # At most 6 words (longer = a description fragment, not a trigger).
+    if (( $(printf '%s' "$t" | wc -w) > 6 )); then return 1; fi
+
+    # Reject camelCase API identifiers (paragraphStyle, endIndex).
+    if [[ "$t" =~ [a-z][A-Z] ]]; then return 1; fi
+
+    # Reject ALL-CAPS constants longer than 4 chars (DEFAULT, NEVER_COLLAPSE),
+    # while keeping short acronyms in phrases (PR, PDF, QA, DX, JSON).
+    local w
+    for w in $t; do
+        if [[ "$w" =~ ^[A-Z]{5,}$ ]]; then return 1; fi
+    done
+
+    # Reject a trigger that is exactly one generic stopword.
+    case " $STOPWORDS " in
+        *" $lc "*) return 1 ;;
+    esac
+
+    return 0
+}
+
 # Find every SKILL.md, resolving symlinks. Each entry-point skill at
 # ~/.claude/skills/<name>/SKILL.md (top level). Plugin skills nested deeper
 # under .claude-plugin/ are also picked up.
@@ -65,19 +130,37 @@ for skill_md in "${SKILL_FILES[@]}"; do
         capture {print}
     ' "$skill_md" 2>/dev/null || echo "")
 
-    # Triggers: skill name (slug + space-form) + every quoted phrase in
-    # the description.
-    triggers=()
-    triggers+=("$name")
+    # Candidate triggers: skill name (slug + space-form) + every quoted phrase
+    # in the description. Each candidate is then passed through
+    # is_valid_trigger so code/data fragments and generic words are dropped.
+    raw_triggers=()
+    raw_triggers+=("$name")
     space_form="${name//-/ }"
     if [ "$space_form" != "$name" ]; then
-        triggers+=("$space_form")
+        raw_triggers+=("$space_form")
     fi
 
     # Pull quoted phrases. Both double-quoted and single-quoted.
     while IFS= read -r phrase; do
-        [ -n "$phrase" ] && triggers+=("$phrase")
+        [ -n "$phrase" ] && raw_triggers+=("$phrase")
     done < <(echo "$desc" | grep -oE '"[^"]+"|'\''[^'\'']+'\''' 2>/dev/null | sed 's/^["'\'']\(.*\)["'\'']$/\1/' | grep -vE '^[[:space:]]*$' | sort -u)
+
+    # Filter: keep only natural-language phrases and slash-commands. The slug
+    # itself can be generic (review, lean, heal) — if it fails the filter the
+    # skill keeps only its specific multi-word triggers, which is the goal.
+    triggers=()
+    for cand in "${raw_triggers[@]}"; do
+        if is_valid_trigger "$cand"; then
+            triggers+=("$cand")
+        fi
+    done
+
+    # A skill with zero surviving triggers can never auto-match; skip it
+    # rather than emit an empty array. (Explicit /skill invocation is
+    # unaffected — it bypasses trigger matching entirely.)
+    if [ "${#triggers[@]}" -eq 0 ]; then
+        continue
+    fi
 
     # Build the triggers JSON array.
     trigger_json=$(printf '%s\n' "${triggers[@]}" | jq -R . | jq -s 'unique')

@@ -8,6 +8,9 @@ description: |
   belong to coders (/python-coder), QA (/qa, iris-qa), and unit testing
   (/unit-test-builder). Use when asked to "create heal scripts", "heal
   framework", "make it self-healing", or "infrastructure debug setup".
+  Do NOT trigger for: writing application code or business logic (use
+  /python-coder), functional or browser QA (use /qa), or unit tests (use
+  /unit-test-builder) — heal only stands up infrastructure.
   Proactively suggest when a project has containers but no infrastructure
   heal framework.
 ---
