@@ -1,0 +1,705 @@
+#!/usr/bin/env python3
+"""jjstack-plan - read and edit plans without re-reading the wall.
+
+Deterministic plan tooling: structure, navigation, track-changes diff, width
+reflow, and a voice lint. The one inference step (revoice) is driven here but
+performed by the agent using the Voice DNA this tool emits - Algorithm First,
+Inference Last.
+
+Subcommands:
+  view     [FILE] [SECTION] [--width N]  color-coded render at terminal width
+  toc      [FILE]                        numbered heading tree + line ranges
+  show     [FILE] SECTION                one section, raw markdown
+  snapshot [FILE]                        set the track-changes baseline
+  diff     [FILE] [--full]               colored track-changes vs baseline
+  accept   [FILE]                        current -> baseline; clears highlights
+  revoice  [FILE] [SECTION]              emit Voice DNA + section for a rewrite
+  lint     [FILE]                        voice-rule check (deterministic)
+  highlight[FILE]                        reflow + bold the delta since last version (native panel)
+  reflow   [FILE]                        join hard-wrapped paragraphs into one line each
+  clear    [FILE]                        restore clean text (remove highlight bold)
+
+Hard rules, enforced in code:
+  - Never red. Output palette excludes red; scrub_red() strips red SGR codes.
+  - Never emdash. lint flags emdash; the Voice DNA mandates short dash.
+"""
+import os
+import re
+import shutil
+import sys
+
+HOME = os.path.expanduser("~")
+PLANS_DIR = os.path.join(HOME, ".claude", "plans")
+VOICE_DNA_DEFAULT = (
+    "/home/jesper/PycharmProjects/jesper-jurcenoks-ai-personalizations/"
+    "voice-dna/Jesper Jurcenoks Voice DNA Final.md"
+)
+
+# ── Palette: no red. Ever. ───────────────────────────────────────────────
+RESET = "\033[0m"
+DIM = "\033[2m"
+GREEN = "\033[92m"      # additions
+MAGENTA = "\033[95m"    # deletions (never red)
+STRIKE = "\033[9m"
+YELLOW = "\033[93m"     # emphasis / task boxes
+CYAN = "\033[96m"       # headings
+
+_FORBIDDEN_SGR = {"31", "91", "41", "101"}  # red fg/bg, normal + bright
+_SGR_RE = re.compile(r"\033\[([0-9;]*)m")
+
+
+def scrub_red(text):
+    """Strip any red SGR parameters from a string. Safety net so no code path
+    - present or future - can emit red on the user's black terminal."""
+    def _fix(m):
+        params = [p for p in m.group(1).split(";") if p not in _FORBIDDEN_SGR]
+        return "\033[" + ";".join(params) + "m" if params else ""
+    return _SGR_RE.sub(_fix, text)
+
+
+def _color_on():
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR") or os.environ.get("CLICOLOR_FORCE"):
+        return True
+    return sys.stdout.isatty()
+
+
+USE_COLOR = _color_on()
+
+
+def c(code, text):
+    """Wrap text in an ANSI code when color is on, else return it plain."""
+    if not USE_COLOR:
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def mark_add(text):
+    """Insertion: green when color is on, else a [+...+] text marker."""
+    return c(GREEN, text) if USE_COLOR else f"[+{text}+]"
+
+
+def mark_del(text):
+    """Deletion: magenta-strikethrough when color is on, else [-...-]."""
+    return c(MAGENTA + STRIKE, text) if USE_COLOR else f"[-{text}-]"
+
+
+def out(text=""):
+    sys.stdout.write(scrub_red(text) + "\n")
+
+
+def die(msg, code=1):
+    sys.stderr.write(scrub_red(c(MAGENTA, "jjstack-plan: ") + msg) + "\n")
+    sys.exit(code)
+
+
+# ── File + section model ─────────────────────────────────────────────────
+PLAN_PATH_RE = re.compile(r"/[^\s\"'\\]*/\.claude/plans/[A-Za-z0-9._-]+\.md")
+SAVED_TO_RE = re.compile(
+    r"saved to:\s*(/[^\s\"'\\]*/\.claude/plans/[A-Za-z0-9._-]+\.md)"
+)
+
+
+def _session_plan():
+    """This session's plan, from its transcript - not the global newest.
+
+    `~/.claude/plans/` is flat and shared by every session, so newest-by-mtime
+    grabs another worker's plan. The session transcript names the plan this
+    session created (the plan-mode 'saved to:' marker), so use that."""
+    import glob
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return None
+    hits = glob.glob(os.path.join(HOME, ".claude", "projects", "*", sid + ".jsonl"))
+    if not hits:
+        return None
+    try:
+        with open(hits[0], encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    saved = SAVED_TO_RE.findall(text)
+    if saved and os.path.isfile(saved[-1]):
+        return saved[-1]
+    refs = PLAN_PATH_RE.findall(text)
+    refs = [p for p in refs if os.path.isfile(p)]
+    if not refs:
+        return None
+    return max(set(refs), key=refs.count)  # most-referenced existing plan
+
+
+def resolve_file(arg, announce=True):
+    if arg:
+        if not os.path.isfile(arg):
+            die(f"no such file: {arg}")
+        return arg
+    sp = _session_plan()
+    if sp:
+        if announce:
+            out(c(DIM, f"# {sp}  (this session's plan)"))
+        return sp
+    if not os.path.isdir(PLANS_DIR):
+        die(f"no FILE given and no plans dir at {PLANS_DIR}")
+    plans = [
+        os.path.join(PLANS_DIR, f)
+        for f in os.listdir(PLANS_DIR)
+        if f.endswith(".md")
+    ]
+    if not plans:
+        die(f"no FILE given and no *.md in {PLANS_DIR}")
+    chosen = max(plans, key=os.path.getmtime)
+    if announce:
+        out(c(YELLOW, f"# {chosen}  (WARN: guessed newest-global; no session "
+                      f"plan found - pass a path to be sure)"))
+    return chosen
+
+
+def read_lines(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read().splitlines()
+
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+FENCE_RE = re.compile(r"^\s*```")
+
+
+def parse_sections(lines):
+    """Return [{level, title, num, start, end}] for ATX headings, skipping any
+    inside fenced code blocks. start/end are 0-based, end exclusive."""
+    sections = []
+    counters = [0] * 6
+    in_fence = False
+    for i, line in enumerate(lines):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = HEADING_RE.match(line)
+        if not m:
+            continue
+        level = len(m.group(1))
+        counters[level - 1] += 1
+        for d in range(level, 6):
+            counters[d] = 0
+        num = ".".join(str(counters[d]) for d in range(level))
+        sections.append(
+            {"level": level, "title": m.group(2).strip(),
+             "num": num, "start": i, "end": len(lines)}
+        )
+    for idx in range(len(sections) - 1):
+        sections[idx]["end"] = sections[idx + 1]["start"]
+    return sections
+
+
+def slugify(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def find_section(sections, key):
+    """Resolve a section by dotted number (3.2) or heading slug."""
+    for s in sections:
+        if s["num"] == key:
+            return s
+    key_slug = slugify(key)
+    for s in sections:
+        if slugify(s["title"]) == key_slug:
+            return s
+    for s in sections:  # last resort: prefix match on slug
+        if slugify(s["title"]).startswith(key_slug):
+            return s
+    return None
+
+
+# ── Snapshot baseline ────────────────────────────────────────────────────
+def aux_path(path, kind):
+    """Sidecar path under .jjplan/. kind in {snap, prev, clean}."""
+    d = os.path.dirname(os.path.abspath(path))
+    return os.path.join(d, ".jjplan", os.path.basename(path) + "." + kind)
+
+
+def snap_path(path):
+    return aux_path(path, "snap")
+
+
+def write_lines(path, lines):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def write_snapshot(path):
+    sp = snap_path(path)
+    os.makedirs(os.path.dirname(sp), exist_ok=True)
+    with open(path, encoding="utf-8") as src, open(sp, "w", encoding="utf-8") as dst:
+        dst.write(src.read())
+    return sp
+
+
+# ── view ─────────────────────────────────────────────────────────────────
+def term_width(override):
+    if override:
+        return max(20, override)
+    return max(40, shutil.get_terminal_size((100, 24)).columns)
+
+
+def wrap(text, width, indent=""):
+    import textwrap
+    if not text.strip():
+        return [""]
+    return textwrap.wrap(
+        text, width=width, initial_indent=indent, subsequent_indent=indent,
+        break_long_words=False, break_on_hyphens=False,
+    ) or [indent]
+
+
+TASK_RE = re.compile(r"^(\s*[-*]\s+)\[( |x|X)\]\s+(.*)$")
+
+
+def cmd_view(path, section_key, width):
+    lines = read_lines(path)
+    sections = parse_sections(lines)
+    if section_key:
+        s = find_section(sections, section_key)
+        if not s:
+            die(f"no section '{section_key}' - try: jjstack-plan toc")
+        lines = lines[s["start"]:s["end"]]
+        sections = parse_sections(lines)
+    w = term_width(width)
+    num_by_start = {s["start"]: s["num"] for s in sections}
+    in_fence = False
+    for i, line in enumerate(lines):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            out(c(DIM, line))
+            continue
+        if in_fence:
+            out(c(DIM, line))
+            continue
+        hm = HEADING_RE.match(line)
+        if hm:
+            num = num_by_start.get(i, "")
+            label = f"{num}  {hm.group(2).strip()}" if num else hm.group(2).strip()
+            prefix = "#" * len(hm.group(1))
+            out(c(CYAN, f"{prefix} {label}"))
+            continue
+        tm = TASK_RE.match(line)
+        if tm:
+            box = c(YELLOW, "[x]") if tm.group(2).lower() == "x" else c(YELLOW, "[ ]")
+            for j, seg in enumerate(wrap(tm.group(3), w - len(tm.group(1)) - 4)):
+                bullet = f"{tm.group(1)}{box} " if j == 0 else " " * (len(tm.group(1)) + 4)
+                out(f"{bullet}{seg}" if j == 0 else seg)
+            continue
+        if line.lstrip().startswith(">") or line.strip().startswith("|"):
+            out(c(DIM, line))
+            continue
+        if not line.strip():
+            out("")
+            continue
+        for seg in wrap(line, w):
+            out(seg)
+
+
+# ── toc ──────────────────────────────────────────────────────────────────
+def cmd_toc(path):
+    lines = read_lines(path)
+    sections = parse_sections(lines)
+    if not sections:
+        out(c(DIM, "(no headings)"))
+        return
+    width = max(len(s["num"]) for s in sections)
+    for s in sections:
+        indent = "  " * (s["level"] - 1)
+        num = s["num"].ljust(width)
+        span = c(DIM, f"  L{s['start'] + 1}-{s['end']}")
+        out(f"{c(CYAN, num)}  {indent}{s['title']}{span}")
+
+
+# ── show ─────────────────────────────────────────────────────────────────
+def cmd_show(path, section_key):
+    if not section_key:
+        die("show needs a SECTION (number like 3.2 or a heading slug)")
+    lines = read_lines(path)
+    s = find_section(parse_sections(lines), section_key)
+    if not s:
+        die(f"no section '{section_key}' - try: jjstack-plan toc")
+    for line in lines[s["start"]:s["end"]]:
+        out(line)
+
+
+# ── diff (track changes) ─────────────────────────────────────────────────
+TOKEN_RE = re.compile(r"\S+|\s+")
+
+
+def word_diff(old, new):
+    """Return a single rendered line: equal text plain, inserts green,
+    deletes magenta-strikethrough."""
+    from difflib import SequenceMatcher
+    a, b = TOKEN_RE.findall(old), TOKEN_RE.findall(new)
+    sm = SequenceMatcher(a=a, b=b, autojunk=False)
+    parts = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            parts.append("".join(a[i1:i2]))
+        elif tag == "delete":
+            parts.append(mark_del("".join(a[i1:i2])))
+        elif tag == "insert":
+            parts.append(mark_add("".join(b[j1:j2])))
+        elif tag == "replace":
+            parts.append(mark_del("".join(a[i1:i2])))
+            parts.append(mark_add("".join(b[j1:j2])))
+    return "".join(parts)
+
+
+def section_for_line(sections, ln):
+    label = ""
+    for s in sections:
+        if s["start"] <= ln < s["end"]:
+            label = f"{s['num']} {s['title']}"
+    return label
+
+
+def cmd_diff(path, full):
+    from difflib import SequenceMatcher
+    sp = snap_path(path)
+    if not os.path.isfile(sp):
+        die("no baseline - run: jjstack-plan snapshot")
+    old, new = read_lines(sp), read_lines(path)
+    new_sections = parse_sections(new)
+    sm = SequenceMatcher(a=old, b=new, autojunk=False)
+    opcodes = sm.get_opcodes()
+    if all(tag == "equal" for tag, *_ in opcodes):
+        out(c(DIM, "no changes since last snapshot/accept"))
+        return
+    shown_headers = set()
+
+    def header(ln):
+        label = section_for_line(new_sections, ln)
+        if label and label not in shown_headers:
+            shown_headers.add(label)
+            out(c(CYAN, f"\n§ {label}"))
+
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            if full:
+                for k in range(j1, j2):
+                    out(c(DIM, "  " + new[k]))
+            continue
+        if tag == "replace":
+            header(j1)
+            n = max(i2 - i1, j2 - j1)
+            for k in range(n):
+                ol = old[i1 + k] if i1 + k < i2 else ""
+                nl = new[j1 + k] if j1 + k < j2 else ""
+                out("  " + word_diff(ol, nl))
+        elif tag == "insert":
+            header(j1)
+            for k in range(j1, j2):
+                out("  " + mark_add(new[k]))
+        elif tag == "delete":
+            header(j1)
+            for k in range(i1, i2):
+                out("  " + mark_del(old[k]))
+
+
+# ── highlight (non-cumulative markdown bold of the last edit) ─────────────
+# These render inside Claude Code's native plan panel, which shows Markdown.
+# Markdown has no inline color, so "changed since last version" = bold.
+# Highlights are NOT cumulative: each `highlight` diffs against the version
+# captured at the previous `highlight`, then advances that baseline.
+
+PREFIX_RE = re.compile(
+    r"^(\s*(?:#{1,6}\s+|>\s+|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+\.\s+)?)(.*)$"
+)
+
+
+def _bold(text):
+    """Bold the non-space core of `text`, preserving outer whitespace."""
+    if not text.strip():
+        return text
+    lead = text[: len(text) - len(text.lstrip())]
+    trail = text[len(text.rstrip()):]
+    return f"{lead}**{text.strip()}**{trail}"
+
+
+def _bold_new_line(line):
+    """A wholly-new line: bold its body, leave the markdown prefix plain so
+    headings/lists/tables still render."""
+    if line.strip().startswith("|") or FENCE_RE.match(line) or not line.strip():
+        return line  # tables/fences/blank: structure too fragile to bold
+    pfx, body = PREFIX_RE.match(line).groups()
+    return pfx + _bold(body)
+
+
+def _bold_changed_words(old_line, new_line):
+    """A changed line paired with its previous form: bold only the new/changed
+    word runs (the markdown prefix and matching words stay plain)."""
+    from difflib import SequenceMatcher
+    if new_line.strip().startswith("|") or not new_line.strip():
+        return new_line
+    opfx, obody = PREFIX_RE.match(old_line).groups()
+    npfx, nbody = PREFIX_RE.match(new_line).groups()
+    a, b = TOKEN_RE.findall(obody), TOKEN_RE.findall(nbody)
+    sm = SequenceMatcher(a=a, b=b, autojunk=False)
+    parts = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            parts.append("".join(b[j1:j2]))
+        elif tag in ("insert", "replace"):
+            parts.append(_bold("".join(b[j1:j2])))
+    return npfx + "".join(parts)
+
+
+LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s+)?")
+HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+QUOTE_RE = re.compile(r"^(\s*>\s?)(.*)$")
+
+
+def reflow_lines(lines):
+    """Join hard-wrapped prose into one line per paragraph so the renderer can
+    fill the screen width. Headings, list items, blockquotes, tables, fenced
+    code, horizontal rules, and blank lines are preserved as boundaries."""
+    out_lines, buf, mode, in_fence = [], None, None, False
+
+    def flush():
+        nonlocal buf, mode
+        if buf is not None:
+            out_lines.append(buf)
+            buf, mode = None, None
+
+    for line in lines:
+        if FENCE_RE.match(line):
+            flush(); in_fence = not in_fence; out_lines.append(line); continue
+        if in_fence:
+            out_lines.append(line); continue
+        if not line.strip():
+            flush(); out_lines.append(""); continue
+        if HEADING_RE.match(line) or HR_RE.match(line) or re.match(r"^\s*\|", line):
+            flush(); out_lines.append(line.rstrip()); continue
+        if LIST_RE.match(line):
+            flush(); buf, mode = line.rstrip(), "list"; continue
+        mq = QUOTE_RE.match(line)
+        if mq:
+            if mode == "quote" and buf is not None:
+                buf += " " + mq.group(2).strip()
+            else:
+                flush(); buf, mode = line.rstrip(), "quote"
+            continue
+        if buf is not None and mode in ("prose", "list"):
+            buf += " " + line.strip()          # continuation of a paragraph/item
+        else:
+            flush(); buf, mode = line.rstrip(), "prose"
+    flush()
+    return out_lines
+
+
+def cmd_reflow(path):
+    flat = reflow_lines(read_lines(path))
+    write_lines(path, flat)
+    write_lines(aux_path(path, "clean"), flat)
+    write_lines(aux_path(path, "prev"), flat)  # normalization, not an edit
+    out(c(DIM, "reflowed - hard line-breaks within paragraphs removed"))
+
+
+def cmd_highlight(path):
+    from difflib import SequenceMatcher
+    prevp, cleanp = aux_path(path, "prev"), aux_path(path, "clean")
+    cur = reflow_lines(read_lines(path))  # de-wrap so the panel fills the width
+    write_lines(cleanp, cur)  # remember clean text so `clear` can restore it
+    if not os.path.isfile(prevp):
+        write_lines(path, cur)  # de-wrap the file on the first render
+        write_lines(prevp, cur)
+        out(c(DIM, "no previous version - reflowed; baseline set; nothing bold"))
+        return
+    prev = read_lines(prevp)
+    sm = SequenceMatcher(a=prev, b=cur, autojunk=False)
+    display, changed = [], 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            display.extend(cur[j1:j2])
+            continue
+        changed += 1
+        if tag == "insert":
+            display.extend(_bold_new_line(l) for l in cur[j1:j2])
+        elif tag == "replace":
+            old_block = prev[i1:i2]
+            for k, nl in enumerate(cur[j1:j2]):
+                ol = old_block[k] if k < len(old_block) else ""
+                display.append(_bold_changed_words(ol, nl) if ol else _bold_new_line(nl))
+        # delete: dropped - not present in current
+    write_lines(path, display)
+    write_lines(prevp, cur)  # advance baseline -> highlights stay non-cumulative
+    out(c(DIM, f"highlighted {changed} changed block(s); baseline advanced"))
+
+
+def cmd_clear(path):
+    """Restore the clean (un-highlighted) text saved by the last highlight."""
+    cleanp = aux_path(path, "clean")
+    if not os.path.isfile(cleanp):
+        out(c(DIM, "no highlights to clear"))
+        return
+    with open(cleanp, encoding="utf-8") as fh:
+        clean = fh.read()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(clean)
+    out(c(DIM, "highlights cleared - clean text restored"))
+
+
+# ── accept / snapshot ────────────────────────────────────────────────────
+def cmd_snapshot(path):
+    sp = write_snapshot(path)
+    out(c(DIM, f"baseline set: {sp}"))
+
+
+def cmd_accept(path):
+    sp = write_snapshot(path)
+    out(c(GREEN, "changes accepted") + c(DIM, f" - baseline now {sp}"))
+
+
+# ── lint (deterministic voice rules) ─────────────────────────────────────
+SUPERLATIVES = [
+    "amazing", "incredible", "groundbreaking", "revolutionary", "awesome",
+    "stunning", "world-class", "best-in-class", "cutting-edge", "seamless",
+    "powerful", "robust", "blazing", "game-changing",
+]
+CONTRACTIONS = re.compile(
+    r"\b(it's|don't|can't|won't|isn't|aren't|didn't|doesn't|we're|they're|"
+    r"that's|there's|let's|you're|we'll|i'm)\b",
+    re.IGNORECASE,
+)
+
+
+def cmd_lint(path):
+    lines = read_lines(path)
+    findings = []
+    in_fence = False
+    for i, line in enumerate(lines, 1):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if "—" in line:
+            findings.append((i, "emdash - use short dash '-'", line))
+        if re.search(r"\b[Bb]ut\b", line):
+            findings.append((i, "'but' - restructure with 'and'", line))
+        for w in SUPERLATIVES:
+            if re.search(r"\b" + re.escape(w) + r"\b", line, re.IGNORECASE):
+                findings.append((i, f"superlative '{w}' - earn it or cut it", line))
+        for m in CONTRACTIONS.finditer(line):
+            findings.append((i, f"contraction '{m.group(0)}' - prefer full form", line))
+        if _SGR_RE.search(line):
+            for m in _SGR_RE.finditer(line):
+                if any(p in _FORBIDDEN_SGR for p in m.group(1).split(";")):
+                    findings.append((i, "red ANSI in content - forbidden", line))
+    emdashes = sum(1 for f in findings if "emdash" in f[1])
+    if not findings:
+        out(c(GREEN, "voice lint clean") + c(DIM, " - 0 emdashes, no flags"))
+        return
+    for ln, msg, _ in findings:
+        out(f"{c(YELLOW, f'L{ln}')}  {msg}")
+    out(c(DIM, f"\n{len(findings)} flag(s); {emdashes} emdash(es)"))
+
+
+# ── revoice (drives the inference step) ──────────────────────────────────
+def cmd_revoice(path, section_key):
+    dna_path = os.environ.get("JJSTACK_VOICE_DNA", VOICE_DNA_DEFAULT)
+    if not os.path.isfile(dna_path):
+        die(f"Voice DNA not found: {dna_path} (set $JJSTACK_VOICE_DNA)")
+    sp = snap_path(path)
+    if not os.path.isfile(sp):
+        write_snapshot(path)
+        note = "baseline created now"
+    else:
+        note = "baseline already set"
+    lines = read_lines(path)
+    target = "(whole file)"
+    if section_key:
+        s = find_section(parse_sections(lines), section_key)
+        if not s:
+            die(f"no section '{section_key}' - try: jjstack-plan toc")
+        target = f"§ {s['num']} {s['title']} (lines {s['start'] + 1}-{s['end']})"
+    with open(dna_path, encoding="utf-8") as fh:
+        dna = fh.read()
+    out(c(CYAN, "=== VOICE DNA (rewrite the target to honor these rules) ==="))
+    out(dna)
+    out(c(CYAN, "=== REWRITE TARGET ==="))
+    out(f"file:   {path}")
+    out(f"target: {target}")
+    out(c(YELLOW, "\nFidelity rule: re-voice and compress, never summarize. "
+                  "Every fact, section, and decision survives."))
+    out(c(DIM, f"({note}.)"))
+    out(c(CYAN, "\nNext: Edit the target in place, then:"))
+    out(f"  jjstack-plan diff {path}     # review the track-changes delta")
+    out(f"  jjstack-plan lint {path}     # check the voice rules")
+    out(f"  jjstack-plan accept {path}   # fold in once you sign off")
+
+
+# ── arg plumbing ─────────────────────────────────────────────────────────
+def split_args(argv):
+    """Return (positional, flags) where flags is a dict. Supports --full and
+    --width N."""
+    pos, flags = [], {}
+    it = iter(argv)
+    for a in it:
+        if a == "--full":
+            flags["full"] = True
+        elif a == "--width":
+            try:
+                flags["width"] = int(next(it))
+            except (StopIteration, ValueError):
+                die("--width needs an integer")
+        elif a.startswith("--width="):
+            flags["width"] = int(a.split("=", 1)[1])
+        else:
+            pos.append(a)
+    return pos, flags
+
+
+USAGE = __doc__
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        out(USAGE)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    pos, flags = split_args(rest)
+    file_arg = pos[0] if pos else None
+    section = pos[1] if len(pos) > 1 else None
+
+    if cmd == "view":
+        cmd_view(resolve_file(file_arg), section, flags.get("width"))
+    elif cmd == "toc":
+        cmd_toc(resolve_file(file_arg))
+    elif cmd == "show":
+        cmd_show(resolve_file(file_arg), section)
+    elif cmd == "snapshot":
+        cmd_snapshot(resolve_file(file_arg))
+    elif cmd == "diff":
+        cmd_diff(resolve_file(file_arg), flags.get("full", False))
+    elif cmd == "accept":
+        cmd_accept(resolve_file(file_arg))
+    elif cmd == "revoice":
+        cmd_revoice(resolve_file(file_arg), section)
+    elif cmd == "lint":
+        cmd_lint(resolve_file(file_arg))
+    elif cmd == "highlight":
+        cmd_highlight(resolve_file(file_arg))
+    elif cmd == "reflow":
+        cmd_reflow(resolve_file(file_arg))
+    elif cmd in ("clear", "clear-highlights"):
+        cmd_clear(resolve_file(file_arg))
+    else:
+        die(f"unknown command '{cmd}' - run: jjstack-plan --help")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BrokenPipeError:
+        sys.exit(0)
+    except KeyboardInterrupt:
+        sys.exit(130)
