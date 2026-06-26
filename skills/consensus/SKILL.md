@@ -1,9 +1,9 @@
 ---
 name: consensus
 description: |
-  Multi-vendor AI consensus across three independent voices — Claude Code (Anthropic),
-  Codex (OpenAI), and AGY/Antigravity (Google + others) — all on flat-rate subscriptions or
-  the free tier, so a full consensus costs ~$0 instead of metered per-token API billing.
+  Multi-vendor AI consensus across four independent voices — Claude Code (Anthropic),
+  Codex (OpenAI), AGY/Antigravity (Google + others), and DeepSeek (via OpenCode) — all on
+  flat-rate subscriptions or the free tier, so a full consensus costs ~$0 instead of metered API.
   Independent-first (anti-sycophancy), a mandatory 10th-man/counterfactual pass when the panel
   agrees too fast, optional structured anonymized debate, optional stances and pre-mortem,
   synthesized verdict with a minority report. Use when asked to "get consensus", "ask all the
@@ -20,7 +20,7 @@ allowed-tools:
 
 # /consensus — Multi-Vendor AI Consensus (local CLIs, ~$0)
 
-You are running `/consensus`. It gathers a genuine cross-vendor consensus from three independent
+You are running `/consensus`. It gathers a genuine cross-vendor consensus from up to four independent
 voices that each run on a flat-rate subscription or the free tier:
 
 | Voice | Backend | Vendor | Cost |
@@ -28,6 +28,7 @@ voices that each run on a flat-rate subscription or the free tier:
 | **Claude Code** | you, this session | Anthropic | your Claude sub |
 | **Codex** | `codex exec` | OpenAI | your ChatGPT sub |
 | **AGY** | `agy -p` | Google (+ Claude/GPT-OSS via `--model`) | free OAuth |
+| **DeepSeek** | `opencode run --agent plan` | DeepSeek | free (OpenCode Zen) |
 
 It replaces Pal's metered `consensus` (one call hit $10) with the CLIs you already pay a flat rate
 for. The design borrows PAL's stances, `/council`'s cross-examination structure, intelligence
@@ -38,8 +39,8 @@ literature. Read the **Why** notes so you preserve the intent.
 
 1. **Independent first, no peeking.** Round 1: every voice answers the SAME proposal blind. *Why:*
    sycophancy is the #1 multi-agent failure — models abandon correct answers to agree with peers.
-2. **Heterogeneous voices.** Three different vendors, not one model three times. *Why:* diversity is
-   the value; homogeneous panels amplify shared blind spots.
+2. **Heterogeneous voices.** Four different vendors available, not one model repeated. *Why:* diversity
+   is the value; homogeneous panels amplify shared blind spots. More vendor diversity beats more rounds.
 3. **Anonymize peers in any debate round** ("Reviewer A/B/C", never by vendor). *Why:* identity bias
    makes models defer to the "prestigious" name instead of the better argument.
 4. **Early agreement is a RED FLAG, not an all-clear — run the Tenth Man.** When round 1 converges,
@@ -70,6 +71,7 @@ Check the external voices; degrade gracefully:
 which codex >/dev/null 2>&1 && echo "CODEX: found" || echo "CODEX: MISSING"
 { which agy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/agy" ]; } && echo "AGY: found" || echo "AGY: MISSING"
 timeout 30 agy models >/tmp/consensus-agy-probe.txt 2>&1; grep -qi "please sign in" /tmp/consensus-agy-probe.txt && echo "AGY: NOT SIGNED IN" || echo "AGY: auth ok"
+which opencode >/dev/null 2>&1 && opencode auth list 2>/dev/null | grep -qi zen && echo "DEEPSEEK: auth ok" || echo "DEEPSEEK: MISSING or no Zen credential"
 ```
 
 If a voice is missing/unauthed, proceed with the rest but **warn that two voices is a weak consensus**.
@@ -116,7 +118,7 @@ they fight confirmation bias and pre-load the cross-exam with real seams.
 If `--stances`: append a different stance line (for / against / neutral) to each voice so the panel
 argues rather than nods.
 
-Run both external voices headless, read-only, ~5-min timeout, blind to each other:
+Run the external voices headless, read-only, ~5-min timeout, blind to each other:
 
 **Codex** (OpenAI):
 ```bash
@@ -130,8 +132,14 @@ timeout 330 agy -p "<boundary + proposal + the three closing lines>" --print-tim
 echo "EXIT: ${PIPESTATUS[0]}"
 ```
 
-On exit 124, note the stall and proceed. NEVER pass `--dangerously-skip-permissions` to AGY. Surface
-auth/quota errors verbatim.
+**DeepSeek** (free via OpenCode Zen; read-only `plan` agent — `-m deepseek/deepseek-v4-pro` if funded):
+```bash
+timeout 300 opencode run "<boundary + proposal + the three closing lines>" --agent plan -m opencode/deepseek-v4-flash-free 2>/tmp/consensus-deepseek-err.txt | tee /tmp/consensus-deepseek-out.txt
+echo "EXIT: ${PIPESTATUS[0]}"
+```
+
+On exit 124, note the stall and proceed. NEVER pass `--dangerously-skip-permissions` to AGY or
+DeepSeek. Surface auth / quota / rate-limit / "Insufficient Balance" errors verbatim.
 
 ## Step 3: Pressure-test (pick the passes that apply)
 
@@ -190,6 +198,9 @@ CODEX SAYS:
 AGY SAYS (<model>):
 <verbatim>           CONFIDENCE: N%
 ────────────────────────────────────────
+DEEPSEEK SAYS:
+<verbatim>           CONFIDENCE: N%
+────────────────────────────────────────
 TENTH MAN (<voice>): <counterfactual, if Step 3A ran>
 ════════════════════════════════════════
 ```
@@ -199,7 +210,7 @@ Then the verdict. Weight by confidence AND reasoning strength, not headcount.
 ```
 CONSENSUS VERDICT
 Question: <one line>
-Panel: Claude Code, Codex, AGY(<model>)   Passes: <round1 | +tenth-man | +debate | +premortem>   Cost: ~$0
+Panel: Claude Code, Codex, AGY(<model>), DeepSeek   Passes: <round1 | +tenth-man | +debate | +premortem>   Cost: ~$0
 
 Agreement map:
   UNANIMOUS:  <points all endorsed>          (but: did the Tenth Man dent any? note it)
@@ -249,11 +260,11 @@ different" forecasts).
 
 ## Rules
 
-- **Read-only.** Codex runs `-s read-only`; AGY runs in print mode with no skip-permissions. Verify the
-  tree is unchanged if the question touched a repo.
+- **Read-only.** Codex runs `-s read-only`; AGY in print mode; DeepSeek via OpenCode's read-only `plan`
+  agent — all with no skip-permissions. Verify the tree is unchanged if the question touched a repo.
 - **Verbatim then synthesize.** Show each voice raw; synthesis comes after, never instead.
 - **Anti-sycophancy is structural:** blind round 1, automatic Tenth Man on convergence, anonymized +
   "don't agree just to agree" in any debate round.
-- **Honest panel size.** Three vendors is a real consensus; two is a tie-breaker; one is an opinion —
-  label it as what it is.
+- **Honest panel size.** Three-four vendors is a strong consensus; two is a tie-breaker; one is an
+  opinion — label it as what it is.
 - **The user decides.**
