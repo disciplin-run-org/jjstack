@@ -49,7 +49,21 @@ literature. Read the **Why** notes so you preserve the intent.
 5. **Confidence-weighted synthesis, minority report mandatory.** Weight by stated confidence AND
    reasoning strength, not headcount. Never average away a lone, well-argued dissenter. *Why:* the
    minority is sometimes the only one who's right.
-6. **The user decides.** Cross-model agreement is a recommendation, not a verdict.
+6. **Voice independence — don't let a distilled voice fake a vote.** Agreement only counts as
+   *independent confirmation* when the agreeing voices have independent foundations. **DeepSeek is a
+   named special case:** Anthropic and OpenAI allege it was built largely by distilling Claude and
+   GPT outputs (Anthropic cites ~24k proxy accounts and ~16M scripted Claude conversations), and it
+   often self-identifies as them. Consequence in this skill:
+   - When **DeepSeek AGREES with Claude Code or Codex**, treat it as a near-duplicate of that voice,
+     **NOT a separate vote** — its concurrence must not raise confidence (that would be circular:
+     checking a model against a fuzzy copy of itself).
+   - When **DeepSeek DISAGREES, or surfaces something the others missed**, that IS real signal —
+     count it fully. A parrot can't dissent.
+   - Net: **discount DeepSeek's agreement, keep its dissent.** Apply the same logic to any
+     distilled/open model added later.
+   *Why:* a panel's confidence should scale with the number of *independent foundations* (Anthropic,
+   OpenAI, Google), not the headcount.
+7. **The user decides.** Cross-model agreement is a recommendation, not a verdict.
 
 ---
 
@@ -132,7 +146,9 @@ timeout 330 agy -p "<boundary + proposal + the three closing lines>" --print-tim
 echo "EXIT: ${PIPESTATUS[0]}"
 ```
 
-**DeepSeek** (free via OpenCode Zen; read-only `plan` agent — `-m deepseek/deepseek-v4-pro` if funded):
+**DeepSeek** (free via OpenCode Zen; read-only `plan` agent — `-m deepseek/deepseek-v4-pro` if funded).
+**Independence caveat:** DeepSeek is distilled from Claude/GPT — at synthesis, discount its agreement
+with Claude Code/Codex and count only its dissent (design rule 6):
 ```bash
 timeout 300 opencode run "<boundary + proposal + the three closing lines>" --agent plan -m opencode/deepseek-v4-flash-free 2>/tmp/consensus-deepseek-err.txt | tee /tmp/consensus-deepseek-out.txt
 echo "EXIT: ${PIPESTATUS[0]}"
@@ -217,6 +233,9 @@ Agreement map:
   MAJORITY:   <points most endorsed>         (name who dissented + why)
   CONTESTED:  <real disagreements>           (each side's strongest argument)
 
+Independent foundations in agreement: <N of {Anthropic, OpenAI, Google}> — count by distinct
+  foundations, NOT headcount. If a UNANIMOUS only holds because DeepSeek echoed Claude Code or Codex,
+  FLAG it and do not treat DeepSeek as extra confirmation — it's a distilled near-duplicate (rule 6).
 Key assumptions the answer rests on: <the load-bearing beliefs; which are shakiest>
 Confidence: panel avg ~N% | spread <low–high>   (lower this if the Tenth Man landed)
 
