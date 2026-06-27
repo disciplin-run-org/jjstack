@@ -71,6 +71,21 @@ _filter_items() {
   done
 }
 
+# Keep only learnings tagged [cross-project] (current-project lessons already load
+# via the repo's native MEMORY.md, so surfacing them here would duplicate).
+_keep_cross_items() {
+  local line keep=0
+  while IFS= read -r line; do
+    case "$line" in
+      '- '*)
+        if printf '%s' "$line" | grep -q '\[cross-project\]'; then keep=1; printf '%s\n' "$line"; else keep=0; fi
+        ;;
+      '  '*) [ "$keep" = 1 ] && printf '%s\n' "$line" ;;
+      *) keep=0 ;;
+    esac
+  done
+}
+
 NL=$'\n'
 
 # ── Gap B: enforcement — data-driven always-rules ────────────────────────────
@@ -112,13 +127,13 @@ if [ -x "$GSTACK_BIN/gstack-learnings-search" ]; then
   LRN=$( (cd "$CWD" 2>/dev/null && timeout 2 "$GSTACK_BIN/gstack-learnings-search" --query "$PROMPT" --limit 5 --cross-project 2>/dev/null) || true )
 fi
 DEC_F=$(printf '%s\n' "$DEC" | _filter_items)
-LRN_F=$(printf '%s\n' "$LRN" | _filter_items)
+LRN_F=$(printf '%s\n' "$LRN" | _keep_cross_items | _filter_items)
 
 # ── Assemble (skip silently if nothing to say) ───────────────────────────────
 BODY=""
 [ -n "${RULES_OUT//[$' \t\n']/}" ] && BODY="${BODY}${NL}Always-rules in effect (deterministic — surfaced because their condition currently holds):${NL}${RULES_OUT}"
 [ -n "$DEC_F" ] && BODY="${BODY}${NL}Decisions on this branch (recalled from gstack decision memory):${NL}${DEC_F}${NL}"
-[ -n "$LRN_F" ] && BODY="${BODY}${NL}Relevant learnings (recalled, incl. cross-project):${NL}${LRN_F}${NL}"
+[ -n "$LRN_F" ] && BODY="${BODY}${NL}Relevant learnings from OTHER projects (cross-project — current-repo lessons already load via native memory):${NL}${LRN_F}${NL}"
 
 [ -z "${BODY//[$' \t\n']/}" ] && exit 0
 
