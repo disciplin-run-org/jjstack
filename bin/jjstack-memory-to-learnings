@@ -1,0 +1,178 @@
+#!/bin/bash
+# jjstack-memory-to-learnings — migrate native per-project memories into gstack
+# learnings so they become prompt-keyed, cross-project recall (visible to
+# gstack-learnings-search and the shared-memory.sh hook).
+#
+# DETERMINISTIC transform (algorithm-first, no LLM). DRY-RUN by default — pass
+# --apply to actually write via gstack-learnings-log.
+#
+# Source: ~/.claude/projects/<dashed-cwd>/memory/*.md  (jjstack frontmatter:
+#         name, description, metadata.type)
+# Target: gstack-learnings-log, run FROM each project's real cwd so it lands in
+#         that repo's correct (remote-based) slug.
+#
+# Mapping:
+#   key        <- frontmatter name (already kebab; must match [A-Za-z0-9_-]+)
+#   type       <- metadata.type mapped: feedback/user->preference,
+#                 project->operational, reference->tool
+#   insight    <- frontmatter description (fallback: first body paragraph)
+#   source     <- user-stated  (=> writer sets trusted=true; required so the
+#                 row is eligible for cross-project surfacing)
+#   confidence <- 8 (feedback/user) | 7 (project/reference)
+#   ts         <- file mtime (ISO)
+#   files      <- [source_file]
+#
+# EXCLUSIONS (PHI/sensitive — never enter the shared store):
+#   - any memory dir containing a .no-gbrain marker
+#   - any dir whose key matches the denylist regex below
+#
+# Usage:
+#   jjstack-memory-to-learnings            # dry-run report
+#   jjstack-memory-to-learnings --verbose  # dry-run + per-entry detail
+#   jjstack-memory-to-learnings --apply     # write (idempotent: read-deduped by key+type)
+
+set -uo pipefail
+
+APPLY=0
+VERBOSE=0
+for a in "$@"; do
+  case "$a" in
+    --apply) APPLY=1 ;;
+    --verbose|-v) VERBOSE=1 ;;
+  esac
+done
+
+PROJECTS_DIR="$HOME/.claude/projects"
+GSTACK_LOG="$HOME/.claude/skills/gstack/bin/gstack-learnings-log"
+GSTACK_SLUG="$HOME/.claude/skills/gstack/bin/gstack-slug"
+DENYLIST_RE='mychart|health|medical|discovery|hipaa|patient|clinical'
+
+YEL=$'\033[33m'; CYN=$'\033[96m'; DIM=$'\033[2m'; RST=$'\033[0m'
+
+# Reconstruct a real cwd from a dashed project key, verifying against the disk so
+# hyphenated path segments (e.g. disciplin-run) resolve correctly.
+reconstruct_cwd() {
+  # Reverse the dashed key by descending into the LONGEST dash-joined token run
+  # that exists on disk at each level (handles hyphenated dir names like
+  # google-workspace-mcp and disciplin-run). Missing tails are appended verbatim
+  # so the caller's [ -d ] test correctly flags a vanished project.
+  local key="${1#-}"
+  local IFS='-'; local toks=($key); IFS=' '
+  local n=${#toks[@]} path="" i=0
+  while [ "$i" -lt "$n" ]; do
+    local acc="" best="" j="$i" k="$i"
+    while [ "$k" -lt "$n" ]; do
+      if [ -z "$acc" ]; then acc="${toks[$k]}"; else acc="$acc-${toks[$k]}"; fi
+      [ -d "$path/$acc" ] && { best="$acc"; j="$k"; }
+      k=$((k+1))
+    done
+    if [ -z "$best" ]; then
+      local rem="${toks[$i]}" m=$((i+1))
+      while [ "$m" -lt "$n" ]; do rem="$rem-${toks[$m]}"; m=$((m+1)); done
+      path="$path/$rem"; break
+    fi
+    path="$path/$best"; i=$((j+1))
+  done
+  printf '%s' "$path"
+}
+
+map_type() {
+  case "$1" in
+    feedback|user) echo "preference" ;;
+    project)       echo "operational" ;;
+    reference)     echo "tool" ;;
+    *)             echo "" ;;
+  esac
+}
+conf_for() { case "$1" in feedback|user) echo 8 ;; *) echo 7 ;; esac; }
+
+# Derive a slug-safe key from any title (names are often full sentences, not slugs).
+slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-64 | sed -E 's/-+$//'; }
+# Infer native memory type from the filename prefix when metadata.type is absent.
+infer_type() { case "$(basename "$1")" in project_*) echo project ;; feedback_*) echo feedback ;; reference_*) echo reference ;; user_*) echo user ;; *) echo "" ;; esac; }
+
+# Extract a single top-level frontmatter scalar (name:/description:).
+fm_scalar() { sed -n '/^---$/,/^---$/p' "$1" | grep -m1 "^$2:" | sed "s/^$2:[[:space:]]*//"; }
+# Extract metadata.type (indented two spaces under metadata:).
+fm_type()   { sed -n '/^---$/,/^---$/p' "$1" | grep -m1 '^  type:' | sed 's/^  type:[[:space:]]*//'; }
+# First non-empty body paragraph line after the closing frontmatter fence.
+first_body() { awk 'f&&NF{print;exit} /^---$/{c++} c==2{f=1}' "$1"; }
+
+tot_inc_dirs=0; tot_exc_dirs=0; tot_mig=0; tot_skip=0; tot_blk=0
+INCLUDED=""; EXCLUDED=""; BLOCKED=""
+
+for mem in "$PROJECTS_DIR"/*/memory; do
+  [ -d "$mem" ] || continue
+  key=$(basename "$(dirname "$mem")")
+
+  # ---- exclusion gate ----
+  reason=""
+  [ -f "$mem/.no-gbrain" ] && reason=".no-gbrain marker"
+  if [ -z "$reason" ] && printf '%s' "$key" | grep -qiE "$DENYLIST_RE"; then
+    reason="denylist match"
+  fi
+  if [ -n "$reason" ]; then
+    EXCLUDED="${EXCLUDED}  ${YEL}EXCLUDE${RST} $key  ${DIM}($reason)${RST}"$'\n'
+    tot_exc_dirs=$((tot_exc_dirs+1))
+    continue
+  fi
+
+  cwd=$(reconstruct_cwd "$key")
+  if [ ! -d "$cwd" ]; then
+    nfiles=$(find "$mem" -maxdepth 1 -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l | tr -d ' ')
+    BLOCKED="${BLOCKED}  ${YEL}BLOCKED${RST} $key  ${DIM}(cwd not on disk: $cwd — $nfiles memories unreachable)${RST}"$'\n'
+    tot_blk=$((tot_blk+1))
+    continue
+  fi
+  slug=$( (cd "$cwd" && eval "$("$GSTACK_SLUG" 2>/dev/null)"; echo "${SLUG:-?}") )
+
+  dir_mig=0; dir_skip=0; detail=""
+  for f in "$mem"/*.md; do
+    [ -e "$f" ] || continue
+    [ "$(basename "$f")" = "MEMORY.md" ] && continue
+    name=$(fm_scalar "$f" name)
+    base="$(basename "$f" .md)"
+    mtype=$(fm_type "$f"); [ -z "$mtype" ] && mtype=$(infer_type "$f")
+    desc=$(fm_scalar "$f" description)
+    [ -z "$desc" ] && desc=$(first_body "$f")
+    fkey=$(slugify "${name:-$base}"); [ -z "$fkey" ] && fkey=$(slugify "$base")
+    gtype=$(map_type "$mtype"); [ -z "$gtype" ] && gtype="operational"  # safe catch-all
+    sreason=""
+    [ -z "$fkey" ] && sreason="no usable key"
+    [ -z "$sreason" ] && [ -z "$desc" ] && sreason="empty insight"
+    if [ -n "$sreason" ]; then
+      dir_skip=$((dir_skip+1)); detail="${detail}      ${DIM}skip${RST} $(basename "$f")  ${DIM}($sreason)${RST}"$'\n'
+      continue
+    fi
+    dir_mig=$((dir_mig+1))
+    conf=$(conf_for "$mtype")
+    mtime=$(date -u -r "$f" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    detail="${detail}      ${CYN}migrate${RST} $fkey  ${DIM}[$gtype, conf $conf]${RST}"$'\n'
+    if [ "$APPLY" = 1 ] && [ -d "$cwd" ]; then
+      json=$(jq -nc --arg k "$fkey" --arg t "$gtype" --arg i "$desc" \
+        --argjson c "$conf" --arg s "user-stated" --arg ts "$mtime" --arg f "$f" \
+        '{key:$k,type:$t,insight:$i,confidence:$c,source:$s,ts:$ts,files:[$f]}')
+      ( cd "$cwd" && "$GSTACK_LOG" "$json" >/dev/null 2>>/tmp/jjstack-mig-errors.log ) \
+        || detail="${detail}        ${YEL}^ writer rejected (see /tmp/jjstack-mig-errors.log)${RST}"$'\n'
+    fi
+  done
+
+  tot_inc_dirs=$((tot_inc_dirs+1)); tot_mig=$((tot_mig+dir_mig)); tot_skip=$((tot_skip+dir_skip))
+  INCLUDED="${INCLUDED}  ${CYN}INCLUDE${RST} $key  ${DIM}-> slug:$slug  (migrate $dir_mig, skip $dir_skip)${RST}"$'\n'
+  [ "$VERBOSE" = 1 ] && INCLUDED="${INCLUDED}${detail}"
+done
+
+mode=$([ "$APPLY" = 1 ] && echo "APPLY (writing)" || echo "DRY-RUN (no writes)")
+printf '%s\n' "=== jjstack memory -> gstack learnings :: $mode ==="
+printf '%s\n' ""
+printf '%s\n' "EXCLUDED dirs — PHI/sensitive ($tot_exc_dirs):"
+printf '%s'   "$EXCLUDED"
+printf '%s\n' ""
+printf '%s\n' "BLOCKED dirs — cwd not on disk, target slug unresolvable ($tot_blk):"
+printf '%s'   "$BLOCKED"
+printf '%s\n' ""
+printf '%s\n' "INCLUDED dirs ($tot_inc_dirs):"
+printf '%s'   "$INCLUDED"
+printf '%s\n' ""
+printf '%s\n' "TOT:  include=$tot_inc_dirs  exclude=$tot_exc_dirs  blocked=$tot_blk  would-migrate=$tot_mig  skip=$tot_skip"
+[ "$APPLY" = 0 ] && printf '%s\n' "Re-run with --apply to write.  (--verbose for per-entry detail)"
