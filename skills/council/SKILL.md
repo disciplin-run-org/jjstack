@@ -1,6 +1,6 @@
 ---
 name: council
-version: 1.1.0
+version: 1.2.0
 description: Run a structured multi-perspective council on a hard decision, design choice, debugging question, strategy problem, or tradeoff. Use when the user wants multiple viewpoints, explicit cross-examination, and a compact final verdict.
 ---
 
@@ -142,6 +142,13 @@ protocol would be disproportionate:
   plateau by round 2 and amplify sycophancy. Add a different lens, never another identical round.
 - For risky or irreversible decisions, run a pre-mortem before synthesis (assume it failed in six
   months; why?).
+- If the panel concludes the thing **can't be done / is impossible**, run the Competitor-did-it pass
+  automatically before synthesis: stipulate a well-resourced rival has ALREADY shipped it in 30 days,
+  and have each member reconstruct the method and sort the dropped constraints into genuinely hard
+  (logic / physics / law) vs. self-imposed (cost-now, tooling, convention, "nobody's done it"). The
+  asymmetry per Clarke's First Law: the Tenth Man polices a "yes", this polices a "no" — and a "no" is
+  the more suspect verdict. If a credible path falls out, overturn or downgrade the "impossible"
+  verdict loudly. Science: `references/competitor-did-it.md`.
 - Keep personas attributed — the identity IS the signal here (unlike /consensus, do NOT anonymize).
 - Prefer substance over theater: the council should improve the answer, not
   just decorate it.

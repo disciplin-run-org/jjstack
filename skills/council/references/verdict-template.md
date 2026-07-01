@@ -24,6 +24,11 @@
 ### Minority Report
 {best dissenting position}
 
+### Competitor-did-it Path
+{only if the verdict was "can't be done": the reconstructed method a competitor would have used, and
+the self-imposed constraints that fell — or a statement that the impossibility is earned because every
+dropped constraint is genuinely hard (logic/physics/law)}
+
 ### Unresolved Questions
 {what still needs evidence or user input}
 

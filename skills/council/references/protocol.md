@@ -52,6 +52,21 @@ months later, and to write the post-mortem: the top 2-3 reasons it failed and th
 sign that would have been ignored. Prospective hindsight surfaces risks members will not volunteer
 under a "does this work?" framing. Fold the named failure modes into the synthesis risks.
 
+## Automatic: Competitor-did-it (impossibility verdicts)
+
+The constructive twin of the pre-mortem and the inverse of the Tenth Man. If the panel concludes the
+thing **can't be done / is impossible / infeasible / blocked**, do NOT accept that "no" — per Clarke's
+First Law it is the most suspect verdict on the table (a universal negative: "possible" needs one
+example, "impossible" must rule out every approach). Before synthesis, tell each member that a
+well-resourced competitor has ALREADY solved it and ships to market in 30 days, and ask them to
+reconstruct it: (1) which specific constraint(s) the competitor dropped or routed around, (2) the most
+plausible method, concretely, and (3) of the dropped constraints, which are genuinely hard (logic /
+physics / law) vs. self-imposed (cost-now, tooling, convention, "nobody's done it"). Stipulated
+certainty flips the question from "can it?" (invites "no") to "they did — how?" (generative
+reconstruction). If a credible path falls out resting only on soft constraints, overturn or downgrade
+the "impossible" verdict and name the self-imposed constraints that fell; if every dropped constraint
+is genuinely hard, the impossibility is earned. Full science: `competitor-did-it.md`.
+
 ## Synthesis
 
 Use the verdict template and report:
@@ -64,6 +79,7 @@ Use the verdict template and report:
 - key assumptions the conclusion rests on (and which are shakiest)
 - minority report
 - pre-mortem failure modes (if that pass ran)
+- competitor-did-it path and the self-imposed constraints that fell (if that pass ran)
 - unresolved questions
 - recommended next steps
 
@@ -77,6 +93,9 @@ Keep the default output compact. Only include round transcripts when the user as
   - Assume the current consensus is wrong. What strongest alternative would flip the decision?
   - Name the single load-bearing assumption the consensus rests on that, if false, collapses it
     (Key Assumptions Check).
+- The asymmetry (Clarke's First Law): the Tenth Man polices a "yes". If instead the verdict is a "no"
+  — the thing can't be done / is impossible — run the **Competitor-did-it** pass (see above) before
+  synthesis. A "no" is a universal negative and the more suspect verdict; it does not get a free pass.
 - Adaptive stop: if Round 2 produced no position changes, skip Round 3 and synthesize. Accuracy
   plateaus by round 2; extra rounds mostly amplify sycophancy and entrench errors.
 - If the harness cannot support multi-round orchestration, simulate the same structure in one agent and disclose that fallback.

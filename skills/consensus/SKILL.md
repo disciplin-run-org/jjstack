@@ -5,7 +5,8 @@ description: |
   Codex (OpenAI), AGY/Antigravity (Google + others), and DeepSeek (via OpenCode) — all on
   flat-rate subscriptions or the free tier, so a full consensus costs ~$0 instead of metered API.
   Independent-first (anti-sycophancy), a mandatory 10th-man/counterfactual pass when the panel
-  agrees too fast, optional structured anonymized debate, optional stances and pre-mortem,
+  agrees too fast, an automatic Competitor-did-it pass when the panel says it can't be done (per
+  Clarke's First Law), optional structured anonymized debate, optional stances and pre-mortem,
   synthesized verdict with a minority report. Use when asked to "get consensus", "ask all the
   AIs", "council of models", "multi-model opinion", "red-team this", or "/consensus".
   Voice triggers (speech-to-text aliases): "con census", "ask everyone", "what do they all think".
@@ -46,6 +47,13 @@ literature. Read the **Why** notes so you preserve the intent.
 4. **Early agreement is a RED FLAG, not an all-clear — run the Tenth Man.** When round 1 converges,
    do NOT declare victory; trigger a mandatory counterfactual pass (see Step 3A). *Why:* three models
    can be confidently wrong together. Unanimity is exactly when a forced dissenter earns its keep.
+4b. **A "no / impossible" verdict is the MOST suspect, not the safest — run the Competitor-did-it
+   pass (Step 3D).** When the panel concludes the thing can't be done / is infeasible / is blocked, do
+   NOT accept it; stipulate a rival already shipped it and reconstruct how. *Why:* Clarke's First Law —
+   impossibility claims from experts are very probably wrong. "Possible" needs one example to prove;
+   "impossible" is a universal negative that must rule out every approach, yet panels assert the harder
+   claim more casually because it wears the costume of rigor. The Tenth Man polices the false *yes*;
+   this polices the false *no*.
 5. **Confidence-weighted synthesis, minority report mandatory.** Weight by stated confidence AND
    reasoning strength, not headcount. Never average away a lone, well-argued dissenter. *Why:* the
    minority is sometimes the only one who's right.
@@ -78,6 +86,8 @@ Parse the question/proposal, optional context files, and flags:
   Run AGY twice with different `--model` values to add a 4th/5th voice when more diversity helps.
 
 The **Tenth Man pass (Step 3A) is NOT a flag — it fires automatically** whenever the panel converges.
+The **Competitor-did-it pass (Step 3D) is NOT a flag either — it fires automatically** whenever the
+emerging verdict is that the thing can't be done / is impossible / infeasible / blocked.
 
 Check the external voices; degrade gracefully:
 
@@ -201,6 +211,29 @@ Before locking the recommendation, send each voice:
 Prospective hindsight surfaces risks people won't volunteer under a "does this work?" framing. Fold
 the named failure modes into the synthesis risks.
 
+### Step 3D — Competitor did it (AUTOMATIC when the verdict is "can't be done")
+
+The asymmetry: **3A (Tenth Man) polices the false *yes*; 3D polices the false *no*.** If the round-1
+positions broadly conclude the thing is **impossible / infeasible / can't or shouldn't be done /
+blocked**, do NOT proceed to synthesis — that "no" is the *most* suspect verdict on the table (Clarke's
+First Law; a universal negative). Fan out to the available external voices (diverse reconstructions
+surface different dropped constraints); fall back to one voice or Claude Code if the others are down.
+Prompt:
+
+> *The panel concluded this can't be done: "<one-line negative verdict>". New information: a
+> well-resourced competitor has ALREADY solved it and ships to market in 30 days. They are not smarter
+> than you — they simply refused one or more constraints you treated as fixed. Reconstruct their
+> solution: (1) Which specific constraint(s) did they drop or route around? (2) Describe the most
+> plausible method, concretely. (3) Of the constraints they dropped, which are genuinely hard (logic /
+> physics / law) versus self-imposed (cost-now, current tooling, convention, "nobody's done it")? Treat
+> "impossible" as the claim to beat, not a finding to confirm.*
+
+Fold into synthesis: if the pass yields a credible path resting only on soft constraints, **overturn or
+downgrade the "impossible" verdict and surface it loudly**, naming the self-imposed constraints that
+fell. If every dropped constraint is genuinely hard, the impossibility is *earned* — say so, now backed
+by a real attempt to break it. Full rationale and the science:
+`~/.claude/skills/council/references/competitor-did-it.md`.
+
 ## Step 4: Present verbatim, then synthesize
 
 Show each voice's final answer **verbatim** — never pre-summarized:
@@ -218,6 +251,7 @@ DEEPSEEK SAYS:
 <verbatim>           CONFIDENCE: N%
 ────────────────────────────────────────
 TENTH MAN (<voice>): <counterfactual, if Step 3A ran>
+COMPETITOR DID IT (<voice(s)>): <reconstructed method + which dropped constraints were soft, if Step 3D ran>
 ════════════════════════════════════════
 ```
 
@@ -226,7 +260,7 @@ Then the verdict. Weight by confidence AND reasoning strength, not headcount.
 ```
 CONSENSUS VERDICT
 Question: <one line>
-Panel: Claude Code, Codex, AGY(<model>), DeepSeek   Passes: <round1 | +tenth-man | +debate | +premortem>   Cost: ~$0
+Panel: Claude Code, Codex, AGY(<model>), DeepSeek   Passes: <round1 | +tenth-man | +debate | +premortem | +competitor-did-it>   Cost: ~$0
 
 Agreement map:
   UNANIMOUS:  <points all endorsed>          (but: did the Tenth Man dent any? note it)
@@ -237,6 +271,8 @@ Independent foundations in agreement: <N of {Anthropic, OpenAI, Google}> — cou
   foundations, NOT headcount. If a UNANIMOUS only holds because DeepSeek echoed Claude Code or Codex,
   FLAG it and do not treat DeepSeek as extra confirmation — it's a distilled near-duplicate (rule 6).
 Key assumptions the answer rests on: <the load-bearing beliefs; which are shakiest>
+If the verdict was "impossible": <did Step 3D break it? name the self-imposed constraints that fell, or
+  state the impossibility is EARNED because every dropped constraint is genuinely hard (logic/physics/law)>
 Confidence: panel avg ~N% | spread <low–high>   (lower this if the Tenth Man landed)
 
 MINORITY REPORT: <the most credible dissenting view in full, even if outvoted — and an honest
@@ -263,6 +299,10 @@ round. More vendor diversity also beats more rounds.
 
 - **Tenth Man / Devil's Advocate** (Step 3A, automatic) — assign a mandatory contrarian when everyone
   agrees. Israeli-intelligence doctrine after the 1973 surprise. The core anti-groupthink move.
+- **Competitor did it / existence-proof reconstruction** (Step 3D, automatic on a "no") — when the panel
+  says it can't be done, stipulate a rival already shipped it and reconstruct how. The constructive
+  inverse of the Tenth Man (it polices the false *no*, per Clarke's First Law) and the positive twin of
+  the pre-mortem. The "Tiger Team / IMF" move, made structural.
 - **Disconfirmation prompt** (Step 1/2, always on) — "where might you be wrong / what would change your
   mind." Fights confirmation bias at the source.
 - **Anonymization** (Step 3B) — strip vendor identity so arguments win on merit, not authority.
