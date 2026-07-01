@@ -52,7 +52,16 @@ fi
 create_progress_bar() {
     local pct=$1
     local label=$2
+    local min_label_width=${3:-0}   # center-pad label to this width (0 = as-is)
     local pct_int=$(echo "$pct" | awk '{printf "%d", $1}')
+
+    # Center-pad the label so short labels keep a consistent bar length
+    if [ "${#label}" -lt "$min_label_width" ]; then
+        local total_pad=$(( min_label_width - ${#label} ))
+        local left_pad=$(( total_pad / 2 ))
+        local right_pad=$(( total_pad - left_pad ))
+        label="$(printf '%*s' "$left_pad" '')${label}$(printf '%*s' "$right_pad" '')"
+    fi
 
     # Background colors: green <70%, yellow 70-89%, red >=90%
     local bg fg
@@ -105,6 +114,8 @@ fi
 
 # -- Trailing segment: usage bar (OAuth) or cost label (API key) --
 trailing_segment=""
+# Weekly (7-day) utilization bar — OAuth only, sits right of the 5h bar
+weekly_segment=""
 
 if [ "$AUTH_MODE" = "oauth" ]; then
     # OAuth path: 5-hour utilization from Anthropic API (cached)
@@ -152,12 +163,16 @@ PYEOF
         disown
     fi
 
+    weekly_pct=0
     if [ -f "$USAGE_CACHE_FILE" ]; then
         usage_pct=$(jq -r '.five_hour.utilization // 0' "$USAGE_CACHE_FILE" 2>/dev/null | awk '{printf "%d", $1}')
+        weekly_pct=$(jq -r '.seven_day.utilization // 0' "$USAGE_CACHE_FILE" 2>/dev/null | awk '{printf "%d", $1}')
     fi
 
     [ -z "$usage_pct" ] && usage_pct=0
-    trailing_segment=$(create_progress_bar "$usage_pct" "usage")
+    [ -z "$weekly_pct" ] && weekly_pct=0
+    trailing_segment=$(create_progress_bar "$usage_pct" "5h" 5)
+    weekly_segment=$(create_progress_bar "$weekly_pct" "week" 5)
 
 else
     # API-key path: session dollar spend from statusline input JSON.
@@ -202,5 +217,6 @@ line="${CYAN}${model}${RESET}${effort_part}${SEP}${folder}"
 [ -n "$git_part" ]   && line="${line}${SEP}${git_part}"
 [ -n "$context_bar" ] && line="${line}${SEP}${context_bar}"
 [ -n "$trailing_segment" ] && line="${line}${SEP}${trailing_segment}"
+[ -n "$weekly_segment" ] && line="${line}${SEP}${weekly_segment}"
 
 echo -e "$line"
