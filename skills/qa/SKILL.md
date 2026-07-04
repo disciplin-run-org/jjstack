@@ -8,7 +8,7 @@ description: |
   Trigger on: "run QA", "test the site", "QA this feature", "fix QA findings",
   "QA the deployed app", "QA with fixes", "QA loop with fixes", "run QA loop".
   Do NOT trigger for: report-only QA (use /qa-only), TDD loop between iris-qa
-  and a code worker (use /qa-loop), adversarial audit of the test suite
+  and a code worker (use /qa-build-loop), adversarial audit of the test suite
   (use /qa-review), or loading QA operational rules (use /jj-qa).
 allowed-tools:
   - Read

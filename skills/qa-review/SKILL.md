@@ -11,7 +11,7 @@ description: |
   good enough", "QA score", "regression health", "mutation score",
   "test coverage audit", "QA check", "audit the test suite".
   Do NOT trigger for: browser QA execution (use /qa or /qa-only), TDD
-  loop between iris-qa and a code worker (use /qa-loop), or loading QA
+  loop between iris-qa and a code worker (use /qa-build-loop), or loading QA
   operational rules (use /jj-qa).
 allowed-tools:
   - Read

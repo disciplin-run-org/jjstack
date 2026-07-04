@@ -9,7 +9,7 @@ description: |
   "report-only QA", "test and report only", "QA report", "test the site and
   report".
   Do NOT trigger for: QA with auto-fix (use /qa), TDD loop between iris-qa
-  and a code worker (use /qa-loop), adversarial audit of the test suite
+  and a code worker (use /qa-build-loop), adversarial audit of the test suite
   (use /qa-review), or loading QA operational rules (use /jj-qa).
 allowed-tools:
   - Read

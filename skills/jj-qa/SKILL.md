@@ -8,7 +8,7 @@ description: |
   "Kano test depth", "QA philosophy", "what are our QA rules", "QA cleanup
   rules", "Docker-first QA".
   Do NOT trigger for: running browser QA (use /qa or /qa-only), TDD loop
-  between iris-qa and a code worker (use /qa-loop), or auditing test-suite
+  between iris-qa and a code worker (use /qa-build-loop), or auditing test-suite
   health (use /qa-review).
 allowed-tools:
   - Read

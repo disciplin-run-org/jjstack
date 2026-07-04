@@ -204,7 +204,7 @@ For each cluster of size 2+:
 - Identify the canonical entry (highest recurrence_count, or longest
   content, or most recent - heuristic, documented per cluster)
 - Draft a merged version (or recommend "leave alone" if the entries
-  are topically similar but functionally different - the qa-loop /
+  are topically similar but functionally different - the qa-build-loop /
   qa-review / jj-qa case)
 - Write a proposal block to
   `~/.jjstack/groom-proposals/<target>-<YYYYMMDD>.md` with:
