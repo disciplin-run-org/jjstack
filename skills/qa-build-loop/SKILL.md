@@ -69,16 +69,47 @@ it isn't in this skill or a memory Jesper wrote, it doesn't exist.
 - **Always delegate detail work to workers via QM** (`clear_first` for
   unrelated tasks per /context-hygiene). The orchestrator's context is for
   orchestration and verification only.
-- **≥85% context**: write the handover memory + a pointer to the
-  authoritative transcript, then **file a QM job addressed to yourself with
-  the clear-context flag set** — QM clears the session and delivers the
-  resume order (the instruction survives the clear as the dispatched
-  prompt). The resume order must say: read the ENTIRE previous session
-  transcript (not just the tail), reload /product-manager-review
-  /kano-model /dev-philosophy /python-coder, verify live state (git, QM
-  queue, container health — never trust the summary alone), continue.
+- **≥85% context**: the self-clear must be ATOMIC — the clear and the
+  resume order are one QM operation, in this exact sequence:
+  1. Write the handover memory + a pointer to the authoritative transcript.
+  2. `qm_queue_add(worker=<your own worker name>, clear_first=true,
+     priority=high, prompt=<resume order>)`.
+  3. **Verify the item exists** (`qm_queue_read`) BEFORE ending the turn.
+  4. End the turn with NO further action. QM clears you and delivers the
+     resume order. **Never type `/clear` yourself, never ask the manager
+     to clear, never clear before step 3 confirms** — a clear without the
+     queued resume order produces an amnesiac session.
+- **The resume order template** (the dispatched prompt MUST begin with the
+  skill invocation, because /clear wipes these instructions):
+
+  ```
+  /qa-build-loop RESUME — you are the continuation of an in-flight
+  overnight run. Do not ask the user anything. 1) Read the handover:
+  <memory file path>. 2) Read the ENTIRE previous session transcript
+  (not just the tail): <transcript path>. 3) Reload /product-manager-review
+  /kano-model /dev-philosophy /python-coder. 4) Verify live state (git,
+  qm_queue_list, container health) — never trust the summary alone.
+  5) Continue the loop from: <precise next actions>.
+  ```
+
 - Stopping "for quality" or "for a fresh context" without the handover +
   resume mechanism is forbidden.
+- **Identity caveat (known problem):** after a clear, the session may not
+  know its own worker name, and QM dispatch won't match the pending resume
+  item. Recover deterministically: `echo $TM_WORKER_NAME` (set by the
+  claude-tm wrapper, survives /clear) — then check QM for your pending
+  item. The clean long-term fix is a **fresh restart (no `--continue`)**
+  so the startup sequence types the automatic `/rename` and re-registers
+  the worker — tubemail's manager currently hardcodes `--continue` on
+  every restart (`manager.py:1889`), so this is a tubemail feature (QM
+  work order filed). Once it ships, prefer: queue the resume job →
+  request fresh restart → startup re-registers → QM dispatches.
+
+Evidence for the atomicity rule: on 2026-07-04 a session cleared without
+the queued resume order landing; the fresh context woke to an empty
+heartbeat notification, had no skill instructions (wiped by the clear),
+didn't know its own worker name, and ended with "Just say the word" — the
+exact stall this skill exists to prevent.
 
 Evidence: one session stopped at 50% context "for highest quality from a
 fresh context" — Jesper: *"you stopped again, waiting for me to decide
@@ -109,6 +140,10 @@ command, or in-flight foreground work. On every wake:
 Extras proven in the field:
 - **Monitor the QM queue** for your own filed items (a 60s read-only poll
   of QM state worked well on 2026-07-04).
+- **Heartbeats must write state to their output file** — every beat prints
+  what it watched and found (queue ids, prompt cleared y/n, worker state).
+  An empty output file makes a post-clear wake useless (2026-07-04: the
+  amnesiac session's only clue was "heartbeat completed, output empty").
 - **Bounce unverifiable "finished" notices** with a commit-sha bar: demand
   the sha + evidence via `qm_queue_followup` rather than closing on an ACK
   (the #535–#539 false-alarm pattern).
@@ -151,7 +186,7 @@ How to decide without Jesper, in order:
    with a stated bias for **Musk-simplify and the right long-term solution
    over a temporary patch**.
 4. Still in doubt → the right long-term solution, Musk-simplified.
-5. **Journal every decision** in `jjstack/qa-build-loop/decisions-<date>.md`
+5. **Journal every decision** in `jjstack/qa-build-loop/decisions-<YYYY-MM-DD>.md`
    (subject repo), including the council verdict + minority report when one
    ran.
 
@@ -259,6 +294,33 @@ over each other's working tree. Both the shared-worktree commit hazard and
 the "docker-compose fix stuck on another session's WIP branch" stall trace
 to shared checkouts.
 
+## Rule 14: Amnesia recovery — a cleared session mid-run resumes itself
+
+If you find yourself with a freshly cleared context and any evidence of an
+unfinished qa-build-loop run, **you are the resumed session — recover, do
+not ask.** Evidence, any one of:
+
+- a `jjstack/qa-build-loop/decisions-<YYYY-MM-DD>.md` for today with no
+  matching `morning-report-<YYYY-MM-DD>.md`
+- a handover memory (`project_*handover*` / MEMORY.md pointer)
+- a pending/in-flight QM item addressed to you (`qm_queue_list`)
+- a background-task notification named after this skill
+
+Recovery, in order:
+
+1. **Recover your identity**: `echo $TM_WORKER_NAME` — deterministic, set
+   by the claude-tm wrapper, survives /clear. If the channel looks dead,
+   `tm_self_reconnect_mcp` / the tubemail-channel reconnect skill.
+2. **Find your resume order**: `qm_queue_list` for pending/in-flight items
+   addressed to you; read it (`qm_queue_read`) — it IS your work order.
+3. Then the resume-order steps from Rule 3: reload this skill, read the
+   handover, read the ENTIRE previous session transcript from
+   `~/.claude/projects/<cwd-slug>/` (newest large `.jsonl` before your
+   own), reload the four key skills, verify live state, continue.
+
+Listing options and ending with "just say the word" is the failure mode,
+not a fallback — it happened on 2026-07-04 and cost the night.
+
 ## Phase −1: Pre-flight checklist (run while Jesper is still there)
 
 The pre-flight is the ONE sanctioned place to interrogate Jesper — **ask
@@ -278,12 +340,12 @@ Then, mechanically:
    allowlist (Rule 6).
 4. **Containers**: health sweep of every involved service + the twin.
 5. **Fixture host**: verified present, deterministic ids confirmed.
-6. **Journal**: create `jjstack/qa-build-loop/decisions-<date>.md`.
+6. **Journal**: create `jjstack/qa-build-loop/decisions-<YYYY-MM-DD>.md`.
 7. **Machinery**: arm the QM monitor + the permission heartbeat.
 
 ## The morning report
 
-One file: `jjstack/qa-build-loop/morning-report-<date>.md` in the subject
+One file: `jjstack/qa-build-loop/morning-report-<YYYY-MM-DD>.md` in the subject
 repo. Contents: scoreboard (per-scope pass rates, cycle counts, red→green
 deltas), decision-journal digest (incl. council verdicts), parked forks
 with recommendations, deferred visual checks with screenshots, infra
