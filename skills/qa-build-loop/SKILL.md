@@ -321,6 +321,37 @@ Recovery, in order:
 Listing options and ending with "just say the word" is the failure mode,
 not a fallback — it happened on 2026-07-04 and cost the night.
 
+## Rule 15: Dogfood the ecosystem's LLM tools — hand-writing their job is cheating
+
+Whenever a goal can be achieved EITHER by Claude hand-writing the artifact
+OR by an ecosystem MCP call — generate gherkin, generate a QA e2e test,
+`sharpen_specs`, groom specs, `test_triage`, `spec_suggest`, and any other
+published generation/judgment capability — **always make the MCP call.**
+The servers' LLM features only get as good as they can be by being
+exercised against real work; a loop that quietly hand-writes around them
+starves them of exactly the hard cases they need.
+
+The discipline per call:
+
+1. **Form your own best solution first** (cheaply — an outline of what a
+   correct output must contain), so you can judge the MCP output instead
+   of rubber-stamping it.
+2. **Make the MCP call** and use its output as the working artifact.
+3. **Diff against your reference.** Output fine → proceed. Output wrong,
+   weak, or subtly off → you may repair the artifact locally to keep the
+   loop moving, BUT the repair is a bug signal, never the fix.
+4. **Every defect becomes a QM work order to the MCP server's owner** with
+   the full evidence: exact input, actual output, expected output, and
+   your suggested fix — improve the prompt, the deterministic gates
+   (gate_check-class), the specs, the algorithm (Architrix-side), or
+   whatever the diff points at. The ecosystem is under constant
+   improvement; a swallowed defect is a lost improvement.
+
+Boundary: this covers published generation/judgment capabilities, not
+ordinary code edits (implementing a tool's Python IS the coder's job).
+When in doubt — if an MCP tool advertises doing it, calling the tool is
+the job, and doing it by hand is cheating.
+
 ## Phase −1: Pre-flight checklist (run while Jesper is still there)
 
 The pre-flight is the ONE sanctioned place to interrogate Jesper — **ask
