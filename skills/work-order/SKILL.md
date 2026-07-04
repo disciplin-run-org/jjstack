@@ -56,7 +56,12 @@ If you can't write this, the deliverable is underspecified.>
 
 ## Done when
 <Binary pass/fail criteria. "All tests green AND branch merged to main AND
-CLAUDE.md reflects new rule." No "looks good" — no judgment calls at the gate.>
+CLAUDE.md reflects new rule." No "looks good" — no judgment calls at the gate.
+Default gate: DONE = done-done — the canonical 8-rung Definition of Done in
+global CLAUDE.md (code complete, unit tests green, committed+pushed,
+merged+branch deleted, deployed live, QA green, specs/ADR updated, ready
+for end-user acceptance). If a rung genuinely doesn't apply, say so in the
+order; the recipient reports "done N/8" naming missing rungs otherwise.>
 ```
 
 ## Optional sections
