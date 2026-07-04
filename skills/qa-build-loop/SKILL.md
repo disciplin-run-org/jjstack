@@ -94,16 +94,16 @@ it isn't in this skill or a memory Jesper wrote, it doesn't exist.
 
 - Stopping "for quality" or "for a fresh context" without the handover +
   resume mechanism is forbidden.
-- **Identity caveat (known problem):** after a clear, the session may not
-  know its own worker name, and QM dispatch won't match the pending resume
-  item. Recover deterministically: `echo $TM_WORKER_NAME` (set by the
-  claude-tm wrapper, survives /clear) — then check QM for your pending
-  item. The clean long-term fix is a **fresh restart (no `--continue`)**
-  so the startup sequence types the automatic `/rename` and re-registers
-  the worker — tubemail's manager currently hardcodes `--continue` on
-  every restart (`manager.py:1889`), so this is a tubemail feature (QM
-  work order filed). Once it ships, prefer: queue the resume job →
-  request fresh restart → startup re-registers → QM dispatches.
+- **Identity loss (solved 2026-07-04, QM #552/#553/#555):** after a bare
+  clear, the session may not know its own worker name and QM dispatch
+  won't match the pending resume item. The canonical recovery is
+  **`tm_restart(worker, fresh=true)`** — restarts without `--continue`,
+  the startup `/rename` re-registers the worker, and the manager
+  auto-types `/sync-inbox`, which resolves identity from the session env
+  and reads the timeline via `tm_receive(worker=…)`. Proven live: the
+  recovered session found its pending QM items, verified evidence, and
+  closed its review duty unaided. Inline fallback: `echo $TM_WORKER_NAME`
+  (set by the wrapper, survives /clear) → `qm_queue_list`.
 
 Evidence for the atomicity rule: on 2026-07-04 a session cleared without
 the queued resume order landing; the fresh context woke to an empty
