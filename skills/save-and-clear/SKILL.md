@@ -290,16 +290,20 @@ When 5a returned `WORKER:<name>`:
    DONE (nothing to resume), skip this step.
 
 2. **Signal the fresh restart** exactly as tubemail's `/restart` skill
-   does in fresh mode:
+   does in fresh mode — **to the MANAGER entity, exactly once**:
 
    ```
-   mcp__tubemail__tm_send(worker="<name>",
+   mcp__tubemail__tm_send(worker="<name>-manager",
        message="restart fresh",
        meta={"kind": "restart", "fresh": True})
    ```
 
-   (`tm_send` routes restart signals to `<name>-manager` — pass the bare
-   worker name from 5a, never a `-manager` suffix.)
+   Unlike the old typed-`/clear` path (where tm_send auto-routed the
+   slash-command), "restart fresh" is NOT a slash-command — you must
+   address `<name>-manager` yourself. Send it ONCE and never also call
+   `tm_restart` on yourself: the fresh flag is one-shot, and a duplicate
+   signal makes the second restart revert to `--continue` (observed
+   live 2026-07-04).
 
 If the tubemail tools are unavailable (hub down): surface that verbatim
 and fall through to **5c**.

@@ -84,15 +84,31 @@ unhandled inbound — prompt injection timed by readiness, not by a clock.
 Belt and braces with the QM order: QM dispatch delivers #<QID> when the
 worker registers idle. Either carrier alone bootstraps the successor.
 
-### 3. Signal the fresh restart
-
-Now /save-and-clear's step-5b restart signal:
+### 3. Signal the fresh restart — to the MANAGER, exactly once
 
 ```
-mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>",
+mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>-manager",
     message="restart fresh",
     meta={"kind": "restart", "fresh": True})
 ```
+
+Three hard-won rules (both violated live on 2026-07-04, run 1 and 2 of
+the first field test):
+
+- **Target `<name>-manager`, not the bare worker name.** "restart
+  fresh" is not a slash-command, so tm_send does NOT auto-route it; sent
+  to the bare name it lands on your own timeline as mail and no restart
+  happens.
+- **Send it ONCE.** Do not also call `tm_restart`, do not retry on a
+  slow response. The fresh flag is one-shot: a duplicate signal kills
+  the newborn fresh child and the second restart reverts to
+  `--continue`, resuming the stale conversation.
+- **Do NOT call `tm_restart(worker=<self>)` from inside your own
+  session.** It force-kills your process mid-tool-call; the dying
+  transport can duplicate the signal (observed: two force_restarts
+  0.14s apart). tm_restart is for EXTERNAL recovery of hung workers;
+  self-rollover uses the polite manager signal above (the manager types
+  /exit when your prompt is ready — clean, single, buffered).
 
 Never a bare /clear. The manager restarts WITHOUT `--continue`; the
 startup `/rename` re-registers identity (QM #552); auto-`/sync-inbox`
