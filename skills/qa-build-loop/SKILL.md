@@ -269,6 +269,15 @@ your own image analysis. Fix what the comparison catches. Most of the
 audit's "eyeball the live UI" asks were resolvable this way (the ✓-vs-✅
 glyph mismatch was visible in the screenshot the whole time).
 
+**Capability fallback (worker sessions often can't screenshot):** chrome
+MCP tools may be barred and /browse may return text-only in a worker
+session (hit live 2026-07-04 by both architrix and iris-qa-ui). Then
+route the pixel-verification as a QM work order to iris-qa — its
+Playwright run measures the rendered result objectively (heights,
+colors, glyphs) and doubles as the QA-green rung. Delegated
+verification counts as self-verify; a claim with neither screenshot nor
+Playwright measurement does not.
+
 Only genuinely subjective look-and-feel calls defer — into the morning
 report, with screenshots attached.
 
