@@ -1,21 +1,25 @@
 ---
 name: browse
-version: 0.1.0
+version: 0.2.0
 description: |
-  Adaptive web-page reader: try the fastest backend first, fall back to
-  slower-but-more-capable backends on failure, learn the winning method
-  per domain, cache it in browse-routes.json. Backends in order: curl
-  (fastest, no JS, no auth), cookied headless chrome (JS + your session
-  cookies), claude-in-chrome MCP (real browser tab, anti-bot stealth),
-  Playwright via gstack browse daemon (full automation, slowest).
+  Adaptive web-page reader AND page screenshotter: try the fastest
+  backend first, fall back to slower-but-more-capable backends on
+  failure, learn the winning method per domain, cache it in
+  browse-routes.json. Read backends in order: curl (fastest, no JS, no
+  auth), cookied headless chrome (JS + your session cookies),
+  claude-in-chrome MCP (real browser tab, anti-bot stealth), Playwright
+  via gstack browse daemon (full automation, slowest). Screenshot mode
+  renders the page to a PNG that Claude Reads and visually analyzes —
+  works in worker sessions with no chrome MCP.
   Trigger on: "browse", "read this page", "fetch the URL", "scrape this",
   "get the page content", "load this URL", "what's on this page",
-  "read the docs at <url>".
+  "read the docs at <url>", "screenshot <url>", "visual check <url>",
+  "what does the page look like", "browse --screenshot".
   Do NOT trigger for: file reads (use Read), git operations, or anything
   that does not start from a URL. For browser-driven QA testing of a
-  deployed app (clicking, asserting, screenshots), use /qa, /qa-only,
-  or /browse-daemon-direct. This skill is for READING; QA skills are for
-  TESTING.
+  deployed app (clicking, asserting, multi-step flows), use /qa,
+  /qa-only, or /browse-daemon-direct. This skill READS and LOOKS AT
+  pages; QA skills TEST them.
 allowed-tools:
   - Read
   - Bash
@@ -129,6 +133,51 @@ metadata block:
 
 The metadata helps the caller know whether they hit cache and what
 backend won.
+
+## Screenshot mode
+
+When the ask is visual — "screenshot <url>", "visual check <url>",
+"does the UI look right", pixel-verifying a UI change (qa-build-loop
+Rule 11) — render the page to a PNG and **Read the PNG** (Claude
+analyzes images natively). Backend ladder, cheapest first:
+
+### Backend S1: headless chrome CLI (no MCP, no daemon — works in any worker session)
+
+```bash
+google-chrome --headless=new --disable-gpu --window-size=1440,900 \
+  --screenshot=<scratchpad>/shot-<host>-<ts>.png \
+  --virtual-time-budget=8000 "<URL>"
+```
+
+- `--virtual-time-budget=8000` lets SPAs finish rendering before capture.
+- `--window-size` sets the viewport; use `1440,900` default, or the size
+  the check calls for (e.g. `390,844` for mobile).
+- Binary fallback order: `google-chrome`, `google-chrome-stable`,
+  `chromium`.
+- Then `Read` the PNG and compare what you SEE against the requirement.
+  State the comparison explicitly (e.g. "sidebar reads 'Iris-QA' mixed
+  case ✓; panels fill viewport ✗ — 60vh cap still visible").
+- Full-page height: add `--window-size=1440,<tall>` (e.g. 3000) when the
+  check concerns below-the-fold content.
+
+Proven live 2026-07-04: one command captured the running iris-qa SPA
+(localhost:8004) and the brand-casing fix was verifiable in the image.
+
+### Backend S2: Playwright via gstack browse daemon
+
+When S1's capture is wrong (page needs real cookies, fights headless, or
+needs element-level shots / precise measurements): the gstack browse
+daemon's Playwright can screenshot and also MEASURE (bounding boxes,
+computed styles). Use for numbers, S1 for looks.
+
+### Backend S3: claude-in-chrome MCP
+
+Interactive sessions only (workers usually have it barred):
+`tabs_create_mcp` + the computer/screenshot tools. Never a dependency in
+unattended loops.
+
+Cache note: screenshot routing reuses `browse-routes.json` hosts — a
+host cached as `playwright` for reading should start at S2 for shots.
 
 ## Important rules
 

@@ -269,14 +269,19 @@ your own image analysis. Fix what the comparison catches. Most of the
 audit's "eyeball the live UI" asks were resolvable this way (the ✓-vs-✅
 glyph mismatch was visible in the screenshot the whole time).
 
-**Capability fallback (worker sessions often can't screenshot):** chrome
-MCP tools may be barred and /browse may return text-only in a worker
-session (hit live 2026-07-04 by both architrix and iris-qa-ui). Then
-route the pixel-verification as a QM work order to iris-qa — its
-Playwright run measures the rendered result objectively (heights,
-colors, glyphs) and doubles as the QA-green rung. Delegated
-verification counts as self-verify; a claim with neither screenshot nor
-Playwright measurement does not.
+**Every worker CAN screenshot — /browse screenshot mode.** Chrome MCP
+tools may be barred in worker sessions, but /browse's screenshot mode
+needs only Bash: `google-chrome --headless=new --screenshot=<png>
+--virtual-time-budget=8000 <url>`, then Read the PNG and compare what
+you SEE against the requirement (proven live 2026-07-04 on the iris-qa
+SPA — brand-casing was verifiable in the image). Pre-allowlist the
+command in pre-flight (Rule 6). Escalation ladder for visuals:
+1. /browse screenshot (S1 headless chrome) — looks, layout, glyphs, colors.
+2. gstack browse daemon Playwright — MEASUREMENTS (heights, boxes,
+   computed styles) and cookie-authed pages.
+3. QM work order to iris-qa Playwright — when the check should double as
+   the QA-green rung anyway.
+A claim with neither a screenshot nor a measurement is not verified.
 
 Only genuinely subjective look-and-feel calls defer — into the morning
 report, with screenshots attached.
