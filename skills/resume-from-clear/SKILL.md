@@ -98,8 +98,15 @@ ls -t ~/.claude/projects/<dashified-cwd>/*.jsonl | head -5
 
 The predecessor is the newest large `.jsonl` that is not your own
 session. Read it completely (delegate to an Explore agent if it is
-huge — you need the conclusions in context, not every byte). Confirm the
-handover against it; where they disagree, the transcript wins.
+huge — you need the conclusions in context, not every byte). If you
+must economize, **extract the USER messages first, assistant text
+second** — the user's inbound corrections and instructions are the
+highest-value content and the exact thing a handover summary loses
+(first field run 2026-07-04: the successor jq'd assistant-text-only and
+read the tail; it got away with it only because the resume order
+happened to carry the user's merge-gate instruction). Confirm the
+handover against the transcript; where they disagree, the transcript
+wins.
 
 ### 6. Reload the key skills
 
