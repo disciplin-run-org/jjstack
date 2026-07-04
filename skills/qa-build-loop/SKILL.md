@@ -69,41 +69,23 @@ it isn't in this skill or a memory Jesper wrote, it doesn't exist.
 - **Always delegate detail work to workers via QM** (`clear_first` for
   unrelated tasks per /context-hygiene). The orchestrator's context is for
   orchestration and verification only.
-- **≥85% context**: the self-clear must be ATOMIC — the clear and the
-  resume order are one QM operation, in this exact sequence:
-  1. Write the handover memory + a pointer to the authoritative transcript.
-  2. `qm_queue_add(worker=<your own worker name>, clear_first=true,
-     priority=high, prompt=<resume order>)`.
-  3. **Verify the item exists** (`qm_queue_read`) BEFORE ending the turn.
-  4. End the turn with NO further action. QM clears you and delivers the
-     resume order. **Never type `/clear` yourself, never ask the manager
-     to clear, never clear before step 3 confirms** — a clear without the
-     queued resume order produces an amnesiac session.
-- **The resume order template** (the dispatched prompt MUST begin with the
-  skill invocation, because /clear wipes these instructions):
-
-  ```
-  /qa-build-loop RESUME — you are the continuation of an in-flight
-  overnight run. Do not ask the user anything. 1) Read the handover:
-  <memory file path>. 2) Read the ENTIRE previous session transcript
-  (not just the tail): <transcript path>. 3) Reload /product-manager-review
-  /kano-model /dev-philosophy /python-coder. 4) Verify live state (git,
-  qm_queue_list, container health) — never trust the summary alone.
-  5) Continue the loop from: <precise next actions>.
-  ```
-
-- Stopping "for quality" or "for a fresh context" without the handover +
-  resume mechanism is forbidden.
-- **Identity loss (solved 2026-07-04, QM #552/#553/#555):** after a bare
-  clear, the session may not know its own worker name and QM dispatch
-  won't match the pending resume item. The canonical recovery is
-  **`tm_restart(worker, fresh=true)`** — restarts without `--continue`,
-  the startup `/rename` re-registers the worker, and the manager
-  auto-types `/sync-inbox`, which resolves identity from the session env
-  and reads the timeline via `tm_receive(worker=…)`. Proven live: the
-  recovered session found its pending QM items, verified evidence, and
-  closed its review duty unaided. Inline fallback: `echo $TM_WORKER_NAME`
-  (set by the wrapper, survives /clear) → `qm_queue_list`.
+- **≥85% context: run /save-and-clear.** The exit transition is factored
+  into that skill so it can be tested independently: memory sweep →
+  handover → **QM resume order addressed to yourself** (verified to exist
+  before ending the turn) → **fresh-restart signal** (restart WITHOUT
+  `--continue`; the startup `/rename` re-registers identity and the
+  manager auto-types `/sync-inbox` — tubemail QM #552/#553/#555). Your
+  resume order's prompt must begin with `/qa-build-loop RESUME` and name:
+  the handover memory path, the transcript path, the four key skills, and
+  the precise next actions — /resume-from-clear consumes it on the other
+  side.
+- **Never type `/clear` yourself, never ask the manager for a bare
+  clear** — a clear without the queued resume order and identity
+  re-registration produces an amnesiac session (2026-07-04: fresh context
+  woke to an empty heartbeat, no skill, no name, ended with "Just say the
+  word").
+- Stopping "for quality" or "for a fresh context" without the
+  /save-and-clear transition is forbidden.
 
 Evidence for the atomicity rule: on 2026-07-04 a session cleared without
 the queued resume order landing; the fresh context woke to an empty
@@ -320,17 +302,16 @@ not ask.** Evidence, any one of:
 - a pending/in-flight QM item addressed to you (`qm_queue_list`)
 - a background-task notification named after this skill
 
-Recovery, in order:
-
-1. **Recover your identity**: `echo $TM_WORKER_NAME` — deterministic, set
-   by the claude-tm wrapper, survives /clear. If the channel looks dead,
-   `tm_self_reconnect_mcp` / the tubemail-channel reconnect skill.
-2. **Find your resume order**: `qm_queue_list` for pending/in-flight items
-   addressed to you; read it (`qm_queue_read`) — it IS your work order.
-3. Then the resume-order steps from Rule 3: reload this skill, read the
-   handover, read the ENTIRE previous session transcript from
-   `~/.claude/projects/<cwd-slug>/` (newest large `.jsonl` before your
-   own), reload the four key skills, verify live state, continue.
+Recovery = **run /resume-from-clear** — the entry-side twin of
+/save-and-clear, factored out so the transition is independently
+testable. Its ladder: identity from `$TM_WORKER_NAME` → timeline via
+`tm_receive(worker=…)` (never `tm_my_inbox`) → QM resume order
+(`qm_queue_list`/`qm_queue_read`) → handover memory → the ENTIRE
+previous session transcript → reload the key skills → verify live state
+→ continue. If the session is so lost it can't even do that, the
+outside recovery is `tm_restart(worker, fresh=true)` — proven
+2026-07-04: the recovered session found its pending QM items, verified
+evidence, and closed its review duty unaided.
 
 Listing options and ending with "just say the word" is the failure mode,
 not a fallback — it happened on 2026-07-04 and cost the night.

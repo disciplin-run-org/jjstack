@@ -7,11 +7,12 @@ description: >
   Writes one memory file per durable lesson with proper frontmatter, updates
   MEMORY.md, reports what was saved versus deliberately skipped, then closes:
   if the session is a tubemail worker (detected by `$TM_WORKER_NAME` being
-  set) the skill asks the worker's manager to type `/clear` into the pty
-  via `mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>", message="/clear")`
-  — `tm_send` auto-routes harness commands to `<worker>-manager`, so the
-  skill must pass the bare worker name, NOT the manager-suffixed form;
-  otherwise it ends the reply with "all pertinent information saved -
+  set) the skill files a QM resume order addressed to itself (when work
+  continues) and signals a FRESH restart via the manager (restart without
+  --continue: the startup /rename re-registers identity and the manager
+  auto-types /sync-inbox) — never a bare /clear, which loses worker
+  identity; the successor session bootstraps via /resume-from-clear.
+  Otherwise it ends the reply with "all pertinent information saved -
   ready to clear" so the user types `/clear` themselves.
   Use whenever the user says "save before clear",
   "checkpoint memory", "save pertinent info", "prep for a clear", "what should
@@ -259,44 +260,60 @@ tool list for `mcp__tubemail-channel__*` was unreliable — the model does
 not always introspect the deferred listing reliably during a skill run, so
 detection silently fell through to 5c. The Bash probe is unambiguous.
 
-#### 5b. Tubemail-driven close
+#### 5b. Tubemail-driven close — QM resume order + FRESH restart
 
-When 5a returned `WORKER:<name>`, ask the manager to type `/clear` into
-this session's pty by making ONE call to `tm_send`:
+**Never signal a bare `/clear`.** Proven live 2026-07-04: a cleared
+worker loses its own name, QM dispatch stops matching it, and the fresh
+context sits idle asking "what would you like to do next". The designed
+close is a **fresh restart** (tubemail QM #552/#553/#555): the manager
+restarts claude WITHOUT `--continue`, the startup sequence types the
+automatic `/rename` (identity re-registered), and the manager auto-types
+`/sync-inbox` so the successor session catches up on its timeline.
 
-```
-mcp__tubemail__tm_send(worker="<name>", message="/clear")
-```
+When 5a returned `WORKER:<name>`:
 
-**Pass the worker name straight from 5a — do NOT add a `-manager` suffix
-yourself.** `tm_send` recognises `/clear` as a built-in harness command,
-appends `-manager` for you, and routes a `kind: "type:/clear"` event so
-the manager types `/clear` into this session's pty within ~1-2 seconds.
-Adding the suffix yourself produces `<name>-manager-manager`, which is
-the silent failure mode that has historically made this skill look
-broken from inside a worker. Do not pass `meta`; `tm_send` overrides it
-for harness commands anyway.
+1. **If multi-turn work continues past this session** (mid-loop, open QM
+   items you filed, an unfinished work order): file the resume order
+   FIRST, addressed to yourself:
 
-This is the legitimate, designed self-clear mechanism — the long-form
-rationale at the bottom of this file explains why it works while every
-other "agent typing /clear" path does not. Do not second-guess it; just
-call the tool.
+   ```
+   mcp__quartermaster__qm_queue_add(
+       worker="<name>", priority="high",
+       label="Resume after save-and-clear",
+       prompt="/resume-from-clear — you are the continuation of the
+       previous <name> session. Handover: <memory file path>. Previous
+       transcript: <path>. Continue from: <precise next actions>.")
+   ```
 
-If `mcp__tubemail__tm_send` is not available (rare — means the session
-lost its hub MCP connection between launch and now, e.g. the
-tubemail-hub container is down): surface that fact verbatim and fall
-through to **5c**.
+   Verify it exists (`qm_queue_read`) before proceeding. QM dispatches
+   it once the fresh session registers as idle. If the session is truly
+   DONE (nothing to resume), skip this step.
+
+2. **Signal the fresh restart** exactly as tubemail's `/restart` skill
+   does in fresh mode:
+
+   ```
+   mcp__tubemail__tm_send(worker="<name>",
+       message="restart fresh",
+       meta={"kind": "restart", "fresh": True})
+   ```
+
+   (`tm_send` routes restart signals to `<name>-manager` — pass the bare
+   worker name from 5a, never a `-manager` suffix.)
+
+If the tubemail tools are unavailable (hub down): surface that verbatim
+and fall through to **5c**.
 
 End the assistant reply with this exact single line as the FINAL visible
-text — nothing after it, no literal `/clear`:
+text — nothing after it:
 
 ```
-All pertinent information saved — clear signal sent via tubemail manager.
+All pertinent information saved — fresh-restart signal sent via tubemail manager.
 ```
 
-A literal `/clear` line in the reply would race the manager's keystroke
-and corrupt the new session's first prompt — the manager handles the
-typing, the reply just announces completion.
+The manager handles the exit and restart; the reply just announces
+completion. The successor session's entry-side protocol is the
+**/resume-from-clear** skill — the paired inverse of this one.
 
 #### 5c. Manual close (no tubemail, or 5b errored)
 
@@ -314,16 +331,18 @@ about a follow-up the user may want). Nothing after the closing line.
 
 ### Why 5b works while every other "agent self-clear" path does not
 
-Slash commands like `/clear` are owned by the Claude Code harness, not the
-agent. Printing `/clear` in agent output renders as inert text. There is
-no `claude clear` CLI binary, and `Stop` / `UserPromptSubmit` hooks in
-`settings.json` only run shell commands, not slash commands. The single
-mechanism in this monorepo that can type a slash command into a session's
-pty on the agent's behalf is the **tubemail manager process**, which
-owns the pty and is privileged for exactly this purpose. 5b is therefore
-the legitimate path — it's not a hack around a restriction, it's the
-designed extension point. Outside a tubemail worker no equivalent exists,
-which is why 5c hands control back to the human.
+Slash commands and process control are owned by the Claude Code harness,
+not the agent. Printing `/clear` in agent output renders as inert text;
+there is no `claude clear` CLI binary, and hooks only run shell commands.
+The single mechanism in this ecosystem that can exit and relaunch a
+session on the agent's behalf is the **tubemail manager process**, which
+owns the pty and is privileged for exactly this purpose. 5b's fresh
+restart is the designed extension point — and it is strictly better than
+the old typed-`/clear` path, because a bare clear keeps the process but
+loses the conversation-held identity (the 2026-07-04 amnesia incident),
+while a fresh restart rebuilds identity from the startup sequence and
+auto-delivers the timeline. Outside a tubemail worker no equivalent
+exists, which is why 5c hands control back to the human.
 
 ## Examples — what saving looked like in past sessions
 
