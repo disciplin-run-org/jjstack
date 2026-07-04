@@ -315,6 +315,13 @@ The manager handles the exit and restart; the reply just announces
 completion. The successor session's entry-side protocol is the
 **/resume-from-clear** skill — the paired inverse of this one.
 
+**Rollover variant:** when invoked via **/rollover** (the one-verb
+transition), step 1's resume order is mandatory, and between steps 1
+and 2 the skill PRE-POSTS a tubemail self-message naming
+/resume-from-clear — the hub persists it during the restart and the
+successor's auto-`/sync-inbox` delivers it as readiness-timed prompt
+injection. See /rollover for the exact message shape.
+
 #### 5c. Manual close (no tubemail, or 5b errored)
 
 End the assistant reply with this exact single line as the FINAL visible

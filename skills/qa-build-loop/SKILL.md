@@ -69,16 +69,17 @@ it isn't in this skill or a memory Jesper wrote, it doesn't exist.
 - **Always delegate detail work to workers via QM** (`clear_first` for
   unrelated tasks per /context-hygiene). The orchestrator's context is for
   orchestration and verification only.
-- **≥85% context: run /save-and-clear.** The exit transition is factored
-  into that skill so it can be tested independently: memory sweep →
-  handover → **QM resume order addressed to yourself** (verified to exist
-  before ending the turn) → **fresh-restart signal** (restart WITHOUT
-  `--continue`; the startup `/rename` re-registers identity and the
-  manager auto-types `/sync-inbox` — tubemail QM #552/#553/#555). Your
-  resume order's prompt must begin with `/qa-build-loop RESUME` and name:
-  the handover memory path, the transcript path, the four key skills, and
-  the precise next actions — /resume-from-clear consumes it on the other
-  side.
+- **≥85% context: run /rollover.** The whole transition is factored into
+  three independently testable skills: /rollover orchestrates
+  /save-and-clear (memory sweep → handover → **QM resume order addressed
+  to yourself**, verified to exist) + a **pre-posted tubemail
+  self-message** naming /resume-from-clear (delivered by the successor's
+  auto-`/sync-inbox` — readiness-timed prompt injection) + the
+  **fresh-restart signal** (no `--continue`; startup `/rename`
+  re-registers identity — tubemail QM #552/#553/#555). Your resume
+  order's prompt must begin with `/resume-from-clear` + `/qa-build-loop
+  RESUME` and name: the handover memory path, the transcript path, the
+  four key skills, and the precise next actions.
 - **Never type `/clear` yourself, never ask the manager for a bare
   clear** — a clear without the queued resume order and identity
   re-registration produces an amnesiac session (2026-07-04: fresh context
