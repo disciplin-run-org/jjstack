@@ -51,6 +51,25 @@ Worker session only: `echo "$TM_WORKER_NAME"` must print a name. In a
 non-worker session, say so and fall back to /save-and-clear's manual
 close (the human types /clear and re-prompts).
 
+**Carrier health check** (do this BEFORE staging — the 2026-07-04
+double-failure): both carriers can silently be dead on arrival:
+
+1. **Manager version**: `tm_list_workers` shows your manager's
+   `forwarder_version` (e.g. `1.0.4+<sha>`). The auto-`/sync-inbox`
+   injection carrier needs commit `788516b`+ (tubemail QM #553). If your
+   manager predates it, the injection will sit unread — run
+   `tm_update_manager(worker=<your name>)` FIRST (it re-execs the
+   manager and resumes you with --continue; then run /rollover again).
+2. **QM dispatch gate**: if YOU currently hold an in_flight QM item,
+   the resume order will be dispatch-blocked behind it (until
+   quartermaster's restart-aware dispatch lands — QM #566). Note the
+   blockage inside the resume order itself ("read #<id> directly via
+   qm_queue_read — it will not auto-dispatch") so the injection carrier
+   compensates, and verify carrier 1 is healthy before relying on it.
+
+If BOTH carriers are compromised, do not roll over blind — fix the
+manager first.
+
 ## Steps
 
 ### 1. Run /save-and-clear — WITH continuation mandatory
