@@ -89,6 +89,15 @@ victory unilaterally. The verify step is the contract.
 **Mixed deliverable and process**: "Investigate and fix the performance issue
 and write a postmortem." Three work orders. Split them.
 
+**Diagnosis as deliverable**: a work order whose premise is "X is broken, fix
+it" must carry *reproduced evidence of X failing through the real path* — not
+the author's diagnosis. "test_read omits the `product` field" is a diagnosis;
+the parsed response showing no `product` key is evidence. A WO built on an
+unverified diagnosis dispatches a worker onto fabricated work. If the failing
+evidence won't materialize when you try to reproduce it, there is no work order
+— the bug was in your investigation, not the code. (See
+`references/root-cause-analysis.md` Rule 3: no action before a `verified` root.)
+
 **Infinite context**: dumping every related file. The recipient reads selectively;
 give them the hooks to find what they need, not the entire codebase.
 
@@ -111,8 +120,11 @@ Do NOT send a work order (via qm_send, Agent, PR body, or any other
 channel) until the Context, Deliverables, Verify, and Done-when sections
 are all present. A work order missing any of these four sections is a
 defect. This applies to EVERY work order regardless of perceived
-simplicity. See references/hard-gate-convention.md for the semantics of
-this tag.
+simplicity. Additionally: a work order whose premise is "X is broken"
+is a defect unless it cites reproduced evidence of X failing through
+the real path (not a diagnosis) — see the "Diagnosis as deliverable"
+anti-pattern. See references/hard-gate-convention.md for the semantics
+of this tag.
 </HARD-GATE>
 
 When a user asks to delegate a task, draft the work order in this shape

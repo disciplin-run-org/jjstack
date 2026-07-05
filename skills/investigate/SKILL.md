@@ -95,7 +95,10 @@ Apply the four rules in order:
    STARTED before any causal reasoning. If gstack's investigation
    already produced causes without this scope, reconstruct the scope
    first and re-evaluate whether each claimed cause survives the
-   IS-NOT filter.
+   IS-NOT filter. Apply **parsimony**: when a source of truth says X
+   passes/works, that is your prior — overturn it only by reproducing X
+   failing, never by inventing a second broken thing to preserve a
+   first assumption.
 
 2. **Every effect has at least two causes** (action + condition). If
    gstack produced a single-chain RCA, branch it into action and
@@ -105,13 +108,23 @@ Apply the four rules in order:
 3. **Every claim carries evidence and confidence**. For each node in
    the tree, fill in `claim` / `evidence` / `confidence`. Evidence
    must be inspectable (log line, git-blame line, failing test, diff,
-   reproducible command). Anything without evidence is marked
-   `hypothesis` — not allowed as a terminal stop.
+   reproducible command) AND the probe must be sound: **(3a)** a
+   negative result (grep-miss, empty output) is the weakest evidence —
+   run a positive control before it becomes a claim; **(3b)** read
+   structured data through its consumer's parser (`json.loads`), never
+   grep escaped/wire text. Anything without evidence is marked
+   `hypothesis` — not allowed as a terminal stop, and **no downstream
+   action** (work order, fix, spec edit, worker dispatch) may fire off a
+   `hypothesis`-confidence root.
 
 4. **Stop at the class boundary**. Write the regression test that
    would catch the CLASS of failure, not just this incident. Record
    it literally in the output. If you can't write the test, you
-   haven't found the actionable root — keep going.
+   haven't found the actionable root — keep going. If the failing
+   artifact is *generated* (test ← Gherkin ← description), apply the
+   "Generated-artifact bugs — climb the generation chain" section:
+   fix the layer where the defect enters and regenerate downward until
+   a test goes red on a real bug.
 
 Write the resulting tree to `{OUTPUT_DIR}/rca-{YYYY-MM-DD}.md` in
 the exact shape documented in `references/root-cause-analysis.md`:

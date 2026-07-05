@@ -414,6 +414,12 @@ On the first pass of a capability, you'll flag the obvious infrastructure behavi
 
 **Rule of thumb for Aux capabilities:** expect ~80% of behaviors to be Not MCP-testable. That's fine. Aux is infrastructure glue. The QA loop tests the 20% that operates inside the sandbox. The 80% still gets documentation Gherkin for human readers.
 
+### When a "green" test hides a real bug — climb the chain
+
+A generated test that passes is not proof the feature works. It can pass for the wrong reason (a substring assertion satisfied by prose) or cover only half a behavior that spans two layers. When a green spec test coexists with a genuinely broken feature, do NOT patch the test — that blesses the bug. Climb the generation chain: test → Gherkin → description, find the layer where the defect enters, fix it there, and regenerate downward one step at a time until a test goes red on the real bug.
+
+The canonical root defect is the **Overstep smell** (see "5. Overstep smell — two tests in one behavior") in its cross-layer form: one behavior describing an outcome that spans a backend contract AND a UI outcome. The MCP test can only cover the backend half; the broken UI half has no behavior, no Gherkin, no test — so the green reads as end-to-end coverage it never had. De-conflate into one behavior per layer (the UI half becomes a `ui:` behavior flagged per "Not MCP-testable"), then regenerate. Full method: `references/root-cause-analysis.md` → "Generated-artifact bugs — climb the generation chain."
+
 ### Orchestrated work orders need scope-check
 
 When an orchestrator sends a work order with a specific behavior count and cap mapping, the count is usually optimistic. Do the judgment pass BEFORE executing:
