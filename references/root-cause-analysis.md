@@ -45,6 +45,15 @@ way on the IP directly."
 
 Minimum fields: what / where / when / extent / boundary.
 
+**Parsimony — respect the prior.** When a source of truth reports "X
+passes / works" (a green test, a passing suite, a "the backend returns
+this"), X is your prior. You may overturn it only by *reproducing X
+failing* — never by inventing a *second* broken thing (a "false-green,"
+a "silently unimplemented backend") to preserve a first assumption.
+Prefer the explanation that invents the fewest new defects. A session
+told "mcp:1.2.17 is green" that concludes the test is lying AND the
+backend is broken has manufactured two bugs to avoid checking one.
+
 ### Rule 2 — Every effect has at least two causes
 
 Not "why" singular — "what ACTION occurred AND what CONDITION let it
@@ -81,6 +90,35 @@ confidence: verified | hypothesis
 
 This is the gate that separates expert from layperson. Laypeople
 accept plausibility. The rule forces verification.
+
+**"Inspectable" is not enough — the probe itself must be sound.**
+Evidence can be inspectable and still wrong. A grep that returns
+nothing is inspectable; it is also worthless if the grep couldn't have
+matched. Three sub-rules close that hole:
+
+- **3a — Negative evidence is the weakest evidence.** A grep-miss, an
+  empty result, a "not found" can mean the thing is absent OR your
+  probe was malformed. Before a negative result becomes a claim, run a
+  **positive control**: point the same probe at a value you *know* is
+  present. If the control also comes back empty, your probe is broken —
+  not the system. Worked failure: grepping `"product":` against a
+  response whose JSON is backslash-escaped (`\"product\":`) returns zero
+  hits; the field was there the whole time. A one-line positive control
+  ("does this probe find `scope`, which I know is present?") would have
+  exposed the broken probe before it became a three-cause RCA.
+
+- **3b — Read structured data through its consumer's parser.** JSON and
+  other wire payloads get parsed the way the real consumer reads them
+  (`json.loads`, the SDK, the deserializer under test) — never grepped
+  as raw text. Evidence gathered through a *different representation*
+  than the code path under test is not evidence about that path.
+
+- **No action before `verified`.** A root cause at `hypothesis`
+  confidence may not trigger any downstream action: no work order filed,
+  no fix applied, no spec edited, no worker dispatched. The tree must
+  first reach a `verified` leaf backed by a *reproduced* failure. Acting
+  on a hypothesis is how a broken grep becomes two real workers churning
+  on fabricated tasks.
 
 ### Rule 4 — Stop at the class boundary, not a depth counter
 
@@ -145,6 +183,14 @@ into the STOP CHECK as "test would detect this IF hypothesis true."
   catches tests that would fix this one bug but not the pattern.
 - **Skipping scope** — Rule 1 is cheap and usually the step people
   skip. Without it, every other step drifts into overreach.
+- **Trusting a negative probe** — Rule 3a. Treating "my search found
+  nothing" as "the thing does not exist," with no positive control to
+  prove the search could have found it.
+- **Manufacturing a second bug** — Rule 1 parsimony. Explaining away a
+  passing test by positing it is a false-green AND the feature is
+  unimplemented, instead of reproducing the failure the green denies.
+- **Acting on a hypothesis** — Rule 3's no-action gate. Filing a work
+  order or dispatching a worker off a cause that is still unverified.
 
 ## Example (abbreviated)
 
@@ -179,6 +225,40 @@ STOP CHECK:
   });
   ```
 - class boundary: covers all save paths where optimistic UI could diverge from actual server state.
+
+## Generated-artifact bugs — climb the generation chain
+
+When the failing artifact is *generated* — a Python test compiled from
+Gherkin compiled from a natural-language description — the defect can
+live at any layer, and patching the leaf blesses the bug one level up.
+Do not fix the generated test. Climb the chain, asking at each rung
+whether the layer is faithful to the one above it:
+
+1. **The test** — does it faithfully implement the Gherkin? A weak
+   assertion (a bare substring `assert "product" in response`) can pass
+   for the wrong reason: the key, any value, or the word "product" in
+   unrelated prose all satisfy it. Faithful compile of a weak Gherkin is
+   not the test's fault — climb.
+2. **The Gherkin** — is it unambiguous? "The response contains product"
+   never says key vs. value vs. word, so the generator picks the weakest
+   reading. Ambiguity here is inherited from above — climb.
+3. **The description** — is it sound, or does it conflate two layers?
+   The canonical smell: **one behavior describing an outcome that spans
+   two layers** — a backend contract ("a root read returns the product
+   field") *and* a UI outcome ("the SPA labels the working area with
+   it"). An MCP behavior can only test the backend half, so the
+   generated test covers half; the broken half (the UI) has no behavior,
+   no Gherkin, no test, and the green reads as "the feature works
+   end-to-end" when it only means "the backend returns the field."
+
+Fix at the layer where the defect *enters* (usually the description:
+de-conflate it into one behavior per layer, and sharpen the surviving
+Gherkin to assert the *value*, not mere presence). Then **regenerate
+downward one step at a time** — new Gherkin from the clean description,
+new test from the Gherkin — until a test goes **red on a real bug**. A
+green that never went red proved nothing; the goal is a test that fails
+before the fix and passes after. See the spec-cleanup playbook's Overstep
+smell and Not-MCP-testable flagging for the layer-migration mechanics.
 
 ## When to use this
 
