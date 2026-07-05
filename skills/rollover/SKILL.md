@@ -82,6 +82,13 @@ memory path, the previous-transcript path (this session's), the key
 skills to reload, and the precise next actions. Verify the item exists
 (`qm_queue_read`) and capture its queue id `<QID>`.
 
+**Never set `clear_first` on the resume order.** The fresh restart
+already provides a clean context; with multiple carriers, a
+`clear_first` dispatch can WIPE a successor that another carrier
+already bootstrapped (observed 2026-07-04: the injection-bootstrapped
+successor was mid-ladder when QM's delayed `clear_first` dispatch
+cleared it again and forced a redundant re-bootstrap).
+
 **Do not send the fresh-restart signal yet** — step 2 goes first.
 
 ### 2. Pre-post the prompt injection (the tie this skill adds)

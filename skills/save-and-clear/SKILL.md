@@ -287,7 +287,10 @@ When 5a returned `WORKER:<name>`:
 
    Verify it exists (`qm_queue_read`) before proceeding. QM dispatches
    it once the fresh session registers as idle. If the session is truly
-   DONE (nothing to resume), skip this step.
+   DONE (nothing to resume), skip this step. **Never set `clear_first`
+   on this item** — the fresh restart already yields a clean context,
+   and a delayed `clear_first` dispatch can wipe a successor that
+   another carrier already bootstrapped (observed live 2026-07-04).
 
 2. **Signal the fresh restart** exactly as tubemail's `/restart` skill
    does in fresh mode — **to the MANAGER entity, exactly once**:
