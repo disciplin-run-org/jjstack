@@ -123,15 +123,25 @@ were down. Verify before acting:
 - `qm_queue_list` — did in-flight items move?
 - Container health for anything the next action touches.
 
-### 8. Continue
+### 8. Close the resume order, then continue — via the queue
 
-Execute the resume order's "continue from" actions. **Never end this
-first turn asking the user what to do** — "listing options and waiting"
-is the exact failure mode this skill exists to kill (2026-07-04: a fresh
-session ended with "Just say the word" and the night was lost). If the
-resume order is missing AND the timeline is empty AND no handover exists,
-THEN you are genuinely a new session — say so and stop; that is not a
-failure of this ladder.
+**Report and close your resume order promptly** (`qm_queue_report` then
+have it closed) once the ladder completes — do NOT keep it open as an
+umbrella authorization for other work. Work that exists as queue items
+flows through QM dispatch AFTER your resume order closes; executing a
+pending item's content "under" the resume order double-tracks the work
+and strands the real item (observed 2026-07-04: a QA duty ran under the
+resume order while its own item sat pending, results posted out-of-band
+— a queue state nobody could read). Inline next-actions in the resume
+order cover only un-queued work: verification steps, uncommitted
+follow-ups, board context.
+
+**Never end this first turn asking the user what to do** — "listing
+options and waiting" is the exact failure mode this skill exists to
+kill (2026-07-04: a fresh session ended with "Just say the word" and
+the night was lost). If the resume order is missing AND the timeline is
+empty AND no handover exists, THEN you are genuinely a new session —
+say so and stop; that is not a failure of this ladder.
 
 ## Verification (how to test this skill end-to-end)
 

@@ -89,6 +89,19 @@ already bootstrapped (observed 2026-07-04: the injection-bootstrapped
 successor was mid-ladder when QM's delayed `clear_first` dispatch
 cleared it again and forced a redundant re-bootstrap).
 
+**Never duplicate queued QM items as inline duties in the resume
+order.** The queue is the single source of truth for work assignment.
+REFERENCE pending/in_flight items ("your queue holds #556 — it
+dispatches after this resume order closes; also sweep for
+awaiting_review items you filed"), never copy their content as "NEXT
+ACTIONS: do #556's work". Observed 2026-07-04: a resume order that
+inlined a queued QA duty made the successor execute it under the resume
+order's authorization while the real item sat pending — double-tracked
+work, results posted out-of-band onto a never-dispatched item, and a
+queue state nobody could read at a glance. Inline next-actions are for
+work that has NO queue item (uncommitted follow-ups, verification
+steps, board context).
+
 **Do not send the fresh-restart signal yet** — step 2 goes first.
 
 ### 2. Pre-post the prompt injection (the tie this skill adds)
