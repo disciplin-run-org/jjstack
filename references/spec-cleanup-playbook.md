@@ -58,6 +58,106 @@ If it describes setup and verification as separate assertions, check for two tes
 
 ---
 
+## Writing a testable behavior description
+
+The five smell tests are diagnostic — they tell you what to split, merge, or
+move. This section is the positive craft: how to *write* the description so it
+compiles into a bug-catching test. It was paid for over a long iris-qa session
+(`mcp:1.2.17`, "root read returns product metadata") where the description got
+rewritten five times before it was right. Learn it once here instead.
+
+### A description states the contract and the expected value — nothing else
+
+The failure mode is not "too little," it's "too much." A good description names
+**the concrete call and the concrete expected value, directly** — field →
+value, done. Everything else is noise the reader (and `gherkin_generate`) trips
+over. Three noise types to strip, all three seen in the same bad description:
+
+1. **Implementation leak** — *how* the backend produces the value. "read from
+   product.json's product field" describes plumbing, not the contract. The
+   description says WHAT is returned, never HOW it is fetched.
+2. **Generic-contract padding** — filler that restates the obvious. "holding
+   the product's human display name", "two top-level fields alongside the
+   coverage tree". It reads like documentation; it tests nothing.
+3. **Hedging / meta frame** — talking *about* the spec instead of stating the
+   behavior. "Mirrors leanspecs's spec_read (LS-38)" (a cross-reference —
+   that's rationale, not contract), "This behavior is the MCP contract only;
+   how a browser consumes it is a separate UI-layer behavior" (a warning about
+   layering — if two layers are tangled, **split them**, don't annotate the
+   tangle in prose).
+
+Worked example — the same behavior, before and after:
+
+- **Bloated (5 rewrites of noise):** "A root read (scope=root) returns two
+  top-level product-metadata fields alongside the coverage tree: `product`,
+  holding the product's human display name read from product.json's product
+  field, and `description`… Mirrors leanspecs's spec_read at root (LS-38)…
+  This behavior is the MCP contract only — how a browser consumes the field to
+  label its UI is a separate UI-layer behavior."
+- **Clean:** "test_read of repo:`litmus` at root (scope=root) returns the
+  top-level field `product` value `"Litmus Test Fixture"`."
+
+### Name the concrete value — that is what makes the test catch bugs
+
+iris-qa behaviors run against a controlled fixture (litmus), so **you know the
+exact value the call must return.** Put it in the description. A description
+that names the value ("`product` value `Litmus Test Fixture`") compiles into a
+test that asserts the *value*; a description that only names the field
+("returns a `product` field") compiles into a key-presence check that
+false-greens on an empty or wrong value — the exact defect class that hid a
+"green" `mcp:1.2.17` while the feature was broken. Do NOT hedge the value
+("for the litmus fixture, the value happens to be…"); state it flat.
+
+**Verify the value from the fixture, not from memory.** The litmus product is
+`"Litmus Test Fixture"` (from `litmus_template.py`), not the "Litmus" you'd
+guess. Read the fixture / the tool schema before you write the value or the
+call params — assuming them is how hallucinated params (`parent_id`,
+`item_id`) and wrong values get baked into the description.
+
+### Assert value, not key — know your dialect's verbs
+
+`contains "product"` is the weakest possible assertion: a substring match
+satisfied by the key, any value, or the word in unrelated prose. Before
+settling for `contains`, check what assertion verbs the dialect actually
+supports. iris-qa's madlibs engine has a whole `Then` family — the one that
+matters here is `Then the <field> equals "<value>"`, which routes to a real
+top-level equality (`assert decoded.get("product") == "Litmus Test Fixture"`).
+Prefer the strongest verb the payload allows.
+
+### Handwrite the gherkin to validate the description
+
+Before trusting `gherkin_generate`, handwrite the gherkin the description
+*should* produce. If you can't write a crisp, value-checking scenario from the
+description, the description is underspecified or noisy — fix it, don't paper
+over it with a generated substring check. The target for `mcp:1.2.17`:
+
+```gherkin
+Scenario: A litmus root read returns the product display name
+  When I call test_read with scope="root", repo="litmus"
+  Then the product equals "Litmus Test Fixture"
+```
+
+No `Given` (the fixture is created by the `qa:1.1` setup that runs before the
+behaviors — nothing to set up in-scenario). One `When` with real params. One
+`Then` asserting the value. If the generator produces anything looser than
+what you handwrote, that's a generator defect to report — not a description to
+loosen. (See `references/root-cause-analysis.md` → "Generated-artifact bugs —
+climb the generation chain" for the debugging counterpart to this authoring
+rule.)
+
+### One value per behavior — split when fields break independently
+
+`product` and `description` are separate fields that can fail independently (a
+change could return the display name correctly but drop the description). The
+moment two assertions can fail independently, cramming them into one behavior
+costs you **failure attribution**: a red scorecard cell that doesn't tell you
+which field broke. Split into one behavior per field (this is the Overstep
+smell, #5 above, in its two-values form) — each gets its own value assertion,
+its own Kano level, and its own green/red cell. `mcp:1.2.17` → product name;
+sibling behavior → description.
+
+---
+
 ## Layer-level framing (current — post April-2026 layer migration)
 
 Every product spec in the ecosystem follows the 7-layer template. Place every capability accordingly. Source of truth: `CONTROLLED_LAYER_VOCABULARY` in `leanspecs/src/leanspecs/models/product.py`. Canonical live example: LeanSpecs's own `product.json`.

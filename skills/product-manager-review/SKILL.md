@@ -231,6 +231,16 @@ features consuming engineering time. No kill list from prior reviews.
   Empty Gherkin or missing Kano = draft, automatically.
 - **Intent, not implementation?** Specs describe WHY (outcomes), not HOW
   (API names, endpoint paths, protocol details). HOW belongs in Tech Specs.
+- **Description states the contract and the expected value — nothing else?**
+  Strip the three noise types (implementation leak, generic-contract padding,
+  hedging/meta cross-references) and confirm the description names the concrete
+  call and the concrete expected VALUE, not just the field. See the playbook's
+  "Writing a testable behavior description" — this is the single biggest
+  description-quality lever and the hardest to get right.
+- **Assertion checks the value, not the key?** A description/gherkin that only
+  proves a field is *present* (substring `contains`) false-greens on an empty
+  or wrong value. Prefer a value-equality assertion where the dialect supports
+  it. A green test that never went red proves nothing.
 - **Cleanliness score tracked?** 4 dimensions: structural integrity, content
   completeness, content quality, data hygiene. Target 100%.
 
