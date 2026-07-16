@@ -9,8 +9,9 @@ description: >
   saved versus deliberately skipped — but a terminal close instead of a restart:
   if the session is a tubemail worker (detected by `$TM_WORKER_NAME` being set)
   the skill settles its QM ledger (no resume order is filed — nothing resumes)
-  and force-stops itself via `tm_stop`, which kills the Claude child AND its
-  manager so the worker is completely gone. Otherwise it ends the reply with
+  and asks the tubemail manager to type `/exit` into its own terminal — a clean
+  shutdown through the harness's own exit path, never a process kill. Otherwise
+  it ends the reply with
   "all pertinent information saved - ready to exit" so the user types `/exit`
   themselves. Use whenever the user says "save and exit", "save before exit",
   "save pertinent info then quit", "shut this worker down", "wrap up and exit",
@@ -68,7 +69,7 @@ Follow it exactly: locate the memory dir, sweep for candidates, dedup,
 write the files, update MEMORY.md, print the report, and run the 5a
 tubemail probe. Then come back here for the close.
 
-## 5b. Tubemail-driven close — settle the ledger, then force-stop
+## 5b. Tubemail-driven close — settle the ledger, then clean /exit
 
 When 5a returned `WORKER:<name>`:
 
@@ -98,42 +99,45 @@ For each item still open, do the honest thing — never a silent close:
 If in doubt, leave the item open and NAME it in the report. A dangling
 item a human can see beats a closed one that lies.
 
-### 2. Force-stop yourself via the manager
+### 2. Ask the manager to type /exit — a clean shutdown
 
 ```
-mcp__tubemail__tm_stop(worker="<name>")
+mcp__tubemail__tm_send(worker="<name>", message="/exit")
 ```
 
-Three things to get right:
+That is the whole close. Three things to get right:
 
-- **Pass the BARE worker name, not `<name>-manager`.** `tm_stop` routes
-  the `force_stop` command to `<worker>-manager` itself — handing it
-  `<name>-manager` would address `<name>-manager-manager` and hit
-  nothing. (This differs from /save-and-clear's 5b, where "restart
-  fresh" is not a slash-command and you address the manager yourself.)
-- **`tm_stop` is the only true terminal path.** It kills the Claude
-  child, removes its PID file, unregisters from the hub, and exits the
-  manager — the worker is completely gone. Do NOT instead type `/exit`
-  via `tm_send`: the manager is a supervisor process and a child that
-  exits under it is not documented to stay exited. Use the tool that is
-  documented as terminal.
-- **The call will probably never return, and that is success.** The
-  manager kills you as it processes the command, so expect no result.
-  Do not retry it, and do not report a missing result as a failure.
+- **Address the WORKER, not `<name>-manager`.** `/exit` is a built-in
+  harness command, and `tm_send` routes those automatically: the manager
+  types them into the session's terminal via pty. You do not address the
+  manager yourself. (This is the mirror of /save-and-clear's 5b, where
+  `"restart fresh"` is NOT a built-in and therefore *must* be addressed
+  to `<name>-manager` explicitly. The routing rule is the same one; the
+  two skills land on opposite sides of it.)
+- **NEVER process-kill the session.** Do not call `tm_stop` (which
+  routes `force_stop`, killing the Claude child and its manager), and do
+  not reach for any other kill path. `/exit` is the harness's own exit:
+  the session closes its work, the forwarder POSTs `/goodbye`, and the
+  worker registers as **💤 exited cleanly** in `tm_list_workers`. A
+  force-stop skips all of that and yields a 🔴 offline worker
+  indistinguishable from a crash. Clean shutdown is the point of this
+  skill — an exit that looks like a crash is a failed exit.
+- **A typed `/exit` waits for the prompt.** The manager types it into
+  the terminal, so it lands when the session is ready rather than
+  interrupting mid-turn. Still send it as the LAST tool call of the
+  message, after your report text — there is no reason to say anything
+  after it.
 
-**Ordering is load-bearing: print your text BEFORE the tool call.**
-Unlike the restart path, `force_stop` does not wait for an idle prompt —
-it kills immediately. So emit the step 5 report and the closing line as
-assistant text first, and make `tm_stop` the LAST tool call of that same
-message. Text already streamed is persisted to the transcript; anything
-you planned to say *after* the call is never written.
-
-The last visible text before the `tm_stop` call must be exactly this
+The last visible text before the `tm_send` call must be exactly this
 single line:
 
 ```
-All pertinent information saved — exit signal sent via tubemail manager.
+All pertinent information saved — /exit sent via tubemail manager.
 ```
+
+**Confirming it worked (non-destructive):** a clean exit shows as
+**💤 exited cleanly** in `tm_list_workers`; 🔴 offline means the session
+died some other way and the close did not do its job.
 
 If the tubemail tools are unavailable (hub down): surface that verbatim
 and fall through to **5c**.
@@ -163,8 +167,9 @@ Same base, different end. Both run
 | Assumption | work continues | work is finished |
 | QM resume order | filed (when work continues) | never — nothing resumes |
 | Other QM items | inherited by the successor | must be settled or named now |
-| 5b signal | `tm_send(<name>-manager, "restart fresh")` | `tm_stop(<name>)` |
-| After 5b | fresh context, same worker, `/resume-from-clear` | worker and manager gone |
+| 5b signal | `tm_send(<name>-manager, "restart fresh")` | `tm_send(<name>, "/exit")` |
+| Why that address | not a built-in → address the manager | built-in → tm_send types it into the pty |
+| After 5b | fresh context, same worker, `/resume-from-clear` | 💤 exited cleanly |
 | 5c line | `ready to clear` | `ready to exit` |
 
 /rollover is the one-verb transition built on /save-and-clear; it has no

@@ -18,7 +18,7 @@ caller:
 | Caller | Close it owns (5b / 5c) |
 |---|---|
 | **/save-and-clear** | Session CONTINUES in a fresh context: QM resume order + fresh restart via the manager, or "ready to clear". |
-| **/save-and-exit** | Session ENDS for good: `tm_stop` via the manager, or "ready to exit". No resume order. |
+| **/save-and-exit** | Session ENDS for good: a clean `/exit` typed by the manager, or "ready to exit". No resume order, no process kill. |
 | **/rollover** | Runs /save-and-clear with continuation mandatory, plus a pre-posted prompt injection. |
 
 Do not invent a close here. Run steps 1-5a, then return to the calling
