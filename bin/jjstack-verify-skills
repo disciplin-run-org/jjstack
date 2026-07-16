@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# jjstack-verify-skills — deterministic checks on the skill tree.
+#
+# Guards the failure classes that prose skills actually hit:
+#   1. a SKILL.md whose frontmatter name drifts from its directory
+#      (the harness keys on the directory; a mismatch loads the wrong name)
+#   2. a skill that `cat`s a shared reference which does not exist
+#      (silently degrades: the model reads nothing and improvises)
+#   3. an installed symlink that dangles after a repo move
+#   4. a shared base copy-pasted back into its callers (the drift the
+#      base exists to prevent)
+#
+# Scope note: a directory under skills/ with no SKILL.md is not a skill
+# and is skipped — git cannot track an empty directory, so these are
+# local cruft, not repo state. ~/.claude/skills/jjstack is deliberately
+# the repo root (it is how references/ resolves), not a skill install.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+fails=0
+
+ok()  { echo -e "  ${GRN}ok${RST}  $1"; }
+bad() { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
+
+# Real skills only: a directory is a skill iff it holds a SKILL.md.
+find "$REPO/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -printf '%h\n' \
+  | xargs -r -n1 basename | sort > "$TMP/skills"
+
+echo "jjstack-verify-skills — repo: $REPO"
+echo "  $(wc -l < "$TMP/skills") skills"
+echo
+echo "== 1. frontmatter name matches directory =="
+while read -r d; do
+  n=$(awk '/^name:/{print $2; exit}' "$REPO/skills/$d/SKILL.md")
+  if [ "$n" = "$d" ]; then ok "$d"; else bad "$d -> frontmatter name '$n'"; fi
+done < "$TMP/skills"
+
+echo "== 2. every skill -> shared-reference pointer resolves =="
+grep -rhoE '~/\.claude/skills/jjstack/references/[a-z0-9-]+\.md' "$REPO/skills/" \
+  | sort -u > "$TMP/refs"
+while read -r p; do
+  real="$REPO/references/$(basename "$p")"
+  if [ -f "$real" ]; then ok "$(basename "$p")"; else bad "$p — dangling, no such reference"; fi
+done < "$TMP/refs"
+
+echo "== 3. installed symlinks resolve =="
+while read -r d; do
+  l="$HOME/.claude/skills/$d"
+  [ -e "$l" ] || continue          # not installed is not a failure
+  if [ -f "$l/SKILL.md" ]; then ok "$d"; else bad "$d installed but SKILL.md unreadable"; fi
+done < "$TMP/skills"
+
+echo "== 4. shared bases are not copy-pasted into their callers =="
+# Keyed on a distinctive body marker, not the title: a skill may legitimately
+# NAME a base (e.g. jj-qa's H1 mentions "QA Philosophy") without copying it.
+# marker|reference
+cat > "$TMP/markers" <<'EOF'
+Dedup check before writing|memory-sweep.md
+EOF
+while IFS='|' read -r marker ref; do
+  [ -n "$marker" ] || continue
+  c=$(grep -rlF "$marker" "$REPO/references/" "$REPO/skills/" 2>/dev/null | wc -l)
+  if [ "$c" -eq 1 ]; then ok "$ref — body lives in exactly one file"
+  else bad "$ref — body marker '$marker' found in $c files; expected 1"; fi
+done < "$TMP/markers"
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo -e "${GRN}ALL CHECKS PASS${RST}"
+else
+  echo -e "${YEL}${fails} FAILURE(S)${RST}"
+fi
+exit "$fails"
