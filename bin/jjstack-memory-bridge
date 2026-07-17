@@ -27,6 +27,12 @@
 #   Refusal is exit code 4 with a clear message. The /groom skill
 #   detects the same markers and uses a native no-gbrain path.
 #
+# Exit codes:
+#   0  success
+#   2  usage error (unknown flag, missing/incompatible args)
+#   4  PHI refusal — slug carries an opt-out marker
+#   5  --ingest requested but gbrain is unreachable or non-operational
+#
 # Usage:
 #   jjstack-memory-bridge --slug <project-slug>      # one project
 #   jjstack-memory-bridge --all                       # every project under ~/.claude/projects/
@@ -35,7 +41,13 @@
 #   jjstack-memory-bridge --ingest                    # after writing jsonl, also call `gbrain put`
 #                                                       on each entry so gbrain query finds them
 #                                                       without waiting for gstack-memory-ingest.
-#                                                       Requires the `gbrain` CLI on PATH.
+#                                                       Requires a working `gbrain` CLI on PATH:
+#                                                       if it is missing or non-operational the
+#                                                       bridge EXITS 5 rather than skipping the
+#                                                       ingest. Never make this a warning — a
+#                                                       silent skip hid the worker PATH gap for
+#                                                       six weeks (workers wrote jsonl, ingested
+#                                                       nothing, exited 0).
 #   jjstack-memory-bridge --ecosystem <name>          # add the ecosystem:<name> tag to every page
 #                                                       bridged in this run. Use only when the
 #                                                       owner of the project is explicitly
@@ -87,6 +99,30 @@ fi
 
 if [ "$SELF_TEST" = "1" ]; then
     SLUG="-home-jesper-PycharmProjects-jjstack"
+fi
+
+# ─── Preflight: --ingest requires a WORKING gbrain CLI ────────────────
+# This check used to live per-slug and merely warn before `return 0`.
+# That fail-soft is exactly how the worker PATH gap stayed invisible for
+# six weeks: claude-tm workers have no ~/.bun/bin on PATH (~/.bashrc adds
+# it but returns early for non-interactive shells), so every worker-side
+# --ingest wrote its jsonl, silently skipped every `gbrain put`, and
+# exited 0. An ingest that was explicitly asked for and cannot ingest is
+# a hard failure, not a warning. Fires under --dry-run too: a dry run
+# that reports green for an ingest that could never happen is the same
+# false-green in a smaller box.
+if [ "$INGEST" = "1" ]; then
+    if ! command -v gbrain >/dev/null 2>&1; then
+        echo "FATAL: --ingest requires the gbrain CLI, which is not on PATH." >&2
+        echo "  PATH=$PATH" >&2
+        echo "  Fix: install the ~/.local/bin/gbrain shim, or run /setup-gbrain." >&2
+        exit 5
+    fi
+    if ! gbrain doctor --fast >/dev/null 2>&1; then
+        echo "FATAL: gbrain CLI resolves to $(command -v gbrain) but is not operational." >&2
+        echo "  Diagnose with: gbrain doctor" >&2
+        exit 5
+    fi
 fi
 
 if [ -z "$SLUG" ] && [ "$ALL" = "0" ]; then
@@ -265,9 +301,11 @@ bridge_project() {
 
     # ── Direct ingest path: call gbrain put for each entry. ───────────
     if [ "$INGEST" = "1" ]; then
+        # Unreachable after the preflight above; kept as defense in depth
+        # against a mid-run disappearance. Never downgrade this to a warn.
         if ! command -v gbrain >/dev/null 2>&1; then
-            echo "  [warn] --ingest requested but gbrain CLI not on PATH; skipping ingest" >&2
-            return 0
+            echo "  [FATAL] $slug — gbrain CLI vanished mid-run; ingest incomplete." >&2
+            exit 5
         fi
         local ok=0 fail=0
         local short_slug
