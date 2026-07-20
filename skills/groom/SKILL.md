@@ -97,19 +97,36 @@ invocation, so over-reach is never accidental.
    cat ~/.claude/skills/jjstack/references/memory-promotion.md
    ```
 
-2. **Check the PHI / no-gbrain opt-out marker for the target slug**:
+2. **Check the PHI / no-gbrain opt-out for the target slug** — two gates,
+   either one opts the slug out:
 
    ```bash
    MEM_DIR="$HOME/.claude/projects/<slug>/memory"
+   # Gate 1 — path marker in this dir:
    [ -f "$MEM_DIR/.no-gbrain" ] && echo "OPTED_OUT (no-gbrain file)"
    grep -lE '^sensitivity:[[:space:]]*phi' "$MEM_DIR"/*.md 2>/dev/null | head -1 && echo "OPTED_OUT (sensitivity: phi)"
+   # Gate 2 — project identity (git remote) in the per-remote registry:
+   POL="$HOME/.claude/skills/gstack/bin/gstack-gbrain-repo-policy"
+   CWD=$(jjstack-memory-bridge --print-cwd <slug> 2>/dev/null)  # or resolve manually
+   REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null)
+   [ -n "$REMOTE" ] && case "$("$POL" get "$("$POL" normalize "$REMOTE")")" in
+     deny|read-only) echo "OPTED_OUT (identity: $("$POL" normalize "$REMOTE"))" ;;
+   esac
    ```
 
-   If EITHER marker is present, this slug is opted out of gbrain (per
+   If EITHER gate reports OPTED_OUT, this slug is opted out of gbrain (per
    `~/.claude/CLAUDE.md` "Sensitive data stays off the shared index").
    Skip step 3 below; use the **No-gbrain native fallback** mode (see
-   that section). The bridge will refuse to ingest this slug; do not
-   try to bypass.
+   that section). The bridge will refuse to ingest this slug (exit 4); do
+   not try to bypass.
+
+   Gate 2 is the class fix for the moved/cloned-repo hole: a path marker
+   lives in one directory and does not follow a clone, so the same project
+   at a second path was silently bridge-eligible. Opting out by identity
+   (`gstack-gbrain-repo-policy set <remote> deny`) binds every live
+   worktree of that remote. Prefer identity opt-out for any git-backed
+   sensitive project; keep the path marker too for the in-repo signal and
+   for non-repo dirs (Downloads/, Documents/) that have no remote.
 
 3. **Confirm gbrain is installed and reachable** (only for non-opted-
    out slugs):

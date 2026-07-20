@@ -17,13 +17,26 @@
 #     NEVER applied based on slug substring. Per-project memories stay
 #     project-scoped until the owner explicitly promotes them.
 #
-# PHI / sensitive-data refusal:
+# PHI / sensitive-data refusal (two independent gates; either refuses):
 #   gbrain is a single shared local vector index across all projects.
-#   PHI and personal records MUST NEVER be bridged into it. The bridge
-#   refuses any slug whose memory dir carries an opt-out marker:
+#   PHI and personal records MUST NEVER be bridged into it.
+#
+#   Gate 1 — PATH MARKER in the slug's own memory dir:
 #     * presence of `~/.claude/projects/<slug>/memory/.no-gbrain` file
 #     * any memory file with frontmatter `sensitivity: phi`
 #     * MEMORY.md with frontmatter `sensitivity: phi`
+#
+#   Gate 2 — PROJECT IDENTITY (git remote), the class fix for the
+#   moved/cloned-repo hole. A path marker lives in one directory, keyed
+#   by the dashed cwd; clone or move the repo and the marker does not
+#   follow, so the same project at a new path becomes bridge-eligible.
+#   Gate 2 keys the opt-out on the project's normalized git remote via
+#   gstack's per-remote registry (gstack-gbrain-repo-policy), so the
+#   decision binds EVERY live worktree of that remote — even one with no
+#   marker. Tiers deny and read-only refuse; read-write and unset allow.
+#   Opt a project out by identity:
+#     gstack-gbrain-repo-policy set <remote-url> deny
+#
 #   Refusal is exit code 4 with a clear message. The /groom skill
 #   detects the same markers and uses a native no-gbrain path.
 #
@@ -78,6 +91,7 @@ DRY_RUN=0
 INGEST=0
 SYNC=0
 FORCE_ECOSYSTEM=""
+PRINT_CWD_SLUG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --slug) SLUG="$2"; shift 2 ;;
@@ -87,6 +101,7 @@ while [ $# -gt 0 ]; do
         --ingest) INGEST=1; shift ;;
         --sync) SYNC=1; shift ;;
         --ecosystem) FORCE_ECOSYSTEM="$2"; shift 2 ;;
+        --print-cwd) PRINT_CWD_SLUG="$2"; shift 2 ;;
         --help|-h) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
@@ -125,7 +140,7 @@ if [ "$INGEST" = "1" ]; then
     fi
 fi
 
-if [ -z "$SLUG" ] && [ "$ALL" = "0" ]; then
+if [ -z "$SLUG" ] && [ "$ALL" = "0" ] && [ -z "$PRINT_CWD_SLUG" ]; then
     echo "Specify --slug <project-slug>, --all, or --self-test." >&2
     exit 2
 fi
@@ -182,6 +197,99 @@ is_slug_opted_out() {
     return 1
 }
 
+# ─── Identity-keyed opt-out (the class fix) ──────────────────────────
+# Path markers (.no-gbrain / sensitivity: phi) live INSIDE one memory dir,
+# which is keyed by the dashed cwd path. Move or clone a repo and the marker
+# does not follow: the same project at a second path becomes silently
+# bridge-eligible. That is exactly how -home-jesper-PycharmProjects-
+# disciplin-run-mychart-sync slipped past the canonical dir's marker.
+#
+# The fix keys the opt-out on PROJECT IDENTITY (its git remote) instead of the
+# directory path, so the decision is made ONCE and binds every live worktree /
+# clone of that project. We reuse gstack's existing per-remote registry
+# (gstack-gbrain-repo-policy) rather than inventing a parallel one — it is
+# already keyed by a normalized remote (SSH and HTTPS collapse to the same
+# github.com/org/repo key) and is what /setup-gbrain's trust triad populates.
+#
+# Tiers and their meaning for BRIDGING (a write of this repo's pages):
+#   deny       → refuse (no gbrain interaction at all)
+#   read-only  → refuse (search allowed, but never write this repo's pages)
+#   read-write → allow
+#   unset      → allow (preserve the bridge's historical default-allow)
+#
+# Limits: only resolves for a LIVE cwd with a git remote. Non-repo dirs
+# (Downloads/, Documents/) and vanished-cwd dirs cannot be identity-resolved
+# and fall through to the path markers above — correct, since those cannot be
+# cloned to a second path. Degrades to markers-only if the policy CLI is absent.
+
+POLICY_BIN="$HOME/.claude/skills/gstack/bin/gstack-gbrain-repo-policy"
+
+# Reverse a dashed project key into a real cwd, descending into the LONGEST
+# dash-joined token run that exists on disk at each level (handles hyphenated
+# dir names like disciplin-run and google-workspace-mcp). Missing tails are
+# appended verbatim so a vanished project fails the caller's [ -d ] test.
+# Ported verbatim from jjstack-memory-to-learnings for behavioral parity.
+reconstruct_cwd() {
+    local key="${1#-}"
+    local IFS='-'; local toks=($key); IFS=' '
+    local n=${#toks[@]} path="" i=0
+    while [ "$i" -lt "$n" ]; do
+        local acc="" best="" j="$i" k="$i"
+        while [ "$k" -lt "$n" ]; do
+            if [ -z "$acc" ]; then acc="${toks[$k]}"; else acc="$acc-${toks[$k]}"; fi
+            [ -d "$path/$acc" ] && { best="$acc"; j="$k"; }
+            k=$((k+1))
+        done
+        if [ -z "$best" ]; then
+            local rem="${toks[$i]}" m=$((i+1))
+            while [ "$m" -lt "$n" ]; do rem="$rem-${toks[$m]}"; m=$((m+1)); done
+            path="$path/$rem"; break
+        fi
+        path="$path/$best"; i=$((j+1))
+    done
+    printf '%s' "$path"
+}
+
+# Debug hook: resolve a dashed slug to its real cwd and exit. Used by /groom's
+# PHI check to find the repo whose remote it should test against the registry.
+if [ -n "$PRINT_CWD_SLUG" ]; then
+    reconstruct_cwd "$PRINT_CWD_SLUG"; echo
+    exit 0
+fi
+
+# slug → normalized remote identity key, or empty string if unresolvable
+# (no live cwd, not a git repo, no origin remote, or policy CLI absent).
+project_identity_key() {
+    local slug="$1"
+    [ -x "$POLICY_BIN" ] || return 0
+    local cwd remote
+    cwd=$(reconstruct_cwd "$slug")
+    [ -d "$cwd" ] || return 0
+    remote=$(git -C "$cwd" remote get-url origin 2>/dev/null) || return 0
+    [ -n "$remote" ] || return 0
+    "$POLICY_BIN" normalize "$remote" 2>/dev/null || return 0
+}
+
+# Returns 0 (refuse) if the slug's project identity is opted out of gbrain
+# writes via the per-remote registry. Sets IDENTITY_KEY / IDENTITY_TIER for
+# the caller's message. Returns 1 (allow) when unresolvable or read-write/unset.
+IDENTITY_KEY=""
+IDENTITY_TIER=""
+is_project_identity_opted_out() {
+    local slug="$1"
+    IDENTITY_KEY=""; IDENTITY_TIER=""
+    [ -x "$POLICY_BIN" ] || return 1
+    local key tier
+    key=$(project_identity_key "$slug")
+    [ -n "$key" ] || return 1
+    tier=$("$POLICY_BIN" get "$key" 2>/dev/null) || return 1
+    IDENTITY_KEY="$key"; IDENTITY_TIER="$tier"
+    case "$tier" in
+        deny|read-only) return 0 ;;
+        *)              return 1 ;;
+    esac
+}
+
 is_ecosystem_scope() {
     # Apply `ecosystem:<name>` tag ONLY on explicit owner promotion:
     #   - frontmatter scope: ecosystem
@@ -212,12 +320,24 @@ bridge_project() {
         return 0
     fi
 
-    # PHI / sensitive-data refusal. Defense in depth: never bridge a slug
-    # carrying an opt-out marker into the shared gbrain index.
+    # PHI / sensitive-data refusal. Two independent gates; either refuses.
+    #
+    # Gate 1 — path marker in THIS dir (.no-gbrain / sensitivity: phi).
     if is_slug_opted_out "$slug"; then
-        echo "  [REFUSED] $slug — opted out of gbrain (sensitivity marker present)" >&2
+        echo "  [REFUSED] $slug — opted out of gbrain (path marker present)" >&2
         echo "  Markers checked: $memory_dir/.no-gbrain ; *.md frontmatter sensitivity: phi" >&2
         echo "  This slug's memories stay native-only. Use /groom with the no-gbrain fallback." >&2
+        REFUSED_SLUGS+=("$slug")
+        return 4
+    fi
+
+    # Gate 2 — project IDENTITY (git remote) opted out in the per-remote
+    # registry. Closes the moved/cloned-repo hole a path marker cannot: binds
+    # every live worktree of the project, even one with no marker of its own.
+    if is_project_identity_opted_out "$slug"; then
+        echo "  [REFUSED] $slug — opted out of gbrain by identity (remote tier: $IDENTITY_TIER)" >&2
+        echo "  Identity: $IDENTITY_KEY  (registry: gstack-gbrain-repo-policy)" >&2
+        echo "  Every worktree of this remote is refused, regardless of path markers." >&2
         REFUSED_SLUGS+=("$slug")
         return 4
     fi
