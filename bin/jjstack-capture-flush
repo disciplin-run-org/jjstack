@@ -1,0 +1,97 @@
+#!/bin/bash
+# jjstack-capture-flush — detached worker that turns one ended session into
+# durable lessons. Spawned (setsid nohup) by hooks/capture-on-end.sh so the
+# session's teardown never waits on it.
+#
+# Pipeline: claim the queued job → extract readable transcript text → run a
+# cheap headless classifier (claude -p, Haiku) with references/capture-classifier.md
+# → feed each emitted lesson to jjstack-capture-write (which owns the PHI gate,
+# dedup-on-write, and canonical-slug fan-out) → mark the job done. On failure it
+# re-queues up to 3× then parks the job in failed/ for /groom to drain.
+#
+# RE-ENTRANCY: the classifier is itself a `claude -p` session that may fire its
+# own SessionEnd hook. We export JJSTACK_NO_CAPTURE=1 around it and the hook
+# honors that, so extraction can never trigger extraction.
+#
+# Usage: jjstack-capture-flush <session_id>
+set -uo pipefail
+
+SESSION_ID="${1:-}"
+[ -z "$SESSION_ID" ] && exit 0
+[ -n "${JJSTACK_NO_CAPTURE:-}" ] && exit 0        # never capture our own extractor
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+QDIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}/capture-queue"
+JOB="$QDIR/$SESSION_ID.json"
+INFLIGHT="$QDIR/$SESSION_ID.inflight"
+mkdir -p "$QDIR/done" "$QDIR/failed"
+
+# Claim atomically; if the job is gone or already claimed, stop.
+[ -f "$JOB" ] || exit 0
+mv "$JOB" "$INFLIGHT" 2>/dev/null || exit 0
+
+TRANSCRIPT=$(jq -r '.transcript_path // empty' "$INFLIGHT" 2>/dev/null)
+CWD=$(jq -r '.cwd // empty' "$INFLIGHT" 2>/dev/null)
+ATTEMPTS=$(jq -r '.attempts // 0' "$INFLIGHT" 2>/dev/null)
+ATTEMPTS=$((ATTEMPTS + 1))
+
+fail_or_requeue() {
+    if [ "$ATTEMPTS" -lt 3 ]; then
+        jq --argjson a "$ATTEMPTS" '.attempts=$a' "$INFLIGHT" > "$JOB" 2>/dev/null && rm -f "$INFLIGHT"
+    else
+        mv "$INFLIGHT" "$QDIR/failed/$SESSION_ID.json" 2>/dev/null
+    fi
+    exit 0
+}
+
+[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -n "$CWD" ] || fail_or_requeue
+
+# Extract readable user+assistant text (drop tool noise); cap to the last ~40k
+# chars (recent turns carry most corrections/decisions). Handles both {message:
+# {role,content}} and flat {role,content} event shapes; content as string or as
+# a block array.
+TEXT=$(jq -rs '
+  map(
+    (.message // .) as $m
+    | select(($m.role // "") == "user" or ($m.role // "") == "assistant")
+    | (($m.content) // "") as $c
+    | (($m.role)) as $r
+    | if ($c | type) == "string" then $r + ": " + $c
+      else $r + ": " + ([ $c[]? | select((.type // "") == "text") | .text ] | join(" "))
+      end
+  ) | join("\n\n")
+' "$TRANSCRIPT" 2>/dev/null | tail -c 40000)
+[ -n "$TEXT" ] || fail_or_requeue
+
+CLASSIFIER_FILE="$HOME/.claude/skills/jjstack/references/capture-classifier.md"
+[ -f "$CLASSIFIER_FILE" ] || fail_or_requeue
+CLASSIFIER=$(cat "$CLASSIFIER_FILE")
+
+# Resolve the claude CLI and model.
+CLAUDE=""
+if command -v claude >/dev/null 2>&1; then CLAUDE="$(command -v claude)"
+elif [ -x "$HOME/.local/bin/claude" ]; then CLAUDE="$HOME/.local/bin/claude"; fi
+[ -n "$CLAUDE" ] || fail_or_requeue
+MODEL="${JJSTACK_CAPTURE_MODEL:-claude-haiku-4-5-20251001}"
+
+# Run the classifier headlessly. JJSTACK_NO_CAPTURE=1 stops this call from
+# recursively triggering capture. 180s cap so a hung model can't strand the job.
+OUT=$(printf '%s' "$TEXT" | JJSTACK_NO_CAPTURE=1 timeout 180 "$CLAUDE" -p \
+    "Extract durable lessons from the session transcript provided on stdin. Follow your system instructions exactly and output ONLY the JSON array." \
+    --model "$MODEL" --append-system-prompt "$CLASSIFIER" 2>/dev/null)
+[ -n "$OUT" ] || fail_or_requeue
+
+# Strip any accidental code fences, then require a JSON array.
+JSON=$(printf '%s' "$OUT" | sed '/^```/d')
+printf '%s' "$JSON" | jq -e 'type == "array"' >/dev/null 2>&1 || fail_or_requeue
+
+# Write each lesson (capture-write owns PHI + dedup + fan-out). Count is fine at 0.
+N=$(printf '%s' "$JSON" | jq 'length')
+printf '%s' "$JSON" | jq -c '.[]' 2>/dev/null | while IFS= read -r lesson; do
+    printf '%s' "$lesson" | "$BIN_DIR/jjstack-capture-write" --cwd "$CWD" >/dev/null 2>&1
+done
+
+# Record a small manifest alongside the done marker for observability.
+jq --argjson n "${N:-0}" '. + {lessons:$n, finished:true}' "$INFLIGHT" > "$QDIR/done/$SESSION_ID.json" 2>/dev/null
+rm -f "$INFLIGHT"
+exit 0
