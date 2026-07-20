@@ -51,14 +51,43 @@ YEL=$'\033[33m'; CYN=$'\033[96m'; DIM=$'\033[2m'; RST=$'\033[0m'
 
 # Reconstruct a real cwd from a dashed project key, verifying against the disk so
 # hyphenated path segments (e.g. disciplin-run) resolve correctly.
+#
+# Two passes. FIRST a git-preferring depth-first search: it tries the SHORTEST
+# dash-joined prefix at each level and returns the first split that consumes all
+# tokens AND lands on a git-repo root. This disambiguates an empty flat shadow
+# dir (PycharmProjects/disciplin-run-actuatrix, non-git) from the real submodule
+# it masks (PycharmProjects/disciplin-run/actuatrix) — the shadow used to win
+# because the old greedy pass took the LONGEST prefix. If no git interpretation
+# exists (plain non-git project dirs), fall back to that original greedy
+# longest-prefix descent so behavior is unchanged for those. Missing tails are
+# appended verbatim so the caller's [ -d ] test still flags a vanished project.
+# NOTE: keep this logic identical to the copy in jjstack-memory-bridge.
+_reconstruct_git_search() {
+  # DFS over token splits from ($_RC_TOKS,$_RC_N); prints a git-root path + rc 0.
+  local path="$1" i="$2"
+  if [ "$i" -ge "$_RC_N" ]; then
+    local top; top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || return 1
+    [ "$top" = "$path" ] && { printf '%s' "$path"; return 0; }
+    return 1
+  fi
+  local acc="" k="$i" hit
+  while [ "$k" -lt "$_RC_N" ]; do
+    if [ -z "$acc" ]; then acc="${_RC_TOKS[$k]}"; else acc="$acc-${_RC_TOKS[$k]}"; fi
+    if [ -d "$path/$acc" ]; then
+      hit=$(_reconstruct_git_search "$path/$acc" "$((k+1))") && { printf '%s' "$hit"; return 0; }
+    fi
+    k=$((k+1))
+  done
+  return 1
+}
 reconstruct_cwd() {
-  # Reverse the dashed key by descending into the LONGEST dash-joined token run
-  # that exists on disk at each level (handles hyphenated dir names like
-  # google-workspace-mcp and disciplin-run). Missing tails are appended verbatim
-  # so the caller's [ -d ] test correctly flags a vanished project.
   local key="${1#-}"
   local IFS='-'; local toks=($key); IFS=' '
   local n=${#toks[@]} path="" i=0
+  # Pass 1 — git-preferring (disambiguates flat shadow dirs from submodules).
+  _RC_TOKS=("${toks[@]}"); _RC_N="$n"
+  local git_hit; git_hit=$(_reconstruct_git_search "" 0) && { printf '%s' "$git_hit"; return; }
+  # Pass 2 — greedy longest-prefix fallback (original behavior; non-git dirs).
   while [ "$i" -lt "$n" ]; do
     local acc="" best="" j="$i" k="$i"
     while [ "$k" -lt "$n" ]; do
