@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
         --insight)    INSIGHT="$2"; shift 2 ;;
         --title)      TITLE="$2"; shift 2 ;;
         --body)       BODY="$2"; shift 2 ;;
+        --body-file)  BODY="$(cat "$2")"; shift 2 ;;
         --confidence) CONFIDENCE="$2"; shift 2 ;;
         --source)     SOURCE="$2"; shift 2 ;;
         --skill)      SKILL="$2"; shift 2 ;;
