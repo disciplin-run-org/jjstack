@@ -127,8 +127,10 @@ elif [ -x "$HOME/.local/bin/gbrain" ]; then GBRAIN="$HOME/.local/bin/gbrain"; fi
 # (what older bridge runs used). Matching both makes recall correct before and
 # after the migration. pan-project/ is the reserved pan-project selector.
 CANON_SLUG=$( (cd "$CWD" 2>/dev/null && eval "$("$GSTACK_BIN/gstack-slug" 2>/dev/null)"; echo "${SLUG:-}") )
+CANON_SLUG="${CANON_SLUG,,}"   # gbrain slugs are lowercase; match in lowercase
 PROJECTS_ROOT="${JJSTACK_PROJECTS_ROOT:-$HOME/PycharmProjects}"
 case "$CWD" in "$PROJECTS_ROOT"/*) SHORT_SLUG="${CWD#"$PROJECTS_ROOT"/}"; SHORT_SLUG="${SHORT_SLUG//\//-}" ;; *) SHORT_SLUG="" ;; esac
+SHORT_SLUG="${SHORT_SLUG,,}"
 
 DEC_TMP=$(mktemp 2>/dev/null); LRN_TMP=$(mktemp 2>/dev/null); GBR_TMP=$(mktemp 2>/dev/null)
 [ -x "$GSTACK_BIN/gstack-decision-search" ] && \

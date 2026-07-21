@@ -68,6 +68,8 @@ DASHED=$(printf '%s' "$CWD" | sed 's|/|-|g')                 # harness native di
 MEM_DIR="$HOME/.claude/projects/$DASHED/memory"
 CANON_SLUG=$( (cd "$CWD" 2>/dev/null && eval "$("$GSTACK_BIN/gstack-slug" 2>/dev/null)"; echo "${SLUG:-}") )
 [ -z "$CANON_SLUG" ] && CANON_SLUG="${DASHED#-}"
+# gbrain requires lowercase slugs; the gstack learnings dir keeps its case.
+CANON_LC="${CANON_SLUG,,}"
 
 # ── PHI gate FIRST ───────────────────────────────────────────────────
 PHI=0
@@ -84,7 +86,7 @@ fi
 if [ -z "$MERGE_FILE" ] && [ "$PHI" = "0" ] && [ -n "$GBRAIN" ]; then
     # Layer B — semantic near-duplicate within THIS project's canonical pages.
     local_top=$(timeout 8 "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null \
-        | sed -nE "s/^\[([0-9.]+)\] +(${CANON_SLUG}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
+        | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
     if [ -n "$local_top" ]; then
         score=${local_top%% *}
         if awk -v s="$score" 'BEGIN{exit !(s>=0.85)}'; then
@@ -181,11 +183,11 @@ else
         && echo "jjstack-capture-write: gstack learning logged → $CANON_SLUG" \
         || echo "jjstack-capture-write: gstack-learnings-log rejected the entry" >&2
     if [ -n "$GBRAIN" ]; then
-        gbslug="$CANON_SLUG/$(kebab "$L_NAME")"
+        gbslug="$CANON_LC/$(kebab "$L_NAME")"
         page="---
 type: learning
 tags:
-  - project:$CANON_SLUG
+  - project:$CANON_LC
   - memory-type:$L_TYPE
 ---
 
