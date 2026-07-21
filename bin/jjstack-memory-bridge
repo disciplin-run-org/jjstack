@@ -270,6 +270,10 @@ bridge_project() {
 
     while IFS= read -r mfile; do
         [ -z "$mfile" ] && continue
+        # Skip memories consolidated elsewhere by a /groom cross pass — their
+        # gbrain page lives under the consolidation target, not per-project;
+        # re-ingesting here would recreate the duplicate that pass removed.
+        grep -qE '^[[:space:]]*consolidated_to:' "$mfile" 2>/dev/null && continue
 
         local fm body name desc memory_type ts ts_iso
         fm=$(extract_frontmatter "$mfile")

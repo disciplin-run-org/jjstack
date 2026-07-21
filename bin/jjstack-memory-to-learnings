@@ -108,6 +108,14 @@ for mem in "$PROJECTS_DIR"/*/memory; do
   for f in "$mem"/*.md; do
     [ -e "$f" ] || continue
     [ "$(basename "$f")" = "MEMORY.md" ] && continue
+    # Skip memories consolidated elsewhere by a /groom cross pass (promoted to
+    # pan-project, or merged into another project's canonical slug). Re-logging
+    # them per-project would recreate the duplicate the consolidation removed.
+    # The file stays in place as historical source, marked with where it went.
+    if grep -qE '^[[:space:]]*consolidated_to:' "$f" 2>/dev/null; then
+      dir_skip=$((dir_skip+1)); detail="${detail}      ${DIM}skip${RST} $(basename "$f")  ${DIM}(consolidated elsewhere)${RST}"$'\n'
+      continue
+    fi
     name=$(fm_scalar "$f" name)
     base="$(basename "$f" .md)"
     mtype=$(fm_type "$f"); [ -z "$mtype" ] && mtype=$(infer_type "$f")
