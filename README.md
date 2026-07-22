@@ -199,13 +199,24 @@ stays.
 
 ## Hooks
 
-jjstack ships four optional hooks that ride along with every Claude Code
+jjstack ships six optional hooks that ride along with every Claude Code
 session.
 
 **`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
 pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
 classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
 Fail-closed when the API is unreachable.
+
+**`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
+into every prompt (see [Memory](#memory)): deterministic always-rules,
+branch decisions, this project's own notes, pan-project preferences, and
+cross-project lessons — surfaced semantically, wrapped in a do-not-interpret
+envelope, with a cross-project/PHI firewall.
+
+**`capture-on-end.sh`** — A SessionEnd hook that auto-captures durable lessons
+from the finished session (see [Memory](#memory)). It enqueues and detaches
+in milliseconds so it never blocks exit; a background worker extracts lessons
+and writes them PHI-gated and deduplicated. Disable with `JJSTACK_NO_CAPTURE=1`.
 
 **`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
 markdown headed for disk and blocks high-confidence prompt-injection
@@ -225,6 +236,39 @@ jq -r '.command' ~/.jjstack/command-failures.jsonl | sort | uniq -c | sort -rn |
 
 **`mcp-reconnect.sh`** — A PostToolUseFailure hook that reconnects MCP
 servers automatically on disconnection. Up to 3 retries before escalating.
+
+---
+
+## Memory
+
+jjstack gives Claude Code a cross-session memory that recalls the right
+lessons at the right time, captures new ones automatically, and consolidates
+duplicates on demand. It layers on gstack's stores and a local vector index
+(gbrain) rather than inventing new storage.
+
+**Recall** (the `shared-memory.sh` hook) surfaces, on every prompt: standing
+always-rules, branch decisions, this project's own memory notes (semantic),
+pan-project preferences ("how you like things done regardless of repo"), and
+lessons from your other projects. Everything is keyed on a project's canonical
+git-remote identity, and another project's private notes are never surfaced —
+a built-in cross-project/PHI firewall.
+
+**Capture** (the `capture-on-end.sh` hook) turns a finished session into
+durable lessons with no manual step: a background pass extracts what's worth
+keeping and writes it deduplicated, with the PHI gate applied first so
+sensitive projects stay local-only.
+
+**Consolidate** (`/groom`, including its `cross` mode) removes sprawl:
+near-duplicate memories are clustered and merged with your review, and a
+lesson you've told several projects can be promoted to the pan-project store.
+A promoted memory is marked so it is never silently re-created.
+
+**PHI safety.** Sensitive projects opt out (a `.no-gbrain` marker or a
+git-remote policy of `deny`/`read-only`); their memories stay in local native
+files only and never reach the shared index. This is enforced in one shared
+library that every memory tool uses.
+
+Regression coverage lives in `test/smoke.sh`.
 
 ---
 
