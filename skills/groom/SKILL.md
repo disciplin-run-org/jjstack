@@ -4,13 +4,17 @@ version: 0.1.0
 description: |
   Groom memories or skills to remove sprawl: vector-cluster near-duplicates,
   propose merges, human-review each one, apply, DNA-tighten survivors,
-  re-index. One operation, three sub-modes - memory, skills, or all.
+  re-index. One operation, four sub-modes - memory, skills, cross, or all.
+  The "cross" mode finds lessons that recur across DIFFERENT projects and
+  promotes them to the pan-project store (the backstop for capture-time
+  scope mis-classification), and merges conflicting lessons with nuance.
   The "all" mode adds the graduation ladder: procedure memories used
   frequently can be proposed for promotion to skills, and rule memories
   for promotion to CLAUDE.md.
-  Trigger on: "/groom", "groom memory", "groom skills", "groom all",
-  "memory cleanup", "consolidate memories", "dedup memories",
-  "memory grooming", "skill consolidation", "graduation pass".
+  Trigger on: "/groom", "groom memory", "groom skills", "groom cross",
+  "groom all", "memory cleanup", "consolidate memories", "dedup memories",
+  "promote to pan-project", "cross-project lessons", "memory grooming",
+  "skill consolidation", "graduation pass".
   Do NOT trigger for: routine save-and-clear writes (use /save-and-clear),
   one-off memory edits (just Edit the file), or anything destructive
   without explicit user invocation. This skill is destructive on apply -
@@ -41,6 +45,7 @@ differs.
 ```
 /groom memory [--slug <project-slug>] [--threshold 0.85] [--ingest]
 /groom skills [--threshold 0.90]
+/groom cross  [--threshold 0.85]
 /groom all
 ```
 
@@ -51,6 +56,13 @@ differs.
   riskier to merge than memories). **Council-deferred** until skill-miss
   telemetry confirms the router need; specced here but recommend manual
   review pass first.
+- **`cross`** - Find lessons that recur across DIFFERENT projects and are
+  really pan-project ("how Jesper likes things done regardless of repo"),
+  and conflicting lessons that should be merged with nuance. See
+  "Cross-project promotion" below. This is the backstop for capture-time
+  scope mis-classification: the auto-capture classifier guesses
+  project-vs-pan-project and is wrong often enough that a periodic
+  cross-project pass is needed to promote what it missed.
 - **`all`** - Memory + skills together AND the graduation ladder. Only
   this mode sees both gbrain pools plus the use-frequency log
   (`~/.jjstack/skill-misses.jsonl`, recurrence_count fields), so only it
@@ -88,6 +100,61 @@ an orchestrator running `/groom` on a worker's memory). The policy
 lives in CLAUDE.md. This step makes the boundary visible at
 invocation, so over-reach is never accidental.
 
+## Cross-project promotion (`cross` mode)
+
+`cross` is the deliberate, whole-store pass. It does ONE job the single-slug
+modes cannot: spot a lesson that recurs across two or more DIFFERENT projects
+and promote it to the pan-project `__global__` store, and merge lessons that
+genuinely conflict. It is read-across-all, write-with-human-approval.
+
+**Why this is now simple.** The 2026-07 memory migration collapsed every
+project's lessons onto ONE canonical slug (git-remote based). There is no
+longer a "same project under three naming generations" problem, so `cross`
+does NOT need identity bucketing or naming-generation collapse — it compares
+canonical project slugs directly. It only handles genuinely-different projects.
+
+**Why it is needed** (not redundant with capture-time routing): the
+auto-capture classifier (`references/capture-classifier.md`) guesses
+`scope: project` vs `pan-project` per lesson and is wrong often enough that
+pan-project lessons keep landing in a single project's store. `cross` is the
+periodic correction: if the SAME lesson shows up in ≥2 projects, that is
+strong evidence it is pan-project, regardless of what the classifier guessed.
+The dayplan/tars projects are a live example — they share ~9 near-identical
+dev-workflow lessons (docker-first, QA cleanup, check-script) that are
+obviously pan-project.
+
+### Flow (preserves every guarantee of the single-slug modes)
+
+1. **PHI gate, store-wide.** Skip any project whose identity is opted out
+   (`.no-gbrain` / `sensitivity: phi` / `gstack-gbrain-repo-policy` tier
+   deny|read-only). Opted-out projects never enter cross-project clustering
+   and never reach the shared index. Same two gates as every other mode.
+2. **Backup** (mandatory, as always) — snapshot every touched project's memory
+   dir + the `__global__` store under `~/.jjstack/backups/`.
+3. **Cluster across projects.** For each candidate lesson, `gbrain query
+   "<title/snippet>" --json` returns neighbors regardless of project tag; keep
+   each hit's `project:` tag to know its origin. A cluster whose members carry
+   **≥2 distinct canonical project tags** is a cross-project cluster.
+4. **Classify + propose** (write to `~/.jjstack/groom-proposals/cross-<date>.md`):
+   - **pan-project promotion** — same lesson in ≥2 projects → propose ONE
+     merged pan-project lesson written via `jjstack-global-learn` (→ `__global__`
+     + a `pan-project/` gbrain page). Optionally retire the per-project copies
+     or leave them (human decides).
+   - **conflict merge-with-nuance** — members that contradict each other →
+     propose ONE lesson that states the condition under which each applies
+     ("in project X do A; in general do B, because ..."). No schema change.
+   - **rule vs preference** — if the promoted lesson is an imperative
+     must/never rule, surface it as a CLAUDE.md / `always-rules.md` candidate
+     (manual edit, never auto-applied); otherwise it is a soft preference and
+     goes to `__global__`.
+5. **Human review, one cluster at a time** (AskUserQuestion; never batch-approve).
+6. **Apply** approved actions; then re-index touched projects with
+   `jjstack-memory-bridge --slug <dashed> --ingest --sync` (canonical, per the
+   migrated bridge) and `jjstack-extract-triggers`.
+
+Within-project dedup (case: the same lesson logged several times in ONE
+project) stays the job of `/groom memory` — unchanged.
+
 ## Mandatory pre-steps
 
 1. **Load the promotion philosophy** so graduation decisions match the
@@ -97,19 +164,36 @@ invocation, so over-reach is never accidental.
    cat ~/.claude/skills/jjstack/references/memory-promotion.md
    ```
 
-2. **Check the PHI / no-gbrain opt-out marker for the target slug**:
+2. **Check the PHI / no-gbrain opt-out for the target slug** — two gates,
+   either one opts the slug out:
 
    ```bash
    MEM_DIR="$HOME/.claude/projects/<slug>/memory"
+   # Gate 1 — path marker in this dir:
    [ -f "$MEM_DIR/.no-gbrain" ] && echo "OPTED_OUT (no-gbrain file)"
    grep -lE '^sensitivity:[[:space:]]*phi' "$MEM_DIR"/*.md 2>/dev/null | head -1 && echo "OPTED_OUT (sensitivity: phi)"
+   # Gate 2 — project identity (git remote) in the per-remote registry:
+   POL="$HOME/.claude/skills/gstack/bin/gstack-gbrain-repo-policy"
+   CWD=$(jjstack-memory-bridge --print-cwd <slug> 2>/dev/null)  # or resolve manually
+   REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null)
+   [ -n "$REMOTE" ] && case "$("$POL" get "$("$POL" normalize "$REMOTE")")" in
+     deny|read-only) echo "OPTED_OUT (identity: $("$POL" normalize "$REMOTE"))" ;;
+   esac
    ```
 
-   If EITHER marker is present, this slug is opted out of gbrain (per
+   If EITHER gate reports OPTED_OUT, this slug is opted out of gbrain (per
    `~/.claude/CLAUDE.md` "Sensitive data stays off the shared index").
    Skip step 3 below; use the **No-gbrain native fallback** mode (see
-   that section). The bridge will refuse to ingest this slug; do not
-   try to bypass.
+   that section). The bridge will refuse to ingest this slug (exit 4); do
+   not try to bypass.
+
+   Gate 2 is the class fix for the moved/cloned-repo hole: a path marker
+   lives in one directory and does not follow a clone, so the same project
+   at a second path was silently bridge-eligible. Opting out by identity
+   (`gstack-gbrain-repo-policy set <remote> deny`) binds every live
+   worktree of that remote. Prefer identity opt-out for any git-backed
+   sensitive project; keep the path marker too for the in-repo signal and
+   for non-repo dirs (Downloads/, Documents/) that have no remote.
 
 3. **Confirm gbrain is installed and reachable** (only for non-opted-
    out slugs):

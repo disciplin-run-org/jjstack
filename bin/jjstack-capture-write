@@ -1,0 +1,204 @@
+#!/bin/bash
+# jjstack-capture-write — deterministically persist ONE captured lesson to the
+# right stores, with the PHI gate FIRST and dedup-on-write so auto-capture never
+# accrues noise. Called by jjstack-capture-flush (one invocation per lesson the
+# classifier emitted); also usable by hand for testing.
+#
+# A lesson is a JSON object (via --lesson or stdin):
+#   { "type":       "feedback|project|user|reference",   # native memory type
+#     "name":       "short_kebab_or_title",
+#     "description":"one specific line (MEMORY.md hook + gstack insight)",
+#     "body":       "the lesson text",
+#     "pattern_key":"stable-dedup-key",
+#     "scope":      "project|pan-project",
+#     "is_rule":    true|false,
+#     "confidence": 1-10,
+#     "source":     "observed|user-stated|inferred|cross-model" }
+#
+# Targets (non-PHI):
+#   native .md   → ~/.claude/projects/<dashed-cwd>/memory/  (harness-owned dir)
+#   gstack learn → canonical gstack slug (run from the project cwd)
+#   gbrain page  → <canonical-slug>/<kebab>  (project scope) OR pan-project/<kebab>
+# PHI (opted-out project): native .md ONLY. Nothing reaches gstack/gbrain.
+#
+# Usage: jjstack-capture-write --cwd <project-cwd> [--lesson '<json>'] [--dry-run]
+# Exit: 0 ok (incl. PHI native-only); 2 usage; 3 bad lesson JSON.
+set -uo pipefail
+
+CWD="" LESSON="" DRY_RUN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cwd)    CWD="$2"; shift 2 ;;
+        --lesson) LESSON="$2"; shift 2 ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        *) echo "jjstack-capture-write: unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+[ -z "$LESSON" ] && LESSON="$(cat)"     # allow stdin
+[ -z "$CWD" ] && { echo "jjstack-capture-write: --cwd required" >&2; exit 2; }
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$BIN_DIR/jjstack-gbrain-phi-lib.sh"          # PHI gates + reconstruct_cwd
+GSTACK_BIN="$HOME/.claude/skills/gstack/bin"
+PROJECTS_ROOT="${JJSTACK_PROJECTS_ROOT:-$HOME/PycharmProjects}"
+
+GBRAIN=""
+if command -v gbrain >/dev/null 2>&1; then GBRAIN="$(command -v gbrain)"
+elif [ -x "$HOME/.local/bin/gbrain" ]; then GBRAIN="$HOME/.local/bin/gbrain"; fi
+
+# ── Parse the lesson ─────────────────────────────────────────────────
+jq -e . >/dev/null 2>&1 <<<"$LESSON" || { echo "jjstack-capture-write: invalid lesson JSON" >&2; exit 3; }
+L_TYPE=$(jq -r '.type // "project"'        <<<"$LESSON")
+L_NAME=$(jq -r '.name // empty'            <<<"$LESSON")
+L_DESC=$(jq -r '.description // empty'      <<<"$LESSON")
+L_BODY=$(jq -r '.body // .description // empty' <<<"$LESSON")
+L_PKEY=$(jq -r '.pattern_key // empty'      <<<"$LESSON")
+L_SCOPE=$(jq -r '.scope // "project"'       <<<"$LESSON")
+L_RULE=$(jq -r '.is_rule // false'          <<<"$LESSON")
+L_CONF=$(jq -r '.confidence // 7'           <<<"$LESSON")
+L_SRC=$(jq -r '.source // "observed"'       <<<"$LESSON")
+[ -z "$L_NAME" ] && { echo "jjstack-capture-write: lesson has no name" >&2; exit 3; }
+[ -z "$L_PKEY" ] && L_PKEY=$(printf '%s' "$L_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//')
+
+kebab() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//'; }
+today() { date -u +%Y-%m-%d; }
+
+# ── Resolve the project's three identities ───────────────────────────
+DASHED=$(printf '%s' "$CWD" | sed 's|/|-|g')                 # harness native dir name
+MEM_DIR="$HOME/.claude/projects/$DASHED/memory"
+CANON_SLUG=$( (cd "$CWD" 2>/dev/null && eval "$("$GSTACK_BIN/gstack-slug" 2>/dev/null)"; echo "${SLUG:-}") )
+[ -z "$CANON_SLUG" ] && CANON_SLUG="${DASHED#-}"
+# gbrain requires lowercase slugs; the gstack learnings dir keeps its case.
+CANON_LC="${CANON_SLUG,,}"
+
+# ── PHI gate FIRST ───────────────────────────────────────────────────
+PHI=0
+if is_slug_opted_out "$DASHED" || is_project_identity_opted_out "$DASHED"; then PHI=1; fi
+
+# map native type → gstack learnings type
+gstack_type() { case "$1" in feedback|user) echo preference ;; project) echo operational ;; reference) echo tool ;; *) echo operational ;; esac; }
+
+# ── Dedup-on-write: Layer A (pattern_key), then Layer B (gbrain) ──────
+MERGE_FILE=""
+if [ -d "$MEM_DIR" ]; then
+    MERGE_FILE=$(grep -lE "^[[:space:]]*pattern_key:[[:space:]]*[\"']?${L_PKEY}[\"']?[[:space:]]*$" "$MEM_DIR"/*.md 2>/dev/null | head -1)
+fi
+if [ -z "$MERGE_FILE" ] && [ "$PHI" = "0" ] && [ -n "$GBRAIN" ]; then
+    # Layer B — semantic near-duplicate within THIS project's canonical pages.
+    local_top=$(timeout 8 "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null \
+        | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
+    if [ -n "$local_top" ]; then
+        score=${local_top%% *}
+        if awk -v s="$score" 'BEGIN{exit !(s>=0.85)}'; then
+            # Near-duplicate: try to resolve back to the source .md via learnings.
+            src=$(jq -r --arg k "$L_PKEY" 'select(.key==$k) | .files[0] // empty' \
+                "$HOME/.gstack/projects/$CANON_SLUG/learnings.jsonl" 2>/dev/null | head -1)
+            [ -n "$src" ] && [ -f "$src" ] && MERGE_FILE="$src"
+        fi
+    fi
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] project cwd:   $CWD"
+    echo "[dry-run] dashed native: $DASHED"
+    echo "[dry-run] canonical slug:$CANON_SLUG"
+    echo "[dry-run] PHI opted-out: $([ "$PHI" = 1 ] && echo yes || echo no)"
+    echo "[dry-run] action:        $([ -n "$MERGE_FILE" ] && echo "MERGE into $MERGE_FILE" || echo "CREATE new memory")"
+    echo "[dry-run] scope:         $L_SCOPE   is_rule: $L_RULE"
+    [ "$PHI" = "0" ] && echo "[dry-run] fan-out:       gstack($CANON_SLUG) + gbrain($([ "$L_SCOPE" = pan-project ] && echo pan-project/ || echo "$CANON_SLUG/")$(kebab "$L_NAME"))"
+    exit 0
+fi
+
+mkdir -p "$MEM_DIR"
+
+# ── Native .md: merge or create ──────────────────────────────────────
+if [ -n "$MERGE_FILE" ]; then
+    # Increment recurrence_count, refresh last_seen, append dated note.
+    rc=$(grep -oE '^[[:space:]]*recurrence_count:[[:space:]]*[0-9]+' "$MERGE_FILE" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+    [ -z "$rc" ] && rc=1
+    new_rc=$((rc + 1))
+    if grep -qE '^[[:space:]]*recurrence_count:' "$MERGE_FILE"; then
+        sed -i -E "s/^([[:space:]]*recurrence_count:[[:space:]]*)[0-9]+/\1$new_rc/" "$MERGE_FILE"
+    else
+        sed -i -E "0,/^---$/{/^---$/a\\
+recurrence_count: $new_rc
+}" "$MERGE_FILE"
+    fi
+    if grep -qE '^[[:space:]]*last_seen:' "$MERGE_FILE"; then
+        sed -i -E "s/^([[:space:]]*last_seen:[[:space:]]*).*/\1$(today)/" "$MERGE_FILE"
+    fi
+    printf '\n## %s update (auto-captured)\n\n%s\n' "$(today)" "$L_BODY" >> "$MERGE_FILE"
+    TARGET_FILE="$MERGE_FILE"
+    echo "jjstack-capture-write: merged into $(basename "$MERGE_FILE") (recurrence_count $rc→$new_rc)"
+else
+    fname="${L_TYPE}_$(kebab "$L_NAME").md"
+    TARGET_FILE="$MEM_DIR/$fname"
+    PROMOTE=""
+    [ "$L_RULE" = "true" ] && PROMOTE=$'\npromote: rule'
+    cat > "$TARGET_FILE" <<EOF
+---
+name: $L_NAME
+description: $L_DESC
+type: $L_TYPE
+pattern_key: $L_PKEY
+recurrence_count: 1
+last_seen: $(today)
+source: auto-capture$PROMOTE
+---
+
+$L_BODY
+EOF
+    # Update MEMORY.md index (create if missing).
+    idx="$MEM_DIR/MEMORY.md"
+    [ -f "$idx" ] || printf '# Memory Index\n\n' > "$idx"
+    grep -qF "($fname)" "$idx" 2>/dev/null || printf -- '- [%s](%s) — %s\n' "$L_NAME" "$fname" "$L_DESC" >> "$idx"
+    echo "jjstack-capture-write: created $fname"
+fi
+
+# ── PHI stop: nothing beyond native ──────────────────────────────────
+if [ "$PHI" = "1" ]; then
+    echo "jjstack-capture-write: PHI/opted-out ($([ -n "$IDENTITY_TIER" ] && echo "identity:$IDENTITY_TIER" || echo "path-marker")) — native-only, no gstack/gbrain/pan-project write"
+    exit 0
+fi
+
+# ── Rule → leave for /groom (never auto-edit CLAUDE.md/always-rules) ──
+if [ "$L_RULE" = "true" ] && [ "$L_SCOPE" = "pan-project" ]; then
+    echo "jjstack-capture-write: is_rule=true — flagged 'promote: rule' in the memory; /groom proposes the CLAUDE.md/always-rules row (never auto-edited here)"
+    # Still record it as a pan-project preference so it is recalled meanwhile.
+fi
+
+# ── Fan-out ──────────────────────────────────────────────────────────
+if [ "$L_SCOPE" = "pan-project" ]; then
+    "$BIN_DIR/jjstack-global-learn" --key "$L_PKEY" --insight "$L_DESC" \
+        --title "$L_NAME" --body "$L_BODY" --confidence "$L_CONF" --source "$L_SRC" \
+        --type preference >/dev/null 2>&1 \
+        && echo "jjstack-capture-write: pan-project preference recorded (__global__)" \
+        || echo "jjstack-capture-write: pan-project write failed" >&2
+else
+    GTYPE=$(gstack_type "$L_TYPE")
+    ljson=$(jq -nc --arg skill capture --arg type "$GTYPE" --arg key "$L_PKEY" \
+        --arg insight "$L_DESC" --argjson confidence "$L_CONF" --arg source "$L_SRC" \
+        '{skill:$skill,type:$type,key:$key,insight:$insight,confidence:$confidence,source:$source}')
+    ( cd "$CWD" && "$GSTACK_BIN/gstack-learnings-log" "$ljson" ) >/dev/null 2>&1 \
+        && echo "jjstack-capture-write: gstack learning logged → $CANON_SLUG" \
+        || echo "jjstack-capture-write: gstack-learnings-log rejected the entry" >&2
+    if [ -n "$GBRAIN" ]; then
+        gbslug="$CANON_LC/$(kebab "$L_NAME")"
+        page="---
+type: learning
+tags:
+  - project:$CANON_LC
+  - memory-type:$L_TYPE
+---
+
+# $L_NAME
+
+$L_DESC
+
+$L_BODY"
+        printf '%s' "$page" | "$GBRAIN" put "$gbslug" >/dev/null 2>&1 \
+            && echo "jjstack-capture-write: gbrain page → $gbslug" \
+            || echo "jjstack-capture-write: gbrain put $gbslug failed" >&2
+    fi
+fi
+exit 0

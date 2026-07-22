@@ -17,15 +17,34 @@
 #     NEVER applied based on slug substring. Per-project memories stay
 #     project-scoped until the owner explicitly promotes them.
 #
-# PHI / sensitive-data refusal:
+# PHI / sensitive-data refusal (two independent gates; either refuses):
 #   gbrain is a single shared local vector index across all projects.
-#   PHI and personal records MUST NEVER be bridged into it. The bridge
-#   refuses any slug whose memory dir carries an opt-out marker:
+#   PHI and personal records MUST NEVER be bridged into it.
+#
+#   Gate 1 — PATH MARKER in the slug's own memory dir:
 #     * presence of `~/.claude/projects/<slug>/memory/.no-gbrain` file
 #     * any memory file with frontmatter `sensitivity: phi`
 #     * MEMORY.md with frontmatter `sensitivity: phi`
+#
+#   Gate 2 — PROJECT IDENTITY (git remote), the class fix for the
+#   moved/cloned-repo hole. A path marker lives in one directory, keyed
+#   by the dashed cwd; clone or move the repo and the marker does not
+#   follow, so the same project at a new path becomes bridge-eligible.
+#   Gate 2 keys the opt-out on the project's normalized git remote via
+#   gstack's per-remote registry (gstack-gbrain-repo-policy), so the
+#   decision binds EVERY live worktree of that remote — even one with no
+#   marker. Tiers deny and read-only refuse; read-write and unset allow.
+#   Opt a project out by identity:
+#     gstack-gbrain-repo-policy set <remote-url> deny
+#
 #   Refusal is exit code 4 with a clear message. The /groom skill
 #   detects the same markers and uses a native no-gbrain path.
+#
+# Exit codes:
+#   0  success
+#   2  usage error (unknown flag, missing/incompatible args)
+#   4  PHI refusal — slug carries an opt-out marker
+#   5  --ingest requested but gbrain is unreachable or non-operational
 #
 # Usage:
 #   jjstack-memory-bridge --slug <project-slug>      # one project
@@ -35,7 +54,13 @@
 #   jjstack-memory-bridge --ingest                    # after writing jsonl, also call `gbrain put`
 #                                                       on each entry so gbrain query finds them
 #                                                       without waiting for gstack-memory-ingest.
-#                                                       Requires the `gbrain` CLI on PATH.
+#                                                       Requires a working `gbrain` CLI on PATH:
+#                                                       if it is missing or non-operational the
+#                                                       bridge EXITS 5 rather than skipping the
+#                                                       ingest. Never make this a warning — a
+#                                                       silent skip hid the worker PATH gap for
+#                                                       six weeks (workers wrote jsonl, ingested
+#                                                       nothing, exited 0).
 #   jjstack-memory-bridge --ecosystem <name>          # add the ecosystem:<name> tag to every page
 #                                                       bridged in this run. Use only when the
 #                                                       owner of the project is explicitly
@@ -66,6 +91,7 @@ DRY_RUN=0
 INGEST=0
 SYNC=0
 FORCE_ECOSYSTEM=""
+PRINT_CWD_SLUG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --slug) SLUG="$2"; shift 2 ;;
@@ -75,6 +101,7 @@ while [ $# -gt 0 ]; do
         --ingest) INGEST=1; shift ;;
         --sync) SYNC=1; shift ;;
         --ecosystem) FORCE_ECOSYSTEM="$2"; shift 2 ;;
+        --print-cwd) PRINT_CWD_SLUG="$2"; shift 2 ;;
         --help|-h) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
@@ -89,13 +116,42 @@ if [ "$SELF_TEST" = "1" ]; then
     SLUG="-home-jesper-PycharmProjects-jjstack"
 fi
 
-if [ -z "$SLUG" ] && [ "$ALL" = "0" ]; then
+# ─── Preflight: --ingest requires a WORKING gbrain CLI ────────────────
+# This check used to live per-slug and merely warn before `return 0`.
+# That fail-soft is exactly how the worker PATH gap stayed invisible for
+# six weeks: claude-tm workers have no ~/.bun/bin on PATH (~/.bashrc adds
+# it but returns early for non-interactive shells), so every worker-side
+# --ingest wrote its jsonl, silently skipped every `gbrain put`, and
+# exited 0. An ingest that was explicitly asked for and cannot ingest is
+# a hard failure, not a warning. Fires under --dry-run too: a dry run
+# that reports green for an ingest that could never happen is the same
+# false-green in a smaller box.
+if [ "$INGEST" = "1" ]; then
+    if ! command -v gbrain >/dev/null 2>&1; then
+        echo "FATAL: --ingest requires the gbrain CLI, which is not on PATH." >&2
+        echo "  PATH=$PATH" >&2
+        echo "  Fix: install the ~/.local/bin/gbrain shim, or run /setup-gbrain." >&2
+        exit 5
+    fi
+    if ! gbrain doctor --fast >/dev/null 2>&1; then
+        echo "FATAL: gbrain CLI resolves to $(command -v gbrain) but is not operational." >&2
+        echo "  Diagnose with: gbrain doctor" >&2
+        exit 5
+    fi
+fi
+
+if [ -z "$SLUG" ] && [ "$ALL" = "0" ] && [ -z "$PRINT_CWD_SLUG" ]; then
     echo "Specify --slug <project-slug>, --all, or --self-test." >&2
     exit 2
 fi
 
 MEMORY_ROOT="$HOME/.claude/projects"
 LEARNINGS_ROOT="$HOME/.gstack/projects"
+
+# PHI gates (is_slug_opted_out / is_project_identity_opted_out) and dashed-slug →
+# real-cwd resolution (reconstruct_cwd) come from ONE shared lib so they never
+# fork. Sourced here; MEMORY_ROOT/POLICY_BIN above are honored via := defaults.
+source "$(cd "$(dirname "$0")" && pwd)/jjstack-gbrain-phi-lib.sh"
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -122,29 +178,15 @@ field() {
     '
 }
 
-is_slug_opted_out() {
-    # Defense in depth against bridging PHI into the shared gbrain index.
-    # Returns 0 (true) if any opt-out marker is present in the slug's
-    # memory dir; the caller MUST refuse the bridge in that case.
-    #
-    # Markers (any one is sufficient):
-    #   1. ~/.claude/projects/<slug>/memory/.no-gbrain       — file present
-    #   2. MEMORY.md frontmatter has `sensitivity: phi`
-    #   3. any *.md frontmatter has `sensitivity: phi`
-    local slug="$1"
-    local mem_dir="$MEMORY_ROOT/$slug/memory"
-    [ ! -d "$mem_dir" ] && return 1
+# PHI gates + reconstruct_cwd now live in jjstack-gbrain-phi-lib.sh (sourced
+# above) — single source of truth so the opt-out logic never forks.
 
-    [ -f "$mem_dir/.no-gbrain" ] && return 0
-
-    if [ -f "$mem_dir/MEMORY.md" ]; then
-        grep -qE '^[[:space:]]*sensitivity:[[:space:]]*phi' "$mem_dir/MEMORY.md" 2>/dev/null && return 0
-    fi
-
-    grep -lE '^[[:space:]]*sensitivity:[[:space:]]*phi' "$mem_dir"/*.md 2>/dev/null | head -1 | grep -q . && return 0
-
-    return 1
-}
+# Debug hook: resolve a dashed slug to its real cwd and exit. Used by /groom's
+# PHI check to find the repo whose remote it should test against the registry.
+if [ -n "$PRINT_CWD_SLUG" ]; then
+    reconstruct_cwd "$PRINT_CWD_SLUG"; echo
+    exit 0
+fi
 
 is_ecosystem_scope() {
     # Apply `ecosystem:<name>` tag ONLY on explicit owner promotion:
@@ -176,15 +218,44 @@ bridge_project() {
         return 0
     fi
 
-    # PHI / sensitive-data refusal. Defense in depth: never bridge a slug
-    # carrying an opt-out marker into the shared gbrain index.
+    # PHI / sensitive-data refusal. Two independent gates; either refuses.
+    #
+    # Gate 1 — path marker in THIS dir (.no-gbrain / sensitivity: phi).
     if is_slug_opted_out "$slug"; then
-        echo "  [REFUSED] $slug — opted out of gbrain (sensitivity marker present)" >&2
+        echo "  [REFUSED] $slug — opted out of gbrain (path marker present)" >&2
         echo "  Markers checked: $memory_dir/.no-gbrain ; *.md frontmatter sensitivity: phi" >&2
         echo "  This slug's memories stay native-only. Use /groom with the no-gbrain fallback." >&2
         REFUSED_SLUGS+=("$slug")
         return 4
     fi
+
+    # Gate 2 — project IDENTITY (git remote) opted out in the per-remote
+    # registry. Closes the moved/cloned-repo hole a path marker cannot: binds
+    # every live worktree of the project, even one with no marker of its own.
+    if is_project_identity_opted_out "$slug"; then
+        echo "  [REFUSED] $slug — opted out of gbrain by identity (remote tier: $IDENTITY_TIER)" >&2
+        echo "  Identity: $IDENTITY_KEY  (registry: gstack-gbrain-repo-policy)" >&2
+        echo "  Every worktree of this remote is refused, regardless of path markers." >&2
+        REFUSED_SLUGS+=("$slug")
+        return 4
+    fi
+
+    # Resolve the CANONICAL gstack slug (git-remote based). gbrain pages and the
+    # project: tag key off this, NOT the dashed dir name — so every project has
+    # one page namespace regardless of which naming generation the native dir
+    # came from. Fall back to the legacy dashed short-slug only if the cwd can't
+    # be resolved to a git remote (non-repo / vanished project).
+    local canon cwd_r
+    cwd_r=$(reconstruct_cwd "$slug")
+    if [ -d "$cwd_r" ]; then
+        canon=$( (cd "$cwd_r" 2>/dev/null && eval "$("$HOME/.claude/skills/gstack/bin/gstack-slug" 2>/dev/null)"; echo "${SLUG:-}") )
+    fi
+    [ -z "$canon" ] && canon="${slug#-home-jesper-PycharmProjects-}"
+    # gbrain requires LOWERCASE slugs (a mixed-case remote org like
+    # JesperJurcenoks/ otherwise fails the put with "Page not found"). The
+    # gstack learnings slug keeps its case; the gbrain page slug + project: tag
+    # use the lowercased form. Recall and capture-write lowercase to match.
+    local canon_lc="${canon,,}"
 
     local md_files
     md_files=$(find "$memory_dir" -maxdepth 1 -name "*.md" -not -name "MEMORY.md" 2>/dev/null | sort)
@@ -199,6 +270,10 @@ bridge_project() {
 
     while IFS= read -r mfile; do
         [ -z "$mfile" ] && continue
+        # Skip memories consolidated elsewhere by a /groom cross pass — their
+        # gbrain page lives under the consolidation target, not per-project;
+        # re-ingesting here would recreate the duplicate that pass removed.
+        grep -qE '^[[:space:]]*consolidated_to:' "$mfile" 2>/dev/null && continue
 
         local fm body name desc memory_type ts ts_iso
         fm=$(extract_frontmatter "$mfile")
@@ -216,7 +291,7 @@ bridge_project() {
         ts_iso=$(date -u -d "@$ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 
         local tags_array
-        tags_array=$(jq -n --arg s "$slug" --arg t "${memory_type:-feedback}" '["project:" + $s, "memory-type:" + $t]')
+        tags_array=$(jq -n --arg s "$canon_lc" --arg t "${memory_type:-feedback}" '["project:" + $s, "memory-type:" + $t]')
         # Per-memory ecosystem promotion (frontmatter scope/promoted/ecosystem fields):
         if is_ecosystem_scope "$fm"; then
             local fm_ecosystem
@@ -250,7 +325,7 @@ bridge_project() {
     done <<< "$md_files"
 
     if [ "$DRY_RUN" = "1" ]; then
-        echo "  [dry-run] $slug — would write $count entries to $out_file"
+        echo "  [dry-run] $slug → canonical '$canon' — would ingest $count gbrain pages (learnings.jsonl is owned by jjstack-memory-to-learnings, not written here)"
         if [ "$count" -gt 0 ]; then
             echo "  Sample (first entry):"
             head -1 "$tmpfile" | jq '{title, tags}'
@@ -259,30 +334,32 @@ bridge_project() {
         return 0
     fi
 
-    mkdir -p "$out_dir"
-    mv "$tmpfile" "$out_file"
-    echo "  [done] $slug — wrote $count entries to $out_file"
+    # INGEST-ONLY. The bridge NO LONGER writes learnings.jsonl: doing so keyed on
+    # the dashed dir name and re-created orphan files at non-canonical slugs (the
+    # six-week bug and the naming-generation sprawl). jjstack-memory-to-learnings
+    # is the sole learnings.jsonl writer, at the canonical slug. Here the bridge
+    # only pushes gbrain pages, keyed off the canonical slug ($canon).
+    if [ "$INGEST" != "1" ]; then
+        echo "  [skip] $slug — bridge is ingest-only; pass --ingest to push gbrain pages. learnings.jsonl comes from jjstack-memory-to-learnings." >&2
+        rm -f "$tmpfile"
+        return 0
+    fi
+    if ! command -v gbrain >/dev/null 2>&1; then
+        echo "  [FATAL] $slug — gbrain CLI vanished mid-run; ingest incomplete." >&2
+        rm -f "$tmpfile"; exit 5
+    fi
 
-    # ── Direct ingest path: call gbrain put for each entry. ───────────
-    if [ "$INGEST" = "1" ]; then
-        if ! command -v gbrain >/dev/null 2>&1; then
-            echo "  [warn] --ingest requested but gbrain CLI not on PATH; skipping ingest" >&2
-            return 0
-        fi
-        local ok=0 fail=0
-        local short_slug
-        short_slug=$(echo "$slug" | sed 's|^-home-jesper-PycharmProjects-||')
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            local title desc content gbslug tags_yaml page
-            title=$(echo "$line" | jq -r '.title')
-            desc=$(echo "$line" | jq -r '.description // empty')
-            content=$(echo "$line" | jq -r '.content')
-            gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
-            # Build YAML tag list from the JSONL tags array.
-            tags_yaml=$(echo "$line" | jq -r '.tags[] | "  - " + .')
-            # Build the page with YAML frontmatter (gbrain reads tags from it).
-            page="---
+    local ok=0 fail=0
+    local short_slug="$canon_lc"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local title desc content gbslug tags_yaml page
+        title=$(echo "$line" | jq -r '.title')
+        desc=$(echo "$line" | jq -r '.description // empty')
+        content=$(echo "$line" | jq -r '.content')
+        gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
+        tags_yaml=$(echo "$line" | jq -r '.tags[] | "  - " + .')
+        page="---
 type: learning
 tags:
 $tags_yaml
@@ -293,49 +370,45 @@ $tags_yaml
 $desc
 
 $content"
-            if echo "$page" | gbrain put "$gbslug" >/dev/null 2>&1; then
-                ok=$((ok + 1))
-            else
-                fail=$((fail + 1))
-                echo "  [ingest-fail] $gbslug" >&2
-            fi
-        done < "$out_file"
-        echo "  [ingest] $slug — ok=$ok fail=$fail"
-
-        # ── Sync path: delete gbrain pages whose source file is gone. ────
-        # Catches the rename/delete/merge case where --ingest alone leaves
-        # orphans that pollute query/similarity results. Diffs the set of
-        # gbrain pages tagged project:<slug> against the slugs we just put
-        # in this run; anything in gbrain but not in the put-set is an
-        # orphan. (Reported by iris-qa-tm during its post-groom cleanup;
-        # 11 orphans had to be hand-purged with comm + gbrain delete.)
-        if [ "$SYNC" = "1" ]; then
-            local expected_slugs purged=0
-            expected_slugs=$(mktemp)
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local title gbslug
-                title=$(echo "$line" | jq -r '.title')
-                gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
-                echo "$gbslug" >> "$expected_slugs"
-            done < "$out_file"
-
-            while IFS= read -r live_slug; do
-                [ -z "$live_slug" ] && continue
-                if ! grep -qFx "$live_slug" "$expected_slugs"; then
-                    if gbrain delete "$live_slug" >/dev/null 2>&1; then
-                        purged=$((purged + 1))
-                        echo "  [orphan-purge] deleted $live_slug"
-                    else
-                        echo "  [orphan-purge-fail] $live_slug" >&2
-                    fi
-                fi
-            done < <(gbrain list --tag "project:$slug" 2>/dev/null | awk -F'\t' '{print $1}')
-
-            rm -f "$expected_slugs"
-            echo "  [sync] $slug — purged=$purged"
+        if echo "$page" | gbrain put "$gbslug" >/dev/null 2>&1; then
+            ok=$((ok + 1))
+        else
+            fail=$((fail + 1))
+            echo "  [ingest-fail] $gbslug" >&2
         fi
+    done < "$tmpfile"
+    echo "  [ingest] $slug — ok=$ok fail=$fail (canonical gbrain slug: $canon/)"
+
+    # ── Sync: delete canonical pages whose source memory is gone. Diffs the
+    #    project:<canon> page set against what we just put; anything extra is an
+    #    orphan from a rename/delete/merge. Keyed on the CANONICAL tag.
+    if [ "$SYNC" = "1" ]; then
+        local expected_slugs purged=0
+        expected_slugs=$(mktemp)
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            local title gbslug
+            title=$(echo "$line" | jq -r '.title')
+            gbslug="$short_slug/$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-\|-$//g')"
+            echo "$gbslug" >> "$expected_slugs"
+        done < "$tmpfile"
+
+        while IFS= read -r live_slug; do
+            [ -z "$live_slug" ] && continue
+            if ! grep -qFx "$live_slug" "$expected_slugs"; then
+                if gbrain delete "$live_slug" >/dev/null 2>&1; then
+                    purged=$((purged + 1))
+                    echo "  [orphan-purge] deleted $live_slug"
+                else
+                    echo "  [orphan-purge-fail] $live_slug" >&2
+                fi
+            fi
+        done < <(gbrain list --tag "project:$canon_lc" 2>/dev/null | awk -F'\t' '{print $1}')
+
+        rm -f "$expected_slugs"
+        echo "  [sync] $canon — purged=$purged"
     fi
+    rm -f "$tmpfile"
 }
 
 # ─── Main ────────────────────────────────────────────────────────────

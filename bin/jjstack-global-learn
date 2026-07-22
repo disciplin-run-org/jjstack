@@ -1,0 +1,122 @@
+#!/bin/bash
+# jjstack-global-learn — record a PAN-PROJECT preference in the shared __global__
+# store: one gstack learning (reusing gstack-learnings-log's validator, no fork)
+# plus one gbrain page under the `pan-project/` slug prefix (the recall selector).
+#
+# "Pan-project" = how Jesper likes things done regardless of project. These are
+# surfaced semantically by hooks/shared-memory.sh (it keeps gbrain hits whose
+# slug begins `pan-project/`) and by `gstack-learnings-search --cross-project`
+# (which admits only trusted `user-stated` rows — hence the default source).
+#
+# The learning is written by invoking the REAL gstack-learnings-log from an
+# anchor dir literally named `__global__`, so gstack-slug's basename fallback
+# yields the slug `__global__` and the full upstream validator runs unchanged.
+# A pre-seeded slug-cache entry makes that deterministic even if $HOME ever
+# becomes a git repo with a remote.
+#
+# Usage:
+#   jjstack-global-learn --key <kebab-key> --insight <one-line> [options]
+# Options:
+#   --title <human title>   heading for the gbrain page (default: the key)
+#   --body  <longer text>   gbrain page body (default: the insight)
+#   --confidence <1-10>     default: 8
+#   --source <src>          observed|user-stated|inferred|cross-model
+#                           default: user-stated (→ trusted → cross-project)
+#   --skill <name>          gstack 'skill' field (default: pan-project)
+#   --type  <gstack-type>   default: preference
+#   --no-gbrain             write the learning only, skip the gbrain page
+#   --dry-run               print what would be written; make no changes
+#
+# Exit codes: 0 ok; 2 usage error; 1 learnings-log validation failed.
+set -uo pipefail
+
+KEY="" INSIGHT="" TITLE="" BODY="" CONFIDENCE=8 SOURCE="user-stated"
+SKILL="pan-project" TYPE="preference" NO_GBRAIN=0 DRY_RUN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --key)        KEY="$2"; shift 2 ;;
+        --insight)    INSIGHT="$2"; shift 2 ;;
+        --title)      TITLE="$2"; shift 2 ;;
+        --body)       BODY="$2"; shift 2 ;;
+        --body-file)  BODY="$(cat "$2")"; shift 2 ;;
+        --confidence) CONFIDENCE="$2"; shift 2 ;;
+        --source)     SOURCE="$2"; shift 2 ;;
+        --skill)      SKILL="$2"; shift 2 ;;
+        --type)       TYPE="$2"; shift 2 ;;
+        --no-gbrain)  NO_GBRAIN=1; shift ;;
+        --dry-run)    DRY_RUN=1; shift ;;
+        --help|-h)    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "jjstack-global-learn: unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ -z "$KEY" ] || [ -z "$INSIGHT" ]; then
+    echo "jjstack-global-learn: --key and --insight are required" >&2
+    exit 2
+fi
+[ -z "$TITLE" ] && TITLE="$KEY"
+[ -z "$BODY" ]  && BODY="$INSIGHT"
+
+GSTACK_BIN="$HOME/.claude/skills/gstack/bin"
+ANCHOR="$HOME/.jjstack/pan-project/__global__"
+
+# gbrain resolver (shim on ~/.local/bin, else PATH).
+GBRAIN=""
+if command -v gbrain >/dev/null 2>&1; then GBRAIN="$(command -v gbrain)"
+elif [ -x "$HOME/.local/bin/gbrain" ]; then GBRAIN="$HOME/.local/bin/gbrain"; fi
+
+# kebab a token for a gbrain slug suffix (stable per key → idempotent upsert).
+kebab() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//'; }
+GBSLUG="pan-project/$(kebab "$KEY")"
+
+LEARN_JSON=$(jq -nc \
+    --arg skill "$SKILL" --arg type "$TYPE" --arg key "$KEY" \
+    --arg insight "$INSIGHT" --argjson confidence "$CONFIDENCE" --arg source "$SOURCE" \
+    '{skill:$skill,type:$type,key:$key,insight:$insight,confidence:$confidence,source:$source}') || {
+        echo "jjstack-global-learn: failed to build JSON (bad --confidence?)" >&2; exit 2; }
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] learning → ~/.gstack/projects/__global__/learnings.jsonl:"
+    printf '%s\n' "$LEARN_JSON" | jq .
+    [ "$NO_GBRAIN" = "0" ] && echo "[dry-run] gbrain page → $GBSLUG (tags: project:__global__, pan-project, memory-type:preference)"
+    exit 0
+fi
+
+# 1) Learning — reuse the upstream validator via the __global__ anchor.
+mkdir -p "$ANCHOR"
+CACHE_DIR="$HOME/.gstack/slug-cache"
+mkdir -p "$CACHE_DIR"
+CACHE_KEY=$(printf '%s' "$ANCHOR" | tr '/' '_')
+printf '%s' "__global__" > "$CACHE_DIR/$CACHE_KEY"   # deterministic slug resolution
+( cd "$ANCHOR" && "$GSTACK_BIN/gstack-learnings-log" "$LEARN_JSON" )
+LOG_RC=$?
+if [ "$LOG_RC" -ne 0 ]; then
+    echo "jjstack-global-learn: gstack-learnings-log rejected the entry (rc=$LOG_RC)" >&2
+    exit 1
+fi
+
+# 2) gbrain page under the pan-project/ prefix (the recall selector).
+if [ "$NO_GBRAIN" = "0" ]; then
+    if [ -z "$GBRAIN" ]; then
+        echo "jjstack-global-learn: gbrain CLI not found; learning written, page skipped" >&2
+    else
+        PAGE="---
+type: learning
+tags:
+  - project:__global__
+  - pan-project
+  - memory-type:preference
+---
+
+# $TITLE
+
+$BODY"
+        if printf '%s' "$PAGE" | "$GBRAIN" put "$GBSLUG" >/dev/null 2>&1; then
+            echo "jjstack-global-learn: wrote __global__ learning + gbrain page $GBSLUG"
+        else
+            echo "jjstack-global-learn: learning written; gbrain put $GBSLUG failed" >&2
+        fi
+    fi
+else
+    echo "jjstack-global-learn: wrote __global__ learning (gbrain page skipped)"
+fi

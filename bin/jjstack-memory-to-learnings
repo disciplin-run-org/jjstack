@@ -49,32 +49,10 @@ DENYLIST_RE='mychart|health|medical|discovery|hipaa|patient|clinical'
 
 YEL=$'\033[33m'; CYN=$'\033[96m'; DIM=$'\033[2m'; RST=$'\033[0m'
 
-# Reconstruct a real cwd from a dashed project key, verifying against the disk so
-# hyphenated path segments (e.g. disciplin-run) resolve correctly.
-reconstruct_cwd() {
-  # Reverse the dashed key by descending into the LONGEST dash-joined token run
-  # that exists on disk at each level (handles hyphenated dir names like
-  # google-workspace-mcp and disciplin-run). Missing tails are appended verbatim
-  # so the caller's [ -d ] test correctly flags a vanished project.
-  local key="${1#-}"
-  local IFS='-'; local toks=($key); IFS=' '
-  local n=${#toks[@]} path="" i=0
-  while [ "$i" -lt "$n" ]; do
-    local acc="" best="" j="$i" k="$i"
-    while [ "$k" -lt "$n" ]; do
-      if [ -z "$acc" ]; then acc="${toks[$k]}"; else acc="$acc-${toks[$k]}"; fi
-      [ -d "$path/$acc" ] && { best="$acc"; j="$k"; }
-      k=$((k+1))
-    done
-    if [ -z "$best" ]; then
-      local rem="${toks[$i]}" m=$((i+1))
-      while [ "$m" -lt "$n" ]; do rem="$rem-${toks[$m]}"; m=$((m+1)); done
-      path="$path/$rem"; break
-    fi
-    path="$path/$best"; i=$((j+1))
-  done
-  printf '%s' "$path"
-}
+# reconstruct_cwd (git-preferring dashed-slug → real-cwd resolution) is provided
+# by the shared lib — single source of truth with jjstack-memory-bridge and
+# jjstack-capture-write, so the logic never forks.
+source "$(cd "$(dirname "$0")" && pwd)/jjstack-gbrain-phi-lib.sh"
 
 map_type() {
   case "$1" in
@@ -130,6 +108,14 @@ for mem in "$PROJECTS_DIR"/*/memory; do
   for f in "$mem"/*.md; do
     [ -e "$f" ] || continue
     [ "$(basename "$f")" = "MEMORY.md" ] && continue
+    # Skip memories consolidated elsewhere by a /groom cross pass (promoted to
+    # pan-project, or merged into another project's canonical slug). Re-logging
+    # them per-project would recreate the duplicate the consolidation removed.
+    # The file stays in place as historical source, marked with where it went.
+    if grep -qE '^[[:space:]]*consolidated_to:' "$f" 2>/dev/null; then
+      dir_skip=$((dir_skip+1)); detail="${detail}      ${DIM}skip${RST} $(basename "$f")  ${DIM}(consolidated elsewhere)${RST}"$'\n'
+      continue
+    fi
     name=$(fm_scalar "$f" name)
     base="$(basename "$f" .md)"
     mtype=$(fm_type "$f"); [ -z "$mtype" ] && mtype=$(infer_type "$f")
