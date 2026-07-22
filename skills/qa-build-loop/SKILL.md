@@ -272,15 +272,16 @@ report, with screenshots attached.
 ## Rule 12: Definition of Done — "done-done"
 
 A scope or work order is done ONLY when it is **done-done** — the canonical
-8-rung checklist in global CLAUDE.md: code complete, unit tests green,
-committed+pushed, merged to main + dangling branch deleted, deployed and
-running live, **iris-qa tested green against the live surface**, specs/ADR
-updated, and ready for Jesper's end-user acceptance test.
+10-rung checklist in `references/definition-of-done.md` (version-controlled
+source of truth; mirrored in global CLAUDE.md). For this loop, rung 6 is
+**iris-qa tested green against the live surface**; the final two rungs are
+change-log updated with an end-user summary and README reflecting the
+current product state.
 
-**Reporting rule:** the unqualified word "done" may only be used at 8/8.
-Anything less is **"done N/8"** naming the missing rungs — in your own
+**Reporting rule:** the unqualified word "done" may only be used at 10/10.
+Anything less is **"done N/10"** naming the missing rungs — in your own
 replies AND required of every worker (put "DONE = done-done or report
-done N/8" in every work order's Done section). "Wired" is not done;
+done N/10" in every work order's Done section). "Wired" is not done;
 "demonstrated" is done.
 
 ## Rule 13: Worktree discipline
@@ -662,8 +663,8 @@ iris_qa_run(<scope>) — all listed behaviors pass.
 ## Done
 Reply with: commit_sha, tests_passing, any remaining failures you classified
 differently. Open the PR titled `feat(qa-loop): <scope> green`.
-DONE = done-done (all 8 rungs of the global Definition of Done) or report
-"done N/8" naming the missing rungs. Demonstrated green with the result
+DONE = done-done (all 10 rungs of the global Definition of Done) or report
+"done N/10" naming the missing rungs. Demonstrated green with the result
 pasted, never "wired". Zero false-greens: if blocked, punt-and-report with
 specifics.
 ```
@@ -684,7 +685,7 @@ Work order — Fix <N> behaviors flagged by iris-qa.
 
 ## Done
 Reply: commit_sha, list of fixed/created spec ids.
-DONE = done-done (all 8 rungs) or report "done N/8" naming the missing rungs.
+DONE = done-done (all 10 rungs) or report "done N/10" naming the missing rungs.
 ```
 
 Work-order hygiene: state constraints explicitly in the order (e.g.
