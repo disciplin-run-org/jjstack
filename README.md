@@ -171,7 +171,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 14 reference documents — the encoded knowledge each skill
+jjstack ships 15 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -187,6 +187,7 @@ loads. Read them directly or let skills load them for you.
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
 | `spec-cleanup-playbook.md` | Five smell tests for capability-level spec cleanup before the QA loop |
 | `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
+| `definition-of-done.md` | The canonical 10-rung "done-done" Definition of Done + reporting rule |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
