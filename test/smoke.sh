@@ -4027,6 +4027,40 @@ check "the scrub keeps that dir's other binaries (control)" "[ -n \"\$( PATH=\"\
 # assertion pointed at the real store, silently.
 check "the sandbox \$HOME survived the whole run" "[ \"\${HOME#\$SANDBOX}\" != \"\$HOME\" ]"
 
+echo "== 20. hermes-skills carry nothing instance-specific =="
+# This directory is captured from a live agent, and Hermes writes its MEMORIES
+# as skills — so a capture naturally drags in one machine's phone number, its
+# paths, and worked examples about real people. Two skills were withheld for
+# being memory rather than technique; four were sanitised on the way in. This
+# section is what stops the next capture quietly undoing that.
+#
+# Scoped to hermes-skills/ excluding README.md, which names the withheld skills
+# on purpose.
+HS="$DIR/hermes-skills"
+hs_grep() { grep -rniE "$1" "$HS" --exclude=README.md 2>/dev/null; }
+
+for pat in 'radicalhonesty|radical honesty' 'brevo|squarespace' 'trainer' \
+           'jesper@' 'gudrun' 'coloradosos' 'on this machine|this install' '/vault/'; do
+  check "no '$pat' in hermes-skills" "! hs_grep '$pat' | grep -q ."
+done
+
+# +1555xxxxxxx is the reserved documentation range and is allowed; anything else
+# NANP-shaped is a real subscriber.
+check "no real phone numbers in hermes-skills" \
+  "! grep -rEo '\\+1[0-9]{10}' '$HS' --exclude=README.md 2>/dev/null | grep -v 555 | grep -q ."
+
+# Positive control — the pattern must be able to fire. A grep that can never
+# match looks exactly like a clean tree, which is how a broken guard passes for
+# months.
+probe=$(tmp probe); printf 'contact +15033806100\n' > "$probe/x.md"
+check "phone pattern actually catches a real number" \
+  "grep -rEo '\\+1[0-9]{10}' '$probe' | grep -v 555 | grep -q ."
+
+# The two withheld skills must stay withheld.
+for withheld in google-workspace-pitfalls hermes-security-hardening; do
+  check "withheld skill absent: $withheld" "[ ! -d '$HS/original/$withheld' ]"
+done
+
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
 else printf '\033[95m%d FAIL\033[0m, %d pass\n' "$fail" "$pass"; exit 1; fi

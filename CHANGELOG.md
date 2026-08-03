@@ -11,6 +11,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **The Hermes agent's skills are in the repo.** `hermes-skills/` holds twenty
+  skills the Hermes agent wrote for itself: twelve rewrites of jjstack skills
+  against Hermes' own primitives, and eight with no jjstack counterpart, such as
+  always-on Gmail push agents, a cascading LLM classifier and a Signal gateway.
+  They are an archive to read and port from, not an installed skill tree. Two
+  skills that were memories of one machine rather than techniques stay off the
+  repo, four were stripped of a real person, a real phone number and one
+  organisation's records before capture, and the test suite refuses any of that
+  coming back.
+
 - **Done now includes a branch sweep, and it is one command.** Rung 5 of the
   Definition of Done said the merged branch is deleted, and that was checked by
   reading: this repo carried five dead branches on GitHub, three in the clone
