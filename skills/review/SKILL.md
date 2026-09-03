@@ -13,6 +13,10 @@ description: |
   two-stage spec-then-quality review (use /two-stage-review), processing
   incoming review feedback (use /receiving-code-review), or design/UI review
   (use /design-review).
+  NOTE: this skill takes the name /review, which Claude Code v2.1.223+ also
+  uses as a built-in alias of /code-review. Typing /review reaches this skill,
+  not Claude's. For Claude Code's own reviewer - the one that takes a PR
+  number, effort levels, --comment and --fix - type /code-review.
 allowed-tools:
   - Read
   - Grep

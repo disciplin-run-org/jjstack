@@ -9,6 +9,9 @@
 #   3. an installed symlink that dangles after a repo move
 #   4. a shared base copy-pasted back into its callers (the drift the
 #      base exists to prevent)
+#   5. a skill name that collides with a Claude Code built-in command
+#      (the wrapper pattern was designed to shadow gstack; shadowing a
+#      built-in was never intended and is invisible until a user types it)
 #
 # Scope note: a directory under skills/ with no SKILL.md is not a skill
 # and is skipped — git cannot track an empty directory, so these are
@@ -24,8 +27,10 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fails=0
 
-ok()  { echo -e "  ${GRN}ok${RST}  $1"; }
-bad() { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
+ok()   { echo -e "  ${GRN}ok${RST}  $1"; }
+bad()  { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
+# A collision is a design decision, not a broken install: warn, never fail.
+warn() { echo -e "  ${YEL}warn${RST} $1"; }
 
 # Real skills only: a directory is a skill iff it holds a SKILL.md.
 find "$REPO/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -printf '%h\n' \
@@ -68,6 +73,49 @@ while IFS='|' read -r marker ref; do
   if [ "$c" -eq 1 ]; then ok "$ref — body lives in exactly one file"
   else bad "$ref — body marker '$marker' found in $c files; expected 1"; fi
 done < "$TMP/markers"
+
+echo "== 5. no skill name collides with a Claude Code built-in =="
+# jjstack's wrapper pattern deliberately shadows gstack skill names so users keep
+# typing the command they know. Claude Code has since shipped built-in commands of
+# its own, and a skill sharing one of those names shadows the built-in too - which
+# the pattern never intended and no other check can see.
+#
+# Source: Claude Code 2.1.259 built-in skills and command aliases. Re-check this
+# list on a Claude Code minor bump; /review became an alias of /code-review in
+# v2.1.223, which is how this class of collision first appeared.
+cat > "$TMP/builtins" <<'EOF'
+artifact-capabilities
+artifact-design
+artifact-diagramming
+claude-api
+claude-in-chrome
+code-review
+dataviz
+design-login
+design-sync
+fewer-permission-prompts
+init
+keybindings-help
+loop
+review
+run
+schedule
+simplify
+update-config
+workflow-authoring
+EOF
+sort -u "$TMP/builtins" -o "$TMP/builtins"
+collisions=$(comm -12 "$TMP/builtins" "$TMP/skills")
+if [ -z "$collisions" ]; then
+  ok "no skill shadows a Claude Code built-in"
+else
+  while read -r c; do
+    [ -n "$c" ] || continue
+    warn "$c shadows the Claude Code built-in /$c - users typing /$c get jjstack's,"
+    warn "     and reach the built-in only under its other name. Document it in the"
+    warn "     skill description, or rename to jj-$c."
+  done <<< "$collisions"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
