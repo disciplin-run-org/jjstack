@@ -132,6 +132,7 @@ enhancements transparently.
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
 | `/review` | Pre-landing review with deeper adversarial passes. |
+| `/spawn-review` | Start a SECOND session on an isolated worktree, to review a PR or branch while you keep coding. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
