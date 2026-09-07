@@ -1553,19 +1553,27 @@ check "no ledger yet exits 4 (skip, no adjustment)" "[ $rc -eq 4 ]"
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
 out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "UNUSED import" 2>&1)
 check "keys normalize to one row across spellings" "printf '%s' \"\$out\" | grep -q 'rejected=2'"
-check "two rejections decay confidence by 20"      "printf '%s' \"\$out\" | grep -q 'delta=-20'"
+check "two rejections rank the pattern at -20"     "grep -q 'rank=-20' <<<\"\$out\""
+check "a negative rank demotes rather than rescores" "grep -q 'placement=demoted' <<<\"\$out\""
+# The whole point of the rewrite: calibration must never emit an instruction to
+# change a finding's confidence. The score is a claim about the code; the
+# demotion is a claim about the team's prior decision.
+check "suggest never emits a confidence delta"     "! grep -qi 'delta=' <<<\"\$out\""
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
 out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "unused-import" 2>&1)
-check "decay is floored at -30" "printf '%s' \"\$out\" | grep -q 'delta=-30'"
+check "rank is floored at -30" "grep -q 'rank=-30' <<<\"\$out\""
 for _ in 1 2 3; do
   "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "missing-migration" --verdict accepted >/dev/null 2>&1
 done
 out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "missing migration" 2>&1)
-check "promotion is capped at +20" "printf '%s' \"\$out\" | grep -q 'delta=20'"
+check "rank is capped at +20" "grep -q 'rank=20' <<<\"\$out\""
+# A confirmed pattern ranks up but must NOT be demoted, and must still not carry
+# a score instruction — promotion is placement too.
+check "a positive rank keeps normal placement" "grep -q 'placement=normal' <<<\"\$out\""
 out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "never-seen" 2>&1); rc=$?
 check "unknown key exits 4 with no adjustment" "[ $rc -eq 4 ]"
-check "unknown key reports delta=0"            "printf '%s' \"\$out\" | grep -q 'delta=0'"
+check "unknown key reports rank=0"             "grep -q 'rank=0' <<<\"\$out\""
 # Positive control — verdict validation that never rejects anything would let a
 # typo ("acccepted") silently become an uncounted row, and the ledger would rot
 # while every read still looked healthy.

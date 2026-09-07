@@ -7,7 +7,7 @@
 # user does the same triage again and again until alert fatigue kills the whole
 # report's credibility.
 #
-# So record the verdicts and let them bias the NEXT review's confidence score.
+# So record the verdicts and let them RANK the next review.
 # Deterministic arithmetic on a tab-separated ledger — no model inference. The
 # only judgment is choosing the pattern key, which is the skill's job, exactly as
 # `pattern_key` works in the jjstack memory system.
@@ -17,10 +17,27 @@
 # belongs under version control with the findings, not in a machine-local cache
 # only one laptop can see.
 #
-# Confidence delta (clamped): 10*accepted - 10*rejected, floor -30, ceiling +20.
-#   Repeat false positives decay a finding out of the report; a repeatedly
-#   confirmed pattern gets promoted across the reporting gate. Asymmetric on
-#   purpose — suppressing noise is cheaper to get wrong than inventing signal.
+# WHAT THIS DELIBERATELY DOES NOT DO: it never touches a finding's confidence
+# score, and it never removes a finding from the report. Phase 5 is enrich-only
+# — verification may raise a score or tag a finding unconfirmed, never lower or
+# delete. This tool obeys the same rule, because:
+#
+#   the confidence score is a claim about the CODE;
+#   a demotion is a claim about the TEAM'S PRIOR DECISION.
+#
+# Conflating them destroys both — a repeatedly-rejected pattern would come back
+# looking like weaker evidence rather than like a team that keeps saying no, and
+# a genuine P0 could be arithmetically decayed out of a report by three past
+# dismissals of a superficially similar finding.
+#
+# Placement rank (clamped): 10*accepted - 10*rejected, floor -30, ceiling +20.
+#   A negative rank moves the finding into the report's "Demoted (prior
+#   decision)" section — still ACTIVE, still printed, still carrying its own
+#   severity and confidence, just ranked below the findings nobody has judged
+#   yet, with the prior decision stated. Only the committed baseline, which
+#   requires an explicit human reason, takes a finding out of the active set.
+#   Asymmetric on purpose — under-ranking noise is cheaper to get wrong than
+#   over-ranking it.
 #
 # Usage:
 #   jjstack-review-calibration record --key K --verdict accepted|rejected \
@@ -140,14 +157,18 @@ if [ "$CMD" = "suggest" ]; then
     $2 == k && $3 == "accepted" { a++ }
     $2 == k && $3 == "rejected" { r++ }
     END { printf "%d %d", a+0, r+0 }' "$STORE")"
-  delta=$(( 10 * acc - 10 * rej ))
-  [ "$delta" -lt -30 ] && delta=-30
-  [ "$delta" -gt 20 ] && delta=20
+  rank=$(( 10 * acc - 10 * rej ))
+  [ "$rank" -lt -30 ] && rank=-30
+  [ "$rank" -gt 20 ] && rank=20
   if [ "$((acc + rej))" -eq 0 ]; then
-    echo "key=$slug accepted=0 rejected=0 delta=0 (no prior data)"
+    echo "key=$slug accepted=0 rejected=0 rank=0 placement=normal (no prior data)"
     exit 4
   fi
-  echo "key=$slug accepted=$acc rejected=$rej delta=$delta"
+  # Placement, never a score. A negative rank files the finding under the
+  # report's "Demoted (prior decision)" section; it stays active and keeps its
+  # own severity and confidence untouched.
+  if [ "$rank" -lt 0 ]; then placement="demoted"; else placement="normal"; fi
+  echo "key=$slug accepted=$acc rejected=$rej rank=$rank placement=$placement"
   exit 0
 fi
 
@@ -160,7 +181,7 @@ fi
 
 echo "jjstack-review-calibration — $STORE ($rows verdict(s))"
 echo
-printf '  %-40s %5s %5s %6s\n' "pattern key" "acc" "rej" "delta"
+printf '  %-40s %5s %5s %6s  %s\n' "pattern key" "acc" "rej" "rank" "placement"
 awk -F'\t' '
   $0 ~ /^#/ { next }
   NF < 3    { next }
@@ -170,9 +191,12 @@ awk -F'\t' '
       d = 10 * (a[k]+0) - 10 * (r[k]+0)
       if (d < -30) d = -30
       if (d >  20) d =  20
-      printf "  %-40s %5d %5d %+6d\n", k, a[k]+0, r[k]+0, d
+      printf "  %-40s %5d %5d %+6d  %s\n", k, a[k]+0, r[k]+0, d, (d < 0 ? "demoted" : "normal")
     }
   }' "$STORE" | sort -k4 -n
 echo
-echo "Apply delta to the Phase 5 confidence score before the reporting gate."
+echo "Rank is PLACEMENT, not score. A demoted finding is printed under"
+echo "\"Demoted (prior decision)\" with its severity and confidence untouched."
+echo "Never subtract this from a finding's confidence: the score is a claim"
+echo "about the code, the demotion is a claim about the team's prior decision."
 exit 0
