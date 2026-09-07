@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# jjstack-review-sweep — re-run the project's deterministic checks AFTER fixes.
+#
+# A review that ends by applying fixes has moved the code out from under its own
+# evidence. The typechecker, linter and test suite are the cheapest, most certain
+# reviewers in the building and they cost no tokens — so run them again on the
+# post-fix tree. This is what catches the fix that broke the build, or the fix
+# that quietly turned a previously-passing test red.
+#
+# Deterministic by construction: detect the ecosystem, run the tools that are
+# actually installed, report exit codes. No model inference anywhere — choosing
+# to run `pytest` is not a judgment call.
+#
+# Detection is a fallback, not a policy: --cmd overrides it entirely, and a
+# project with no runnable checks is a clean SKIP (exit 4), never a failure.
+#
+# Usage:
+#   jjstack-review-sweep [--repo DIR] [--cmd "CMD"]... [--timeout SECS] [--dry-run]
+#
+# Exit: 0 every check passed, 1 at least one check FAILED, 2 usage error,
+#       3 repo unusable, 4 nothing applicable (skipped — say so, don't fail).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+REPO=""
+TIMEOUT=600
+DRY=0
+declare -a USER_CMDS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)    REPO="${2:-}"; shift 2 ;;
+    --cmd)     USER_CMDS+=("${2:-}"); shift 2 ;;
+    --timeout) TIMEOUT="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help)
+      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$TIMEOUT" in
+  ''|*[!0-9]*) echo -e "${CYA}error${RST} --timeout must be a positive integer" >&2; exit 2 ;;
+esac
+
+[ -z "$REPO" ] && REPO="$PWD"
+if [ ! -d "$REPO" ]; then
+  echo -e "${CYA}error${RST} no such directory: $REPO" >&2; exit 3
+fi
+ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$ROOT" ] && ROOT="$REPO"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# label<TAB>command
+declare -a PLAN=()
+add() { PLAN+=("$1	$2"); }
+
+if [ "${#USER_CMDS[@]}" -gt 0 ]; then
+  i=0
+  for c in "${USER_CMDS[@]}"; do
+    i=$((i + 1))
+    [ -n "$c" ] || { echo -e "${CYA}error${RST} --cmd given an empty command" >&2; exit 2; }
+    add "custom $i" "$c"
+  done
+else
+  # --- Python ---------------------------------------------------------------
+  if [ -f "$ROOT/pyproject.toml" ] || [ -f "$ROOT/setup.py" ] || [ -f "$ROOT/setup.cfg" ]; then
+    have ruff  && add "ruff (lint)" "ruff check ."
+    if have mypy && { [ -f "$ROOT/mypy.ini" ] || grep -qs 'mypy' "$ROOT/pyproject.toml" "$ROOT/setup.cfg"; }; then
+      add "mypy (types)" "mypy ."
+    fi
+    have pytest && add "pytest (tests)" "pytest -q"
+  fi
+
+  # --- Node -----------------------------------------------------------------
+  if [ -f "$ROOT/package.json" ] && have npm; then
+    scripts=""
+    if have node; then
+      scripts="$(node -p "Object.keys((require('$ROOT/package.json').scripts)||{}).join(' ')" 2>/dev/null)"
+    elif have python3; then
+      scripts="$(python3 -c "import json,sys;print(' '.join(json.load(open(sys.argv[1])).get('scripts',{})))" "$ROOT/package.json" 2>/dev/null)"
+    fi
+    for s in typecheck lint test; do
+      case " $scripts " in *" $s "*) add "npm run $s" "npm run --silent $s" ;; esac
+    done
+  fi
+
+  # --- Go -------------------------------------------------------------------
+  if [ -f "$ROOT/go.mod" ] && have go; then
+    add "go vet" "go vet ./..."
+    add "go test" "go test ./..."
+  fi
+
+  # --- Rust -----------------------------------------------------------------
+  if [ -f "$ROOT/Cargo.toml" ] && have cargo; then
+    add "cargo check" "cargo check --quiet"
+    add "cargo test" "cargo test --quiet"
+  fi
+
+  # --- Fallbacks: only when nothing above claimed the project ---------------
+  if [ "${#PLAN[@]}" -eq 0 ]; then
+    if [ -x "$ROOT/test/smoke.sh" ]; then
+      add "test/smoke.sh" "./test/smoke.sh"
+    elif [ -f "$ROOT/Makefile" ] && have make && grep -qE '^test:' "$ROOT/Makefile"; then
+      add "make test" "make test"
+    fi
+  fi
+fi
+
+echo "jjstack-review-sweep — repo: $ROOT"
+
+if [ "${#PLAN[@]}" -eq 0 ]; then
+  echo -e "${YEL}skip${RST}  no deterministic checks available for this project."
+  echo -e "${YEL}skip${RST}  report the post-pass as SKIPPED (no test runner / linter found), not as clean."
+  exit 4
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  echo "  plan (${#PLAN[@]} check(s)):"
+  for row in "${PLAN[@]}"; do
+    echo "  [dry-run] ${row%%	*} -> ${row#*	}"
+  done
+  exit 0
+fi
+
+RUNNER=""
+have timeout && RUNNER="timeout $TIMEOUT"
+
+failed=0
+passed=0
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+
+for row in "${PLAN[@]}"; do
+  label="${row%%	*}"; cmd="${row#*	}"
+  ( cd "$ROOT" && eval "$RUNNER $cmd" ) > "$LOG" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo -e "  ${GRN}ok${RST}   $label"
+    passed=$((passed + 1))
+  else
+    echo -e "  ${CYA}FAIL${RST} $label (exit $rc)"
+    echo "       --- last 40 lines ---"
+    tail -n 40 "$LOG" | sed 's/^/       /'
+    failed=$((failed + 1))
+  fi
+done
+
+echo
+if [ "$failed" -eq 0 ]; then
+  echo -e "${GRN}SWEEP CLEAN${RST} $passed check(s) passed post-fix"
+  exit 0
+fi
+echo -e "${YEL}SWEEP BROKEN${RST} $failed of $((passed + failed)) check(s) failed post-fix — the fixes regressed something"
+exit 1

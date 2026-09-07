@@ -93,6 +93,7 @@ have on a developer machine.
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
 | `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
 | `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
+| `/review` after the review | Ends at the findings list | **Five post-passes**: what's *missing* from the diff, a review of the auto-applied fixes, a red test proving each finding, a re-run of typecheck/lint/tests on the post-fix tree, and persisted accept/reject calibration |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -133,7 +134,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, self-verifies each finding, then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration). Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -173,7 +174,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 17 reference documents — the encoded knowledge each skill
+jjstack ships 18 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -185,6 +186,7 @@ loads. Read them directly or let skills load them for you.
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `review-post-passes.md` | The five blind spots no diff-reader can cover — absence, the auto-fix diff, proof-by-red-test, the post-fix sweep, calibration — and how `/review` runs each |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
