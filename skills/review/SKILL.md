@@ -787,7 +787,11 @@ The script enforces three invariants that prose cannot:
 2. **Reachability deprioritises, it never deletes** — `not-reachable` is legal
    only with `defer` or `demoted`. Code that is unreachable today becomes
    reachable at the next refactor, and a reviewer that deleted the finding has
-   no way to bring it back.
+   no way to bring it back. Even the scanner vendors hold this line: their stated
+   policy is that in ambiguous cases they "err on the side of caution: instead of
+   suppressing a potentially relevant issue, [they] will either keep it as-is or
+   lower its severity." You have less call-graph evidence than they do, so hold it
+   harder — uncertainty always resolves toward keeping the finding.
 3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
    reason; it may not be made to disappear.
 
