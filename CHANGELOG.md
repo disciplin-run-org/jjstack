@@ -147,6 +147,35 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   is copied rather than counted. It also insists every finding arrive complete —
   including a suggested fix — which quietly removes the findings nobody could
   have acted on anyway.
+- **`/review` now does five things after it finishes reviewing.** A review that
+  has read the diff from every angle still hasn't asked five questions, because
+  none of them are questions about the diff's contents:
+  1. **What should have changed and didn't.** A schema change with no migration,
+     an enum member whose `switch` statements weren't updated, a signature change
+     that missed a caller, a new config key with no default, a new error case
+     with no handler. Nothing that reads a diff can see what isn't in it, so
+     these normally reach production untouched by review.
+  2. **A review of the fixes the reviewer applied itself.** The review step that
+     auto-applies safe fixes writes real code that no reviewer has ever looked
+     at — it arrives blended into your branch under the banner of a completed
+     review. It is now pulled out as its own diff and reviewed as if a stranger
+     wrote it.
+  3. **A failing test for each serious finding.** Instead of asserting a bug
+     exists, `/review` writes the test that goes red and runs it. If it can't be
+     made to fail, the finding was never real and gets dropped — and if it can,
+     you get the regression test along with the report.
+  4. **Your typechecker, linter and tests re-run after the fixes land.** The
+     cheapest, most certain reviewer you own, pointed at the post-fix code. This
+     is what catches a fix that broke the build or turned a green test red.
+  5. **Memory of what you accepted and rejected.** Verdicts are recorded in your
+     repo (`jjstack/review-calibration.tsv`), and the next review adjusts its
+     confidence from them — so a false positive you dismissed twice stops being
+     raised, and a pattern you confirmed gets promoted. Previously every review
+     started from zero and re-guessed.
+
+  Any of the five that doesn't apply to your project — no test runner, no
+  auto-fixes, no history yet — is reported as SKIPPED with the reason, never
+  quietly passed off as clean.
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,

@@ -1,0 +1,235 @@
+# Review post-passes — the five things a finished review still hasn't done
+
+Operating manual for the post-gstack half of the jjstack `/review` wrapper. It is
+the base; `skills/review/SKILL.md` cites it and does not restate it.
+
+Phases 2–5 of `/review` produce a verified findings list. That list is the output
+of one activity — *reading a diff and judging it* — repeated by many lenses. Five
+things stay invisible to every one of those lenses no matter how many you run,
+because they are not questions about the diff's contents:
+
+| # | Post-pass | The blind spot it covers |
+|---|-----------|--------------------------|
+| 1 | Absence | What should have changed and didn't |
+| 2 | Auto-fix review | The code the reviewer itself wrote |
+| 3 | Prove it | Whether a finding is real, as opposed to argued |
+| 4 | Deterministic sweep | Whether the fixes broke the build |
+| 5 | Calibration | Whether the reviewer is learning anything |
+
+Every post-pass is **skippable when structurally inapplicable** — no test runner,
+no auto-fixes, no prior calibration data. A skipped pass is REPORTED as skipped,
+with the reason. Silently omitting a pass and silently passing it look identical
+in a report, which is how a dead check survives for months.
+
+---
+
+## Post-pass 1 — The absence pass
+
+**Ask exactly one question: what should have changed and didn't?**
+
+Every reviewer reviews what IS in the diff. Errors of omission never appear in
+the text a reviewer is handed, so essentially nothing catches them — which makes
+this the highest-value gap in the whole pipeline, not a nice-to-have. The pass is
+worth running even when the preceding phases found nothing, because "found
+nothing" is exactly what an omission looks like.
+
+Run it as a dedicated pass with a fresh context. For each changed symbol, walk
+outward from the change instead of reading the hunk again:
+
+- **Schema / model changed → is there a migration?** And a backfill for existing
+  rows, and a rollback path?
+- **Enum member, variant, or status added → is every exhaustive consumer
+  updated?** Grep the type name and check each `switch` / `match` / `if-elif`
+  chain, dispatch table, and serializer mapping. A language without exhaustive
+  matching will not tell you.
+- **Function/API signature changed → are all callers updated?** Including
+  callers in tests, scripts, docs, examples, other repos in the workspace, and
+  the public docs that state the old signature.
+- **New conditional branch → does a test enter it?** A branch with no test is a
+  behavior with no owner.
+- **Config key added → is there a default, and does the code path work when the
+  key is absent?** Old deployments will not have it.
+- **New error case introduced → who handles it?** A raised exception with no
+  catch, a returned error code nobody checks, a new failure mode with no log.
+- **Behavior removed or renamed → is the caller, the doc, the changelog, the
+  feature flag, and the metric name updated too?**
+- **New external call → timeout, retry, and failure path?**
+
+Emit absences as ordinary findings, subject to the same Phase 5 verification:
+quote the line that creates the obligation (the enum member, the schema column,
+the signature) and name the concrete failure — "adding `Status.ARCHIVED` without
+touching `render_badge`'s switch means an archived item renders an empty badge
+in production", not "the switch may be incomplete".
+
+**Skip only when:** the diff changes no code (docs-only). Say so.
+
+---
+
+## Post-pass 2 — Review the auto-fixes
+
+gstack's review Step 5 is "Fix-First": it classifies findings and auto-applies
+the ones it judges safe (Step 5b). **That auto-applied code is an unreviewed
+diff.** The reviewer wrote it, so no reviewer reviewed it — it can be wrong,
+incomplete, fix the symptom rather than the cause, or introduce a fresh bug in
+code that had none. The person who lands the PR usually never sees it as a diff
+at all, because it arrives blended into the branch.
+
+Get the diff deterministically — do not reconstruct it from memory of what was
+fixed:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --stat
+```
+
+Drop `--stat` for the full patch. Baseline resolution is documented in the
+script's header; when it falls back to `HEAD` (no marker was taken before the
+fixing step) the output says so, and the pass must repeat that caveat in the
+report rather than claiming the diff is purely reviewer-authored.
+
+Then review that patch as **a fresh diff from an unknown author**, with the full
+Phase 4 lens set. Explicitly re-ask:
+
+- Does the fix actually resolve the finding, or only silence its symptom?
+- Is it complete — every occurrence of the pattern, or just the one that was
+  quoted?
+- Did it change behavior beyond the finding's scope?
+- Does it contradict a nearby invariant, comment, or CLAUDE.md rule?
+- Is the fixed path tested? An auto-fix is the least-tested code in the branch.
+
+Findings here are **P1 by default**: an unreviewed change written by an automaton
+and about to be merged under the banner of a completed review is worse than an
+ordinary bug, because its provenance implies it was checked.
+
+**Skip only when:** the script exits 4 (no changes since baseline — no auto-fixes
+were applied). Say so.
+
+---
+
+## Post-pass 3 — Prove it with a failing test
+
+For each finding that survived Phase 5 at high confidence, **write the test that
+goes red, and run it.**
+
+This is the ultimate false-positive filter. A finding is an assertion; a red test
+is evidence. If you cannot make it fail, it is not real — and discovering that
+costs one test instead of one round of the user's trust. It also converts the
+review's output from a list of claims into a list of regressions someone can
+merge.
+
+It is the same rule as the project's RCA method: stop at the **class boundary**,
+not at the incident. The test must catch the class of failure, not the single
+line that inspired it — if you cannot write a test for the class, you have not
+finished understanding the bug.
+
+Procedure, per finding:
+
+1. Write the smallest test that exercises the failure scenario already recorded
+   in Phase 5. The scenario IS the test plan; if it is too vague to turn into a
+   test, that is a Phase 5 verification defect, and the finding drops.
+2. Run it. Confirm it fails, **and read the failure** — a test that errors on a
+   typo or a missing import is not proof of anything.
+3. Record the result on the finding: `PROVEN` (red as predicted, quote the
+   assertion output), `DISPROVEN` (passes — the finding is a false positive;
+   drop it and record a `rejected` verdict in post-pass 5), or `UNPROVABLE`.
+4. `UNPROVABLE` is a finding in its own right, never an excuse. Per the project's
+   TDD rule, a behavior that cannot currently be tested yields a **failing** test
+   — never a hidden, skipped, or deleted one. Report what is missing (harness,
+   fixture, seam, injectable clock) as the finding, and keep the red test.
+
+Then get the proof tests out of the way of post-pass 4: either hand the red test
+to the fix in the same pass (preferred — a red test plus its fix is the whole
+deliverable), or park it in the report and revert it from the working tree. Never
+leave deliberate red tests in the tree while running the sweep; they make a
+broken build indistinguishable from a proven finding.
+
+Budget it: prove the P0/P1 findings first, and every finding whose confidence
+sits near the reporting gate — that is where proof changes the outcome.
+
+**Skip only when:** there are no high-confidence findings to prove, or the
+project has no way to execute a test at all (record that as a finding, per
+step 4). Say so.
+
+---
+
+## Post-pass 4 — Re-run the deterministic sweep
+
+The typechecker, linter and test suite are the cheapest and most certain
+reviewers available, and they cost no tokens. Run them **after** the fixes are
+applied — the review has moved the code out from under its own evidence, and a
+fix that broke the build or turned a previously-green test red is the most
+embarrassing possible way to end a review that reported "all clear".
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-sweep
+```
+
+The script detects the ecosystem, runs only tools that are actually installed,
+prints each check's result, and exits: `0` all green, `1` at least one check
+failed, `4` nothing applicable. Override detection with repeated `--cmd "…"` when
+the project's real command differs; `--dry-run` prints the plan without running
+it.
+
+On exit 1: every failed check is a **P0 finding** — the branch does not merge.
+Attribute it before reporting: run the same command against the pre-fix baseline
+(`git stash` the fixes, or check out the baseline the auto-fix diff used) to tell
+"the fixes broke it" apart from "it was already broken". The two are different
+bugs with different owners.
+
+**Skip only when:** the script exits 4. Report SKIPPED with the reason it gives —
+never report a skipped sweep as a clean one.
+
+> Note: a companion "before gstack" sweep runs the same checks at review START,
+> to establish the pre-existing baseline. When both exist, they share this one
+> script; do not add a second implementation.
+
+---
+
+## Post-pass 5 — Calibration persistence
+
+Record which findings the user accepted and which they rejected, so the next
+review starts from evidence instead of re-guessing.
+
+Without it the reviewer never learns: the same false positive returns at the same
+confidence forever, and a pattern the user has confirmed three times gets no more
+credit than a first guess. That is how alert fatigue sets in and a report stops
+being read. With it, repeat false positives decay out of the report and confirmed
+patterns get promoted across the gate.
+
+**Write** one row per triaged finding:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-calibration record \
+  --key <pattern-key> --verdict accepted|rejected --lens <pass> --file <path>
+```
+
+Choosing the pattern key is the judgment; the arithmetic is not. Key on the
+**class** of finding, not the instance — `missing-migration-for-schema-change`,
+not `users-table-line-42`. A key that can only ever match once teaches nothing.
+Same convention as `pattern_key` in the jjstack memory system.
+
+Record a verdict for every finding whose fate you actually know:
+- the user fixed it, or told you it was real → `accepted`
+- the user dismissed it, or post-pass 3 DISPROVED it → `rejected`
+- the user never responded → record nothing. A guess pollutes the ledger.
+
+**Read** at the start of the next review's verification step:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-calibration report
+~/.claude/skills/jjstack/bin/jjstack-review-calibration suggest --key <pattern-key>
+```
+
+`suggest` prints a `delta` to add to the Phase 5 confidence score before the
+reporting gate: `10*accepted - 10*rejected`, floored at -30 and capped at +20.
+Asymmetric on purpose — suppressing noise is cheaper to get wrong than inventing
+signal. Two prior rejections push a 75 to 55 (appendix instead of main report);
+a third pushes it to 45; the cap keeps a confirmed pattern from ever manufacturing
+certainty it did not earn.
+
+The ledger is `{repo}/jjstack/review-calibration.tsv` — version-controlled, so
+calibration is a property of the codebase and its reviewers rather than of one
+laptop, and so a bad row can be reverted like any other mistake.
+
+**Skip only when:** the script exits 4 (no ledger yet — the first calibrated
+review). Say so, apply no adjustment, and still record this review's verdicts so
+the next one has data.

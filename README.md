@@ -94,6 +94,7 @@ have on a developer machine.
 | `/review` evidence | Starts by reading the diff | **Deterministic pre-flight first**: runs your real typechecker/linter/tests, maps changed symbols to callers outside the diff, reads the change's stated intent, loads prior dismissals, snapshots the test baseline |
 | `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 10 passes gstack and Anthropic's `/code-review` skip |
 | `/review` noise control | Suppress low-confidence findings | Findings are **never deleted**: verification may only enrich or tag them, and a committed baseline retires accepted ones with a stated reason |
+| `/review` after the review | Ends at the findings list | **Five post-passes**: what's *missing* from the diff, a review of the auto-applied fixes, a red test proving each finding, a re-run of typecheck/lint/tests on the post-fix tree, and persisted accept/reject calibration that ranks without rescoring |
 | `/review` verdict | Prose summary | Three-valued `APPROVE` / `CAUTION` / `REJECT` + per-finding review judgment + guardrails + degraded-mode disclosure |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
@@ -135,7 +136,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it. Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it — then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration). Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -175,7 +176,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 17 reference documents — the encoded knowledge each skill
+jjstack ships 18 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -188,6 +189,7 @@ loads. Read them directly or let skills load them for you.
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the enrich-don't-suppress architecture borrowed from NVIDIA SkillSpector, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
 | `review-preflight.md` | The five deterministic pre-passes `/review` runs before any AI pass, why each exists, and how the later phases consume the evidence pack |
+| `review-post-passes.md` | The five blind spots no diff-reader can cover — absence, the auto-fix diff, proof-by-red-test, the post-fix sweep, calibration — and how `/review` runs each |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
