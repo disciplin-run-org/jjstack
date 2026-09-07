@@ -932,7 +932,7 @@ check "the pre-flight feature is filed under Added" \
       "grep -q 'gathers evidence before it starts thinking' '$PF/unrel-added.md'"
 
 rm -rf "$PF"
-echo "== 5d. number-lines (grounded locations) =="
+echo "== 5e. number-lines (grounded locations) =="
 # A review pass shown bare source has to COUNT to report a line, and that is
 # where "real bug, wrong line" false positives come from. Numbering makes the
 # location something to copy. The fixture deliberately holds a blank line and
@@ -956,7 +956,7 @@ check "missing file exits 3"          "[ $rc -eq 3 ]"
 check "non-numeric --start exits 2"   "[ $rc -eq 2 ]"
 rm -rf "$NL"
 
-echo "== 5e. review-normalize (finding struct + confidence) =="
+echo "== 5f. review-normalize (finding struct + confidence) =="
 # Every finding must arrive as a struct the reader can act on. `remediation`
 # is required at EMISSION time precisely because a finding nobody can act on
 # is not worth a line in the report.
@@ -995,7 +995,7 @@ printf 'not json at all\n' > "$RN/junk.jsonl"
 check "unparseable line exits 1, not a crash" "[ $rc -eq 1 ]"
 rm -rf "$RN"
 
-echo "== 5f. review-baseline (suppression, never deletion) =="
+echo "== 5g. review-baseline (suppression, never deletion) =="
 # The baseline is how a re-review surfaces only NEW issues without losing the
 # old ones. Two mechanisms with deliberately different aging: brittle
 # fingerprints (edit the source, the finding comes back) and drift-tolerant
@@ -1072,6 +1072,40 @@ check "--allow-version-drift re-enables them"  "[ ! -s '$RB/ovr.out' ]"
 check "positive control: drifted baseline has a different version" \
   "! cmp -s '$RB/bl.json' '$RB/old.json'"
 rm -rf "$RB"
+
+echo "== 5h. review skill structural guards =="
+# Two five-line greps that would have caught two defects the parallel PR stack
+# actually produced, both invisible to a per-PR review against main:
+#
+#  1. A PR written against the OLD Phase 5 re-introduces the heading a later PR
+#     deleted — and git merges that hunk WITHOUT reporting a conflict, because
+#     the heading arrives as innocent context lines. Result: two "## Phase 5"
+#     headings and two contradictory verification models in one file.
+#  2. Three PRs independently created bin/jjstack-review-blast-radius with three
+#     incompatible CLIs (--out DIR vs stdout). Whichever merged last won the
+#     filename, and the caller that passes --out died with exit 2.
+#
+# These pass at this point in the chain and are meant to go RED the moment
+# either defect is reintroduced downstream. That is the guard doing its job:
+# the defect cannot land silently, which is how it landed the first time.
+SK="$DIR/skills/review/SKILL.md"
+n_phase5=$(grep -c '^## Phase 5: ' "$SK" 2>/dev/null)
+check "exactly one '## Phase 5: ' heading in the review skill" "[ \"\$n_phase5\" = 1 ]"
+
+n_blast=$(ls -1 "$BIN" 2>/dev/null | grep -c '^jjstack-review-blast-radius')
+check "exactly one blast-radius implementation in bin/" "[ \"\$n_blast\" = 1 ]"
+
+# Positive controls — a grep that can never fire looks exactly like a clean tree.
+probe_sk="$(mktemp)"
+printf '## Phase 5: one\nbody\n## Phase 5: two\n' > "$probe_sk"
+check "phase-5 guard actually catches a duplicate" \
+  "[ \"\$(grep -c '^## Phase 5: ' '$probe_sk')\" = 2 ]"
+rm -f "$probe_sk"
+probe_bin="$(mktemp -d)"
+: > "$probe_bin/jjstack-review-blast-radius"; : > "$probe_bin/jjstack-review-blast-radius-census"
+check "blast-radius guard actually catches a duplicate" \
+  "[ \"\$(ls -1 '$probe_bin' | grep -c '^jjstack-review-blast-radius')\" = 2 ]"
+rm -rf "$probe_bin"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

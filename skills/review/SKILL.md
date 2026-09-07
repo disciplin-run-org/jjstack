@@ -512,6 +512,19 @@ Each row expands below with its quote, failure scenario, and remediation.
 ### Unconfirmed  (tagged `llm-unconfirmed` — kept deliberately, not verified)
 Same shape. These were NOT deleted; nobody could confirm them at the source.
 
+### Demoted (prior decision)  (still active; ranked lower, never rescored)
+| Sev | Conf | Location | Finding | Demoted because |
+|---|---|---|---|---|
+| P2 | 70 | src/b.py:44 | <claim> | rejected 3× as a pattern; see calibration ledger |
+
+For findings this team has repeatedly rejected as a *class*. The distinction this
+section exists to protect: **the confidence score is a claim about the code; the
+demotion is a claim about the team's prior decision.** Conflating them destroys
+both — so a demoted finding keeps its severity and its number untouched and only
+moves down the page, with the prior decision stated. It is still active: it is
+reported, not suppressed. Only the baseline below, with an explicit human reason,
+takes a finding out of the active set.
+
 ### Suppressed by baseline  (not active; shown for audit)
 | Location | Finding | Suppressed by | Reason |
 
