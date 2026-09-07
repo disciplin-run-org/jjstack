@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# jjstack-review-ledger — per-repo memory of what past reviews decided.
+#
+# Every AI reviewer that people keep using eventually grows a memory: Greptile
+# markets "learns from your team's feedback", CodeRabbit has learnings, gstack
+# already carries a suppression history for Greptile's own comments
+# (~/.claude/skills/gstack/review/greptile-triage.md). The mechanic is real —
+# re-reporting a finding the team already dismissed is the purest form of alert
+# fatigue. The vendor implementations are opaque: the memory lives on their
+# server, you cannot read it, diff it, or review a change to it.
+#
+# This is the same mechanic with the opacity removed. The ledger is a plain
+# markdown file inside the repo, so it is version controlled, reviewable in a
+# PR, and greppable. And it deliberately does NOT do what the vendors do: a
+# match here DEMOTES a finding to the report appendix with the prior decision
+# cited. It never drops one. jjstack /review is tuned for recall; silently
+# suppressing a whole class because someone once waved it off is exactly the
+# failure this stack exists to avoid. Only `dismissed` entries demote —
+# `fixed` and `confirmed` entries are history, not suppression.
+#
+# Usage:
+#   jjstack-review-ledger --record --type TYPE --path PATTERN --category CAT
+#                         [--note TEXT] [--ledger FILE] [--repo DIR]
+#   jjstack-review-ledger --match --path FILE --category CAT
+#                         [--ledger FILE] [--repo DIR]
+#   jjstack-review-ledger --list [--ledger FILE] [--repo DIR]
+#
+#   TYPE  = dismissed | fixed | confirmed
+#   CAT   = correctness | security | concurrency | error-handling | resource-leak
+#           | test-coverage | performance | api-contract | style | type-safety
+#           | dependency | other
+#   PATTERN is a shell glob matched against the finding's repo-relative path.
+#
+# Protected categories (security, correctness, concurrency, error-handling,
+# resource-leak, test-coverage) are recorded but NEVER demote — --match prints
+# PROTECTED and exits 1 for them.
+#
+# Default ledger: <repo-root>/jjstack/review-ledger.md
+#
+# Exit: 0 recorded / listed / a demotion matched, 1 --match found nothing,
+#       2 usage error or an invalid type or category, 3 repo root unresolvable.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+VALID_TYPES="dismissed fixed confirmed"
+VALID_CATS="correctness security concurrency error-handling resource-leak test-coverage performance api-contract style type-safety dependency other"
+
+# Greptile's suppression engine exempts a fixed list of classes from ever being
+# silenced by repeated ignores — security vulnerabilities, memory leaks,
+# infinite loops, null-pointer exceptions and missing input validation
+# (greptile.com/docs/how-greptile-works/nitpicks). That guard is the right idea
+# and it is the one part of a learning loop you cannot leave to judgment: the
+# categories that most deserve suppression pressure are exactly the ones where
+# a wrong suppression is a shipped incident. A dismissal in one of these is
+# still RECORDED — the history stays honest — it just never demotes.
+PROTECTED_CATS="security correctness concurrency error-handling resource-leak test-coverage"
+
+MODE=""; TYPE=""; PATH_ARG=""; CATEGORY=""; NOTE=""; LEDGER=""; REPO=""
+
+set_mode() {
+  if [ -n "$MODE" ]; then
+    echo -e "${CYA}error${RST} pick one mode: --record, --match or --list" >&2; exit 2
+  fi
+  MODE="$1"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --record)   set_mode record; shift ;;
+    --match)    set_mode match;  shift ;;
+    --list)     set_mode list;   shift ;;
+    --type)     TYPE="${2:-}";     shift 2 ;;
+    --path)     PATH_ARG="${2:-}"; shift 2 ;;
+    --category) CATEGORY="${2:-}"; shift 2 ;;
+    --note)     NOTE="${2:-}";     shift 2 ;;
+    --ledger)   LEDGER="${2:-}";   shift 2 ;;
+    --repo)     REPO="${2:-}";     shift 2 ;;
+    -h|--help)
+      sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$MODE" ] && { echo -e "${CYA}error${RST} one of --record, --match, --list is required" >&2; exit 2; }
+
+in_set() {
+  for v in $2; do [ "$1" = "$v" ] && return 0; done
+  return 1
+}
+
+# Validate BEFORE touching the ledger: a typo'd category silently written is a
+# suppression that can never match, and a typo'd category silently matched is a
+# suppression that fires on the wrong class.
+if [ "$MODE" = "record" ] || [ "$MODE" = "match" ]; then
+  [ -n "$PATH_ARG" ] || { echo -e "${CYA}error${RST} --path is required for --$MODE" >&2; exit 2; }
+  [ -n "$CATEGORY" ] || { echo -e "${CYA}error${RST} --category is required for --$MODE" >&2; exit 2; }
+  if ! in_set "$CATEGORY" "$VALID_CATS"; then
+    echo -e "${CYA}error${RST} unknown category '$CATEGORY'" >&2
+    echo -e "${YEL}valid${RST} $VALID_CATS" >&2
+    exit 2
+  fi
+fi
+if [ "$MODE" = "record" ]; then
+  [ -n "$TYPE" ] || { echo -e "${CYA}error${RST} --type is required for --record" >&2; exit 2; }
+  if ! in_set "$TYPE" "$VALID_TYPES"; then
+    echo -e "${CYA}error${RST} unknown type '$TYPE'" >&2
+    echo -e "${YEL}valid${RST} $VALID_TYPES" >&2
+    exit 2
+  fi
+fi
+
+if [ -z "$LEDGER" ]; then
+  [ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
+    echo -e "${YEL}warn${RST}  no repo root: pass --ledger or --repo, or run inside a git repo" >&2
+    exit 3
+  fi
+  LEDGER="${REPO%/}/jjstack/review-ledger.md"
+fi
+
+# Repo slug for the record, so a ledger stays readable if it is ever merged or
+# copied between repos.
+slug() {
+  local url
+  url="$(git -C "${REPO:-.}" remote get-url origin 2>/dev/null)"
+  if [ -n "$url" ]; then
+    url="${url%.git}"; url="${url##*:}"
+    printf '%s\n' "$url" | awk -F/ '{ if (NF >= 2) print $(NF-1) "/" $NF; else print $NF }'
+  else
+    basename "${REPO:-$(dirname "$LEDGER")}"
+  fi
+}
+
+case "$MODE" in
+  record)
+    mkdir -p "$(dirname "$LEDGER")" || exit 3
+    if [ ! -f "$LEDGER" ]; then
+      {
+        echo "# jjstack review ledger"
+        echo
+        echo "What past /review runs decided, so the next run does not relitigate it."
+        echo "One record per line:"
+        echo
+        echo '```'
+        echo "<date> | <repo> | <dismissed|fixed|confirmed> | <path-glob> | <category> | <note>"
+        echo '```'
+        echo
+        echo "Only \`dismissed\` records suppress, and they DEMOTE a repeat finding to"
+        echo "the report appendix with this note cited — they never drop it. Delete a"
+        echo "line to retire a decision; the deletion shows up in the diff like any"
+        echo "other reviewed change."
+        echo
+      } > "$LEDGER"
+    fi
+    printf '%s | %s | %s | %s | %s | %s\n' \
+      "$(date +%F)" "$(slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" "${NOTE:-(no note)}" >> "$LEDGER"
+    echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] → $LEDGER"
+    if [ "$TYPE" = "dismissed" ] && in_set "$CATEGORY" "$PROTECTED_CATS"; then
+      echo -e "${YEL}note${RST}  '$CATEGORY' is a protected category — this record is kept as" >&2
+      echo -e "${YEL}note${RST}  history but will NEVER demote a future finding." >&2
+    fi
+    exit 0
+    ;;
+
+  list)
+    if [ ! -f "$LEDGER" ]; then
+      echo -e "${YEL}warn${RST}  no ledger yet: $LEDGER" >&2
+      exit 0
+    fi
+    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LEDGER" || true
+    exit 0
+    ;;
+
+  match)
+    [ -f "$LEDGER" ] || exit 1
+    hits=0; protected=0
+    while IFS= read -r line; do
+      case "$line" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ \|*) ;;
+        *) continue ;;
+      esac
+      # date | repo | type | pattern | category | note
+      l_type=$(printf '%s' "$line" | awk -F' *\\| *' '{print $3}')
+      l_pat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $4}')
+      l_cat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $5}')
+      l_note=$(printf '%s' "$line" | awk -F' *\\| *' '{print $6}')
+      [ "$l_type" = "dismissed" ] || continue
+      [ "$l_cat" = "$CATEGORY" ]  || continue
+      if in_set "$l_cat" "$PROTECTED_CATS"; then
+        printf 'PROTECTED %s [%s] — a prior dismissal exists but this category never demotes: %s\n' \
+          "$l_pat" "$l_cat" "$l_note"
+        protected=$((protected + 1))
+        continue
+      fi
+      # shellcheck disable=SC2254  # the glob is the point
+      case "$PATH_ARG" in
+        $l_pat) ;;
+        *) continue ;;
+      esac
+      printf 'DEMOTE %s [%s] — dismissed previously: %s\n' "$l_pat" "$l_cat" "$l_note"
+      hits=$((hits + 1))
+    done < "$LEDGER"
+    [ "$hits" -gt 0 ] && exit 0
+    exit 1
+    ;;
+esac

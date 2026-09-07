@@ -25,6 +25,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-prior-dismissals \
          "$BIN"/jjstack-review-sweep "$BIN"/jjstack-review-autofix-diff \
          "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-triage \
+         "$BIN"/jjstack-review-ledger "$BIN"/jjstack-review-revert-history \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -1183,6 +1184,164 @@ check "--help documents --reconcile"         "grep -q -- '--reconcile' '$TRI/hel
 # POSITIVE CONTROL 7 — the help must stop at the code, not spill the script.
 check "POSITIVE CONTROL: --help stops at the comment block" "! grep -q 'set -uo pipefail' '$TRI/help.txt'"
 rm -rf "$TRI"
+echo "== 7e. review-blast-radius (generic threshold + cross-repo) =="
+# The one Greptile mechanic that survives scrutiny is repo-wide context: a
+# diff-only reviewer structurally cannot see the callers of the function the
+# diff just changed. Ours is grep, so it is exact and testable — and the value
+# is entirely in what it EXCLUDES (the changed files, already under review) and
+# what it still finds (everything else, including sibling repos).
+BR="$(mktemp -d)"
+mkdir -p "$BR/repo/src" "$BR/sibling"
+cat > "$BR/repo/src/auth.py" <<'EOF'
+def build_token(user, ttl, scope):
+    return "t"
+EOF
+cat > "$BR/repo/src/api.py" <<'EOF'
+from auth import build_token
+handler = build_token("u", 60, "read")
+EOF
+cat > "$BR/sibling/consumer.py" <<'EOF'
+from auth import build_token
+EOF
+# Diff file lives OUTSIDE the repo so it cannot pollute its own reference map.
+cat > "$BR/change.diff" <<'EOF'
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,4 +1,4 @@
+-def build_token(user, ttl):
++def build_token(user, ttl, scope):
+-def only_here():
++def only_here_now():
+EOF
+"$BIN/jjstack-review-blast-radius" --repo "$BR/repo" --diff-file "$BR/change.diff" > "$BR/out.md" 2>/dev/null
+check "blast-radius exits 0"            "[ \$? -eq 0 ]"
+check "maps the changed symbol"         "grep -q 'build_token' '$BR/out.md'"
+check "lists an out-of-diff call site"  "grep -q 'src/api.py:' '$BR/out.md'"
+check "reports contained symbols"       "grep -q 'only_here_now' '$BR/out.md'"
+check "excludes the already-changed file" "! grep -q 'src/auth.py:' '$BR/out.md'"
+# POSITIVE CONTROL — an exclusion grep for something never present passes
+# whether or not the exclusion works. The changed file must really hold the
+# symbol, or "excluded" only means "was never there".
+check "changed-file exclusion had something to exclude" "grep -q 'build_token' '$BR/repo/src/auth.py'"
+
+"$BIN/jjstack-review-blast-radius" --repo "$BR/repo" --diff-file "$BR/change.diff" \
+  --also-repo "$BR/sibling" > "$BR/cross.md" 2>/dev/null
+check "--also-repo finds sibling-repo callers" "grep -q '(sibling) consumer.py' '$BR/cross.md'"
+# POSITIVE CONTROL for the flag itself — the sibling site must be ABSENT without
+# it, else the check above would pass on a script that always scans everything.
+check "sibling callers absent without --also-repo" "! grep -q 'consumer.py' '$BR/out.md'"
+
+"$BIN/jjstack-review-blast-radius" --repo "$BR/repo" --diff-file "$BR/change.diff" \
+  --generic-threshold 1 > "$BR/generic.md" 2>/dev/null
+check "generic threshold parks noisy symbols" "grep -q 'Too generic to map' '$BR/generic.md'"
+
+# Extraction must be language-scoped. Caught by dogfooding: a global keyword
+# set turned English prose ("a function whose contract…") and shell flag values
+# ("--type fixed") into symbols, which buried the real ones under junk. A map
+# nobody can read is a map nobody uses.
+cat > "$BR/noise.diff" <<'EOF'
+--- a/docs/notes.md
++++ b/docs/notes.md
+@@ -1,2 +1,2 @@
+-the class whose type is unclear
++a function whose contract changed
+--- a/run.sh
++++ b/run.sh
+@@ -1,2 +1,2 @@
+-cmd --type fixed --path lib
++cmd --type dismissed --path lib
+EOF
+"$BIN/jjstack-review-blast-radius" --repo "$BR/repo" --diff-file "$BR/noise.diff" > "$BR/noise.md" 2>/dev/null
+check "prose and shell flag values yield no symbols" "grep -q 'definition symbols extracted: 0' '$BR/noise.md'"
+# POSITIVE CONTROL — the bait must really be in the fixture, or "0 symbols"
+# just means the diff was empty and the scoping is untested.
+check "the noise fixture really contains the bait" \
+  "grep -q 'whose' '$BR/noise.diff' && grep -q -- '--type fixed' '$BR/noise.diff'"
+
+"$BIN/jjstack-review-blast-radius" --repo "$BR/repo" --diff-file "$BR/change.diff" --max-refs abc >/dev/null 2>&1
+check "non-numeric --max-refs exits 2" "[ \$? -eq 2 ]"
+"$BIN/jjstack-review-blast-radius" --repo "$BR/nope" --diff-file "$BR/change.diff" >/dev/null 2>&1
+check "unresolvable repo exits 3" "[ \$? -eq 3 ]"
+rm -rf "$BR"
+
+echo "== 7f. review-ledger (dismissal memory that demotes, never drops) =="
+# Every reviewer people keep using grows a memory of what was waved off. The
+# risk is that the memory quietly becomes a suppression list — which is how a
+# recall-first reviewer turns into a precision-first one without anyone
+# deciding to. These tests pin the three rules that stop that.
+LD="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'bin/*' --category style \
+  --note 'house style permits it' --ledger "$LD" >/dev/null 2>&1
+check "records a dismissal"              "[ -f '$LD' ]"
+"$BIN/jjstack-review-ledger" --match --path 'bin/foo.sh' --category style --ledger "$LD" >/dev/null 2>&1
+check "prior dismissal demotes a repeat"  "[ \$? -eq 0 ]"
+"$BIN/jjstack-review-ledger" --match --path 'src/foo.py' --category style --ledger "$LD" >/dev/null 2>&1
+check "unrelated path does not demote"    "[ \$? -eq 1 ]"
+
+# Rule 1: only dismissals suppress. Suppressing a previously-FIXED issue would
+# hide the regression of a bug this repo has already paid for once.
+"$BIN/jjstack-review-ledger" --record --type fixed --path 'lib/*' --category performance --ledger "$LD" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'lib/x.py' --category performance --ledger "$LD" >/dev/null 2>&1
+check "a FIXED record never suppresses" "[ \$? -eq 1 ]"
+# POSITIVE CONTROL — the fixed record must really be on file and really match
+# path+category, or the non-suppression proves nothing about the type check.
+check "the FIXED record exists and matches path+category" "grep -q 'fixed | lib/\* | performance' '$LD'"
+
+# Rule 2: protected categories never demote, however often they are dismissed.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category security \
+  --note 'looked fine at the time' --ledger "$LD" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category security --ledger "$LD" > "$LD.sec" 2>/dev/null
+check "protected category never demotes"        "[ \$? -eq 1 ]"
+check "protected match still surfaces the history" "grep -q 'PROTECTED' '$LD.sec'"
+# POSITIVE CONTROL — the identical shape in an UNPROTECTED category must demote,
+# else "never demotes" could just mean the matcher is broken for every category.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style --ledger "$LD" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style --ledger "$LD" >/dev/null 2>&1
+check "same shape in an unprotected category DOES demote" "[ \$? -eq 0 ]"
+
+# Rule 3: a typo'd category is a suppression that fires on the wrong class.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path x --category not-a-category --ledger "$LD" >/dev/null 2>&1
+check "unknown category exits 2" "[ \$? -eq 2 ]"
+"$BIN/jjstack-review-ledger" --record --type maybe --path x --category style --ledger "$LD" >/dev/null 2>&1
+check "unknown type exits 2"     "[ \$? -eq 2 ]"
+rm -rf "$(dirname "$LD")"
+
+echo "== 7g. review-revert-history (files that burned us before) =="
+# A file that has been reverted is not the same review risk as one that never
+# has, and the diff never shows that. git already holds the record.
+RH="$(mktemp -d)"
+git -C "$RH" init -q >/dev/null 2>&1
+git -C "$RH" config user.email smoke@test.local
+git -C "$RH" config user.name "Smoke Test"
+printf 'a\n' > "$RH/pay.py"
+printf 'b\n' > "$RH/calm.py"
+git -C "$RH" add -A >/dev/null 2>&1
+git -C "$RH" commit -q -m 'feat: initial' >/dev/null 2>&1
+printf 'a2\n' > "$RH/pay.py"
+git -C "$RH" add -A >/dev/null 2>&1
+git -C "$RH" commit -q -m 'Revert "feat: charge the card twice"' >/dev/null 2>&1
+printf 'b2\n' > "$RH/calm.py"
+git -C "$RH" add -A >/dev/null 2>&1
+git -C "$RH" commit -q -m 'docs: tidy the wording' >/dev/null 2>&1
+cat > "$RH/d.diff" <<'EOF'
+--- a/pay.py
++++ b/pay.py
+--- a/calm.py
++++ b/calm.py
+EOF
+"$BIN/jjstack-review-revert-history" --repo "$RH" --diff-file "$RH/d.diff" > "$RH/out.md" 2>/dev/null
+check "revert-history exits 0"             "[ \$? -eq 0 ]"
+check "flags a file with revert history"   "grep -q 'pay.py' '$RH/out.md'"
+check "does not flag a clean file"         "! grep -q 'calm.py' '$RH/out.md'"
+# POSITIVE CONTROL — the clean file must actually have been in the diff, or
+# "not flagged" just means "never examined" and the discrimination is fictional.
+check "the clean file was really examined" "grep -q 'calm.py' '$RH/d.diff'"
+"$BIN/jjstack-review-revert-history" --repo "$RH" --diff-file "$RH/d.diff" --limit x >/dev/null 2>&1
+check "non-numeric --limit exits 2" "[ \$? -eq 2 ]"
+NOGIT="$(mktemp -d)"
+"$BIN/jjstack-review-revert-history" --repo "$NOGIT" --diff-file "$RH/d.diff" >/dev/null 2>&1
+check "non-git directory exits 3" "[ \$? -eq 3 ]"
+rm -rf "$RH" "$NOGIT"
 
 echo "== 7e. value-less flags must be a usage error, never a hang =="
 # Reproduced before the fix: every one of these returned 124 under `timeout 5`.

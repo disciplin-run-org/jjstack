@@ -137,7 +137,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it — then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration) and files every finding, reported or not, in an audited triage ledger. Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself and the changed files' revert history, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it — then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration) and files every finding, reported or not, in an audited triage ledger. Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -192,6 +192,7 @@ loads. Read them directly or let skills load them for you.
 | `review-preflight.md` | The five deterministic pre-passes `/review` runs before any AI pass, why each exists, and how the later phases consume the evidence pack |
 | `review-post-passes.md` | The five blind spots no diff-reader can cover — absence, the auto-fix diff, proof-by-red-test, the post-fix sweep, calibration — and how `/review` runs each |
 | `vendor-lessons-aikido.md` | What a commercial scanner-plus-LLM product's triage actually does — adopted mechanics, and the claims rejected as marketing, with sources |
+| `vendor-lessons-greptile.md` | What Greptile's reviewer actually does, which claims are verifiable mechanics vs marketing, and exactly what `/review` adopted and rejected |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
