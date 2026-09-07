@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# jjstack-review-intent — gather what the change CLAIMS to do, before judging it.
+#
+# "The code does not do what the change says it does" is a defect class a
+# reviewer cannot detect without knowing the claim. Research practice for AI
+# review is to run an understanding pass before a judging pass; you cannot run
+# one on evidence you never collected.
+#
+# So this collects the claim, deterministically, from the three places it is
+# actually written down:
+#   - the commit messages on this branch (the author's own words, per step)
+#   - the PR title and body, when a PR exists
+#   - any issue the commits or PR reference (#123, GH-123, "fixes #123")
+#
+# Gathering is mechanical; the judgement built on it is not. This script does
+# only the gathering — the /review skill does the restatement and the
+# claim-vs-code comparison.
+#
+# Usage:
+#   jjstack-review-intent --out DIR [--base REF] [--repo DIR] [--dry-run]
+#
+# Exit: 0 gathered (even if only commits were available), 2 usage error,
+#       3 not a git repo.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+OUT=""; REPO=""; BASE=""; DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)     OUT="${2:-}"; shift 2 ;;
+    --repo)    REPO="${2:-}"; shift 2 ;;
+    --base)    BASE="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF]" >&2; exit 2; }
+
+if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
+if [ -z "$REPO" ] || ! git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo -e "${YEL}warn${RST}  not a git repo — no stated intent to gather" >&2
+  exit 3
+fi
+
+if [ -z "$BASE" ]; then
+  for cand in main master; do
+    if git -C "$REPO" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
+      BASE="$(git -C "$REPO" merge-base HEAD "$cand" 2>/dev/null)"
+      [ -n "$BASE" ] && break
+    fi
+  done
+fi
+[ -z "$BASE" ] && BASE="$(git -C "$REPO" rev-parse --verify --quiet HEAD~5 2>/dev/null)"
+
+BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+HAVE_GH=0; command -v gh >/dev/null 2>&1 && HAVE_GH=1
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] repo:   $REPO"
+  echo "[dry-run] branch: $BRANCH"
+  echo "[dry-run] base:   ${BASE:-<root>}"
+  echo "[dry-run] gh cli: $([ "$HAVE_GH" -eq 1 ] && echo available || echo 'absent — PR/issue text will be skipped')"
+  echo "[dry-run] would write: $OUT/intent.md"
+  exit 0
+fi
+
+mkdir -p "$OUT" || exit 3
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+if [ -n "$BASE" ]; then
+  git -C "$REPO" log --format='%h%n%s%n%b%n---' "$BASE..HEAD" > "$TMP/commits" 2>/dev/null
+else
+  git -C "$REPO" log --format='%h%n%s%n%b%n---' -n 20 > "$TMP/commits" 2>/dev/null
+fi
+
+PR_OK=0
+if [ "$HAVE_GH" -eq 1 ]; then
+  # `gh pr view` with no argument resolves the PR for the current branch; it
+  # needs to run inside the repo, and exits non-zero when there is none.
+  if ( cd "$REPO" && gh pr view --json number,title,body ) > "$TMP/pr.json" 2>/dev/null; then
+    [ -s "$TMP/pr.json" ] && PR_OK=1
+  fi
+fi
+
+# Issue references, from commits and (if present) the PR body.
+{ cat "$TMP/commits"; [ "$PR_OK" -eq 1 ] && cat "$TMP/pr.json"; } 2>/dev/null \
+  | grep -oE '(#|GH-)[0-9]{1,6}' | tr -d '#' | sed 's/^GH-//' | sort -un | head -n 10 > "$TMP/issues"
+
+{
+  echo "# Stated intent — what this change CLAIMS to do"
+  echo
+  echo "Collected before any judging pass. Every downstream pass compares the"
+  echo "code against this: a change that does not do what it says it does is a"
+  echo "finding no diff-reading reviewer can produce without the claim in hand."
+  echo
+  echo "- repo:   \`$REPO\`"
+  echo "- branch: \`$BRANCH\`"
+  echo "- base:   \`${BASE:-<repo root>}\`"
+  echo
+  echo "## Commit messages on this branch"
+  echo
+  if [ -s "$TMP/commits" ]; then
+    echo '```'
+    cat "$TMP/commits"
+    echo '```'
+  else
+    echo "_No commits between the base and HEAD — the intent is uncommitted."
+    echo "Treat the working tree itself as the only statement of intent, and say"
+    echo "so in the report rather than inferring a claim._"
+  fi
+  echo
+  echo "## Pull request"
+  echo
+  if [ "$PR_OK" -eq 1 ] && [ -s "$TMP/pr.json" ]; then
+    python3 - "$TMP/pr.json" <<'PY' 2>/dev/null || echo "_PR JSON present but unparseable._"
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"**#{d.get('number','?')} — {d.get('title','(no title)')}**\n")
+print(d.get('body') or "_(empty PR body)_")
+PY
+  elif [ "$HAVE_GH" -eq 0 ]; then
+    echo "_Skipped: \`gh\` not installed. Structurally inapplicable, not a failure._"
+  else
+    echo "_No pull request for this branch. Structurally inapplicable, not a failure._"
+  fi
+  echo
+  echo "## Referenced issues"
+  echo
+  if [ -s "$TMP/issues" ]; then
+    while read -r n; do
+      echo "### #$n"
+      echo
+      if [ "$HAVE_GH" -eq 1 ]; then
+        ( cd "$REPO" && gh issue view "$n" --json title,body \
+            --template '**{{.title}}**{{"\n\n"}}{{.body}}' ) 2>/dev/null \
+          || echo "_Could not read issue #$n (not an issue, or no access)._"
+      else
+        echo "_Referenced, but \`gh\` is not installed — text unavailable._"
+      fi
+      echo
+    done < "$TMP/issues"
+  else
+    echo "_No issue references found in the commits or PR body._"
+  fi
+  echo
+  echo "## What the review must do with this"
+  echo
+  echo "1. Restate the claim in one or two sentences BEFORE reading the diff"
+  echo "   critically. Grounding in intent first is what stops confidently-wrong"
+  echo "   findings that misread the change's purpose."
+  echo "2. Then look for the mismatch in both directions:"
+  echo "   - the claim is not fully implemented (a stated case is missing)"
+  echo "   - the diff does something the claim never mentions (scope creep, or a"
+  echo "     behavior change smuggled in beside the stated one)"
+  echo "3. When no claim was recoverable, say so in the report. Do not invent"
+  echo "   one and then grade the code against your own invention."
+} > "$OUT/intent.md"
+
+NCOMMITS=$(grep -c '^---$' "$TMP/commits" 2>/dev/null); NCOMMITS="${NCOMMITS:-0}"
+echo -e "${GRN}intent${RST} commits: $NCOMMITS, PR: $([ "$PR_OK" -eq 1 ] && echo yes || echo no), issues: $(wc -l < "$TMP/issues") → $OUT/intent.md"
+exit 0

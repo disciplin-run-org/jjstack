@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+# jjstack-review-tooling-sweep — run the project's own tooling BEFORE the AI review.
+#
+# Anthropic's /code-review tells the reviewer to skip anything "a linter or
+# typechecker would catch — assume CI runs them." That is right for a PR bot
+# that cannot execute anything, and wrong for a local pre-merge review that
+# can just RUN them. This script runs them.
+#
+# It produces two artifacts, and both matter:
+#   1. tooling-results.md — the real, deterministic failures. Free findings,
+#      with zero hallucination risk and zero token cost.
+#   2. exclusions.md — the "already covered by tooling, do NOT report" list
+#      handed to the AI passes. Crucially, a category is excluded ONLY when the
+#      tool that covers it actually ran and passed. Nothing detected means
+#      nothing excluded: the AI passes are told those defects are IN SCOPE.
+#      Excluding a category on the strength of a tool that never ran is how a
+#      review goes quiet about the thing nobody checked.
+#   3. test-baseline.md — which tests pass RIGHT NOW (pre-pass 5), so a later
+#      pass can prove the diff, and gstack's auto-applied fixes, broke nothing.
+#
+# This is the "Algorithm First, Inference Last" rule applied to code review:
+# never spend LLM tokens on what a compiler catches for free.
+#
+# Detection is best-effort and degrades gracefully — a repo with no typechecker
+# is a normal repo, not an error.
+#
+# Usage:
+#   jjstack-review-tooling-sweep --out DIR [options]
+#
+# Options:
+#   --out DIR          where to write the artifacts (required)
+#   --repo DIR         repo to sweep (default: git toplevel of cwd)
+#   --typecheck CMD    override typecheck command ("none" disables)
+#   --lint CMD         override lint command ("none" disables)
+#   --test CMD         override test command ("none" disables)
+#   --skip-tests       detect but do not run the test suite
+#   --timeout SECS     per-tool timeout (default 600)
+#   --dry-run          print what would run; execute nothing, write nothing
+#
+# Exit: 0 every detected tool passed (or none detected), 1 at least one tool
+#       reported failures, 2 usage error, 3 environment error (no repo).
+#
+# Re-entrancy: exports JJSTACK_REVIEW_PREFLIGHT=1 while running. If that is
+# already set on entry the test suite is NOT run — a project whose test command
+# invokes /review would otherwise recurse forever.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+OUT=""; REPO=""; TIMEOUT=600; DRY=0; SKIP_TESTS=0
+TC_OVERRIDE=""; LINT_OVERRIDE=""; TEST_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)        OUT="${2:-}"; shift 2 ;;
+    --repo)       REPO="${2:-}"; shift 2 ;;
+    --typecheck)  TC_OVERRIDE="${2:-}"; shift 2 ;;
+    --lint)       LINT_OVERRIDE="${2:-}"; shift 2 ;;
+    --test)       TEST_OVERRIDE="${2:-}"; shift 2 ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
+    --timeout)    TIMEOUT="${2:-}"; shift 2 ;;
+    --dry-run)    DRY=1; shift ;;
+    -h|--help)    sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--repo DIR] [--dry-run]" >&2; exit 2; }
+
+if [ -z "$REPO" ]; then
+  REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+fi
+if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
+  echo -e "${YEL}warn${RST}  not a git repo and no --repo given — nothing to sweep" >&2
+  exit 3
+fi
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+# --- detection -------------------------------------------------------------
+# Each detector echoes a shell command string, or nothing. First match wins.
+# Deliberately conservative: a command we are not confident about is worse than
+# no command, because a bogus failure poisons the whole evidence pack.
+
+npm_script() {   # npm_script <name> -> "npm run <name>" when package.json has it
+  [ -f "$REPO/package.json" ] || return 1
+  has node || return 1
+  node -e "const p=require('$REPO/package.json');process.exit(p.scripts&&p.scripts['$1']?0:1)" 2>/dev/null || return 1
+  echo "npm run --silent $1"
+}
+
+make_target() { # make_target <name>
+  [ -f "$REPO/Makefile" ] || return 1
+  grep -qE "^$1:" "$REPO/Makefile" 2>/dev/null || return 1
+  has make || return 1
+  echo "make $1"
+}
+
+detect_typecheck() {
+  npm_script typecheck && return 0
+  npm_script type-check && return 0
+  if [ -f "$REPO/tsconfig.json" ] && has npx; then echo "npx --no-install tsc --noEmit"; return 0; fi
+  if { [ -f "$REPO/pyproject.toml" ] || [ -f "$REPO/setup.cfg" ] || [ -f "$REPO/mypy.ini" ]; } && has mypy; then
+    echo "mypy ."; return 0; fi
+  if [ -f "$REPO/go.mod" ] && has go; then echo "go build ./..."; return 0; fi
+  if [ -f "$REPO/Cargo.toml" ] && has cargo; then echo "cargo check --quiet"; return 0; fi
+  make_target typecheck && return 0
+  return 1
+}
+
+detect_lint() {
+  npm_script lint && return 0
+  if { [ -f "$REPO/pyproject.toml" ] || [ -f "$REPO/setup.cfg" ] || [ -f "$REPO/ruff.toml" ]; } && has ruff; then
+    echo "ruff check ."; return 0; fi
+  if [ -f "$REPO/.flake8" ] && has flake8; then echo "flake8"; return 0; fi
+  if [ -f "$REPO/go.mod" ] && has go; then echo "go vet ./..."; return 0; fi
+  if [ -f "$REPO/Cargo.toml" ] && has cargo; then echo "cargo clippy --quiet"; return 0; fi
+  make_target lint && return 0
+  # Shell-first repos (jjstack itself): `bash -n` over every tracked shell
+  # script is a real parse-level guard and costs nothing. Last resort, so a
+  # project with a proper linter always wins.
+  if git -C "$REPO" ls-files 2>/dev/null | grep -qE '\.sh$|^bin/|^hooks/'; then
+    echo "__shell_parse_sweep__"; return 0
+  fi
+  return 1
+}
+
+detect_test() {
+  npm_script test && return 0
+  if [ -f "$REPO/pytest.ini" ] || [ -d "$REPO/tests" ] || grep -q '\[tool.pytest' "$REPO/pyproject.toml" 2>/dev/null; then
+    has pytest && { echo "pytest -q"; return 0; }
+  fi
+  if [ -f "$REPO/go.mod" ] && has go; then echo "go test ./..."; return 0; fi
+  if [ -f "$REPO/Cargo.toml" ] && has cargo; then echo "cargo test --quiet"; return 0; fi
+  [ -x "$REPO/test/smoke.sh" ] && { echo "test/smoke.sh"; return 0; }
+  make_target test && return 0
+  return 1
+}
+
+TC="${TC_OVERRIDE:-$(detect_typecheck || true)}"
+LINT="${LINT_OVERRIDE:-$(detect_lint || true)}"
+TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
+[ "$TC" = "none" ]   && TC=""
+[ "$LINT" = "none" ] && LINT=""
+[ "$TEST" = "none" ] && TEST=""
+
+# Re-entrancy guard: never let a project's own test command re-enter the review.
+REENTRY_NOTE=""
+if [ -n "${JJSTACK_REVIEW_PREFLIGHT:-}" ] && [ -n "$TEST" ]; then
+  REENTRY_NOTE="test suite NOT run: JJSTACK_REVIEW_PREFLIGHT already set (re-entrancy guard)"
+  TEST=""
+fi
+
+label() { # human name for a command, incl. the internal shell-sweep token
+  case "${1:-}" in
+    "")                    echo "<none detected>" ;;
+    __shell_parse_sweep__) echo "bash -n over tracked shell scripts" ;;
+    *)                     echo "$1" ;;
+  esac
+}
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] repo:      $REPO"
+  echo "[dry-run] typecheck: $(label "$TC")"
+  echo "[dry-run] lint:      $(label "$LINT")"
+  if [ "$SKIP_TESTS" -eq 1 ]; then
+    echo "[dry-run] test:      $(label "$TEST") (--skip-tests)"
+  else
+    echo "[dry-run] test:      $(label "$TEST")"
+  fi
+  [ -n "$REENTRY_NOTE" ] && echo "[dry-run] $REENTRY_NOTE"
+  echo "[dry-run] would write: $OUT/{tooling-results.md,exclusions.md,test-baseline.md}"
+  exit 0
+fi
+
+mkdir -p "$OUT/tooling-logs" || exit 3
+
+export JJSTACK_REVIEW_PREFLIGHT=1
+
+# --- execution -------------------------------------------------------------
+failures=0
+declare -A STATUS CMDS
+
+# A file is shell iff it says so — extension or shebang. Guessing by directory
+# would run `bash -n` over python and report a fake parse error.
+is_shell() {
+  case "$1" in *.sh) return 0 ;; esac
+  head -n1 "$1" 2>/dev/null | grep -qE '^#!.*(bash|/sh|env sh)'
+}
+
+run_tool() { # run_tool <slug> <command>
+  local slug="$1" cmd="$2" rc log
+  log="$OUT/tooling-logs/$slug.log"
+  CMDS["$slug"]="$cmd"
+  if [ "$cmd" = "__shell_parse_sweep__" ]; then
+    CMDS["$slug"]="bash -n over tracked shell scripts"
+    : > "$log"
+    local list f
+    list="$(mktemp)"
+    git -C "$REPO" ls-files 2>/dev/null | grep -E '\.sh$|^bin/|^hooks/' > "$list"
+    rc=0
+    while read -r f; do
+      [ -f "$REPO/$f" ] || continue
+      is_shell "$REPO/$f" || continue
+      if ! bash -n "$REPO/$f" 2>>"$log"; then echo "parse error: $f" >> "$log"; rc=1; fi
+    done < "$list"
+    rm -f "$list"
+  else
+    if has timeout; then
+      ( cd "$REPO" && timeout "$TIMEOUT" bash -c "$cmd" ) > "$log" 2>&1
+    else
+      ( cd "$REPO" && bash -c "$cmd" ) > "$log" 2>&1
+    fi
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then STATUS["$slug"]="pass"
+  else STATUS["$slug"]="FAIL(rc=$rc)"; failures=$((failures + 1)); fi
+  return 0
+}
+
+[ -n "$TC" ]   && run_tool typecheck "$TC"
+[ -n "$LINT" ] && run_tool lint "$LINT"
+if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
+
+# --- artifact 1: real failures --------------------------------------------
+{
+  echo "# Deterministic tooling sweep"
+  echo
+  echo "Ran the project's own tooling before the AI review. Everything below was"
+  echo "found by a compiler/linter/test runner, not by a model — zero"
+  echo "hallucination risk, zero token cost."
+  echo
+  echo "- repo: \`$REPO\`"
+  echo "- date: $(date +%F)"
+  [ -n "$REENTRY_NOTE" ] && { echo "- note: $REENTRY_NOTE"; }
+  echo
+  echo "| tool | command | result |"
+  echo "|------|---------|--------|"
+  for slug in typecheck lint test; do
+    if [ -n "${STATUS[$slug]:-}" ]; then
+      echo "| $slug | \`${CMDS[$slug]}\` | ${STATUS[$slug]} |"
+    elif [ "$slug" = "test" ] && [ "$SKIP_TESTS" -eq 1 ]; then
+      echo "| test | \`${TEST:-n/a}\` | skipped (--skip-tests) |"
+    else
+      echo "| $slug | — | none detected (structurally inapplicable) |"
+    fi
+  done
+  echo
+  for slug in typecheck lint test; do
+    case "${STATUS[$slug]:-}" in
+      FAIL*)
+        echo "## $slug FAILED — real findings, report these"
+        echo
+        echo '```'
+        tail -n 60 "$OUT/tooling-logs/$slug.log" 2>/dev/null
+        echo '```'
+        echo
+        echo "Full log: \`tooling-logs/$slug.log\`"
+        echo ;;
+    esac
+  done
+  if [ "$failures" -eq 0 ]; then
+    echo "## No deterministic failures"
+    echo
+    echo "Every detected tool passed. That does NOT mean the diff is clean — it"
+    echo "means the remaining defects are the ones only a reviewer can find."
+  fi
+} > "$OUT/tooling-results.md"
+
+# --- artifact 2: exclusion list -------------------------------------------
+# The load-bearing rule: exclude a category ONLY when the tool covering it
+# actually ran AND passed. A tool that did not run excludes nothing.
+{
+  echo "# Tooling exclusion list — hand this to every AI review pass"
+  echo
+  echo "Categories marked COVERED were checked by real tooling that RAN and"
+  echo "PASSED on this working tree. Do NOT spend a finding on them."
+  echo
+  echo "Categories marked IN SCOPE were NOT checked — no such tool was detected,"
+  echo "or it failed. The AI passes must review them normally. Never assume CI"
+  echo "covers what this sweep could not run."
+  echo
+  if [ "${STATUS[typecheck]:-}" = "pass" ]; then
+    echo "## COVERED — do NOT report (typechecker: \`${CMDS[typecheck]}\`)"
+    echo
+    echo "- type errors, wrong argument types, wrong arity"
+    echo "- undefined names, missing/unused imports the checker flags"
+    echo "- unreachable code and signature mismatches the checker flags"
+  else
+    echo "## IN SCOPE — no passing typechecker"
+    echo
+    echo "- type errors, wrong arity, signature mismatches: review these normally"
+  fi
+  echo
+  if [ "${STATUS[lint]:-}" = "pass" ]; then
+    echo "## COVERED — do NOT report (linter: \`${CMDS[lint]}\`)"
+    echo
+    if [ "$LINT" = "__shell_parse_sweep__" ]; then
+      # A parse sweep proves the scripts parse. It says nothing about style,
+      # and claiming otherwise would silence a category nothing checked.
+      echo "- shell syntax / parse errors, unbalanced quotes and blocks"
+      echo
+      echo "This was a parse sweep, NOT a style linter. Style, naming, unused"
+      echo "variables and shell-specific smells (shellcheck territory) remain"
+      echo "IN SCOPE — nothing checked them."
+    else
+      echo "- style, formatting, naming conventions enforced by that config"
+      echo "- unused variables/imports, shadowing, syntax-level smells"
+    fi
+  else
+    echo "## IN SCOPE — no passing linter"
+    echo
+    echo "- lint-class issues are NOT covered; still prefer real defects over"
+    echo "  style nits, but do not assume a linter caught anything"
+  fi
+  echo
+  if [ "${STATUS[test]:-}" = "pass" ]; then
+    echo "## COVERED — do NOT report (test suite: \`${CMDS[test]}\`)"
+    echo
+    echo "- \"this might be broken\" claims about behavior the suite exercises;"
+    echo "  the suite is green. Report a coverage GAP instead — a behavior with"
+    echo "  no test is still a finding."
+  else
+    echo "## IN SCOPE — no passing test suite"
+    echo
+    echo "- nothing was proven to work. Correctness claims get no free pass."
+  fi
+  echo
+  echo "## Always excluded (independent of this sweep)"
+  echo
+  echo "- pure formatting a formatter would rewrite"
+  echo "- pre-existing issues on lines the diff did not touch"
+} > "$OUT/exclusions.md"
+
+# --- artifact 3: test baseline --------------------------------------------
+{
+  echo "# Test baseline snapshot"
+  echo
+  echo "What passes RIGHT NOW, recorded before any review-driven edit. A later"
+  echo "pass compares against this to prove the diff — and any fix gstack"
+  echo "auto-applies — broke nothing. Without a baseline, \"tests pass\" cannot"
+  echo "be distinguished from \"tests passed before too, and still miss this\"."
+  echo
+  if [ -n "${STATUS[test]:-}" ]; then
+    echo "- runner:  \`${CMDS[test]}\`"
+    echo "- result:  ${STATUS[test]}"
+    echo "- captured: $(date -u +%FT%TZ)"
+    echo "- head:    $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo
+    echo "## Runner output (tail)"
+    echo
+    echo '```'
+    tail -n 40 "$OUT/tooling-logs/test.log" 2>/dev/null
+    echo '```'
+    echo
+    if [ "${STATUS[test]}" != "pass" ]; then
+      echo "**The baseline is RED.** Failures present before the review are"
+      echo "pre-existing, not diff-introduced — do not attribute them to the"
+      echo "change, and do not let them mask a new failure."
+    fi
+  else
+    echo "- runner: none"
+    echo
+    if [ "$SKIP_TESTS" -eq 1 ]; then
+      echo "Skipped by \`--skip-tests\`."
+    elif [ -n "$REENTRY_NOTE" ]; then
+      echo "$REENTRY_NOTE"
+    else
+      echo "No test runner detected. NO baseline exists, so no later pass may"
+      echo "claim the change \"broke nothing\" — that claim is unsupported here."
+    fi
+  fi
+} > "$OUT/test-baseline.md"
+
+echo -e "${GRN}sweep${RST} → $OUT (typecheck: ${STATUS[typecheck]:-none}, lint: ${STATUS[lint]:-none}, test: ${STATUS[test]:-none})"
+[ "$failures" -gt 0 ] && { echo -e "${YEL}warn${RST}  $failures tool(s) reported failures — see tooling-results.md" >&2; exit 1; }
+exit 0
