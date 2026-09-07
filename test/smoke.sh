@@ -949,6 +949,29 @@ printf '**CAUTION**\n\n**P0** a:1 leaks a handle\n' > "$PCL/nolink.md"
 out=$("$BIN/jjstack-pr-comment-lint" "$PCL/nolink.md" 2>&1)
 check "a comment with no link to the report is rejected" "grep -q 'no-link' <<<\"\$out\""
 
+# REGRESSION (external review, round 1): both caps were trivially evadable and
+# the original tests passed anyway - they only exercised the shapes the code
+# already handled. These two fixtures are the reviewer's actual bypasses.
+#
+# 1. The cap anchored P0-P3 to line start, so a "- " prefix slipped past it:
+#    9 findings returned `clean`, rc=0.
+printf '**CAUTION**\n- P0 a:1 x\n- P0 b:2 y\n- P1 c:3 z\n- P1 d:4 w\n- P2 e:5 v\njjstack/review-2026-09-07.md\n' > "$PCL/bullets.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/bullets.md" 2>&1)
+check "findings as a bulleted list cannot evade the cap" "grep -q 'too-many' <<<\"\$out\""
+printf '**CAUTION**\n1. P0 a:1 x\n2. P0 b:2 y\n3. P1 c:3 z\n4. P1 d:4 w\njjstack/review-2026-09-07.md\n' > "$PCL/numbered.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/numbered.md" 2>&1)
+check "findings as a numbered list cannot evade the cap" "grep -q 'too-many' <<<\"\$out\""
+
+# 2. The link rule accepted ANY ".md" substring, so a finding's own subject file
+#    satisfied it while linking nothing.
+printf '**CAUTION** - 1 blocking.\n**P0** `docs/setup.md:12` the install step is wrong.\n' > "$PCL/subjectmd.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/subjectmd.md" 2>&1)
+check "a finding's own .md subject does not count as a report link" "grep -q 'no-link' <<<\"\$out\""
+# POSITIVE CONTROL — the fixture must genuinely contain a .md, or this passes
+# for the wrong reason and the old bypass would look fixed when it is not.
+check "POSITIVE CONTROL: the subject fixture really contains a .md path" \
+  "grep -q 'setup\\.md' '$PCL/subjectmd.md'"
+
 printf '**P0** a:1 an incredible and robust finding\nreport.md\n' > "$PCL/sell.md"
 out=$("$BIN/jjstack-pr-comment-lint" "$PCL/sell.md" 2>&1)
 check "superlatives used to sell are rejected" "grep -q 'superlative' <<<\"\$out\""
@@ -1094,6 +1117,19 @@ n_appendix=$(grep -inE 'appendix' "${ROUTE_CORPUS[@]}" 2>/dev/null | wc -l | tr 
 check "no finding is routed to a section 5f does not define" "[ \"\$n_appendix\" = 0 ]"
 check "the Demoted section it routes to instead exists" \
   "grep -q '^### Demoted (prior decision)' '$SK'"
+
+# The PR post must be CHAINED to its lint, never a separate step. Bold prose
+# saying "do not post if it fails" is what hard-gate-convention.md names as the
+# failure: two fenced blocks let a failed lint be followed by a successful post.
+check "every gh pr comment is chained to the lint" \
+  "! grep -E 'gh pr comment' '$SK' | grep -qv 'pr-comment-lint'"
+# POSITIVE CONTROL — an unchained post must be detectable, or the guard above
+# passes on a file that simply never mentions gh pr comment at all.
+probe_gate="$(mktemp)"
+printf 'gh pr comment --body-file x.md\n' > "$probe_gate"
+check "gate guard actually catches an unchained post" \
+  "grep -E 'gh pr comment' '$probe_gate' | grep -qv 'pr-comment-lint'"
+rm -f "$probe_gate"
 
 # POSITIVE CONTROL — every line below is a LITERAL that this repository really
 # shipped (recovered with `git grep -i appendix HEAD` at 754d63d), not a string
