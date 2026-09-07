@@ -999,12 +999,13 @@ TRI="$(mktemp -d)"
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
 
 # A well-formed ledger: two lenses on the same defect (must collapse), one
-# appendix item, one suppressed nit, one deferred vendor finding.
+# demoted-by-prior-decision item, one baseline-suppressed nit, one deferred
+# vendor finding. Dispositions track the enrich-only model — no score bands.
 {
   row P1 80 src/auth.py:42      security    report   -              'missing authz check on admin route'
   row P1 72 src/auth.py:42      correctness report   -              'Missing authz check on admin route!'
-  row P2 55 src/util.py:9       perf        appendix low-confidence 'N+1 query in loop'
-  row P3 30 tests/test_x.py:5   style       suppress style-only     'trailing whitespace'
+  row P2 55 src/util.py:9       perf        demoted  prior-decision 'N+1 query in loop'
+  row P3 30 tests/test_x.py:5   style       suppress baseline       'trailing whitespace'
   row P2 40 vendor/lib/x.js:100 security    defer    not-reachable  'unused eval path'
 } > "$TRI/good.tsv"
 
@@ -1019,7 +1020,13 @@ check "classifies a tests/ path as test"        "grep -q 'tests/test_x.py:5\` | 
 check "classifies node_modules-style vendor"    "grep -q 'vendor/lib/x.js:100\` | vendor' '$TRI/good.md'"
 # The core claim: a suppressed finding is still on the page, with its reason.
 check "suppressed finding stays visible"        "grep -q 'trailing whitespace' '$TRI/good.md'"
-check "suppressed finding records its reason"   "grep -q 'style-only' '$TRI/good.md'"
+check "suppressed finding records its reason"   "grep -q 'baseline' '$TRI/good.md'"
+# A demoted finding is ACTIVE — it must be printed, keeping its own severity and
+# confidence. Demotion is a claim about the team's prior decision, never a
+# rescoring of the finding.
+check "demoted finding stays on the page"       "grep -q 'N+1 query in loop' '$TRI/good.md'"
+check "demoted finding keeps its confidence"    "grep -qE '\\| P2 \\| 55 \\|' '$TRI/good.md'"
+check "demoted has its own section"             "grep -q 'Demoted (prior decision)' '$TRI/good.md'"
 
 # POSITIVE CONTROL 1 — a disposition other than `report` with no reason code
 # is the silent drop this whole script exists to make impossible.
@@ -1035,7 +1042,7 @@ row P2 30 src/b.py:1 sec suppress not-reachable 'deleted via reachability' > "$T
 "$BIN/jjstack-review-triage" "$TRI/reach.tsv" > /dev/null 2> "$TRI/reach.err"
 rc=$?
 check "POSITIVE CONTROL: not-reachable cannot suppress (exit 4)" "[ $rc -eq 4 ]"
-check "not-reachable error offers defer/appendix instead"        "grep -q 'deprioritise' '$TRI/reach.err'"
+check "not-reachable error offers defer/demoted instead"         "grep -q 'deprioritise' '$TRI/reach.err'"
 
 # POSITIVE CONTROL 3 — a P0/P1 may be deferred, never made to disappear.
 row P0 90 src/c.py:1 sec suppress style-only 'top severity vanished' > "$TRI/p0.tsv"
