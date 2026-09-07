@@ -91,6 +91,8 @@ have on a developer machine.
 |-------------|--------|---------|
 | Review quality target | 8/10 | **10/10** (configurable) |
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
+| `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
+| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
