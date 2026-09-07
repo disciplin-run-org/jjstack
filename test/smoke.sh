@@ -51,15 +51,45 @@ else
 fi
 
 echo "== 4. capture-write dry-run (no writes) =="
+# JJSTACK_CAPTURE_NO_GBRAIN pins this section to Layer A. Without it, --dry-run
+# queries a LIVE gbrain index under an 8s timeout: the answer changes as the
+# index grows and the latency is not ours to control, so these assertions were
+# neither deterministic nor fast — contradicting this file's own header. Layer B
+# has its own coverage below; it is pinned here, not skipped.
 LESSON='{"type":"feedback","name":"smoke probe","description":"d","body":"b","pattern_key":"smoke-probe","scope":"project","is_rule":false,"confidence":7,"source":"observed"}'
-out=$("$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
-check "capture-write --dry-run resolves canonical slug" "printf '%s' \"\$out\" | grep -q 'canonical slug:'"
-check "capture-write --dry-run makes no write claim" "printf '%s' \"\$out\" | grep -q '\\[dry-run\\]'"
+out=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+# Herestrings, not `printf | grep`: a pipeline under `pipefail` reports the
+# left-hand status too, so an assertion could fail for reasons unrelated to the
+# match. A herestring has no pipeline and no such ambiguity.
+check "capture-write --dry-run resolves canonical slug" "grep -q 'canonical slug:' <<<\"\$out\""
+check "capture-write --dry-run marks output dry-run" "grep -q '\\[dry-run\\]' <<<\"\$out\""
+check "capture-write --dry-run pins gbrain layer off" "grep -q 'gbrain dedup:  not-run' <<<\"\$out\""
+
+# Positive control: without the pin Layer B must actually run, or the pin above
+# proves nothing and we have quietly stopped testing the real path. Uses a STUB
+# gbrain on PATH rather than the real one — the control stays hermetic, instant,
+# and works on a machine with no gbrain installed.
+STUB=$(mktemp -d)
+printf '#!/bin/sh\nexit 0\n' > "$STUB/gbrain"; chmod +x "$STUB/gbrain"
+out_live=$(PATH="$STUB:$PATH" "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+check "gbrain layer runs when not pinned (control)" "grep -q 'gbrain dedup:  ran' <<<\"\$out_live\""
+# And the pin must beat an available gbrain, not merely an absent one.
+out_pin=$(PATH="$STUB:$PATH" JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+check "pin overrides an available gbrain" "grep -q 'gbrain dedup:  not-run' <<<\"\$out_pin\""
+rm -rf "$STUB"
+
+# The section is named "no writes" but only ever checked stdout. Assert the
+# actual claim: a --dry-run leaves the memory dir untouched.
+_MEMD="$HOME/.claude/projects/-home-jesper-PycharmProjects-jjstack/memory"
+before=$(ls -1 "$_MEMD" 2>/dev/null | wc -l)
+JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" >/dev/null 2>&1
+after=$(ls -1 "$_MEMD" 2>/dev/null | wc -l)
+check "capture-write --dry-run writes no memory file" "[ \"\$before\" = \"\$after\" ]"
 
 echo "== 5. global-learn dry-run (no writes) =="
 out=$("$BIN/jjstack-global-learn" --key smoke-probe --insight "x" --dry-run 2>&1)
-check "global-learn --dry-run targets __global__" "printf '%s' \"\$out\" | grep -q '__global__'"
-check "global-learn --dry-run targets pan-project/ page" "printf '%s' \"\$out\" | grep -q 'pan-project/'"
+check "global-learn --dry-run targets __global__" "grep -q '__global__' <<<\"\$out\""
+check "global-learn --dry-run targets pan-project/ page" "grep -q 'pan-project/' <<<\"\$out\""
 
 echo "== 5b. capture-review-refs (allowlist + exclusions) =="
 # /review snapshots gstack's review rubric into the repo so old findings stay

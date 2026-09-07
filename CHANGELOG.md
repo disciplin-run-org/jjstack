@@ -9,6 +9,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Capturing a lesson no longer has to reach the network to tell you what it
+  would do.** `jjstack-capture-write --dry-run` was querying the live gbrain
+  index before printing its plan — so a preview that changes nothing still
+  waited on a remote lookup, and its answer drifted as the index grew. Set
+  `JJSTACK_CAPTURE_NO_GBRAIN=1` to pin the semantic dedup layer off for a fast,
+  repeatable answer (useful offline or air-gapped); duplicate detection by
+  pattern key still runs, so dedup is reduced rather than silently skipped. The
+  dry-run output now states which dedup layers ran instead of leaving you to
+  guess. The test suite uses this, and went from intermittently failing to
+  stable — and from seconds of waiting to under three.
+
 ### Changed
 
 - **`/review` is now the deepest review in the stack — on purpose.** It used to

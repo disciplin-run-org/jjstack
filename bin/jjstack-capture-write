@@ -23,6 +23,13 @@
 #
 # Usage: jjstack-capture-write --cwd <project-cwd> [--lesson '<json>'] [--dry-run]
 # Exit: 0 ok (incl. PHI native-only); 2 usage; 3 bad lesson JSON.
+#
+# Env: JJSTACK_CAPTURE_NO_GBRAIN=1 skips the Layer-B semantic dedup query.
+#   Layer B asks a LIVE gbrain index whether a near-duplicate page already
+#   exists. That answer changes as the index grows, and the query is remote
+#   enough to need an 8s timeout — so any caller that needs a DETERMINISTIC,
+#   fast result (the smoke suite; offline or air-gapped use) sets this. Layer A
+#   (pattern_key) still runs, so dedup is reduced, never silently skipped.
 set -uo pipefail
 
 CWD="" LESSON="" DRY_RUN=0
@@ -80,11 +87,15 @@ gstack_type() { case "$1" in feedback|user) echo preference ;; project) echo ope
 
 # ── Dedup-on-write: Layer A (pattern_key), then Layer B (gbrain) ──────
 MERGE_FILE=""
+# Observable so callers (and the smoke suite) can verify which dedup layers ran
+# rather than assuming — a silently-skipped layer looks identical to a clean one.
+LAYER_B="not-run"
 if [ -d "$MEM_DIR" ]; then
     MERGE_FILE=$(grep -lE "^[[:space:]]*pattern_key:[[:space:]]*[\"']?${L_PKEY}[\"']?[[:space:]]*$" "$MEM_DIR"/*.md 2>/dev/null | head -1)
 fi
-if [ -z "$MERGE_FILE" ] && [ "$PHI" = "0" ] && [ -n "$GBRAIN" ]; then
+if [ -z "$MERGE_FILE" ] && [ "$PHI" = "0" ] && [ -n "$GBRAIN" ] && [ "${JJSTACK_CAPTURE_NO_GBRAIN:-0}" != "1" ]; then
     # Layer B — semantic near-duplicate within THIS project's canonical pages.
+    LAYER_B="ran"
     local_top=$(timeout 8 "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null \
         | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
     if [ -n "$local_top" ]; then
@@ -105,6 +116,7 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] PHI opted-out: $([ "$PHI" = 1 ] && echo yes || echo no)"
     echo "[dry-run] action:        $([ -n "$MERGE_FILE" ] && echo "MERGE into $MERGE_FILE" || echo "CREATE new memory")"
     echo "[dry-run] scope:         $L_SCOPE   is_rule: $L_RULE"
+    echo "[dry-run] gbrain dedup:  $LAYER_B"
     [ "$PHI" = "0" ] && echo "[dry-run] fan-out:       gstack($CANON_SLUG) + gbrain($([ "$L_SCOPE" = pan-project ] && echo pan-project/ || echo "$CANON_SLUG/")$(kebab "$L_NAME"))"
     exit 0
 fi
