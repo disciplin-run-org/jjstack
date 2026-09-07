@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# jjstack-review-triage — turn a raw /review findings list into an audited
+# triage ledger: deduped, exposure-annotated, and fully accounted for.
+#
+# Why this exists (the Aikido lesson, see references/vendor-lessons-aikido.md):
+# a security scanner cannot delete a finding it does not like — it records a
+# DISPOSITION and a REASON, and the finding stays inspectable forever. An LLM
+# reviewer that simply stops mentioning a finding is indistinguishable from one
+# that never found it, and nobody can audit the difference six months later.
+#
+# So this script enforces three invariants no prose prompt can guarantee:
+#   1. NO SILENT DROP — any disposition other than `report` needs a reason code
+#      from a closed vocabulary.
+#   2. REACHABILITY DEPRIORITISES, IT NEVER DELETES — reason `not-reachable` is
+#      legal only with `defer` or `appendix`, never `suppress`. Unreachable
+#      today is reachable after the next refactor.
+#   3. TOP SEVERITY IS NEVER SUPPRESSED — a P0/P1 may be deferred with a stated
+#      reason, but it may not be made to disappear.
+#
+# Everything mechanical happens here, not in the model: fingerprinting and
+# dedup, corroboration counting across lenses, path-exposure classification,
+# vocabulary validation, the tally, and the rendered ledger. The model supplies
+# only judgment — severity, confidence, disposition, reason, claim.
+#
+# Input: a TSV ledger, 7 tab-separated columns; `#` comments and blanks ignored:
+#   severity  confidence  path:line  lens  disposition  reason  claim
+#     severity     P0 | P1 | P2 | P3
+#     confidence   integer 0-100
+#     path:line    file path, colon, line number (or range N-M)
+#     lens         the pass that flagged it (free text, no tabs)
+#     disposition  report | appendix | defer | suppress
+#     reason       `-` for `report`; otherwise one of:
+#                  low-confidence pre-existing tool-covered style-only
+#                  no-repro duplicate not-reachable accepted-risk
+#     claim        the finding text (any further columns are rejoined)
+#
+# Usage:
+#   jjstack-review-triage <ledger.tsv> [--out FILE]
+#
+# Exit: 0 ledger valid and rendered, 2 usage error, 3 input missing,
+#       4 validation failed (nothing rendered — fix the ledger and rerun).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+SRC=""
+OUT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT="${2:-}"; shift 2 ;;
+    -h|--help)
+      sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  if [ -z "$SRC" ]; then SRC="$1"; else echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; fi
+        shift ;;
+  esac
+done
+
+if [ -z "$SRC" ]; then
+  echo -e "${CYA}error${RST} usage: $(basename "$0") <ledger.tsv> [--out FILE]" >&2
+  exit 2
+fi
+
+if [ ! -f "$SRC" ]; then
+  echo -e "${YEL}warn${RST}  ledger not found: $SRC" >&2
+  exit 3
+fi
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+RENDER="$WORK/ledger.md"
+ERRS="$WORK/errors.txt"
+: > "$ERRS"
+
+awk -F'\t' -v today="$(date +%F)" -v src="$SRC" -v render="$RENDER" -v errfile="$ERRS" '
+function fail(n, msg) { errs++; print "  line " n ": " msg >> errfile }
+
+# Deterministic exposure class — the code-review analogue of a security scanner
+# asking "is this actually shipped to production?". It annotates blast radius;
+# it never decides whether a finding is shown.
+function pathclass(p,   lp) {
+  lp = tolower(p)
+  if (lp ~ /(^|\/)(vendor|node_modules|third_party|bower_components)\//) return "vendor"
+  if (lp ~ /(^|\/)(\.venv|venv|site-packages)\//)                        return "vendor"
+  if (lp ~ /(^|\/)(fixture|fixtures|testdata|__mocks__|mocks)\//)        return "fixture"
+  if (lp ~ /(^|\/)(test|tests|spec|specs|__tests__)\//)                  return "test"
+  if (lp ~ /_test\.|\.test\.|\.spec\.|(^|\/)test_[^\/]*$/)               return "test"
+  if (lp ~ /(^|\/)(dist|build|out|target|generated)\//)                  return "generated"
+  if (lp ~ /\.min\.(js|css)$|_pb2\.py$|\.pb\.go$|\.generated\./)         return "generated"
+  if (lp ~ /(^|\/)(doc|docs)\/|\.(md|rst|adoc|txt)$/)                    return "docs"
+  return "prod"
+}
+
+# Fingerprint: location plus the normalised head of the claim. Two lenses
+# describing the same defect at the same line collapse into one finding that
+# carries a corroboration count — itself a ranking signal.
+function fingerprint(loc, claim,   c, w, i, k, n) {
+  c = tolower(claim); gsub(/[^a-z0-9 ]/, " ", c); gsub(/  +/, " ", c); sub(/^ /, "", c)
+  n = split(c, w, " "); k = ""
+  for (i = 1; i <= n && i <= 8; i++) k = k w[i] " "
+  return loc "|" k
+}
+
+function lenslist(fp,   s) { s = LENSES[fp]; gsub(/\|/, ", ", s); return s }
+
+function section(title, want,   i, fp, n) {
+  n = 0
+  for (i = 1; i <= uniq; i++) if (DISP_[order[i]] == want) n++
+  print ""                          >> render
+  print "## " title " (" n ")"      >> render
+  print ""                          >> render
+  if (n == 0) { print "_none_"      >> render; return }
+  if (want == "report" || want == "appendix") {
+    print "| sev | conf | location | exposure | lenses | corrob | finding |" >> render
+    print "|---|---|---|---|---|---|---|"                                    >> render
+  } else {
+    print "| sev | conf | location | exposure | reason | lenses | finding |" >> render
+    print "|---|---|---|---|---|---|---|"                                    >> render
+  }
+  for (i = 1; i <= uniq; i++) {
+    fp = order[i]
+    if (DISP_[fp] != want) continue
+    if (want == "report" || want == "appendix")
+      printf("| %s | %s | `%s` | %s | %s | %d | %s |\n", SEV_[fp], CONF[fp], LOC[fp], CLS[fp], lenslist(fp), CORROB[fp], CLAIM[fp]) >> render
+    else
+      printf("| %s | %s | `%s` | %s | `%s` | %s | %s |\n", SEV_[fp], CONF[fp], LOC[fp], CLS[fp], RSN[fp], lenslist(fp), CLAIM[fp]) >> render
+  }
+}
+
+BEGIN {
+  split("P0 P1 P2 P3", a, " ");                    for (i in a) SEV[a[i]] = 1
+  split("report appendix defer suppress", a, " "); for (i in a) DISP[a[i]] = 1
+  split("low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk", a, " ")
+  for (i in a) REASON[a[i]] = 1
+  errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0
+}
+
+/^[[:space:]]*$/ { next }
+/^[[:space:]]*#/ { next }
+
+{
+  rows++
+  if (NF < 7) { fail(NR, "expected 7 tab-separated columns, got " NF); next }
+
+  sev = $1; conf = $2; loc = $3; lens = $4; disp = $5; rsn = $6
+  claim = $7
+  for (i = 8; i <= NF; i++) claim = claim " " $i
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", claim)
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", lens)
+
+  bad = 0
+  if (!(sev in SEV))                        { fail(NR, "unknown severity \"" sev "\" (want P0|P1|P2|P3)"); bad = 1 }
+  if (conf !~ /^[0-9]+$/ || conf + 0 > 100) { fail(NR, "confidence \"" conf "\" is not an integer 0-100");  bad = 1 }
+  if (loc  !~ /^[^ \t]+:[0-9]+(-[0-9]+)?$/) { fail(NR, "location \"" loc "\" is not path:line");            bad = 1 }
+  if (lens == "")                           { fail(NR, "lens is empty — every finding names the pass that raised it"); bad = 1 }
+  if (!(disp in DISP))                      { fail(NR, "unknown disposition \"" disp "\"");                 bad = 1 }
+  if (rsn != "-" && !(rsn in REASON))       { fail(NR, "unknown reason code \"" rsn "\"");                  bad = 1 }
+  if (claim == "")                          { fail(NR, "claim is empty");                                   bad = 1 }
+
+  # INVARIANT 1 — no silent drop.
+  if (disp != "report" && rsn == "-") {
+    fail(NR, "disposition \"" disp "\" carries no reason code — a finding may be demoted, never dropped silently"); bad = 1
+  }
+  if (disp == "report" && rsn != "-") {
+    fail(NR, "disposition \"report\" must carry reason \"-\", got \"" rsn "\""); bad = 1
+  }
+  # INVARIANT 2 — reachability deprioritises, it never deletes.
+  if (rsn == "not-reachable" && disp == "suppress") {
+    fail(NR, "reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"appendix\""); bad = 1
+  }
+  # INVARIANT 3 — top severity is never made to disappear.
+  if ((sev == "P0" || sev == "P1") && disp == "suppress") {
+    fail(NR, sev " may not be suppressed — defer it with a stated reason instead"); bad = 1
+  }
+
+  if (bad) next
+
+  cls = pathclass(loc)
+  fp  = fingerprint(loc, claim)
+
+  if (fp in SEEN) {
+    dupes++
+    if (!((fp SUBSEP lens) in LSEEN)) {
+      LSEEN[fp SUBSEP lens] = 1
+      LENSES[fp] = LENSES[fp] "|" lens
+      CORROB[fp]++
+    }
+    next
+  }
+  SEEN[fp] = 1; order[++uniq] = fp
+  SEV_[fp] = sev; CONF[fp] = conf; LOC[fp] = loc; DISP_[fp] = disp
+  RSN[fp] = rsn; CLAIM[fp] = claim; CLS[fp] = cls
+  LENSES[fp] = lens; LSEEN[fp SUBSEP lens] = 1; CORROB[fp] = 1
+  TALLY[disp]++
+  if (disp == "report" && (cls == "vendor" || cls == "generated"))
+    advisories[++nadv] = loc " (" cls ") is reported but is not authored here — check it is not noise"
+}
+
+END {
+  if (errs > 0) exit 4
+
+  print "# Review triage ledger"                                              >> render
+  print ""                                                                    >> render
+  print "- generated: " today                                                 >> render
+  print "- source ledger: `" src "`"                                          >> render
+  print "- findings in: " rows "  |  unique after dedup: " uniq "  |  duplicates collapsed: " dupes >> render
+  print ""                                                                    >> render
+  print "Every finding this review raised is on this page. A finding may be"   >> render
+  print "demoted, deferred, or suppressed — but only with a recorded reason"   >> render
+  print "code, never by going quiet. `exposure` is a deterministic path"       >> render
+  print "classification (a blast-radius annotation, not a filter); `corrob` is">> render
+  print "how many independent passes flagged the same defect."                 >> render
+  print ""                                                                    >> render
+  print "## Disposition tally"                                                >> render
+  print ""                                                                    >> render
+  print "| disposition | count |"                                             >> render
+  print "|---|---|"                                                           >> render
+  split("report appendix defer suppress", d, " ")
+  for (i = 1; i <= 4; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)      >> render
+
+  section("Reported — main report", "report")
+  section("Appendix — verify, medium confidence", "appendix")
+  section("Deferred — real, out of scope for this diff", "defer")
+  section("Suppressed — with a recorded reason (nothing is dropped silently)", "suppress")
+
+  print "TALLY report=" TALLY["report"] + 0 " appendix=" TALLY["appendix"] + 0 \
+        " defer=" TALLY["defer"] + 0 " suppress=" TALLY["suppress"] + 0 \
+        " unique=" uniq " collapsed=" dupes
+  for (i = 1; i <= nadv; i++) print "ADVISORY " advisories[i]
+  exit 0
+}
+' "$SRC" > "$WORK/tally.txt"
+rc=$?
+
+if [ "$rc" -eq 4 ]; then
+  echo -e "${CYA}FAIL${RST} triage ledger is invalid — nothing rendered:" >&2
+  cat "$ERRS" >&2
+  exit 4
+fi
+if [ "$rc" -ne 0 ]; then
+  echo -e "${CYA}FAIL${RST} triage render failed (awk exit $rc)" >&2
+  exit 4
+fi
+
+if [ -n "$OUT" ]; then
+  mkdir -p "$(dirname "$OUT")" 2>/dev/null
+  cp "$RENDER" "$OUT" || exit 3
+  echo -e "${GRN}ledger${RST} → $OUT"
+else
+  cat "$RENDER"
+fi
+
+while IFS= read -r line; do
+  case "$line" in
+    TALLY*)    echo -e "${GRN}${line}${RST}" ;;
+    ADVISORY*) echo -e "${YEL}${line}${RST}" >&2 ;;
+  esac
+done < "$WORK/tally.txt"
+
+exit 0

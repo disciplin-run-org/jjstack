@@ -731,6 +731,83 @@ and still record verdicts. For each triaged finding:
 
 Key on the CLASS of finding, never the instance. Record nothing for findings the
 user never ruled on — a guess pollutes the ledger.
+<!-- BEGIN aikido-lessons — additive section, see references/vendor-lessons-aikido.md -->
+
+## Phase 5.11: Triage ledger — account for every finding, drop none silently
+
+```bash
+cat ~/.claude/skills/jjstack/references/vendor-lessons-aikido.md
+```
+
+Phases 2 and 4 cast wide; Phase 5 decides what the human reads. The problem is
+that the *decisions* evaporate: a finding that quietly leaves the report leaves
+no trace, so nobody can tell a reviewer that looked and dismissed from one that
+never looked at all. Security scanners solved this long ago — a finding is never
+deleted, it is given a **disposition** and a **reason code** and stays
+inspectable (the mechanic is drawn from Aikido's triage model; the reference
+above records what was adopted and what was rejected as marketing).
+
+Adopt the accountable half. After Phase 5, write the **complete** merged set —
+every finding, whatever became of it — to a TSV ledger at
+`{OUTPUT_DIR}/review-findings.tsv`, one finding per line, 7 tab-separated
+columns:
+
+```
+severity  confidence  path:line  lens  disposition  reason  claim
+```
+
+Map Phase 5's outcome onto the disposition, and give every non-reported finding
+a reason code from the closed vocabulary. Phase 5 is **enrich-only**, so these
+outcomes are dispositions a finding *arrives with* — none of them is a licence
+to delete, and no arithmetic threshold appears here:
+
+| Phase 5 outcome | disposition | reason |
+|---|---|---|
+| confirmed, in the main report | `report` | `-` |
+| tagged `llm-unconfirmed` (§5b) | `unconfirmed` | `unverified` |
+| demoted by calibration (§5.10) | `demoted` | `prior-decision` |
+| retired by the committed baseline (§5d) | `suppress` | the baseline's own stated reason |
+| real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` |
+| never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` |
+
+Then render the ledger. This is deterministic — dedup, corroboration counting,
+path-exposure classification, vocabulary validation and the tally are the
+script's job, not the model's:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-triage {OUTPUT_DIR}/review-findings.tsv --out {OUTPUT_DIR}/review-triage-ledger.md
+```
+
+The script enforces three invariants that prose cannot:
+
+1. **No silent drop** — any disposition other than `report` must carry a reason
+   code. Together with the enrich-only rule in Phase 5, this closes the loop:
+   Phase 5 cannot delete a finding, and this ledger cannot let one leave the
+   report without a stated reason on the record.
+2. **Reachability deprioritises, it never deletes** — `not-reachable` is legal
+   only with `defer` or `demoted`. Code that is unreachable today becomes
+   reachable at the next refactor, and a reviewer that deleted the finding has
+   no way to bring it back.
+3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
+   reason; it may not be made to disappear.
+
+It exits **4** and renders nothing if any of those is violated: fix the ledger
+and rerun rather than working around it. It exits 3 if the ledger file is
+missing. It also emits yellow `ADVISORY` lines for findings reported against
+vendored or generated paths — code nobody here authored, and usually noise.
+
+Two things it gives you for free that the model should not be doing by hand:
+**dedup with a corroboration count** (the same defect found by three lenses is
+one finding with `corrob 3`, and that agreement is itself a ranking signal —
+rank the main report by severity, then corroboration, then confidence), and
+**exposure class** (`prod` / `test` / `fixture` / `vendor` / `generated` /
+`docs`), a deterministic blast-radius annotation. Exposure *annotates*; it never
+decides whether a finding is shown.
+
+Commit `review-triage-ledger.md` alongside the findings report — it is the
+record of what this review chose not to tell you, and why.
+
+<!-- END aikido-lessons -->
 
 ---
 

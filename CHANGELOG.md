@@ -282,6 +282,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   Any of the five that doesn't apply to your project — no test runner, no
   auto-fixes, no history yet — is reported as SKIPPED with the reason, never
   quietly passed off as clean.
+- **`/review` now shows you what it decided NOT to tell you.** Every finding the
+  review raises — including the ones it judges too weak, too nitpicky, or
+  already covered by your linter — is written to a triage ledger next to the
+  report, each with a recorded reason for its fate. Previously a low-confidence
+  finding just vanished, and there was no way to tell a reviewer that looked and
+  dismissed from one that never looked. Three rules are now machine-enforced and
+  the review will refuse to render a ledger that breaks them: nothing is dropped
+  without a stated reason; "this code isn't reachable" can lower a finding's
+  priority but can never delete it (unreachable today is reachable after the
+  next refactor); and a P0 or P1 can be deferred but never made to disappear.
+  The ledger also collapses duplicates — the same defect found by three
+  different passes becomes one finding that shows it was flagged three times,
+  which is now a ranking signal — and labels each finding's blast radius
+  (production code vs test, fixture, vendored or generated), so a warning about
+  a test fixture is visibly a warning about a test fixture.
+- **`references/vendor-lessons-aikido.md`** — what a commercial security-scanning
+  vendor's AI triage actually does, what we took from it, and (with sources) the
+  claims we rejected as marketing.
+
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,
