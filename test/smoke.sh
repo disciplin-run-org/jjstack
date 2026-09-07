@@ -345,6 +345,33 @@ check "decoy symbols really are in the diff" \
       "git -C '$FX' diff HEAD~1 | grep -q 'class DocOnlySymbol' && git -C '$FX' diff HEAD~1 | grep -q 'type CommentOnlySymbol'"
 check "decoy symbols really are referenced outside the diff" \
       "grep -q 'DocOnlySymbol CommentOnlySymbol' '$FX/consumer.sh'"
+# --- the enclosing-definition case (gstack's "enum completeness") ---
+# The highest-value out-of-diff defect, and the one all three competing
+# implementations missed identically: a change INSIDE a class/enum body while
+# the `class X:` line itself is untouched. The enclosing type's contract just
+# changed for every outside user, but no definition LINE was added, so
+# pattern-on-changed-lines extraction sees nothing. gstack names this the one
+# category that "requires reading code OUTSIDE the diff".
+ENC="$(mktemp -d)"
+git -C "$ENC" init -q; git -C "$ENC" config user.email f@x.dev; git -C "$ENC" config user.name F
+printf 'class OrderStatus:\n    OPEN = "open"\n' > "$ENC/core.py"
+printf 'from core import OrderStatus\ndef report(o):\n    return o == OrderStatus.OPEN\n' > "$ENC/reporting.py"
+git -C "$ENC" add -A; git -C "$ENC" commit -qm base
+printf 'class OrderStatus:\n    OPEN = "open"\n    CLOSED = "closed"\n' > "$ENC/core.py"
+git -C "$ENC" add -A; git -C "$ENC" commit -qm "add enum member"
+"$BIN/jjstack-review-blast-radius" --out "$ENC/out" --repo "$ENC" --base HEAD~1 >/dev/null 2>&1
+check "blast-radius maps a change inside a class body to the class" \
+      "grep -q 'OrderStatus' '$ENC/out/blast-radius.md'"
+check "blast-radius names the out-of-diff user of that class" \
+      "grep -q 'reporting.py' '$ENC/out/blast-radius.md'"
+# Positive control — the enclosing definition line must genuinely be UNCHANGED,
+# or the test passes for the wrong reason (an ordinary added-definition case).
+check "the class definition line is untouched in the diff" \
+      "! git -C '$ENC' diff HEAD~1 | grep -qE '^[+-]class OrderStatus'"
+check "the changed line really is inside the class body" \
+      "git -C '$ENC' diff HEAD~1 | grep -qE '^\\+    CLOSED'"
+rm -rf "$ENC"
+
 "$BIN/jjstack-review-blast-radius" --out "$PF/br2" --repo "$FX" --base HEAD --dry-run >/dev/null 2>&1
 check "blast-radius --dry-run writes nothing" "[ ! -d '$PF/br2' ]"
 "$BIN/jjstack-review-blast-radius" --out "$PF/br3" --repo "$PF" >/dev/null 2>&1

@@ -1,211 +1,362 @@
 #!/usr/bin/env bash
-# jjstack-review-blast-radius — map every changed public symbol to its callers
-# OUTSIDE the diff.
+# jjstack-review-blast-radius — deterministic cross-file impact map for a diff.
 #
-# gstack's review checklist names enum completeness as "the one category where
-# within-diff review is insufficient" — you cannot see a missing switch arm by
-# reading the enum. That is not special to enums. It is true of every renamed
-# function, every changed signature, every retyped constant: the defect lives
-# in a file the diff never touches, so a diff-only reviewer is structurally
-# blind to it. No amount of extra AI passes fixes that; the information is not
-# in the input.
+# The one mechanic in Greptile's pitch that survives scrutiny is repo-wide
+# context: a reviewer that only sees the unified diff cannot see the callers of
+# the function the diff just changed, so it structurally cannot catch the
+# "signature changed, three call sites elsewhere now wrong" class of defect.
+# Greptile solves that with a hosted index. We do not need one — for the
+# specific question "who else references the definitions this diff touched?",
+# grep over the working tree is exact, free, and auditable.
 #
-# So: extract the public symbols the diff adds, removes or changes, then find
-# their references elsewhere in the repo. The resulting map is handed to every
-# downstream pass, which can then ask the only question that matters —
-# "does each of these N call sites still hold?"
-#
-# Deterministic: git diff + git grep. No model inference. Symbol extraction is
-# regex-based and best-effort across languages; it is tuned to over-collect
-# (a spurious symbol just yields an empty reference list) rather than to miss.
+# So this script extracts every identifier whose DEFINITION the diff adds,
+# removes or rewrites, then lists every reference to it in files the diff did
+# NOT touch. Those sites are the un-reviewed ripple surface. Pure mechanics —
+# parsing, matching and counting — which is why it is a script and not a
+# paragraph of prompt: /review's model spends its judgment on "is this call
+# site now broken?", never on running grep.
 #
 # Usage:
-#   jjstack-review-blast-radius --out DIR [--base REF] [--repo DIR]
-#                               [--max-symbols N] [--max-refs N] [--dry-run]
+#   jjstack-review-blast-radius [--repo DIR] [--base REF] [--diff-file FILE|-]
+#                               [--max-refs N] [--generic-threshold N]
 #
-# Exit: 0 map written (even if empty), 2 usage error, 3 no repo / no diff.
+#   --repo               repo root (default: git rev-parse --show-toplevel)
+#   --base               diff base ref (default: first of origin/main,
+#                        origin/master, main, master that exists)
+#   --diff-file          read a unified diff from FILE instead of git ("-" = stdin)
+#   --max-refs           reference sites listed per symbol (default 10)
+#   --generic-threshold  above this many hits a symbol is called too generic to
+#                        map and its sites are not listed (default 40)
+#   --also-repo          additional repo root to search for references
+#                        (repeatable; sites are prefixed "(reponame) ").
+#                        The cheap half of Greptile's "Repo Clusters": a shared
+#                        module's callers usually live in a sibling repo, and a
+#                        review that never looks there cannot see them break.
+#
+# Writes a markdown report to stdout; status and errors go to stderr.
+# Exit: 0 report produced (an empty diff is still a 0), 2 usage error,
+#       3 no usable repo or diff source.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
-YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+YEL="\033[33m"; CYA="\033[96m"; RST="\033[0m"
 
-OUT=""; REPO=""; BASE=""; MAXSYM=200; MAXREF=25; DRY=0
+REPO=""; BASE=""; DIFF_FILE=""; MAX_REFS=10; GENERIC=40
+OUT=""; DRY_RUN=0; MAX_SYMBOLS=200
+ALSO=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)          OUT="${2:-}"; shift 2 ;;
-    --repo)         REPO="${2:-}"; shift 2 ;;
-    --base)         BASE="${2:-}"; shift 2 ;;
-    --max-symbols)  MAXSYM="${2:-}"; shift 2 ;;
-    --max-refs)     MAXREF="${2:-}"; shift 2 ;;
-    --dry-run)      DRY=1; shift ;;
-    -h|--help)      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+    --repo)               REPO="${2:-}"; shift 2 ;;
+    --base)               BASE="${2:-}"; shift 2 ;;
+    --diff-file)          DIFF_FILE="${2:-}"; shift 2 ;;
+    --max-refs)           MAX_REFS="${2:-}"; shift 2 ;;
+    --generic-threshold)  GENERIC="${2:-}"; shift 2 ;;
+    --out)                OUT="${2:-}"; shift 2 ;;
+    --dry-run)            DRY_RUN=1; shift ;;
+    --max-symbols)        MAX_SYMBOLS="${2:-}"; shift 2 ;;
+    --also-repo)
+      if [ -d "${2:-}" ]; then ALSO+=("${2%/}")
+      else echo -e "${YEL}warn${RST}  --also-repo not a directory, skipped: ${2:-}" >&2; fi
+      shift 2 ;;
+    -h|--help)
+      sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
 
-[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF]" >&2; exit 2; }
+case "$MAX_REFS" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --max-refs must be a number" >&2; exit 2 ;; esac
+case "$GENERIC"  in ''|*[!0-9]*) echo -e "${CYA}error${RST} --generic-threshold must be a number" >&2; exit 2 ;; esac
+case "$MAX_SYMBOLS" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --max-symbols must be a number" >&2; exit 2 ;; esac
 
-if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
-if [ -z "$REPO" ] || ! git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1; then
-  echo -e "${YEL}warn${RST}  not a git repo — no blast radius to map" >&2
+[ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
+  echo -e "${YEL}warn${RST}  no repo root: pass --repo or run inside a git repo" >&2
   exit 3
 fi
+REPO="${REPO%/}"
 
-# Base ref: explicit, else merge-base with the default branch, else HEAD~1.
-if [ -z "$BASE" ]; then
-  for cand in main master; do
-    if git -C "$REPO" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
-      BASE="$(git -C "$REPO" merge-base HEAD "$cand" 2>/dev/null)"
-      [ -n "$BASE" ] && break
-    fi
-  done
+# --out adapter. Phase 0's jjstack-review-preflight calls this with `--out DIR`
+# and then reads DIR/blast-radius.md; stdout is the default so the tool stays
+# usable by hand. --dry-run must not create the directory: the pre-flight pack
+# advertises a dry run as writing nothing, and a stray empty dir is a write.
+if [ -n "$OUT" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    echo -e "${YEL}dry-run${RST} would write $OUT/blast-radius.md" >&2
+    exit 0
+  fi
+  mkdir -p "$OUT" || { echo -e "${CYA}error${RST} cannot create $OUT" >&2; exit 3; }
+  exec > "$OUT/blast-radius.md"
 fi
-[ -z "$BASE" ] && BASE="$(git -C "$REPO" rev-parse --verify --quiet HEAD~1 2>/dev/null)"
-[ -z "$BASE" ] && BASE="$(git -C "$REPO" hash-object -t tree /dev/null)"   # empty tree: first commit
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+DIFF="$TMP/diff"
+SOURCE=""
 
-# Files the diff touches (committed + working tree), so we can exclude them
-# from the reference search — a reference inside the diff is not blast radius.
-git -C "$REPO" diff --name-only "$BASE" -- > "$TMP/changed" 2>/dev/null
-git -C "$REPO" diff --name-only --cached >> "$TMP/changed" 2>/dev/null
-sort -u "$TMP/changed" -o "$TMP/changed"
-
-if [ ! -s "$TMP/changed" ]; then
-  echo -e "${YEL}warn${RST}  no changes against $BASE — nothing to map" >&2
-  if [ "$DRY" -eq 0 ]; then
-    mkdir -p "$OUT" || exit 3
-    {
-      echo "# Blast-radius map"
-      echo
-      echo "No changes against \`$BASE\`. Structurally inapplicable — skipped, not failed."
-    } > "$OUT/blast-radius.md"
+if [ -n "$DIFF_FILE" ]; then
+  if [ "$DIFF_FILE" = "-" ]; then
+    cat > "$DIFF"; SOURCE="stdin"
+  elif [ -f "$DIFF_FILE" ]; then
+    cp "$DIFF_FILE" "$DIFF"; SOURCE="$DIFF_FILE"
+  else
+    echo -e "${YEL}warn${RST}  diff file not found: $DIFF_FILE" >&2
+    exit 3
   fi
-  exit 3
+else
+  if [ -z "$BASE" ]; then
+    for c in origin/main origin/master main master; do
+      if git -C "$REPO" rev-parse --verify --quiet "$c" >/dev/null 2>&1; then BASE="$c"; break; fi
+    done
+  fi
+  if [ -z "$BASE" ]; then
+    echo -e "${YEL}warn${RST}  no base ref found; pass --base or --diff-file" >&2
+    exit 3
+  fi
+  git -C "$REPO" diff "$BASE...HEAD" > "$DIFF" 2>/dev/null \
+    || git -C "$REPO" diff "$BASE" > "$DIFF" 2>/dev/null
+  SOURCE="git diff $BASE"
 fi
 
-# --- symbol extraction -----------------------------------------------------
-# Over-collect on purpose. Every pattern below names a thing another file can
-# depend on by name: a spurious hit costs one empty grep, a miss costs a bug.
-git -C "$REPO" diff -U0 "$BASE" -- > "$TMP/diff" 2>/dev/null
-git -C "$REPO" diff -U0 --cached >> "$TMP/diff" 2>/dev/null
+echo "# Cross-file blast radius"
+echo
+echo "Every identifier whose *definition* this diff adds, removes or rewrites, and"
+echo "every reference to it in files the diff did NOT touch. Those sites are the"
+echo "ripple surface a diff-only review structurally cannot see."
+echo
 
-# Mine changed lines from CODE files only. Prose files define no symbols, and
-# mining them turns ordinary English into "symbols" that then match hundreds of
-# lines of documentation — noise that buries the real call sites.
-awk '
-  /^\+\+\+ / { p = $2; sub(/^b\//, "", p)
-               skip = (p ~ /\.(md|markdown|rst|txt|adoc|json|lock|csv|tsv|svg|png|jpg|pdf)$/) || p == "/dev/null"
-               next }
-  /^--- /    { next }
-  /^[+-]/    { if (skip) next
-               l = substr($0, 2)
-               # Comment lines declare nothing. Mining them turns prose words
-               # ("a decoy record after the marker") into fake symbols.
-               t = l; sub(/^[[:space:]]+/, "", t)
-               if (t ~ /^(#|\/\/|\/\*|\*|--|<!--|;)/) next
-               print l }
-' "$TMP/diff" > "$TMP/lines"
-
-{
-  # python / js / ts / php / shell function definitions
-  grep -oE '\bdef[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'          "$TMP/lines" | awk '{print $2}'
-  grep -oE '\bfunction[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*'   "$TMP/lines" | awk '{print $2}'
-  grep -oE '\bfunc[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'         "$TMP/lines" | awk '{print $2}'
-  grep -oE '\bfn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'           "$TMP/lines" | awk '{print $2}'
-  grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{' "$TMP/lines" \
-    | sed 's/[[:space:]]//g; s/().*//'
-  # type-ish declarations
-  grep -oE '\b(class|type|struct|enum|interface|trait|record)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$TMP/lines" | awk '{print $2}'
-  # exported names
-  grep -oE '\bexport[[:space:]]+(default[[:space:]]+)?(const|let|var|function|class|type|interface|enum)[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*' "$TMP/lines" | awk '{print $NF}'
-  # SCREAMING_CASE constants and enum members (assignment or bare member line)
-  grep -oE '^[[:space:]]*[A-Z][A-Z0-9_]{2,}[[:space:]]*[:=]' "$TMP/lines" | sed 's/[[:space:]]//g; s/[:=]$//'
-  grep -oE '^[[:space:]]*[A-Z][A-Z0-9_]{2,},[[:space:]]*$'   "$TMP/lines" | sed 's/[[:space:]]//g; s/,$//'
-  # module-level assignments that read like public constants
-  grep -oE '\bconst[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*'     "$TMP/lines" | awk '{print $2}'
-} 2>/dev/null | sed 's/^[[:space:]]*//' | grep -E '^[A-Za-z_$][A-Za-z0-9_$]*$' \
-  | grep -vE '^(if|for|in|is|of|to|as|at|by|on|or|and|not|new|the|def|fn|func|let|var|self|this|true|false|null|none|None|True|False|main|test|tests|init|__init__|str|int|dict|list|set|bool)$' \
-  | awk 'length($0) >= 3' | sort -u > "$TMP/symbols"
-
-nsym=$(wc -l < "$TMP/symbols")
-head -n "$MAXSYM" "$TMP/symbols" > "$TMP/symbols.capped"
-
-if [ "$DRY" -eq 1 ]; then
-  echo "[dry-run] base:     $BASE"
-  echo "[dry-run] changed:  $(wc -l < "$TMP/changed") file(s)"
-  echo "[dry-run] symbols:  $nsym (capped at $MAXSYM)"
-  echo "[dry-run] would write: $OUT/blast-radius.md"
+if [ ! -s "$DIFF" ]; then
+  echo "Empty diff — nothing to map."
   exit 0
 fi
 
-mkdir -p "$OUT" || exit 3
+# Files this diff touches: they are the reviewed surface, so references inside
+# them are not "elsewhere" and must not pad the map.
+grep -E '^\+\+\+ ' "$DIFF" \
+  | sed -E 's/^\+\+\+ [ab]\///; s/^\+\+\+ //' \
+  | grep -v '^/dev/null$' | sort -u > "$TMP/touched"
 
-# --- reference search ------------------------------------------------------
-# git grep only searches tracked files and is fast enough to run per symbol.
-# Exclude the changed files: a reference inside the diff is not blast radius.
-exposed=0; isolated=0
-: > "$TMP/body"
+# Definition-site extraction. Added AND removed lines both count: a deleted
+# definition is exactly the case where out-of-diff callers break hardest.
+awk '
+function emit(n) {
+  if (length(n) < 3) return
+  if (n in kwnoise) return
+  if (n in seen) return
+  seen[n] = 1
+  print n
+}
+# Definition keywords are LANGUAGE-scoped, not global. A global keyword set
+# looks harmless until "--type fixed" in a shell script yields the symbol
+# `fixed`, or English prose yields `whose`. Each language only contributes the
+# keywords it actually uses; anything unrecognised gets a conservative set.
+function kwfor(p) {
+  if (p ~ /\.py$/)                       return "def|class"
+  if (p ~ /\.go$/)                       return "func|type|struct|interface"
+  if (p ~ /\.rs$/)                       return "fn|struct|trait|enum|impl|type"
+  if (p ~ /\.(js|jsx|mjs|cjs|ts|tsx)$/)  return "function|class|interface|type|enum"
+  if (p ~ /\.(java|kt|kts|scala|cs)$/)   return "class|interface|enum|record"
+  if (p ~ /\.rb$/)                       return "def|class|module"
+  if (p ~ /\.(c|h|cc|cpp|hpp|hh)$/)      return "struct|class|enum|typedef"
+  if (p ~ /\.(php|swift|dart)$/)         return "function|class|func|struct|enum"
+  if (isshell(p))                        return ""
+  return "def|class|func|fn|function"
+}
+# Extensionless files are executables (bin/foo), which here means shell.
+function isshell(p,  b) {
+  b = p; sub(/.*\//, "", b)
+  return (p ~ /\.(sh|bash|zsh|ksh)$/) || (b !~ /\./)
+}
+function isjs(p) { return (p ~ /\.(js|jsx|mjs|cjs|ts|tsx)$/) }
+BEGIN {
+  # Keyword-capture misfires and shell names that are never worth tracing.
+  split("def class func fn function interface struct type trait enum module " \
+        "impl record typedef " \
+        "if else for while return true false null nil none new self this " \
+        "IFS PATH HOME PWD OLDPWD SHELL USER LANG TERM EOF TMPDIR RANDOM LC_ALL", k, " ")
+  for (i in k) kwnoise[k[i]] = 1
+  skip = 1; kw = ""
+}
+# Prose is not code. Those keywords ("the type whose…", "a class of…") match
+# English constantly, so extracting definitions from markdown and data files
+# buries the real symbols. Track the file each hunk belongs to.
+/^\+\+\+ / {
+  p = substr($0, 5); sub(/^[ab]\//, "", p)
+  skip = (p ~ /\.(md|markdown|txt|rst|adoc|json|ya?ml|toml|ini|cfg|csv|tsv|lock|svg|html?|xml|po|pot)$/)
+  kw = kwfor(p); shellfile = isshell(p); jsfile = isjs(p)
+  next
+}
+/^--- / { next }
+
+# A new hunk resets the enclosing-definition tracker.
+/^@@/ {
+  encsym = ""; encind = -1
+  # git often names the enclosing function in the hunk header itself
+  # ("@@ -1,5 +1,9 @@ class OrderStatus:"). When it does, that is the most
+  # reliable enclosing signal available and costs nothing to read.
+  if (!skip && kw != "" && match($0, "@@.*@@[ \t]*")) {
+    tail = substr($0, RSTART + RLENGTH)
+    if (match(tail, "(^|[^A-Za-z0-9_])(" kw ")[ \t]+[A-Za-z_][A-Za-z0-9_]*")) {
+      m = substr(tail, RSTART, RLENGTH)
+      sub("^[^A-Za-z_]*", "", m); sub("^(" kw ")[ \t]+", "", m)
+      pending_hdr = m
+    }
+  }
+  next
+}
+
+# CONTEXT lines (unchanged, leading space). The enclosing-definition case:
+# a change INSIDE a class/enum/function body while the definition line itself
+# is untouched. Nothing on a +/- line names the thing whose contract changed,
+# so pattern-on-changed-lines extraction is blind to it — and that is exactly
+# the gstack "enum completeness" case, the one category it says needs
+# out-of-diff reading. Remember the definition seen as context, then emit it
+# only if a changed line in this hunk is indented INSIDE it.
+/^ / {
+  if (skip || kw == "") next
+  line = substr($0, 2)
+  if (match(line, "^[ \t]*") && RLENGTH >= 0) ind = RLENGTH
+  if (match(line, "(^|[^A-Za-z0-9_])(" kw ")[ \t]+[A-Za-z_][A-Za-z0-9_]*")) {
+    m = substr(line, RSTART, RLENGTH)
+    sub("^[^A-Za-z_]*", "", m); sub("^(" kw ")[ \t]+", "", m)
+    encsym = m; encind = ind
+  }
+  next
+}
+
+/^[+-]/ {
+  if (skip) next
+  line = substr($0, 2)
+
+  # Changed line sits inside a definition whose own line never changed.
+  if (match(line, "^[ \t]*")) chind = RLENGTH; else chind = 0
+  if (encsym != "" && chind > encind) { emit(encsym); encsym = "" }
+  if (pending_hdr != "") { emit(pending_hdr); pending_hdr = "" }
+
+  # keyword-introduced definitions, in the languages that use these keywords
+  if (kw != "") {
+    rest = line
+    while (match(rest, "(^|[^A-Za-z0-9_])(" kw ")[ \t]+[A-Za-z_][A-Za-z0-9_]*")) {
+      m = substr(rest, RSTART, RLENGTH)
+      sub("^[^A-Za-z_]*", "", m)
+      sub("^(" kw ")[ \t]+", "", m)
+      emit(m)
+      rest = substr(rest, RSTART + RLENGTH)
+    }
+  }
+
+  # shell function:  name() {
+  if (shellfile && match(line, "^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\\(\\)")) {
+    m = substr(line, RSTART, RLENGTH); gsub(/[ \t()]/, "", m); emit(m)
+  }
+
+  # js/ts binding:  const NAME =   /  let NAME =  /  var NAME =
+  if (jsfile && match(line, "(^|[^A-Za-z0-9_])(const|let|var)[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*=")) {
+    m = substr(line, RSTART, RLENGTH)
+    sub("^[^A-Za-z_]*", "", m); sub("^(const|let|var)[ \t]+", "", m)
+    sub("[ \t]*=$", "", m); emit(m)
+  }
+
+  # Env-contract constant:  LONG_NAME=. Deliberately narrow — a bare shell
+  # VAR= is a local (TMP, SRC, DEST) and mapping those is pure noise. Requiring
+  # an underscore and 6+ chars targets the names that actually cross files.
+  if (match(line, "(^|[^A-Za-z0-9_])[A-Z][A-Z0-9]*_[A-Z0-9_]*=")) {
+    m = substr(line, RSTART, RLENGTH); sub("^[^A-Z]*", "", m); sub("=$", "", m)
+    if (length(m) >= 6) emit(m)
+  }
+}
+' "$DIFF" | sort -u > "$TMP/symbols"
+
+TOUCHED_N=$(wc -l < "$TMP/touched" | tr -d ' ')
+SYM_N=$(wc -l < "$TMP/symbols" | tr -d ' ')
+
+echo "- repo: \`$REPO\`"
+echo "- diff source: \`$SOURCE\`"
+echo "- changed files: $TOUCHED_N"
+echo "- definition symbols extracted: $SYM_N"
+echo
+
+if [ "$SYM_N" -eq 0 ]; then
+  echo "No definition-shaped changes in this diff — the blast radius is the diff itself."
+  exit 0
+fi
+
+EXCL=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=vendor
+      --exclude-dir=dist --exclude-dir=build --exclude-dir=target
+      --exclude-dir=.venv --exclude-dir=venv --exclude-dir=__pycache__
+      --exclude-dir=.next --exclude-dir=coverage --exclude-dir=.mypy_cache
+      --exclude=*.diff --exclude=*.patch --exclude=*.lock --exclude=*.min.js)
+
+i=0
+: > "$TMP/index"; : > "$TMP/generic"; : > "$TMP/contained"
 while read -r sym; do
   [ -n "$sym" ] || continue
-  # Drop hits whose FILE (the part before the first colon) is itself in the
-  # diff — matching the path anywhere in the line would also drop unrelated
-  # hits that merely quote the filename.
-  git -C "$REPO" grep -n -w -F "$sym" -- . 2>/dev/null \
-    | awk -v L="$TMP/changed" 'BEGIN{while((getline l < L)>0) c[l]=1}
-                               {split($0,p,":"); if(!(p[1] in c)) print}' > "$TMP/hits" || true
-  n=$(wc -l < "$TMP/hits")
-  if [ "$n" -eq 0 ]; then
-    isolated=$((isolated + 1))
-    continue
-  fi
-  exposed=$((exposed + 1))
-  {
-    echo "### \`$sym\` — $n reference(s) outside the diff"
-    echo
-    echo '```'
-    head -n "$MAXREF" "$TMP/hits"
-    [ "$n" -gt "$MAXREF" ] && echo "... $((n - MAXREF)) more"
-    echo '```'
-    echo
-  } >> "$TMP/body"
-done < "$TMP/symbols.capped"
-
-{
-  echo "# Blast-radius map"
-  echo
-  echo "Every public symbol this diff touches, and where else in the repo it is"
-  echo "referenced. **These files are not in the diff.** A reviewer reading only"
-  echo "the diff cannot see them, which is why this map exists: it is the defect"
-  echo "class diff-only review is structurally blind to."
-  echo
-  echo "- base:            \`$BASE\`"
-  echo "- changed files:   $(wc -l < "$TMP/changed")"
-  echo "- symbols found:   $nsym (analysed: $(wc -l < "$TMP/symbols.capped"), cap $MAXSYM)"
-  echo "- with outside refs: $exposed"
-  echo "- self-contained:  $isolated"
-  echo
-  echo "## How every downstream pass must use this"
-  echo
-  echo "For each symbol below, check each listed call site against the NEW"
-  echo "definition: signature/arity still satisfied, contract still honoured,"
-  echo "constant's new value still valid, every enum member still handled at"
-  echo "every switch/match/dispatch. A call site that no longer holds is a P0"
-  echo "even though it appears in no hunk."
-  echo
-  if [ "$exposed" -eq 0 ]; then
-    echo "## No symbol has references outside the diff"
-    echo
-    echo "The change is self-contained by this measure. Note the measure's"
-    echo "limits: it sees tracked files in THIS repo only — not other repos,"
-    echo "dynamic dispatch, reflection, string-keyed lookup, or serialized data."
+  i=$((i + 1))
+  grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$REPO" 2>/dev/null \
+    | sed "s|^$REPO/||" \
+    | awk -F: -v tf="$TMP/touched" 'BEGIN{while((getline l < tf) > 0) t[l]=1} !($1 in t)' \
+    > "$TMP/h.$i"
+  # Sibling repos: every hit is out-of-diff by construction, so no touched-file
+  # filter — but label the repo so a site is never mistaken for a local path.
+  for extra in ${ALSO+"${ALSO[@]}"}; do
+    grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$extra" 2>/dev/null \
+      | sed "s|^$extra/|($(basename "$extra")) |" >> "$TMP/h.$i"
+  done
+  refs=$(wc -l < "$TMP/h.$i" | tr -d ' ')
+  if [ "$refs" -eq 0 ]; then
+    printf '%s\n' "$sym" >> "$TMP/contained"
+  elif [ "$refs" -gt "$GENERIC" ]; then
+    printf '%s\t%s\n' "$sym" "$refs" >> "$TMP/generic"
   else
-    cat "$TMP/body"
+    files=$(cut -d: -f1 "$TMP/h.$i" | sort -u | wc -l | tr -d ' ')
+    printf '%s\t%s\t%s\t%s\n' "$refs" "$files" "$i" "$sym" >> "$TMP/index"
   fi
-} > "$OUT/blast-radius.md"
+done < "$TMP/symbols"
 
-echo -e "${GRN}blast-radius${RST} $exposed/$nsym symbol(s) reach outside the diff → $OUT/blast-radius.md"
+MAPPED=$(wc -l < "$TMP/index" | tr -d ' ')
+if [ "$MAPPED" -gt 0 ]; then
+  echo "## Symbols with out-of-diff references"
+  echo
+  sort -rn -k1,1 "$TMP/index" | while IFS=$'\t' read -r refs files idx sym; do
+    echo "### \`$sym\` — $refs reference(s) in $files file(s)"
+    head -n "$MAX_REFS" "$TMP/h.$idx" | cut -d: -f1,2 | sed 's/^/- /'
+    if [ "$refs" -gt "$MAX_REFS" ]; then
+      echo "- (+$((refs - MAX_REFS)) more; raise --max-refs to list them)"
+    fi
+    echo
+  done
+fi
+
+if [ -s "$TMP/generic" ]; then
+  echo "## Too generic to map"
+  echo
+  echo "Above the generic threshold ($GENERIC hits) — listing every site would be"
+  echo "noise. If the change to one of these is behavioural, grep it by hand."
+  echo
+  awk -F'\t' '{ printf "- `%s` — %s hits\n", $1, $2 }' "$TMP/generic"
+  echo
+fi
+
+if [ -s "$TMP/contained" ]; then
+  CN=$(wc -l < "$TMP/contained" | tr -d ' ')
+  echo "## Contained — no out-of-diff references ($CN)"
+  echo
+  echo "These definitions are referenced only inside the changed files. That is"
+  echo "evidence of containment, not proof: dynamic dispatch, reflection, string"
+  echo "keys and cross-language callers are invisible to a textual match."
+  echo
+  awk '{ printf "%s`%s`", (NR > 1 ? ", " : "- "), $0 } END { print "" }' "$TMP/contained"
+  echo
+fi
+
+echo "---"
+echo
+echo "Each site above is an out-of-diff caller. For every one, ask: does the"
+echo "changed definition still satisfy this call? A site that no longer holds is"
+echo "a P0 the diff alone cannot show. Absence of a site is weak evidence, never"
+echo "proof — this map is textual, so it misses dynamic dispatch, reflection,"
+echo "string-keyed lookup and cross-language callers."
 exit 0
