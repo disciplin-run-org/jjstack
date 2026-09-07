@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# jjstack-review-autofix-diff — emit the code a review's fix-first step wrote.
+#
+# gstack's /review Step 5 is "Fix-First": it classifies findings and AUTO-APPLIES
+# the ones it judges safe. That auto-applied code is a diff nobody ever reads —
+# the reviewer wrote it, so no reviewer reviews it. It can be wrong, incomplete,
+# or introduce a fresh bug, and today nothing looks at it before it lands.
+#
+# This script does the deterministic half of closing that hole: produce the
+# auto-fix diff as a reviewable unit. The judgment half (re-reviewing it) is the
+# skill's job. No model inference here — just git plumbing.
+#
+# Baseline resolution, in order:
+#   1. --baseline REF          explicit
+#   2. the marker written by --mark (taken before the fixing step ran)
+#   3. HEAD                    fallback: everything uncommitted is assumed
+#                              review-authored. Reported, so the caller can say
+#                              so instead of silently over-claiming.
+#
+# Usage:
+#   jjstack-review-autofix-diff [--repo DIR] [--mark]
+#                               [--baseline REF] [--stat] [--dry-run]
+#
+# Exit: 0 diff emitted (or --mark/--dry-run ok), 2 usage error,
+#       3 not a git repo, 4 no changes since baseline (pass not applicable).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+REPO=""
+BASELINE=""
+MARK=0
+STAT=0
+DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)     REPO="${2:-}"; shift 2 ;;
+    --baseline) BASELINE="${2:-}"; shift 2 ;;
+    --mark)     MARK=1; shift ;;
+    --stat)     STAT=1; shift ;;
+    --dry-run)  DRY=1; shift ;;
+    -h|--help)
+      sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$REPO" ] && REPO="$PWD"
+if [ ! -d "$REPO" ]; then
+  echo -e "${CYA}error${RST} no such directory: $REPO" >&2; exit 3
+fi
+
+ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$ROOT" ]; then
+  echo -e "${YEL}warn${RST}  not a git repo: $REPO" >&2
+  echo -e "${YEL}warn${RST}  cannot isolate the auto-fix diff — skip this pass and say so." >&2
+  exit 3
+fi
+
+# Marker lives outside the repo: it is scratch state for one review, never
+# something to commit.
+SLUG="$(printf '%s' "$ROOT" | tr '/' '-')"
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/jjstack/review/$SLUG"
+MARKER="$STATE/autofix-baseline"
+
+if [ "$MARK" -eq 1 ]; then
+  # `git stash create` snapshots a dirty tree as a dangling commit WITHOUT
+  # touching the working tree or the stash list. On a clean tree it prints
+  # nothing, so fall back to HEAD.
+  snap="$(git -C "$ROOT" stash create 2>/dev/null | tr -d '[:space:]')"
+  [ -z "$snap" ] && snap="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$snap" ]; then
+    echo -e "${YEL}warn${RST}  repo has no commits — nothing to baseline against" >&2
+    exit 3
+  fi
+  if [ "$DRY" -eq 1 ]; then
+    echo "[dry-run] would mark baseline $snap -> $MARKER"
+    exit 0
+  fi
+  mkdir -p "$STATE" || exit 3
+  printf '%s\n' "$snap" > "$MARKER"
+  echo -e "${GRN}marked${RST} baseline $snap"
+  exit 0
+fi
+
+SOURCE="explicit --baseline"
+if [ -z "$BASELINE" ] && [ -f "$MARKER" ]; then
+  BASELINE="$(tr -d '[:space:]' < "$MARKER")"
+  SOURCE="marker taken before the fixing step"
+fi
+if [ -z "$BASELINE" ]; then
+  BASELINE="HEAD"
+  SOURCE="fallback HEAD (no marker) — treats ALL uncommitted work as review-authored"
+fi
+
+if ! git -C "$ROOT" rev-parse --verify --quiet "$BASELINE^{commit}" >/dev/null 2>&1; then
+  echo -e "${CYA}error${RST} baseline is not a commit: $BASELINE" >&2
+  exit 2
+fi
+
+UNTRACKED="$(git -C "$ROOT" ls-files --others --exclude-standard)"
+CHANGED="$(git -C "$ROOT" diff --name-only "$BASELINE" 2>/dev/null)"
+
+# Line count of a possibly-empty newline-joined list. `grep -c` would exit 1 on
+# empty and trip the `||` fallback into printing twice.
+count_lines() { [ -z "$1" ] && { echo 0; return; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] repo:     $ROOT"
+  echo "[dry-run] baseline: $BASELINE ($SOURCE)"
+  echo "[dry-run] tracked changes: $(count_lines "$CHANGED")"
+  echo "[dry-run] untracked files: $(count_lines "$UNTRACKED")"
+  exit 0
+fi
+
+if [ -z "$CHANGED" ] && [ -z "$UNTRACKED" ]; then
+  echo -e "${YEL}skip${RST}  no changes since $BASELINE — the review applied no auto-fixes."
+  exit 4
+fi
+
+echo "# auto-fix diff"
+echo "# repo:     $ROOT"
+echo "# baseline: $BASELINE"
+echo "# source:   $SOURCE"
+echo
+
+if [ -n "$UNTRACKED" ]; then
+  echo "## new untracked files (not in the diff below — read them in full)"
+  printf '%s\n' "$UNTRACKED"
+  echo
+fi
+
+if [ -n "$CHANGED" ]; then
+  echo "## tracked changes"
+  if [ "$STAT" -eq 1 ]; then
+    git -C "$ROOT" diff --stat "$BASELINE"
+  else
+    git -C "$ROOT" diff "$BASELINE"
+  fi
+fi
+
+exit 0

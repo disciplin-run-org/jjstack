@@ -14,10 +14,15 @@ description: |
   misuse, git-history context, prior-PR comments, code-comment + CLAUDE.md
   compliance), then controls the resulting noise with an enrich-only
   verification pass and a committed baseline — never by deleting findings.
-  Emits a three-valued APPROVE/CAUTION/REJECT verdict with per-finding review
-  judgments and guardrails. Saves findings to {repo}/jjstack/, injects DNA,
-  iterates to 10/10. Use on the diff about to merge when you want to catch what
-  a fast review would miss.
+  Then it runs five post-passes no diff-reader can do: what SHOULD have changed
+  and didn't, a review of the fixes the reviewer auto-applied, a red test
+  proving each finding, a re-run of the project's typechecker/linter/tests on
+  the post-fix tree, and persisted accept/reject calibration that ranks the next
+  review without ever rescoring a finding. Emits a three-valued
+  APPROVE/CAUTION/REJECT verdict with per-finding review judgments and
+  guardrails. Saves findings to {repo}/jjstack/, injects DNA, iterates to 10/10.
+  Use on the diff about to merge when you want to catch what a fast review
+  would miss.
   Trigger on: "review my changes", "pre-landing review", "review the diff",
   "review before merge", "deep review", "adversarial review", "review this PR",
   "catch everything review", "thorough review".
@@ -61,7 +66,7 @@ review — run the compiler, grep the callers, read the commit message — so no
 token of judgement is spent on a fact. Its reasoning lives in
 `references/review-preflight.md`, loaded in Phase 0.
 
-Five enhancements over the gstack base:
+Six enhancements over the gstack base:
 1. **Pre-flight evidence pack** — five deterministic pre-passes run BEFORE any
    AI pass: run the real tooling, map the diff's blast radius outside itself,
    gather the change's stated intent, load prior dismissals, snapshot the test
@@ -73,7 +78,13 @@ Five enhancements over the gstack base:
    failure scenario, a remediation, and a review judgment. Verification may
    enrich a finding or mark it unconfirmed; it may never delete one. Noise is
    controlled by a committed baseline with a stated reason, not by deletion.
-5. **jjstack finish** — repo-local output, DNA injection, quality loop to 10/10,
+5. **Post-passes (5.6–5.10)** — the five things a finished review still hasn't
+   done: look for what's *missing* from the diff, review the fixes the reviewer
+   itself auto-applied, prove each finding with a red test, re-run the
+   deterministic checks on the post-fix tree, and persist accept/reject verdicts
+   that RANK the next review without ever rescoring a finding. Manual:
+   `references/review-post-passes.md`.
+6. **jjstack finish** — repo-local output, DNA injection, quality loop to 10/10,
    README maintenance.
 
 ## Preamble
@@ -594,6 +605,85 @@ Commit them alongside the findings (the output-capture step in 6.2 covers this).
 
 If the script exits 3 (gstack review dir missing), note it and continue — the
 review still stands, it just isn't snapshot-reproducible.
+
+---
+
+## Phases 5.6–5.10: the post-passes (what a finished review still hasn't done)
+
+Phases 2–5 are all the same activity — read the diff, judge it — repeated by many
+lenses. Five blind spots survive every lens, because they are not questions about
+the diff's contents. Load the manual once; it carries the rationale and the
+procedure for all five:
+
+```bash
+cat ~/.claude/skills/jjstack/references/review-post-passes.md
+```
+
+Run the five in order. **Any post-pass that is structurally inapplicable is
+skipped and REPORTED as skipped, with its reason** — never omitted silently, and
+never reported as clean. New findings raised by a post-pass go back through the
+Phase 5 verification gate before they reach the report.
+
+### Phase 5.6 — Absence pass
+
+Ask only: *what should have changed and didn't?* Schema without migration, enum
+member without its exhaustive consumers, signature without its callers or docs,
+branch without a test, config key without a default, error case without a
+handler. Run it as a dedicated pass with a fresh context, following the walk-
+outward checklist in the reference. Worth running even when every prior phase
+found nothing — "found nothing" is what an omission looks like.
+
+### Phase 5.7 — Review the auto-fixes
+
+gstack's Step 5b auto-applies fixes; that code is an unreviewed diff nothing has
+looked at. Get it deterministically, then re-review it as a fresh diff from an
+unknown author with the full Phase 4 lens set.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --stat
+```
+
+Exit 4 = no auto-fixes were applied → SKIP and say so. Findings here are P1 by
+default. If the output says the baseline fell back to `HEAD`, repeat that caveat
+in the report.
+
+### Phase 5.8 — Prove it with a failing test
+
+For each high-confidence finding, write the test that goes red and RUN it. Mark
+each finding `PROVEN` / `DISPROVEN` / `UNPROVABLE`. `DISPROVEN` drops the finding
+(and records a `rejected` verdict in 5.10). `UNPROVABLE` is itself a finding —
+per the jjstack TDD rule an untestable behavior yields a **failing** test, never a
+hidden or skipped one. Get deliberate red tests out of the tree before Phase 5.9.
+
+### Phase 5.9 — Re-run the deterministic sweep
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-sweep
+```
+
+Exit 0 = clean, exit 1 = the fixes regressed something (every failed check is a
+P0; attribute it against the pre-fix baseline before reporting), exit 4 = no
+checks available → SKIP and say so.
+
+### Phase 5.10 — Calibration persistence
+
+Read the ledger, apply its deltas to borderline findings before the report is
+finalized, then record this review's verdicts so the next one starts from
+evidence.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-calibration report
+```
+
+Exit 4 = no ledger yet (first calibrated review) → apply no adjustment, say so,
+and still record verdicts. For each triaged finding:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-calibration record --key <pattern-key> --verdict accepted|rejected --lens <pass> --file <path>
+```
+
+Key on the CLASS of finding, never the instance. Record nothing for findings the
+user never ruled on — a guess pollutes the ledger.
 
 ---
 

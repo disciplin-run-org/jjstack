@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# jjstack-review-calibration — remember which findings the user accepted.
+#
+# Without this, every review starts from zero: the same false positive is
+# re-raised at the same confidence forever, and a pattern the user confirmed
+# three times gets no more credit than a guess. The reviewer never learns, so the
+# user does the same triage again and again until alert fatigue kills the whole
+# report's credibility.
+#
+# So record the verdicts and let them bias the NEXT review's confidence score.
+# Deterministic arithmetic on a tab-separated ledger — no model inference. The
+# only judgment is choosing the pattern key, which is the skill's job, exactly as
+# `pattern_key` works in the jjstack memory system.
+#
+# The ledger lives in the repo ({repo}/jjstack/review-calibration.tsv) on
+# purpose: calibration is a property of the codebase and its reviewers, so it
+# belongs under version control with the findings, not in a machine-local cache
+# only one laptop can see.
+#
+# Confidence delta (clamped): 10*accepted - 10*rejected, floor -30, ceiling +20.
+#   Repeat false positives decay a finding out of the report; a repeatedly
+#   confirmed pattern gets promoted across the reporting gate. Asymmetric on
+#   purpose — suppressing noise is cheaper to get wrong than inventing signal.
+#
+# Usage:
+#   jjstack-review-calibration record --key K --verdict accepted|rejected \
+#                                     [--lens L] [--file F] [--note N]
+#   jjstack-review-calibration suggest --key K
+#   jjstack-review-calibration report
+#   (all accept [--repo DIR] [--store PATH] [--dry-run])
+#
+# Exit: 0 ok, 2 usage error, 3 store unwritable/unreadable,
+#       4 no prior calibration data (skip the adjustment and say so).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+CMD=""
+REPO=""
+STORE=""
+KEY=""
+VERDICT=""
+LENS="-"
+FILE="-"
+NOTE="-"
+DRY=0
+
+usage() {
+  echo -e "${CYA}error${RST} usage: $(basename "$0") {record|suggest|report} [flags] — see --help" >&2
+  exit 2
+}
+
+[ $# -gt 0 ] || usage
+case "$1" in
+  record|suggest|report) CMD="$1"; shift ;;
+  -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) usage ;;
+esac
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)    REPO="${2:-}"; shift 2 ;;
+    --store)   STORE="${2:-}"; shift 2 ;;
+    --key)     KEY="${2:-}"; shift 2 ;;
+    --verdict) VERDICT="${2:-}"; shift 2 ;;
+    --lens)    LENS="${2:-}"; shift 2 ;;
+    --file)    FILE="${2:-}"; shift 2 ;;
+    --note)    NOTE="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# Slugify a pattern key the same way every time: lowercase, non-alphanumeric to
+# '-', collapsed, trimmed, capped. Two reviews naming the same pattern slightly
+# differently must land on the same ledger row or the memory is worthless.
+slugify() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-\+//' -e 's/-\+$//' \
+    | cut -c1-60
+}
+
+# Tabs and newlines would corrupt the row; the ledger's whole value is that it
+# parses exactly.
+clean() { printf '%s' "${1:-}" | tr '\t\n\r' '   ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+if [ -z "$STORE" ]; then
+  [ -z "$REPO" ] && REPO="$PWD"
+  ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)"
+  [ -z "$ROOT" ] && ROOT="$REPO"
+  if [ ! -d "$ROOT" ]; then
+    echo -e "${CYA}error${RST} no such directory: $ROOT" >&2; exit 3
+  fi
+  STORE="$ROOT/jjstack/review-calibration.tsv"
+fi
+
+HEADER='#ts	key	verdict	lens	file	note'
+
+# --- record ------------------------------------------------------------------
+if [ "$CMD" = "record" ]; then
+  [ -n "$KEY" ] || { echo -e "${CYA}error${RST} record needs --key" >&2; exit 2; }
+  case "$VERDICT" in
+    accepted|rejected) ;;
+    *) echo -e "${CYA}error${RST} --verdict must be accepted or rejected (got '${VERDICT}')" >&2; exit 2 ;;
+  esac
+  slug="$(slugify "$KEY")"
+  [ -n "$slug" ] || { echo -e "${CYA}error${RST} --key slugifies to nothing: '$KEY'" >&2; exit 2; }
+  row="$(date +%F)	$slug	$VERDICT	$(clean "$LENS")	$(clean "$FILE")	$(clean "$NOTE")"
+  if [ "$DRY" -eq 1 ]; then
+    echo "[dry-run] would append to $STORE:"
+    echo "[dry-run] $row"
+    exit 0
+  fi
+  mkdir -p "$(dirname "$STORE")" 2>/dev/null
+  if [ ! -f "$STORE" ]; then
+    printf '%s\n' "$HEADER" > "$STORE" || { echo -e "${CYA}error${RST} cannot write $STORE" >&2; exit 3; }
+  fi
+  printf '%s\n' "$row" >> "$STORE" || { echo -e "${CYA}error${RST} cannot append to $STORE" >&2; exit 3; }
+  echo -e "${GRN}recorded${RST} $slug=$VERDICT -> $STORE"
+  exit 0
+fi
+
+# --- shared read path --------------------------------------------------------
+if [ ! -f "$STORE" ]; then
+  echo -e "${YEL}skip${RST}  no calibration ledger yet ($STORE)."
+  echo -e "${YEL}skip${RST}  first calibrated review — no confidence adjustment, and say so."
+  exit 4
+fi
+
+# --- suggest -----------------------------------------------------------------
+if [ "$CMD" = "suggest" ]; then
+  [ -n "$KEY" ] || { echo -e "${CYA}error${RST} suggest needs --key" >&2; exit 2; }
+  slug="$(slugify "$KEY")"
+  read -r acc rej <<<"$(awk -F'\t' -v k="$slug" '
+    $0 ~ /^#/ { next }
+    $2 == k && $3 == "accepted" { a++ }
+    $2 == k && $3 == "rejected" { r++ }
+    END { printf "%d %d", a+0, r+0 }' "$STORE")"
+  delta=$(( 10 * acc - 10 * rej ))
+  [ "$delta" -lt -30 ] && delta=-30
+  [ "$delta" -gt 20 ] && delta=20
+  if [ "$((acc + rej))" -eq 0 ]; then
+    echo "key=$slug accepted=0 rejected=0 delta=0 (no prior data)"
+    exit 4
+  fi
+  echo "key=$slug accepted=$acc rejected=$rej delta=$delta"
+  exit 0
+fi
+
+# --- report ------------------------------------------------------------------
+rows="$(awk -F'\t' '$0 !~ /^#/ && NF >= 3 { print }' "$STORE" | grep -c . 2>/dev/null)"
+if [ "${rows:-0}" -eq 0 ]; then
+  echo -e "${YEL}skip${RST}  calibration ledger is empty ($STORE) — no adjustments available."
+  exit 4
+fi
+
+echo "jjstack-review-calibration — $STORE ($rows verdict(s))"
+echo
+printf '  %-40s %5s %5s %6s\n' "pattern key" "acc" "rej" "delta"
+awk -F'\t' '
+  $0 ~ /^#/ { next }
+  NF < 3    { next }
+  { key[$2]; if ($3 == "accepted") a[$2]++; else if ($3 == "rejected") r[$2]++ }
+  END {
+    for (k in key) {
+      d = 10 * (a[k]+0) - 10 * (r[k]+0)
+      if (d < -30) d = -30
+      if (d >  20) d =  20
+      printf "  %-40s %5d %5d %+6d\n", k, a[k]+0, r[k]+0, d
+    }
+  }' "$STORE" | sort -k4 -n
+echo
+echo "Apply delta to the Phase 5 confidence score before the reporting gate."
+exit 0

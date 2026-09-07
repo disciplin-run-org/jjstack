@@ -61,6 +61,7 @@ echo "== 4. shared bases are not copy-pasted into their callers =="
 # marker|reference
 cat > "$TMP/markers" <<'EOF'
 Dedup check before writing|memory-sweep.md
+Errors of omission never appear|review-post-passes.md
 EOF
 while IFS='|' read -r marker ref; do
   [ -n "$marker" ] || continue
