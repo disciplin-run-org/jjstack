@@ -222,6 +222,10 @@ envelope, with a cross-project/PHI firewall.
 from the finished session (see [Memory](#memory)). It enqueues and detaches
 in milliseconds so it never blocks exit; a background worker extracts lessons
 and writes them PHI-gated and deduplicated. Disable with `JJSTACK_NO_CAPTURE=1`.
+Deduplication runs in two layers: an exact `pattern_key` match, then a semantic
+near-duplicate lookup against gbrain. `JJSTACK_CAPTURE_NO_GBRAIN=1` pins the
+semantic layer off — for offline or air-gapped use, or when you need a fast,
+repeatable answer. Exact-key dedup still runs, so dedup is reduced, not skipped.
 
 **`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
 markdown headed for disk and blocks high-confidence prompt-injection
