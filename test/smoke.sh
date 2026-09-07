@@ -63,7 +63,7 @@ out=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dr
 # match. A herestring has no pipeline and no such ambiguity.
 check "capture-write --dry-run resolves canonical slug" "grep -q 'canonical slug:' <<<\"\$out\""
 check "capture-write --dry-run marks output dry-run" "grep -q '\\[dry-run\\]' <<<\"\$out\""
-check "capture-write --dry-run pins gbrain layer off" "grep -q 'gbrain dedup:  not-run' <<<\"\$out\""
+check "capture-write --dry-run names WHY the layer was skipped" "grep -q 'gbrain dedup:  not-run:pinned' <<<\"\$out\""
 
 # Positive control: without the pin Layer B must actually run, or the pin above
 # proves nothing and we have quietly stopped testing the real path. Uses a STUB
@@ -72,11 +72,23 @@ check "capture-write --dry-run pins gbrain layer off" "grep -q 'gbrain dedup:  n
 STUB=$(mktemp -d)
 printf '#!/bin/sh\nexit 0\n' > "$STUB/gbrain"; chmod +x "$STUB/gbrain"
 out_live=$(PATH="$STUB:$PATH" "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
-check "gbrain layer runs when not pinned (control)" "grep -q 'gbrain dedup:  ran' <<<\"\$out_live\""
+check "gbrain layer runs when not pinned (control)" "grep -q 'gbrain dedup:  ran-clean' <<<\"\$out_live\""
 # And the pin must beat an available gbrain, not merely an absent one.
 out_pin=$(PATH="$STUB:$PATH" JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
-check "pin overrides an available gbrain" "grep -q 'gbrain dedup:  not-run' <<<\"\$out_pin\""
-rm -rf "$STUB"
+check "pin overrides an available gbrain" "grep -q 'gbrain dedup:  not-run:pinned' <<<\"\$out_pin\""
+
+# A HUNG gbrain must not report as a clean run. This is the failure the whole
+# observability exists to expose: timeout kills the query, stderr is discarded,
+# the result is empty — which is indistinguishable from "no duplicate found"
+# unless the state says so. Stub sleeps past the 8s deadline.
+# The deadline is configurable so this costs 1s, not 8 — a test that makes the
+# suite slow is a test people stop running.
+HANG=$(mktemp -d)
+printf '#!/bin/sh\nsleep 30\n' > "$HANG/gbrain"; chmod +x "$HANG/gbrain"
+out_hang=$(PATH="$HANG:$PATH" JJSTACK_CAPTURE_GBRAIN_TIMEOUT=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+check "a timed-out gbrain query reports ran-timeout" "grep -q 'gbrain dedup:  ran-timeout' <<<\"\$out_hang\""
+check "a timed-out query is NOT reported as clean"   "! grep -q 'gbrain dedup:  ran-clean' <<<\"\$out_hang\""
+rm -rf "$HANG" "$STUB"
 
 # The section is named "no writes" but only ever checked stdout. Assert the
 # actual claim: a --dry-run leaves the memory dir untouched.

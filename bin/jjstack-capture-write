@@ -30,6 +30,11 @@
 #   enough to need an 8s timeout — so any caller that needs a DETERMINISTIC,
 #   fast result (the smoke suite; offline or air-gapped use) sets this. Layer A
 #   (pattern_key) still runs, so dedup is reduced, never silently skipped.
+#
+# --dry-run reports which dedup layers ran as one of:
+#   ran-clean | ran-timeout | not-run:{layer-a-hit,phi-optout,no-gbrain,pinned}
+# ran-timeout is distinct on purpose: a killed query returns empty, which reads
+# exactly like "no duplicate found" unless the state says otherwise.
 set -uo pipefail
 
 CWD="" LESSON="" DRY_RUN=0
@@ -89,14 +94,33 @@ gstack_type() { case "$1" in feedback|user) echo preference ;; project) echo ope
 MERGE_FILE=""
 # Observable so callers (and the smoke suite) can verify which dedup layers ran
 # rather than assuming — a silently-skipped layer looks identical to a clean one.
-LAYER_B="not-run"
+#
+# THREE states, not two, and the reason is the whole point of this reporting:
+#   ran-clean          the query completed and its answer was used
+#   ran-timeout        the query was killed at the deadline — NO answer was used,
+#                      so this run got NO semantic dedup even though it tried
+#   not-run:<reason>   never attempted; the reason says which of four causes
+#
+# Collapsing "ran-timeout" into "ran" would report the exact failure this
+# observability exists to expose — a hung gbrain — as a successful clean run.
+# The query redirects stderr to /dev/null and yields an empty result on timeout,
+# which is indistinguishable from "no near-duplicate found" unless the exit
+# status is captured. So capture it.
+LAYER_B="not-run:unknown"
 if [ -d "$MEM_DIR" ]; then
     MERGE_FILE=$(grep -lE "^[[:space:]]*pattern_key:[[:space:]]*[\"']?${L_PKEY}[\"']?[[:space:]]*$" "$MEM_DIR"/*.md 2>/dev/null | head -1)
 fi
-if [ -z "$MERGE_FILE" ] && [ "$PHI" = "0" ] && [ -n "$GBRAIN" ] && [ "${JJSTACK_CAPTURE_NO_GBRAIN:-0}" != "1" ]; then
+if   [ -n "$MERGE_FILE" ];                            then LAYER_B="not-run:layer-a-hit"
+elif [ "$PHI" != "0" ];                               then LAYER_B="not-run:phi-optout"
+elif [ -z "$GBRAIN" ];                                then LAYER_B="not-run:no-gbrain"
+elif [ "${JJSTACK_CAPTURE_NO_GBRAIN:-0}" = "1" ];     then LAYER_B="not-run:pinned"
+else
     # Layer B — semantic near-duplicate within THIS project's canonical pages.
-    LAYER_B="ran"
-    local_top=$(timeout 8 "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null \
+    _gb_raw=$(timeout "${JJSTACK_CAPTURE_GBRAIN_TIMEOUT:-8}" "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null)
+    _gb_rc=$?
+    # 124 is timeout(1)'s "deadline reached, child killed".
+    if [ "$_gb_rc" -eq 124 ]; then LAYER_B="ran-timeout"; else LAYER_B="ran-clean"; fi
+    local_top=$(printf '%s\n' "$_gb_raw" \
         | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
     if [ -n "$local_top" ]; then
         score=${local_top%% *}
