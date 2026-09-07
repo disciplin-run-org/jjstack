@@ -1080,12 +1080,19 @@ Compose the comment to `{OUTPUT_DIR}/pr-comment.md` following the structure in
 the reference. **The comment is a doorbell, not the delivery** — verdict, the
 blocking findings only, and a link to the full report committed in 6.2.
 
-Then lint it. This is a **HARD GATE**: the linter exits non-zero and you fix the
-comment rather than posting it anyway.
+Then lint it. This is a **HARD GATE** per
+`references/hard-gate-convention.md`. Bold prose saying "do not post if it fails"
+is not a gate — a gate is one command where the post cannot run unless the check
+passed, so the lint and the post are chained and the shell enforces the order:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md
+~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment --body-file {OUTPUT_DIR}/pr-comment.md
 ```
+
+Never run the post as its own step. Two separate fenced blocks let a failed lint
+be followed by a successful post, which is the exact failure the convention
+names. If the lint exits non-zero, fix the comment and run the chained command
+again.
 
 It enforces what a machine can decide: 12 lines / 900 chars, at most 3 findings
 inline, a mandatory link, no emdash, no superlatives, no meta-commentary, no
@@ -1098,11 +1105,8 @@ delete them.** Cutting a finding to fit the budget is the one failure this whole
 skill exists to prevent. The report already holds all of them; the comment shows
 what blocks the merge.
 
-Post it:
-
-```bash
-gh pr comment --body-file {OUTPUT_DIR}/pr-comment.md
-```
+The post already happened in the chained command above, and only if the lint
+passed. There is deliberately no separate post step to reach for.
 
 If `dna.voice` is set in the jjstack config, load it first and let it govern the
 prose — the reference above is the review-scoped subset of that voice, and the
