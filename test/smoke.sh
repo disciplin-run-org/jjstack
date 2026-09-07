@@ -19,6 +19,7 @@ echo "== 1. syntax =="
 for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-capture-write "$BIN"/jjstack-capture-flush \
          "$BIN"/jjstack-global-learn "$BIN"/jjstack-gbrain-phi-lib.sh \
+         "$BIN"/jjstack-capture-review-refs \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -59,6 +60,43 @@ echo "== 5. global-learn dry-run (no writes) =="
 out=$("$BIN/jjstack-global-learn" --key smoke-probe --insight "x" --dry-run 2>&1)
 check "global-learn --dry-run targets __global__" "printf '%s' \"\$out\" | grep -q '__global__'"
 check "global-learn --dry-run targets pan-project/ page" "printf '%s' \"\$out\" | grep -q 'pan-project/'"
+
+echo "== 5b. capture-review-refs (allowlist + exclusions) =="
+# /review snapshots gstack's review rubric into the repo so old findings stay
+# interpretable after a gstack upgrade rebuilds the global clone. The value is
+# entirely in the allowlist: capture the durable docs, never the build
+# artifacts. Fixture carries both so the exclusions are actually exercised.
+CRR="$(mktemp -d)"
+mkdir -p "$CRR/src/specialists" "$CRR/src/sections"
+: > "$CRR/src/checklist.md"; : > "$CRR/src/design-checklist.md"
+: > "$CRR/src/greptile-triage.md"; : > "$CRR/src/TODOS-format.md"
+: > "$CRR/src/SKILL.md"; : > "$CRR/src/SKILL.md.tmpl"
+: > "$CRR/src/specialists/security.md"; : > "$CRR/src/specialists/red-team.md"
+: > "$CRR/src/sections/review-army.md"; : > "$CRR/src/sections/review-army.md.tmpl"
+: > "$CRR/src/sections/manifest.json"
+printf '9.9.9.9\n' > "$CRR/VERSION"   # sits beside src/, as gstack's does
+
+"$BIN/jjstack-capture-review-refs" "$CRR/out" --gstack-review-dir "$CRR/src" >/dev/null 2>&1
+check "capture-review-refs exits 0" "[ \$? -eq 0 ]"
+check "captures checklist.md"            "[ -f '$CRR/out/checklist.md' ]"
+check "captures specialists/*.md"        "[ -f '$CRR/out/specialists/red-team.md' ]"
+check "captures sections/*.md"           "[ -f '$CRR/out/sections/review-army.md' ]"
+check "writes PROVENANCE.md"             "[ -f '$CRR/out/PROVENANCE.md' ]"
+check "PROVENANCE stamps gstack version" "grep -q '9.9.9.9' '$CRR/out/PROVENANCE.md'"
+# Exclusions — the whole point of an allowlist.
+check "excludes procedural SKILL.md"   "[ ! -f '$CRR/out/SKILL.md' ]"
+check "excludes .tmpl build artifacts" "! find '$CRR/out' -name '*.tmpl' | grep -q ."
+check "excludes manifest.json"         "! find '$CRR/out' -name 'manifest.json' | grep -q ."
+# Positive control — an exclusion grep that can never fire looks exactly like a
+# clean capture, which is how a broken guard passes for months.
+check "tmpl guard actually catches a .tmpl" "find '$CRR/src' -name '*.tmpl' | grep -q ."
+# --dry-run must not write.
+"$BIN/jjstack-capture-review-refs" "$CRR/out2" --gstack-review-dir "$CRR/src" --dry-run >/dev/null 2>&1
+check "--dry-run writes nothing" "[ ! -d '$CRR/out2' ]"
+# A missing gstack install is a clean exit 3, not a crash or a silent success.
+"$BIN/jjstack-capture-review-refs" "$CRR/out3" --gstack-review-dir "$CRR/nope" >/dev/null 2>&1
+check "missing gstack dir exits 3" "[ \$? -eq 3 ]"
+rm -rf "$CRR"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0

@@ -91,6 +91,8 @@ have on a developer machine.
 |-------------|--------|---------|
 | Review quality target | 8/10 | **10/10** (configurable) |
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
+| `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
+| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -131,7 +133,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | Pre-landing review with deeper adversarial passes. |
+| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -171,7 +173,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 15 reference documents — the encoded knowledge each skill
+jjstack ships 17 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -182,7 +184,8 @@ loads. Read them directly or let skills load them for you.
 | `product-management.md` | 4P:90 framework, OKR Quantity/Quality/Efficiency, JTBD, RICE, scope control toolbox, agentic PM |
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
-| `product-scaffold.md` | Standard capability layout (MCP Core / Auxiliary / Extended / Foundation / CLI / Web UI / Tech / Design) |
+| `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
 | `spec-cleanup-playbook.md` | Five smell tests for capability-level spec cleanup before the QA loop |
@@ -190,6 +193,8 @@ loads. Read them directly or let skills load them for you.
 | `definition-of-done.md` | The canonical 10-rung "done-done" Definition of Done + reporting rule |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
+| `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |
+| `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
 | `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
 
 These references are the durable layer. Skills come and go; the philosophy
