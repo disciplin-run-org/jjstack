@@ -261,8 +261,13 @@ confidence moves — this is ordering, and only ordering.
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-calibration record \
-  --key <pattern-key> --verdict accepted|rejected --lens <pass> --file <path>
+  --key <pattern-key> --verdict accepted|rejected --code <reason-code> \
+  --lens <pass> --file <path>
 ```
+
+A `rejected` verdict needs a `--code` from the shared vocabulary in
+`bin/jjstack-review-vocab.tsv` — a rejection is a decision, and a decision is
+explained. An `accepted` verdict does not: it silences nothing.
 
 Choosing the pattern key is the judgment; the arithmetic is not. Key on the
 **class** of finding, not the instance — `missing-migration-for-schema-change`,
@@ -304,10 +309,29 @@ explicit human reason, removes anything from the active set.
 Asymmetric on purpose — under-ranking noise is cheaper to get wrong than
 over-ranking it.
 
-The ledger is `{repo}/jjstack/review-calibration.tsv` — version-controlled, so
-calibration is a property of the codebase and its reviewers rather than of one
-laptop, and so a bad row can be reverted like any other mistake.
+The store is `{repo}/jjstack/review-memory/calibration.tsv` — version-controlled,
+so calibration is a property of the codebase and its reviewers rather than of one
+laptop, and so a bad row can be reverted like any other mistake. It sits beside
+its two siblings, `ledger.tsv` and `baseline.tsv`, in one directory and one
+format.
 
-**Skip only when:** the script exits 4 (no ledger yet — the first calibrated
+**They stay three files on purpose.** They are an escalation ladder — the
+narrower the key, the stronger the verdict it may emit:
+
+| store | key scope | ceiling |
+|---|---|---|
+| `calibration.tsv` | a global **pattern class** | `rank` (placement only) |
+| `ledger.tsv` | a **path glob + category** | `demote` |
+| `baseline.tsv` | one finding **instance** | `suppress` |
+
+Collapsing them would let a global heuristic silently suppress a specific P0.
+The ceilings live in `bin/jjstack-review-vocab.tsv` — the one shared reason-code
+vocabulary — so a calibration row that claims `suppress` is rejected with exit 4
+by arithmetic rather than by convention. And demotion is idempotent: a finding
+demoted by both the ledger and a negative calibration rank is demoted once,
+still active, never suppressed.
+
+**Skip only when:** the script exits 4 (no store yet — the first calibrated
 review). Say so, apply no adjustment, and still record this review's verdicts so
-the next one has data.
+the next one has data. Exit 3 means a pre-1.0 store needs
+`jjstack-review-memory-migrate` run once.

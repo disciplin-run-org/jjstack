@@ -185,6 +185,56 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
+- **`/review`'s memory of your team's decisions now lives in one place, in one
+  format — and `/review` is 1.0.** Everything `/review` remembers about a
+  finding is now under `jjstack/review-memory/` in your repo, as three
+  tab-separated files instead of a JSON file at the repo root, a Markdown file,
+  and a TSV. The version was deliberately held at 0.4.0 until this landed,
+  because the public contract of this skill is its script CLIs and its store
+  formats, and this is the change that settles them.
+
+  **They stay three files on purpose.** They are a ladder, and the rung is set
+  by how specific the memory is:
+
+  | what it remembers | strongest thing it can do |
+  |---|---|
+  | "we generally don't care about this **pattern**" | rank it lower in the report |
+  | "we dismissed this **category in these files**" | file it under *Demoted*, still active |
+  | "we accepted **this exact finding**" | take it out of the active set |
+
+  Only the last one can silence anything, and only with a written reason. That
+  is what stops a broad, half-remembered preference from quietly burying a real
+  P0 — and it is enforced by the tools, not by good intentions: a wide-scope
+  record that claims a suppression is rejected outright.
+
+  **Why TSV for all three:** the value of these files is their diff. One
+  decision is one line, so accepting a finding shows up in a pull request as a
+  one-line addition, retiring it as a one-line deletion, and `grep` finds
+  either. JSON hid that; Markdown made it unparseable for the tools.
+
+  **Migrating is a one-time, explicit step.** If you have used `/review` before,
+  the tools will stop and tell you to run
+  `bin/jjstack-review-memory-migrate --repo <your repo>` once. Read the new
+  files, delete the old ones, commit both together. Nothing migrates itself:
+  these files are version controlled, and a tool that rewrote one behind your
+  back would produce a diff nobody approved.
+
+- **The per-run triage ledger is now called the run report.**
+  `bin/jjstack-review-triage` is `bin/jjstack-review-run-report`, and its output
+  is `review-run-report.md`. It was never memory — it is the audit trail of one
+  review run, regenerated every run — but its old name and file were confusing
+  enough that four separate changes treated it as a fourth memory store. It now
+  refuses to run against a memory file at all. If you scripted the old name,
+  update it.
+
+- **One list of reason codes across the whole of `/review`.** The closed
+  vocabulary that explains why a finding was demoted, deferred or suppressed now
+  lives in a single file (`bin/jjstack-review-vocab.tsv`) read by the run report
+  and all three memory stores. Each code also declares the strongest verdict it
+  may carry, so a rule like "unreachable code is deprioritised, never deleted"
+  is now one line of data enforced in four places instead of a comment enforced
+  in one.
+
 - **`/review` is now the deepest review in the stack — on purpose.** It used to
   be a light wrapper over gstack's review. It now deliberately trades time and
   tokens for coverage: it runs *every* specialist (gstack normally skips them on

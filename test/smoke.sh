@@ -71,7 +71,8 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-blast-radius "$BIN"/jjstack-review-intent \
          "$BIN"/jjstack-review-prior-dismissals \
          "$BIN"/jjstack-review-sweep "$BIN"/jjstack-review-autofix-diff \
-         "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-triage \
+         "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-run-report \
+         "$BIN"/jjstack-review-vocab.sh "$BIN"/jjstack-review-memory-migrate \
          "$BIN"/jjstack-review-ledger "$BIN"/jjstack-review-revert-history \
          "$BIN"/jjstack-review-dep-inventory \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
@@ -1263,168 +1264,153 @@ python3 "$RN/internal.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" \
 check "positive control: unpatched harness exits 0" "[ $rc -eq 0 ]"
 rm -rf "$RN"
 
-echo "== 5g. review-baseline (suppression, never deletion) =="
+echo "== 5g. review-baseline (instance scope — the only rung that may suppress) =="
 # The baseline is how a re-review surfaces only NEW issues without losing the
 # old ones. Two mechanisms with deliberately different aging: brittle
 # fingerprints (edit the source, the finding comes back) and drift-tolerant
-# rules (survive rewording, which is why they need a stated reason).
+# rules (survive rewording, which is why they need a stated reason). Since the
+# store consolidation it is TSV, in jjstack/review-memory/, and it is the
+# NARROWEST rung of the memory ladder — the only one allowed to suppress.
 RB="$(mktemp -d)"
 F1='{"lens":"security","file":"a.py","start_line":12,"severity":"P1","confidence":0.75,"message":"shell injection","quote":"os.system(x)","explanation":"e","remediation":"r"}'
 F2='{"lens":"perf","file":"b.py","start_line":3,"severity":"P2","confidence":0.4,"message":"n+1 query","quote":"for r in rows: get(r)","explanation":"e2","remediation":"r2"}'
 printf '%s\n%s\n' "$F1" "$F2" > "$RB/findings.jsonl"
+BL_HDR=$'#jjstack-review-store\tscope=instance\tmax-effect=suppress\tv=3\tjjstack=x'
 
 # Mandatory reason — an unexplained suppression is indistinguishable from a bug.
-"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" -o "$RB/noreason.json" >/dev/null 2>&1; rc=$?
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" -o "$RB/noreason.tsv" >/dev/null 2>&1; rc=$?
 check "generate without --reason exits 2" "[ $rc -eq 2 ]"
-check "generate without --reason writes nothing" "[ ! -f '$RB/noreason.json' ]"
+check "generate without --reason writes nothing" "[ ! -f '$RB/noreason.tsv' ]"
 "$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "accepted in triage" \
-  -o "$RB/bl.json" >/dev/null 2>&1; rc=$?
+  -o "$RB/bl.tsv" >/dev/null 2>&1; rc=$?
 check "generate with --reason exits 0" "[ $rc -eq 0 ]"
-check "baseline records both fingerprints" "[ \"\$(grep -c 'sha256:' '$RB/bl.json')\" -eq 2 ]"
-check "every fingerprint carries a reason" "[ \"\$(grep -c '\"reason\"' '$RB/bl.json')\" -eq 2 ]"
+check "baseline records both fingerprints" "[ \"\$(grep -c 'sha256:' '$RB/bl.tsv')\" -eq 2 ]"
+check "every fingerprint carries a reason" "[ \"\$(grep -c 'accepted in triage' '$RB/bl.tsv')\" -eq 2 ]"
+# One decision is one line: the whole reason this store is TSV and not JSON is
+# that a suppression must read as a one-line PR diff.
+check "a suppression is exactly one line" \
+  "[ \"\$(grep -c '^fingerprint	' '$RB/bl.tsv')\" -eq 2 ]"
+check "the store declares its scope in the header" \
+  "head -n 1 '$RB/bl.tsv' | grep -q 'scope=instance'"
+check "the store declares its effect ceiling" \
+  "head -n 1 '$RB/bl.tsv' | grep -q 'max-effect=suppress'"
 
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/bl.json" \
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/bl.tsv" \
   > "$RB/all.out" 2>/dev/null; rc=$?
 check "apply exits 0 when nothing is active" "[ $rc -eq 0 ]"
 # The core property: suppressed is NOT deleted. Both findings still present.
 check "suppressed findings stay in the output" "[ \"\$(wc -l < '$RB/all.out')\" -eq 2 ]"
 check "suppression is auditable (reason shown)" "grep -q 'accepted in triage' '$RB/all.out'"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/bl.json" \
+check "suppression names its effect" "grep -q '\"effect\": \"suppress\"' '$RB/all.out'"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/bl.tsv" \
   --active-only > "$RB/active.out" 2>/dev/null
 check "--active-only shows just the new stuff" "[ ! -s '$RB/active.out' ]"
 
 # Fingerprints are brittle ON PURPOSE: edit the flagged source, get it back.
 printf '%s\n%s\n' "${F1/os.system(x)/os.system(y)}" "$F2" > "$RB/edited.jsonl"
-"$BIN/jjstack-review-baseline" apply "$RB/edited.jsonl" --baseline "$RB/bl.json" \
+"$BIN/jjstack-review-baseline" apply "$RB/edited.jsonl" --baseline "$RB/bl.tsv" \
   --active-only > "$RB/edited.out" 2>/dev/null; rc=$?
 check "editing the quoted line reactivates it" "[ \"\$(wc -l < '$RB/edited.out')\" -eq 1 ]"
 check "a reactivated finding exits 1"          "[ $rc -eq 1 ]"
 # ...but an unrelated edit ABOVE the finding only shifts start_line, and must not.
 printf '%s\n%s\n' "${F1/\"start_line\":12/\"start_line\":40}" "$F2" > "$RB/shifted.jsonl"
-"$BIN/jjstack-review-baseline" apply "$RB/shifted.jsonl" --baseline "$RB/bl.json" \
+"$BIN/jjstack-review-baseline" apply "$RB/shifted.jsonl" --baseline "$RB/bl.tsv" \
   --active-only > "$RB/shifted.out" 2>/dev/null
 check "a pure line shift does NOT reactivate"  "[ ! -s '$RB/shifted.out' ]"
 
-# Drift-tolerant glob rules.
-printf '{"version":2,"jjstack_version":"x","rules":[{"id":"per*","reason":"policy: perf lens is advisory here"}],"fingerprints":[]}\n' > "$RB/rules.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/rules.json" \
+# Drift-tolerant glob rules. `-` means "unstated", so it matches anything.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\tper*\t-\t-\tpolicy: perf lens is advisory here\n'; } > "$RB/rules.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/rules.tsv" \
   --active-only > "$RB/rules.out" 2>/dev/null; rc=$?
 check "glob rule suppresses its lens"       "[ \"\$(wc -l < '$RB/rules.out')\" -eq 1 ]"
 check "glob rule leaves other lenses active" "grep -q 'shell injection' '$RB/rules.out'"
 # Positive control — the rule guard can actually reject. A malformed-baseline
 # check that never fires looks exactly like a clean baseline.
-printf '{"version":2,"rules":[{"id":"per*"}],"fingerprints":[]}\n' > "$RB/noreason-rule.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/noreason-rule.json" >/dev/null 2>&1; rc=$?
-check "rule without a reason exits 2" "[ $rc -eq 2 ]"
-printf '{"version":2,"rules":[{"reason":"because"}],"fingerprints":[]}\n' > "$RB/catchall.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/catchall.json" >/dev/null 2>&1; rc=$?
-check "reason-only rule exits 2" "[ $rc -eq 2 ]"
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\tper*\t-\t-\t-\n'; } > "$RB/noreason-rule.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/noreason-rule.tsv" >/dev/null 2>&1; rc=$?
+check "rule without a reason exits 4" "[ $rc -eq 4 ]"
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\t-\t-\t-\tbecause\n'; } > "$RB/catchall.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/catchall.tsv" >/dev/null 2>&1; rc=$?
+check "reason-only rule exits 4" "[ $rc -eq 4 ]"
 # PR #16 review (P1): the guard above only asked whether a field was PRESENT
 # and non-empty, so a universal glob sailed through and muted the whole repo at
 # exit 0 — the posture table then read "nothing above P3" and emitted APPROVE.
-# Reproduced with {"path":"*"}: 0 active, 2 suppressed, rc=0. `file` and
-# `rule_id` are aliases `rule_matches` honours, so they are covered too.
-for wk in path file id rule_id message; do
-  printf '{"version":2,"jjstack_version":"x","rules":[{"%s":"*","reason":"noisy"}],"fingerprints":[]}\n' \
-    "$wk" > "$RB/wild.json"
-  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild.json" \
+# Reproduced with path "*": 0 active, 2 suppressed, rc=0. Every column
+# `rule_matches` honours is covered, because one unguarded column is enough.
+for wspec in "lens:*	-	-" "file:-	*	-" "message:-	-	*"; do
+  wcol="${wspec%%:*}"; wrow="${wspec#*:}"
+  { printf '%s\n' "$BL_HDR"
+    printf 'rule\tsuppress\taccepted-risk\t-\t%s\tnoisy\n' "$wrow"; } > "$RB/wild.tsv"
+  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild.tsv" \
     > "$RB/wild.out" 2>/dev/null; rc=$?
-  check "wildcard rule on $wk exits 2, suppresses nothing" \
-    "[ $rc -eq 2 ] && [ ! -s '$RB/wild.out' ]"
+  check "wildcard rule on $wcol exits 4, suppresses nothing" \
+    "[ $rc -eq 4 ] && [ ! -s '$RB/wild.out' ]"
 done
-printf '{"version":2,"jjstack_version":"x","rules":[{"path":"**","message":"*","reason":"noisy"}],"fingerprints":[]}\n' > "$RB/wild2.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild2.json" >/dev/null 2>&1; rc=$?
-check "several universal globs together still exit 2" "[ $rc -eq 2 ]"
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\t**\t*\t?\tnoisy\n'; } > "$RB/wild2.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild2.tsv" >/dev/null 2>&1; rc=$?
+check "several universal globs together still exit 4" "[ $rc -eq 4 ]"
 # Positive control — the guard must reject WILDCARDS, not globbing itself. A
 # real glob with a discriminating character has to keep working, or the tests
 # above would pass just as well with the rules feature switched off.
-printf '{"version":2,"jjstack_version":"x","rules":[{"path":"b*","reason":"policy: b.py is vendored"}],"fingerprints":[]}\n' > "$RB/narrow.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/narrow.json" \
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\t-\tb*\t-\tpolicy: b.py is vendored\n'; } > "$RB/narrow.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/narrow.tsv" \
   --active-only > "$RB/narrow.out" 2>/dev/null; rc=$?
 check "positive control: a real glob still suppresses" \
   "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/narrow.out')\" -eq 1 ]"
 check "positive control: it suppressed only b.py" "grep -q 'shell injection' '$RB/narrow.out'"
-# PR #16 review ROUND 2 (P1): the round-1 guard checked the five keys
-# INDEPENDENTLY, but `rule_matches` resolves them as ALIAS PAIRS — `id or
-# rule_id`, `path or file`, first truthy wins. So a discriminating value in the
-# LOSING alias made the rule look scoped while `*` was still the pattern
-# actually applied. Reproduced: {"id":"*","rule_id":"security"} → 0 active,
-# 2 suppressed, rc=0 — the whole repo muted at a clean exit.
-# `id` beats `rule_id` and `path` beats `file`, so only those two directions
-# can hide a wildcard; the mirrored pair is asserted below as INERT.
-for pair in 'id:rule_id' 'path:file'; do
-  wild="${pair%%:*}"; loser="${pair##*:}"
-  printf '{"version":2,"jjstack_version":"x","rules":[{"%s":"*","%s":"scoped","reason":"noisy"}],"fingerprints":[]}\n' \
-    "$wild" "$loser" > "$RB/alias.json"
-  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/alias.json" \
-    > "$RB/alias.out" 2>/dev/null; rc=$?
-  check "wildcard $wild beside a scoped $loser exits 2" \
-    "[ $rc -eq 2 ] && [ ! -s '$RB/alias.out' ]"
-  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" \
-    --baseline "$RB/alias.json" > "$RB/alias.err" 2>&1
-  check "the rejection says the losing $loser never applies" \
-    "grep -q '$loser never applies' '$RB/alias.err'"
-done
-# Positive control — the guard must reject the alias that WINS, not alias pairs
-# as such. With the discriminating value in the winning slot the rule is
-# legitimate, the `*` in the losing slot is inert, and suppression must still
-# be exactly as narrow as the winning pattern says. This is also what pins WHICH
-# alias wins: swap the precedence in either place and these go red.
-printf '{"version":2,"jjstack_version":"x","rules":[{"id":"sec*","rule_id":"*","reason":"policy: security lens is advisory here"}],"fingerprints":[]}\n' \
-  > "$RB/aliasok.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok.json" \
-  --active-only > "$RB/aliasok.out" 2>/dev/null; rc=$?
-check "positive control: a scoped winning id makes rule_id:* inert" \
-  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/aliasok.out')\" -eq 1 ]"
-check "positive control: it suppressed only the security lens" \
-  "grep -q 'n+1 query' '$RB/aliasok.out'"
-printf '{"version":2,"jjstack_version":"x","rules":[{"path":"b*","file":"*","reason":"policy: b.py is vendored"}],"fingerprints":[]}\n' \
-  > "$RB/aliasok2.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok2.json" \
-  --active-only > "$RB/aliasok2.out" 2>/dev/null; rc=$?
-check "positive control: a scoped winning path makes file:* inert" \
-  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/aliasok2.out')\" -eq 1 ]"
-check "positive control: it suppressed only b.py" \
-  "grep -q 'shell injection' '$RB/aliasok2.out'"
-# The annotation must show the pattern that was APPLIED. Printing every key
-# present made a losing alias read to a human as a scoped rule.
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok.json" \
-  > "$RB/aliasann.out" 2>/dev/null
-check "the suppression annotation shows only the winning alias" \
-  "grep -q 'sec\*' '$RB/aliasann.out' && ! grep -q 'rule_id' '$RB/aliasann.out'"
+# PR #16 round 2 found a rule could look scoped while a `*` was the pattern
+# actually applied, because `rule_matches` resolved ALIAS PAIRS (`id or
+# rule_id`, `path or file`) and the guard checked the five keys independently.
+# The store is now TSV: `lens`, `file` and `message` are one column each, so
+# there is no losing alias for a wildcard to hide behind, and the per-column
+# wildcard loop above covers every column that can match. Assert the alias
+# machinery is really gone rather than assuming it — reintroducing it would
+# reopen the hole with nothing watching.
+check "no alias pairs remain for a wildcard to hide behind" \
+  "! grep -q 'RULE_MATCH_GROUPS\\|resolve_rule_pattern' '$BIN/jjstack-review-baseline'"
+check "the three matchable fields are one flat, aliasless list (control)" \
+  "grep -q '^RULE_MATCH_KEYS = (\"lens\", \"file\", \"message\")$' '$BIN/jjstack-review-baseline'"
 
-# PR #16 review (P1): `generate` built the doc from scratch with `rules: []` and
-# opened "w", so following SKILL.md's documented flow for EXTENDING a baseline
-# destroyed every human-written rule and previously accepted fingerprint.
-printf '{"version":2,"jjstack_version":"x","rules":[{"id":"docs","reason":"human policy exclusion"}],"fingerprints":[{"hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","reason":"accepted by a human last quarter"}]}\n' \
-  > "$RB/prior.json"
+
+# PR #16 review (P1): `generate` rewrote the store from scratch, so following
+# SKILL.md's documented flow for EXTENDING a baseline destroyed every
+# human-written rule and previously accepted fingerprint.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\taccepted-risk\t-\tdocs\t-\t-\thuman policy exclusion\n'
+  printf 'fingerprint\tsuppress\tbaseline\tsha256:1111111111111111111111111111111111111111111111111111111111111111\tsec\tz.py\tm\taccepted by a human last quarter\n'; } > "$RB/prior.tsv"
 "$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "second pass" \
-  -o "$RB/prior.json" >/dev/null 2>&1; rc=$?
-check "generate onto an existing baseline exits 0" "[ $rc -eq 0 ]"
-check "the human-written RULE survives"      "grep -q 'human policy exclusion' '$RB/prior.json'"
-check "the prior fingerprint survives"       "grep -q 'accepted by a human last quarter' '$RB/prior.json'"
-check "the new findings are appended"        "[ \"\$(grep -c 'sha256:' '$RB/prior.json')\" -eq 3 ]"
+  -o "$RB/prior.tsv" >/dev/null 2>&1; rc=$?
+check "generate onto an existing store exits 0" "[ $rc -eq 0 ]"
+check "the human-written RULE survives"      "grep -q 'human policy exclusion' '$RB/prior.tsv'"
+check "the prior fingerprint survives"       "grep -q 'accepted by a human last quarter' '$RB/prior.tsv'"
+check "the new findings are appended"        "[ \"\$(grep -c 'sha256:' '$RB/prior.tsv')\" -eq 3 ]"
 # Positive control — merging must be idempotent, not merely additive: a second
 # identical run must add nothing, or "3 fingerprints" would grow every run.
 "$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "third pass" \
-  -o "$RB/prior.json" >/dev/null 2>&1
+  -o "$RB/prior.tsv" >/dev/null 2>&1
 check "positive control: re-running adds no duplicates" \
-  "[ \"\$(grep -c 'sha256:' '$RB/prior.json')\" -eq 3 ]"
+  "[ \"\$(grep -c 'sha256:' '$RB/prior.tsv')\" -eq 3 ]"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/prior.tsv" >/dev/null 2>&1; rc=$?
 check "positive control: the merged file is still valid to apply" \
-  "\"$BIN/jjstack-review-baseline\" apply '$RB/findings.jsonl' --baseline '$RB/prior.json' >/dev/null 2>&1; [ \$? -ne 2 ]"
+  "[ $rc -ne 2 ] && [ $rc -ne 4 ]"
 # --replace is the explicit way to start over; nothing else may truncate.
 "$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "fresh" \
-  -o "$RB/prior.json" --replace >/dev/null 2>&1
+  -o "$RB/prior.tsv" --replace >/dev/null 2>&1
 check "--replace drops the prior rules on purpose" \
-  "! grep -q 'human policy exclusion' '$RB/prior.json'"
-# A corrupt existing baseline must stop the run, not be silently overwritten.
-printf 'this is not json\n' > "$RB/corrupt.json"
+  "! grep -q 'human policy exclusion' '$RB/prior.tsv'"
+# A corrupt existing store must stop the run, not be silently overwritten.
+printf 'this is not a review store\n' > "$RB/corrupt.tsv"
 "$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "x" \
-  -o "$RB/corrupt.json" >/dev/null 2>&1; rc=$?
-check "generate refuses to clobber a corrupt baseline" "[ $rc -eq 2 ]"
-check "the corrupt baseline is left untouched" "grep -q 'this is not json' '$RB/corrupt.json'"
-check "no .tmp file is left behind" "[ ! -f '$RB/corrupt.json.tmp' ]"
-# ...but that path returns 2 at LOAD time, before any temp file is created, so
+  -o "$RB/corrupt.tsv" >/dev/null 2>&1; rc=$?
+check "generate refuses to clobber a corrupt store" "[ $rc -eq 4 ]"
+check "the corrupt store is left untouched" "grep -q 'this is not a review store' '$RB/corrupt.tsv'"
+check "no .tmp file is left behind" "[ ! -f '$RB/corrupt.tsv.tmp' ]"
+# ...but that path returns at LOAD time, before any temp file is created, so
 # the check above is vacuous — deleting the unlink cleanup outright kept the
 # whole suite green. Reach the write branch instead: `--replace` skips the load,
 # a DIRECTORY at the output path lets the .tmp write succeed and only the
@@ -1438,33 +1424,44 @@ check "the failed write leaves NO .tmp behind" "[ ! -e '$RB/adir.tmp' ]"
 # Positive control — prove the run reached the WRITE branch and not the load
 # bail, i.e. that the .tmp really existed a moment earlier. `cannot write` is
 # printed only after the .tmp open has already succeeded, and the errno text
-# names the .tmp as the rename source. (Literals recovered from
-# bin/jjstack-review-baseline and from the OS, not invented for this test.)
+# names the .tmp as the rename source.
 check "positive control: it failed at the RENAME, not the load" \
   "grep -q 'cannot write' '$RB/adir.err' && grep -q 'adir.tmp' '$RB/adir.err'"
 check "positive control: the directory it refused to clobber is intact" \
   "[ -f '$RB/adir/keep' ]"
 rm -rf "$RB/adir" "$RB/adir.err"
-printf '{"version":1,"rules":[],"fingerprints":[]}\n' > "$RB/v1.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/v1.json" >/dev/null 2>&1; rc=$?
+printf '#jjstack-review-store\tscope=instance\tmax-effect=suppress\tv=1\n' > "$RB/v1.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/v1.tsv" >/dev/null 2>&1; rc=$?
 check "unsupported baseline version exits 2" "[ $rc -eq 2 ]"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/gone.json" >/dev/null 2>&1; rc=$?
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/gone.tsv" >/dev/null 2>&1; rc=$?
 check "missing baseline exits 2" "[ $rc -eq 2 ]"
+# A store from a DIFFERENT rung of the ladder is not interchangeable with this
+# one. Pointing the suppressing tool at the demoting store must be refused.
+printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=3\n' > "$RB/wrongscope.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wrongscope.tsv" >/dev/null 2>&1; rc=$?
+check "a store from another rung exits 4" "[ $rc -eq 4 ]"
+# The reason-code ceiling is shared data, not a per-tool special case:
+# `not-reachable` caps at demote, so it may not appear on a suppression here
+# either. Same rule, same file, three tools.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\tnot-reachable\t-\tper*\t-\t-\tdead code\n'; } > "$RB/ceiling.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/ceiling.tsv" >/dev/null 2>&1; rc=$?
+check "not-reachable may not suppress here either" "[ $rc -eq 4 ]"
 
 # Fingerprints fail CLOSED across a jjstack version change: they cannot be
 # trusted to still mean what they meant, so they go inert rather than hide.
-sed 's/"jjstack_version": ".*"/"jjstack_version": "0.0.0-ancient"/' "$RB/bl.json" > "$RB/old.json"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/old.json" \
+sed 's/jjstack=.*/jjstack=0.0.0-ancient/' "$RB/bl.tsv" > "$RB/old.tsv"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/old.tsv" \
   --active-only > "$RB/old.out" 2>/dev/null; rc=$?
 check "version drift makes fingerprints inert" "[ \"\$(wc -l < '$RB/old.out')\" -eq 2 ]"
 check "version drift is a warning, not a hide" "[ $rc -eq 1 ]"
-"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/old.json" \
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/old.tsv" \
   --active-only --allow-version-drift > "$RB/ovr.out" 2>/dev/null
 check "--allow-version-drift re-enables them"  "[ ! -s '$RB/ovr.out' ]"
 # Positive control for the drift test — prove the two baselines really do
 # differ in version, or "inert" above proves nothing.
 check "positive control: drifted baseline has a different version" \
-  "! cmp -s '$RB/bl.json' '$RB/old.json'"
+  "! cmp -s '$RB/bl.tsv' '$RB/old.tsv'"
 rm -rf "$RB"
 
 echo "== 5h. review skill structural guards =="
@@ -1859,18 +1856,21 @@ check "mark/states: pre-existing dirt alone is 'no auto-fixes' (exit 4)" "[ $rc 
 unset XDG_CACHE_HOME
 rm -rf "$MKS"
 
-echo "== 7c. review-calibration (accept/reject memory) =="
+echo "== 7c. review-calibration (pattern-class scope — may only RANK) =="
 # Post-pass 5: a class the team keeps rejecting must be ranked DOWN THE PAGE and a
 # class they keep confirming ranked up, or the reviewer re-guesses every run.
 # Nothing leaves the report and no confidence ever moves — this is ordering only.
 # The value is entirely in the key normalization (same class -> same row) and the
 # clamped, placement-only rank arithmetic.
-CAL="$(mktemp -d)"; LEDGER="$CAL/review-calibration.tsv"
-"$BIN/jjstack-review-calibration" report --store "$LEDGER" >/dev/null 2>&1; rc=$?
-check "no ledger yet exits 4 (skip, no adjustment)" "[ $rc -eq 4 ]"
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "Unused Import!!" --verdict rejected >/dev/null 2>&1
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
-out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "UNUSED import" 2>&1)
+# This is the WIDEST rung of the memory ladder: its key is a global pattern
+# class, so its ceiling is `rank` — placement only, never a demotion and never a
+# suppression.
+CAL="$(mktemp -d)"; CSTORE="$CAL/calibration.tsv"
+"$BIN/jjstack-review-calibration" report --store "$CSTORE" >/dev/null 2>&1; rc=$?
+check "no store yet exits 4 (skip, no adjustment)" "[ $rc -eq 4 ]"
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "Unused Import!!" --verdict rejected --code style-only >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "unused-import" --verdict rejected --code style-only >/dev/null 2>&1
+out=$("$BIN/jjstack-review-calibration" suggest --store "$CSTORE" --key "UNUSED import" 2>&1)
 check "keys normalize to one row across spellings" "printf '%s' \"\$out\" | grep -q 'rejected=2'"
 check "two rejections rank the pattern at -20"     "grep -q 'rank=-20' <<<\"\$out\""
 check "a negative rank demotes rather than rescores" "grep -q 'placement=demoted' <<<\"\$out\""
@@ -1878,43 +1878,46 @@ check "a negative rank demotes rather than rescores" "grep -q 'placement=demoted
 # change a finding's confidence. The score is a claim about the code; the
 # demotion is a claim about the team's prior decision.
 check "suggest never emits a confidence delta"     "! grep -qi 'delta=' <<<\"\$out\""
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
-out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "unused-import" 2>&1)
+# ...and it must state its EFFECT on every line, so nothing downstream can read
+# a negative rank as something stronger than placement.
+check "suggest states effect=rank even when demoting" "grep -q 'effect=rank' <<<\"\$out\""
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "unused-import" --verdict rejected --code style-only >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "unused-import" --verdict rejected --code style-only >/dev/null 2>&1
+out=$("$BIN/jjstack-review-calibration" suggest --store "$CSTORE" --key "unused-import" 2>&1)
 check "rank is floored at -30" "grep -q 'rank=-30' <<<\"\$out\""
 for _ in 1 2 3; do
-  "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "missing-migration" --verdict accepted >/dev/null 2>&1
+  "$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "missing-migration" --verdict accepted >/dev/null 2>&1
 done
-out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "missing migration" 2>&1)
+out=$("$BIN/jjstack-review-calibration" suggest --store "$CSTORE" --key "missing migration" 2>&1)
 check "rank is capped at +20" "grep -q 'rank=20' <<<\"\$out\""
 # A confirmed pattern ranks up but must NOT be demoted, and must still not carry
 # a score instruction — promotion is placement too.
 check "a positive rank keeps normal placement" "grep -q 'placement=normal' <<<\"\$out\""
-out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "never-seen" 2>&1); rc=$?
+out=$("$BIN/jjstack-review-calibration" suggest --store "$CSTORE" --key "never-seen" 2>&1); rc=$?
 check "unknown key exits 4 with no adjustment" "[ $rc -eq 4 ]"
 check "unknown key reports rank=0"             "grep -q 'rank=0' <<<\"\$out\""
 # Positive control — verdict validation that never rejects anything would let a
-# typo ("acccepted") silently become an uncounted row, and the ledger would rot
+# typo ("acccepted") silently become an uncounted row, and the store would rot
 # while every read still looked healthy.
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key k --verdict acccepted >/dev/null 2>&1; rc=$?
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key k --verdict acccepted >/dev/null 2>&1; rc=$?
 check "invalid verdict actually rejected (exit 2)" "[ $rc -eq 2 ]"
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --verdict accepted >/dev/null 2>&1; rc=$?
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --verdict accepted >/dev/null 2>&1; rc=$?
 check "missing --key is a usage error (2)" "[ $rc -eq 2 ]"
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "tabby" --verdict accepted --note "a	b	c" >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "tabby" --verdict accepted --note "a	b	c" >/dev/null 2>&1
 # Field-count integrity: a tab in free text would shift every column after it.
-# The old form, `awk -F'\t' '/tabby/{exit !(NF==6)}'`, exits 0 when NO line
+# The old form, `awk -F'\t' '/tabby/{exit !(NF==8)}'`, exits 0 when NO line
 # matches — so it passed just as happily when the row was missing entirely.
 # Assert the row EXISTS and is well formed, and prove the assertion can fail.
-row_is_intact() { # row_is_intact <ledger> <key>
-  awk -F'\t' -v k="$2" '$2 == k { seen = 1; if (NF != 6) bad = 1 }
+row_is_intact() { # row_is_intact <store> <key>
+  awk -F'\t' -v k="$2" '$2 == k { seen = 1; if (NF != 8) bad = 1 }
                         END { exit (seen && !bad) ? 0 : 1 }' "$1"
 }
-check "tabs in --note cannot corrupt the row" "row_is_intact '$LEDGER' tabby"
+check "tabs in --note cannot corrupt the row" "row_is_intact '$CSTORE' tabby"
 check "control: the row check fails when the row is absent" \
-  "! row_is_intact '$LEDGER' definitely-never-recorded"
-before=$(wc -l < "$LEDGER")
-"$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "dry" --verdict accepted --dry-run >/dev/null 2>&1
-check "--dry-run appends nothing" "[ \$(wc -l < '$LEDGER') -eq $before ]"
+  "! row_is_intact '$CSTORE' definitely-never-recorded"
+before=$(wc -l < "$CSTORE")
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key "dry" --verdict accepted --dry-run >/dev/null 2>&1
+check "--dry-run appends nothing" "[ \$(wc -l < '$CSTORE') -eq $before ]"
 # Ordering IS the product of `report` — it is the ranked view of the ledger.
 # `%+6d` emits "+20", and `sort -n` cannot parse a leading '+', so the sort key
 # collapsed to 0 and the ranked output came back unranked. The keys below are
@@ -1924,7 +1927,7 @@ ORD="$CAL/ordering.tsv"
 "$BIN/jjstack-review-calibration" record --store "$ORD" --key "aaa-top" --verdict accepted >/dev/null 2>&1
 "$BIN/jjstack-review-calibration" record --store "$ORD" --key "aaa-top" --verdict accepted >/dev/null 2>&1
 "$BIN/jjstack-review-calibration" record --store "$ORD" --key "bbb-mid" --verdict accepted >/dev/null 2>&1
-"$BIN/jjstack-review-calibration" record --store "$ORD" --key "ccc-low" --verdict rejected >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "ccc-low" --verdict rejected --code style-only >/dev/null 2>&1
 rout="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
 # The rank column of each data row, in the order printed (last field is the
 # placement word, so the rank is the one before it).
@@ -1946,8 +1949,37 @@ r2="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
 check "report is byte-identical across runs on an unchanged ledger" "[ \"\$r1\" = \"\$r2\" ]"
 check "tied ranks fall back to key order" \
   "[ \"\$(printf '%s\n' \"\$r1\" | awk '/(demoted|normal)\$/ && \$1 ~ /^tie-/ { print \$1 }' | tr '\n' ' ')\" = 'tie-a tie-b ' ]"
+# A rejection is a decision, and a decision is explained — with a code from the
+# ONE shared vocabulary, never a fourth private list.
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key noreason --verdict rejected >/dev/null 2>&1; rc=$?
+check "a rejection without a reason code exits 2" "[ $rc -eq 2 ]"
+"$BIN/jjstack-review-calibration" record --store "$CSTORE" --key bogus --verdict rejected --code feels-fine >/dev/null 2>&1; rc=$?
+check "an invented reason code exits 2" "[ $rc -eq 2 ]"
+check "the store declares its scope and ceiling" \
+  "head -n 1 '$CSTORE' | grep -q 'scope=pattern-class.*max-effect=rank'"
+
+# POSITIVE CONTROL — the ladder cap can actually fire. A hand-edited row that
+# claims `suppress` from the widest key is precisely the failure the three
+# stores were kept apart to prevent, so it must be rejected by arithmetic, not
+# by anyone remembering the rule.
+printf '2026-01-01\tevil\trejected\tsuppress\tstyle-only\t-\t-\t-\n' >> "$CSTORE"
+"$BIN/jjstack-review-calibration" validate --store "$CSTORE" > /dev/null 2> "$CAL/ladder.err"; rc=$?
+check "POSITIVE CONTROL: a calibration row may not suppress (exit 4)" "[ $rc -eq 4 ]"
+check "the ladder error names the ceiling" "grep -q \"may emit at most 'rank'\" '$CAL/ladder.err'"
+"$BIN/jjstack-review-calibration" report --store "$CSTORE" >/dev/null 2>&1; rc=$?
+check "a ladder-violating store is not silently read" "[ $rc -eq 4 ]"
+# ...and the same file WITHOUT the violating row validates clean, or "exit 4"
+# above would prove only that validate is broken.
+grep -v '	evil	' "$CSTORE" > "$CAL/clean.tsv"
+"$BIN/jjstack-review-calibration" validate --store "$CAL/clean.tsv" >/dev/null 2>&1; rc=$?
+check "the same store without that row validates clean" "[ $rc -eq 0 ]"
+
+# A store from a DIFFERENT rung is not interchangeable with this one.
+printf '#jjstack-review-store\tscope=instance\tmax-effect=suppress\tv=3\n' > "$CAL/wrong.tsv"
+"$BIN/jjstack-review-calibration" validate --store "$CAL/wrong.tsv" >/dev/null 2>&1; rc=$?
+check "a store from another rung exits 4" "[ $rc -eq 4 ]"
 rm -rf "$CAL"
-echo "== 7d. review-triage (no-silent-drop invariants + dedup + exposure) =="
+echo "== 7d. review-run-report (per-run audit trail, NOT memory) =="
 # /review casts wide on purpose, so the interesting question is not what it
 # reports but what it decided NOT to report. This script is the accountability
 # layer: every finding gets a disposition and a reason code, three invariants
@@ -1955,12 +1987,12 @@ echo "== 7d. review-triage (no-silent-drop invariants + dedup + exposure) =="
 # than guessed. Guards that can't fire are worthless, so each invariant below
 # has a POSITIVE CONTROL feeding it input that must be rejected.
 TRI="$(mktemp -d)"
-# One ledger row: 7 fields joined by real tabs. Hand-writing the tabs into a
+# One findings row: 7 fields joined by real tabs. Hand-writing the tabs into a
 # format string is how the first draft of these tests silently produced
 # 6-column rows, so the join lives in one place.
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
 
-# A well-formed ledger: two lenses on the same defect (must collapse), one
+# A well-formed findings file: two lenses on the same defect (must collapse), one
 # demoted-by-prior-decision item, one baseline-suppressed nit, one deferred
 # vendor finding. Dispositions track the enrich-only model — no score bands.
 {
@@ -1971,10 +2003,10 @@ row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"
   row P2 40 vendor/lib/x.js:100 security    defer    not-reachable  'unused eval path'
 } > "$TRI/good.tsv"
 
-"$BIN/jjstack-review-triage" "$TRI/good.tsv" --out "$TRI/good.md" > "$TRI/good.out" 2> "$TRI/good.err"
+"$BIN/jjstack-review-run-report" "$TRI/good.tsv" --out "$TRI/good.md" > "$TRI/good.out" 2> "$TRI/good.err"
 rc=$?
-check "review-triage exits 0 on a valid ledger" "[ $rc -eq 0 ]"
-check "renders a ledger to --out"               "[ -f '$TRI/good.md' ]"
+check "review-run-report exits 0 on valid findings" "[ $rc -eq 0 ]"
+check "renders a run report to --out"           "[ -f '$TRI/good.md' ]"
 check "dedups two lenses on one defect"         "grep -q 'unique=4 collapsed=1' '$TRI/good.out'"
 # The lens list is SORTED, not in arrival order. This assertion used to pin
 # `security, correctness` — the order the two rows happen to sit in the fixture
@@ -1985,7 +2017,7 @@ check "counts corroborating lenses"             "grep -q 'correctness, security'
 check "both corroborating lenses are still named" \
       "grep -q 'src/auth.py:42' '$TRI/good.md' && grep -q 'correctness' '$TRI/good.md' && grep -q 'security' '$TRI/good.md'"
 tac "$TRI/good.tsv" > "$TRI/good.rev.tsv"
-"$BIN/jjstack-review-triage" "$TRI/good.rev.tsv" --out "$TRI/good.rev.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$TRI/good.rev.tsv" --out "$TRI/good.rev.md" > /dev/null 2>&1
 check "the lens list does not depend on which row came first" \
       "grep -q 'correctness, security' '$TRI/good.rev.md'"
 check "classifies a src path as prod exposure"  "grep -q 'src/auth.py:42\` | prod' '$TRI/good.md'"
@@ -2004,35 +2036,35 @@ check "demoted has its own section"             "grep -q 'Demoted (prior decisio
 # POSITIVE CONTROL 1 — a disposition other than `report` with no reason code
 # is the silent drop this whole script exists to make impossible.
 row P2 30 src/a.py:1 sec suppress - 'dropped with no reason' > "$TRI/silent.tsv"
-"$BIN/jjstack-review-triage" "$TRI/silent.tsv" --out "$TRI/silent.md" > /dev/null 2> "$TRI/silent.err"
+"$BIN/jjstack-review-run-report" "$TRI/silent.tsv" --out "$TRI/silent.md" > /dev/null 2> "$TRI/silent.err"
 rc=$?
 check "POSITIVE CONTROL: silent drop rejected (exit 4)" "[ $rc -eq 4 ]"
 check "silent drop names the invariant"                 "grep -q 'never dropped silently' '$TRI/silent.err'"
-check "invalid ledger renders nothing"                  "[ ! -f '$TRI/silent.md' ]"
+check "invalid findings render nothing"                 "[ ! -f '$TRI/silent.md' ]"
 
 # POSITIVE CONTROL 2 — reachability may deprioritise, never delete.
 row P2 30 src/b.py:1 sec suppress not-reachable 'deleted via reachability' > "$TRI/reach.tsv"
-"$BIN/jjstack-review-triage" "$TRI/reach.tsv" > /dev/null 2> "$TRI/reach.err"
+"$BIN/jjstack-review-run-report" "$TRI/reach.tsv" > /dev/null 2> "$TRI/reach.err"
 rc=$?
 check "POSITIVE CONTROL: not-reachable cannot suppress (exit 4)" "[ $rc -eq 4 ]"
 check "not-reachable error offers defer/demoted instead"         "grep -q 'deprioritise' '$TRI/reach.err'"
 
 # POSITIVE CONTROL 3 — a P0/P1 may be deferred, never made to disappear.
 row P0 90 src/c.py:1 sec suppress style-only 'top severity vanished' > "$TRI/p0.tsv"
-"$BIN/jjstack-review-triage" "$TRI/p0.tsv" > /dev/null 2> "$TRI/p0.err"
+"$BIN/jjstack-review-run-report" "$TRI/p0.tsv" > /dev/null 2> "$TRI/p0.err"
 rc=$?
 check "POSITIVE CONTROL: P0 cannot be suppressed (exit 4)" "[ $rc -eq 4 ]"
 check "P0 error names the severity"                        "grep -q 'P0 may not be suppressed' '$TRI/p0.err'"
 
 # Vocabulary is closed — an invented reason code is a failure, not a passthrough.
 row P2 30 src/d.py:1 sec defer feels-fine 'invented reason code' > "$TRI/vocab.tsv"
-"$BIN/jjstack-review-triage" "$TRI/vocab.tsv" > /dev/null 2> "$TRI/vocab.err"
+"$BIN/jjstack-review-run-report" "$TRI/vocab.tsv" > /dev/null 2> "$TRI/vocab.err"
 rc=$?
 check "POSITIVE CONTROL: unknown reason code rejected" "[ $rc -eq 4 ]"
 
 # Reporting a finding in code nobody here authored is advisory noise, not fatal.
 row P2 70 node_modules/x/y.js:3 sec report - 'vendor finding reported' > "$TRI/adv.tsv"
-"$BIN/jjstack-review-triage" "$TRI/adv.tsv" > /dev/null 2> "$TRI/adv.err"
+"$BIN/jjstack-review-run-report" "$TRI/adv.tsv" > /dev/null 2> "$TRI/adv.err"
 rc=$?
 check "vendor-path report warns but still exits 0" "[ $rc -eq 0 ]"
 check "vendor-path report emits an ADVISORY"       "grep -q 'ADVISORY' '$TRI/adv.err'"
@@ -2044,7 +2076,7 @@ check "vendor-path report emits an ADVISORY"       "grep -q 'ADVISORY' '$TRI/adv
 # forbidden for a P0/P1 by invariant 3. So the one phase permitted to delete had
 # no accounting: the finding just left. `refuted` + `stale-api` is that row.
 row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is correct per current docs (https://example/docs)' > "$TRI/ref.tsv"
-"$BIN/jjstack-review-triage" "$TRI/ref.tsv" --out "$TRI/ref.md" > "$TRI/ref.out" 2> "$TRI/ref.err"
+"$BIN/jjstack-review-run-report" "$TRI/ref.tsv" --out "$TRI/ref.md" > "$TRI/ref.out" 2> "$TRI/ref.err"
 rc=$?
 check "a refuted stale-API finding is a legal ledger row" "[ $rc -eq 0 ]"
 check "a refuted P1 is accepted (invariant 3 is about suppress)" "[ -f '$TRI/ref.md' ]"
@@ -2055,21 +2087,48 @@ check "refuted is counted in the tally"       "grep -q 'refuted=1' '$TRI/ref.out
 # POSITIVE CONTROL 4a — `refuted` may not carry any other reason, or it becomes
 # a general delete hatch for anything a reviewer dislikes.
 row P2 30 src/f.py:1 sec refuted style-only 'refuted for the wrong reason' > "$TRI/ref2.tsv"
-"$BIN/jjstack-review-triage" "$TRI/ref2.tsv" > /dev/null 2> "$TRI/ref2.err"
+"$BIN/jjstack-review-run-report" "$TRI/ref2.tsv" > /dev/null 2> "$TRI/ref2.err"
 rc=$?
 check "POSITIVE CONTROL: refuted with a non-stale-api reason rejected" "[ $rc -eq 4 ]"
 check "the pairing error names both halves" "grep -q 'only legal together' '$TRI/ref2.err'"
 # POSITIVE CONTROL 4b — and `stale-api` may not ride any other disposition, or a
 # P0/P1 could be routed past invariant 3 by relabelling it.
 row P0 90 src/g.py:1 sec suppress stale-api 'P0 suppressed via stale-api' > "$TRI/ref3.tsv"
-"$BIN/jjstack-review-triage" "$TRI/ref3.tsv" > /dev/null 2> "$TRI/ref3.err"
+"$BIN/jjstack-review-run-report" "$TRI/ref3.tsv" > /dev/null 2> "$TRI/ref3.err"
 rc=$?
 check "POSITIVE CONTROL: stale-api cannot ride suppress" "[ $rc -eq 4 ]"
 
-# A missing ledger is a clean exit 3, not a crash or a silent success.
-"$BIN/jjstack-review-triage" "$TRI/nope.tsv" > /dev/null 2>&1
+# A missing findings file is a clean exit 3, not a crash or a silent success.
+"$BIN/jjstack-review-run-report" "$TRI/nope.tsv" > /dev/null 2>&1
 rc=$?
-check "missing ledger exits 3" "[ $rc -eq 3 ]"
+check "missing findings file exits 3" "[ $rc -eq 3 ]"
+
+# The rename is not cosmetic. This tool was mistaken for one of the three review
+# MEMORY stores by four separate PRs, so it now refuses one structurally: every
+# memory store opens with a #jjstack-review-store header, and a run report is
+# never rendered from one.
+printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1\n' > "$TRI/store.tsv"
+"$BIN/jjstack-review-run-report" "$TRI/store.tsv" > /dev/null 2> "$TRI/store.err"
+rc=$?
+check "POSITIVE CONTROL: a memory store is refused (exit 2)" "[ $rc -eq 2 ]"
+check "the refusal says it is not memory" "grep -q 'MEMORY store' '$TRI/store.err'"
+# ...and the same file without that one header line renders fine, or the refusal
+# above would prove only that the tool is broken.
+row P2 30 src/e2.py:1 sec report - 'ordinary finding' > "$TRI/nostore.tsv"
+"$BIN/jjstack-review-run-report" "$TRI/nostore.tsv" > /dev/null 2>&1; rc=$?
+check "the same findings without that header render" "[ $rc -eq 0 ]"
+
+# --dry-run validates without writing — the house flag on every bin/ script.
+"$BIN/jjstack-review-run-report" "$TRI/good.tsv" --out "$TRI/dry.md" --dry-run >/dev/null 2>&1
+check "--dry-run writes nothing" "[ ! -f '$TRI/dry.md' ]"
+
+# The reason-code ceiling is DATA now (bin/jjstack-review-vocab.tsv), shared with
+# all three memory stores. Deleting the not-reachable row from the vocabulary
+# would break this, which is the point: one definition, four consumers.
+check "the shared vocabulary is the only reason-code list" \
+  "grep -q '^reason	not-reachable	demote' '$BIN/jjstack-review-vocab.tsv'"
+check "the run report defines no reason codes of its own" \
+  "! grep -q 'unverified prior-decision low-confidence' '$BIN/jjstack-review-run-report'"
 
 # --- REGRESSION: dedup absorbed a reported P0 into a suppressed P3 ----------
 # The three invariants used to run PER ROW, BEFORE dedup, and dedup kept only
@@ -2083,7 +2142,7 @@ check "missing ledger exits 3" "[ $rc -eq 3 ]"
   row P3 20 src/a.py:10 style    suppress baseline 'the request handler does not validate the incoming field length'
   row P0 95 src/a.py:10 security report   -        'the request handler does not validate the incoming token allowing auth bypass'
 } > "$TRI/absorb.tsv"
-"$BIN/jjstack-review-triage" "$TRI/absorb.tsv" --out "$TRI/absorb.md" > "$TRI/absorb.out" 2>&1
+"$BIN/jjstack-review-run-report" "$TRI/absorb.tsv" --out "$TRI/absorb.md" > "$TRI/absorb.out" 2>&1
 rc=$?
 check "merged group is not suppressed (exit 0)"    "[ $rc -eq 0 ]"
 check "merge keeps the HIGHEST severity"           "grep -q '| P0 | 95 |' '$TRI/absorb.md'"
@@ -2110,7 +2169,7 @@ check "the merge records the disposition change"   "grep -q 'suppress → report
   row P3 20 vendor/lib/x.js:5 style    suppress baseline 'the bundled helper concatenates the incoming request value without any check'
   row P1 88 vendor/lib/x.js:5 security report   -        'the bundled helper concatenates the incoming request value into a shell command'
 } > "$TRI/vendmerge.tsv"
-"$BIN/jjstack-review-triage" "$TRI/vendmerge.tsv" --out "$TRI/vendmerge.md" > /dev/null 2> "$TRI/vendmerge.err"
+"$BIN/jjstack-review-run-report" "$TRI/vendmerge.tsv" --out "$TRI/vendmerge.md" > /dev/null 2> "$TRI/vendmerge.err"
 check "POSITIVE CONTROL: merged-up vendor report warns after the merge" \
       "grep -q 'vendor/lib/x.js:5 (vendor) is reported' '$TRI/vendmerge.err'"
 # Defence in depth: an all-suppressed group whose merged severity is P0 must
@@ -2120,7 +2179,7 @@ check "POSITIVE CONTROL: merged-up vendor report warns after the merge" \
   row P3 20 src/e.py:7 style    suppress baseline 'the parser accepts a header value without any bound'
   row P0 91 src/e.py:7 security suppress baseline 'the parser accepts a header value without checking the signature'
 } > "$TRI/absorb2.tsv"
-"$BIN/jjstack-review-triage" "$TRI/absorb2.tsv" --out "$TRI/absorb2.md" > /dev/null 2> "$TRI/absorb2.err"
+"$BIN/jjstack-review-run-report" "$TRI/absorb2.tsv" --out "$TRI/absorb2.md" > /dev/null 2> "$TRI/absorb2.err"
 rc=$?
 check "an all-suppressed merge reaching P0 is rejected" "[ $rc -eq 4 ]"
 check "merged P0 rejection renders nothing"             "[ ! -f '$TRI/absorb2.md' ]"
@@ -2140,7 +2199,7 @@ check "an agreeing dedup is not reported as a merge" "grep -q 'merges-raised=0' 
   row P0 60 src/a.py:10 security report - 'the request handler does not validate the incoming token allowing auth bypass'
   row P0 95 src/a.py:10 memory   report - 'the request handler does not validate the incoming size so double free'
 } > "$TRI/eqsev.tsv"
-"$BIN/jjstack-review-triage" "$TRI/eqsev.tsv" --out "$TRI/eqsev.md" > "$TRI/eqsev.out" 2>&1
+"$BIN/jjstack-review-run-report" "$TRI/eqsev.tsv" --out "$TRI/eqsev.md" > "$TRI/eqsev.out" 2>&1
 rc=$?
 check "two distinct P0s at one line exit 0"        "[ $rc -eq 0 ]"
 check "the winning claim survives an equal merge"  "grep -q 'double free' '$TRI/eqsev.md'"
@@ -2169,8 +2228,12 @@ check "identical claims at one line are still not a merge" "grep -q 'merges-rais
 # The injected fault is not invented: it is the literal pre-fix dedup body
 # recovered from git (d128644^ lines 192-200), which kept the first-seen row
 # and discarded the rest — the exact defect this PR exists to fix.
-MUT="$TRI/triage-with-prefix-dedup"
-python3 - "$BIN/jjstack-review-triage" "$MUT" <<'MUTPY'
+MUT="$TRI/run-report-with-prefix-dedup"
+# The script sources its vocabulary from beside itself, so the mutant needs the
+# same two files next to it — otherwise it dies at startup and "exit 4" would be
+# reporting a missing file, not a rejected collapse.
+cp "$BIN/jjstack-review-vocab.sh" "$BIN/jjstack-review-vocab.tsv" "$TRI/"
+python3 - "$BIN/jjstack-review-run-report" "$MUT" <<'MUTPY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src, encoding="utf-8").read()
@@ -2181,7 +2244,7 @@ b = s.index("    next\n", a) + len("    next\n")
 open(dst, "w", encoding="utf-8").write(s[:a] + "    next\n" + s[b:])
 MUTPY
 chmod +x "$MUT"
-check "the fault injection actually changed the script" "! cmp -s '$MUT' '$BIN/jjstack-review-triage'"
+check "the fault injection actually changed the script" "! cmp -s '$MUT' '$BIN/jjstack-review-run-report'"
 "$MUT" "$TRI/absorb.tsv" --out "$TRI/mut.md" > /dev/null 2> "$TRI/mut.err"
 rc=$?
 check "POSITIVE CONTROL: a broken collapse is rejected (exit 4)" "[ $rc -eq 4 ]"
@@ -2195,7 +2258,7 @@ check "a broken collapse renders nothing"                       "[ ! -f '$TRI/mu
 # produced a 9-cell row against a 7-cell header and renderers dropped the
 # overflow, making the finding text unreadable in the committed artifact.
 row P2 50 src/x.py:3 correctness report - 'the guard uses a || b when it should use a && b' > "$TRI/pipe.tsv"
-"$BIN/jjstack-review-triage" "$TRI/pipe.tsv" --out "$TRI/pipe.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$TRI/pipe.tsv" --out "$TRI/pipe.md" > /dev/null 2>&1
 check "pipe in a claim is escaped for the table" "grep -q 'a \\\\|\\\\| b' '$TRI/pipe.md'"
 # POSITIVE CONTROL 5 — count the cells a renderer would actually see: strip
 # the escapes, then the row must have exactly 7 cells like its header.
@@ -2214,14 +2277,14 @@ adj() { printf '{"lens":"%s","file":"%s","start_line":%s,"severity":"%s","confid
   adj security src/a.py 10 P0 'auth bypass'
   adj perf     src/b.py 4  P2 'n+1 query'
 } > "$TRI/adjudicated.jsonl"
-"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --out "$TRI/empty.md" > /dev/null 2> "$TRI/empty.err"
+"$BIN/jjstack-review-run-report" "$TRI/empty.tsv" --out "$TRI/empty.md" > /dev/null 2> "$TRI/empty.err"
 rc=$?
 check "an empty ledger still exits 0 unreconciled" "[ $rc -eq 0 ]"
 check "empty unreconciled ledger warns it certifies nothing" "grep -q 'certifies nothing' '$TRI/empty.err'"
 check "unreconciled header does not claim completeness"      "grep -q 'was NOT verified' '$TRI/empty.md'"
 # POSITIVE CONTROL 6 — the same empty ledger against a real adjudicated set
 # must refuse to render and name every finding that left without a disposition.
-"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --reconcile "$TRI/adjudicated.jsonl" \
+"$BIN/jjstack-review-run-report" "$TRI/empty.tsv" --reconcile "$TRI/adjudicated.jsonl" \
   --out "$TRI/recon.md" > /dev/null 2> "$TRI/recon.err"
 rc=$?
 check "POSITIVE CONTROL: a dropped finding fails reconciliation (exit 4)" "[ $rc -eq 4 ]"
@@ -2232,14 +2295,14 @@ check "failed reconciliation renders nothing"      "[ ! -f '$TRI/recon.md' ]"
   row P0 90 src/a.py:10 security report -            'auth bypass'
   row P2 50 src/b.py:4  perf     defer  pre-existing 'n+1 query'
 } > "$TRI/full.tsv"
-"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/adjudicated.jsonl" \
+"$BIN/jjstack-review-run-report" "$TRI/full.tsv" --reconcile "$TRI/adjudicated.jsonl" \
   --out "$TRI/full.md" > /dev/null 2>&1
 rc=$?
 check "a complete ledger reconciles (exit 0)"          "[ $rc -eq 0 ]"
 check "reconciled header states it is a checked fact"  "grep -q 'checked fact, not a promise' '$TRI/full.md'"
 check "reconciled ledger names its adjudicated source" "grep -q 'reconciled against' '$TRI/full.md'"
 # A missing adjudicated file is exit 3, the same clean signal as a missing ledger.
-"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/nope.jsonl" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$TRI/full.tsv" --reconcile "$TRI/nope.jsonl" > /dev/null 2>&1
 rc=$?
 check "missing --reconcile file exits 3" "[ $rc -eq 3 ]"
 
@@ -2250,7 +2313,7 @@ check "missing --reconcile file exits 3" "[ $rc -eq 3 ]"
 # the printed remedy ("fix the ledger") was wrong.
 row P0 90 src/a.py:10-14 security report - 'auth bypass over a range' > "$TRI/range.tsv"
 adj security src/a.py 10 P0 'auth bypass' > "$TRI/range.jsonl"
-"$BIN/jjstack-review-triage" "$TRI/range.tsv" --reconcile "$TRI/range.jsonl" \
+"$BIN/jjstack-review-run-report" "$TRI/range.tsv" --reconcile "$TRI/range.jsonl" \
   --out "$TRI/range.md" > /dev/null 2> "$TRI/range.err"
 rc=$?
 check "a path:N-M row reconciles against file:start_line (exit 0)" "[ $rc -eq 0 ]"
@@ -2262,7 +2325,7 @@ check "the range row still renders its own full location" "grep -q 'src/a.py:10-
 # reconciled page made a STRONGER claim than the unreconciled one on strictly
 # less evidence. Evidence of absence is not a check.
 : > "$TRI/emptyadj.jsonl"
-"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --reconcile "$TRI/emptyadj.jsonl" \
+"$BIN/jjstack-review-run-report" "$TRI/empty.tsv" --reconcile "$TRI/emptyadj.jsonl" \
   --out "$TRI/vac.md" > /dev/null 2> "$TRI/vac.err"
 rc=$?
 check "an empty adjudicated set still exits 0"                  "[ $rc -eq 0 ]"
@@ -2276,7 +2339,7 @@ check "reconciling against nothing still certifies nothing"     "grep -q 'certif
 # every adjudicated finding" above an EMPTY problem list. A tool that cannot
 # run must say it could not run, never blame the input it never read.
 printf 'not utf8: \377\376\n' > "$TRI/binary.jsonl"
-"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/binary.jsonl" \
+"$BIN/jjstack-review-run-report" "$TRI/full.tsv" --reconcile "$TRI/binary.jsonl" \
   --out "$TRI/crash.md" > /dev/null 2> "$TRI/crash.err"
 rc=$?
 check "an unreadable adjudicated file fails loudly (exit 4)"    "[ $rc -eq 4 ]"
@@ -2289,8 +2352,8 @@ check "a crashed reconciliation renders nothing"                "[ ! -f '$TRI/cr
 # `sed -n '2,43p'` cut the block before the Exit line, so the documented exit
 # codes — including the exit 4 the whole design hinges on — never reached the
 # user. The range is now computed from the comment block itself.
-"$BIN/jjstack-review-triage" --help > "$TRI/help.txt" 2>&1
-check "--help documents the exit codes"      "grep -q 'Exit: 0 ledger valid' '$TRI/help.txt'"
+"$BIN/jjstack-review-run-report" --help > "$TRI/help.txt" 2>&1
+check "--help documents the exit codes"      "grep -q 'Exit: 0 report valid' '$TRI/help.txt'"
 check "--help documents exit 4"              "grep -q '4 validation failed' '$TRI/help.txt'"
 check "--help documents --reconcile"         "grep -q -- '--reconcile' '$TRI/help.txt'"
 # POSITIVE CONTROL 7 — the help must stop at the code, not spill the script.
@@ -2376,17 +2439,26 @@ check "non-numeric --max-refs exits 2" "[ \$? -eq 2 ]"
 check "unresolvable repo exits 3" "[ \$? -eq 3 ]"
 rm -rf "$BR"
 
-echo "== 7f. review-ledger (dismissal memory that demotes, never drops) =="
+echo "== 7f. review-ledger (path-glob scope — may DEMOTE, never suppress) =="
 # Every reviewer people keep using grows a memory of what was waved off. The
 # risk is that the memory quietly becomes a suppression list — which is how a
 # recall-first reviewer turns into a precision-first one without anyone
-# deciding to. These tests pin the three rules that stop that.
-LD="$(mktemp -d)/ledger.md"
+# deciding to. These tests pin the rules that stop that. This is the MIDDLE rung
+# of the memory ladder: its key is a path glob plus a category, so its ceiling
+# is `demote`.
+# Hand-written fixtures below need the store's own two header lines, or
+# validate_store rejects the file before the behaviour under test is reached.
+LG_HDR=$'#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1'
+LG_COLS=$'#ts\trepo\ttype\teffect\tcode\tpath-glob\tcategory\tnote'
+LD="$(mktemp -d)/ledger.tsv"
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'bin/*' --category style \
   --note 'house style permits it' --ledger "$LD" >/dev/null 2>&1
 check "records a dismissal"              "[ -f '$LD' ]"
-"$BIN/jjstack-review-ledger" --match --path 'bin/foo.sh' --category style --ledger "$LD" >/dev/null 2>&1
+check "the store declares its scope and ceiling" \
+  "head -n 1 '$LD' | grep -q 'scope=path-glob.*max-effect=demote'"
+"$BIN/jjstack-review-ledger" --match --path 'bin/foo.sh' --category style --ledger "$LD" > "$LD.hit" 2>/dev/null
 check "prior dismissal demotes a repeat"  "[ \$? -eq 0 ]"
+check "the match states effect=demote"    "grep -q 'effect=demote' '$LD.hit'"
 "$BIN/jjstack-review-ledger" --match --path 'src/foo.py' --category style --ledger "$LD" >/dev/null 2>&1
 check "unrelated path does not demote"    "[ \$? -eq 1 ]"
 
@@ -2397,7 +2469,11 @@ check "unrelated path does not demote"    "[ \$? -eq 1 ]"
 check "a FIXED record never suppresses" "[ \$? -eq 1 ]"
 # POSITIVE CONTROL — the fixed record must really be on file and really match
 # path+category, or the non-suppression proves nothing about the type check.
-check "the FIXED record exists and matches path+category" "grep -q 'fixed | lib/\* | performance' '$LD'"
+check "the FIXED record exists and matches path+category" \
+  "awk -F'\t' '\$3==\"fixed\" && \$6==\"lib/*\" && \$7==\"performance\"{f=1} END{exit !f}' '$LD'"
+# ...and it is recorded with effect `none`: history, not a verdict.
+check "a FIXED record carries no effect" \
+  "awk -F'\t' '\$3==\"fixed\"{exit !(\$4==\"none\")}' '$LD'"
 
 # Rule 2: protected categories never demote, however often they are dismissed.
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category security \
@@ -2416,6 +2492,8 @@ check "same shape in an unprotected category DOES demote" "[ \$? -eq 0 ]"
 check "unknown category exits 2" "[ \$? -eq 2 ]"
 "$BIN/jjstack-review-ledger" --record --type maybe --path x --category style --ledger "$LD" >/dev/null 2>&1
 check "unknown type exits 2"     "[ \$? -eq 2 ]"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path x --category style --code feels-fine --ledger "$LD" >/dev/null 2>&1
+check "an invented reason code exits 2" "[ \$? -eq 2 ]"
 
 # Rule 4: a record only speaks about a finding whose PATH it matches. The
 # protected branch used to print and `continue` before the glob was ever tested,
@@ -2424,7 +2502,7 @@ check "unknown type exits 2"     "[ \$? -eq 2 ]"
 # prior dismissal in the finding body: a fabricated precedent, pointing at a
 # live P0. The pre-existing protected test could not catch it because its glob
 # ('src/*' vs 'src/a.py') happened to match.
-LDG="$(mktemp -d)/ledger.md"
+LDG="$(mktemp -d)/ledger.tsv"
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'docs/*' --category security \
   --note 'docs only' --ledger "$LDG" >/dev/null 2>&1
 "$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category security \
@@ -2546,8 +2624,9 @@ check "positive control: every scoped glob a reviewer would write is accepted" \
 # Rule 5c — the ledger is designed to be hand-edited in git, so --record is only
 # half the door. --match read the pattern straight out of the file, so one
 # merged or hand-typed '*' row demoted repo-wide with no check at all.
-LDH="$(mktemp -d)/ledger.md"
-printf '2026-01-01 | acme/x | dismissed | * | style | hand written\n' > "$LDH"
+LDH="$(mktemp -d)/ledger.tsv"
+printf '%s\n%s\n' "$LG_HDR" "$LG_COLS" > "$LDH"
+printf '2026-01-01\tacme/x\tdismissed\tdemote\tprior-decision\t*\tstyle\thand written\n' >> "$LDH"
 out=$("$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category style \
   --ledger "$LDH" 2>&1)
 check "a hand-edited blanket row does NOT demote" \
@@ -2556,7 +2635,8 @@ check "a hand-edited blanket row says why it was ignored" \
   "grep -qi 'too broad' <<< \"\$out\""
 # POSITIVE CONTROL — the same hand-written row shape, scoped, must still demote,
 # or "does not demote" would only mean hand-written rows are never read at all.
-printf '2026-01-01 | acme/x | dismissed | src/* | style | hand written scoped\n' > "$LDH"
+printf '%s\n%s\n' "$LG_HDR" "$LG_COLS" > "$LDH"
+printf '2026-01-01\tacme/x\tdismissed\tdemote\tprior-decision\tsrc/*\tstyle\thand written scoped\n' >> "$LDH"
 hedge=$("$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category style \
   --ledger "$LDH" 2>/dev/null)
 check "positive control: a hand-edited SCOPED row still demotes" \
@@ -2564,10 +2644,11 @@ check "positive control: a hand-edited SCOPED row still demotes" \
 rm -rf "$(dirname "$LDH")" "$(dirname "$BRC")" "$(dirname "$BRN")"
 
 # Rule 6: the note is quoted by the skill as the demotion reason, so it must
-# survive the round trip whole. The reader took field 6 of a '|'-separated line,
-# which truncated any note containing a pipe at the first one — silently
-# dropping the condition attached to the dismissal.
-LDP="$(mktemp -d)/ledger.md"
+# survive the round trip whole. The markdown reader took field 6 of a
+# '|'-separated line, which truncated any note containing a pipe at the first
+# one — silently dropping the condition attached to the dismissal. TSV columns
+# make that structural, and this test pins that it stayed fixed.
+LDP="$(mktemp -d)/ledger.tsv"
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
   --note 'safe today | revisit when we drop py38' --ledger "$LDP" >/dev/null 2>&1
 "$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
@@ -2592,12 +2673,12 @@ check "positive control: that record really demoted" "grep -q '^DEMOTE ' '$LDP.o
 # to strip: a note is stored in the printable alphabet, and anything outside it
 # is escaped into that alphabet reversibly. A control character nobody has
 # thought of is covered by the same sentence as the one that was reported.
-LDN="$(mktemp -d)/ledger.md"
+LDN="$(mktemp -d)/ledger.tsv"
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
   --note 'safe today
 BUT revisit when we drop py38' --ledger "$LDN" >/dev/null 2>&1
 check "a note containing a newline writes exactly ONE ledger row" \
-  "[ \"\$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \\|' '$LDN')\" = 1 ]"
+  "[ \"\$(grep -cP '^[0-9]{4}-[0-9]{2}-[0-9]{2}\\t' '$LDN')\" = 1 ]"
 check "the ledger file itself gains no orphan continuation line" \
   "! grep -q '^BUT revisit' '$LDN'"
 "$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
@@ -2618,11 +2699,11 @@ check "the stored note decodes back to the exact original text" \
 # must not forge a second one. \033 and \013 appear nowhere in the fix.
 ctl_bad=0
 for esc in '\n' '\r' '\t' '\013' '\014' '\033' '\007'; do
-  LDC="$(mktemp -d)/ledger.md"
-  n=$(printf "head${esc}2099-01-01 | forged/repo | dismissed | src/* | security | injected")
+  LDC="$(mktemp -d)/ledger.tsv"
+  n=$(printf "head${esc}2099-01-01\tforged/repo\tdismissed\tdemote\tprior-decision\tsrc/*\tsecurity\tinjected")
   "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
     --note "$n" --ledger "$LDC" >/dev/null 2>&1
-  rows=$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LDC")
+  rows=$(grep -cP '^[0-9]{4}-[0-9]{2}-[0-9]{2}\t' "$LDC")
   [ "$rows" = 1 ] || ctl_bad=$((ctl_bad + 1))
   # the forged row must not be reachable as a security dismissal either
   grep -q 'forged\|injected' \
@@ -2634,9 +2715,10 @@ check "no control character in a note can forge a ledger row" "[ $ctl_bad -eq 0 
 # POSITIVE CONTROL — the forgery probe must be able to SEE a forged row, or
 # "no forgery" would only mean the probe never looks. This row is written
 # straight into the file, which is exactly what the unescaped note produced.
-LDF="$(mktemp -d)/ledger.md"
-printf '2026-01-01 | acme/x | dismissed | docs/* | style | head\n' > "$LDF"
-printf '2099-01-01 | forged/repo | dismissed | src/* | security | injected\n' >> "$LDF"
+LDF="$(mktemp -d)/ledger.tsv"
+printf '%s\n%s\n' "$LG_HDR" "$LG_COLS" > "$LDF"
+printf '2026-01-01\tacme/x\tdismissed\tdemote\tprior-decision\tdocs/*\tstyle\thead\n' >> "$LDF"
+printf '2099-01-01\tforged/repo\tdismissed\tdemote\tprior-decision\tsrc/*\tsecurity\tinjected\n' >> "$LDF"
 # (command substitution, not a pipe: --match exits 1 on a PROTECTED-only hit and
 # `set -o pipefail` would read that as the whole check failing.)
 fout=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category security \
@@ -2646,7 +2728,7 @@ check "positive control: the probe sees a genuinely forged row" \
 # POSITIVE CONTROL — an ordinary printable note must pass through byte for byte,
 # or "escaped" could just mean "mangled". Pipes, quotes, backslashes and
 # non-ASCII all stay exactly as typed.
-LDA="$(mktemp -d)/ledger.md"
+LDA="$(mktemp -d)/ledger.tsv"
 plain='keep as-is: 100% "quoted", back\slash, em—dash, pipe | and all'
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
   --note "$plain" --ledger "$LDA" >/dev/null 2>&1
@@ -2708,7 +2790,7 @@ check "positive control: a real ledger with no match warns nothing" \
 # until killed (verified rc=124 under `timeout 5`). An unattended /review step
 # that spins is worse than one that crashes — nothing reports and nothing times
 # out. Every value-taking flag is covered, since one unguarded arm is enough.
-for vflag in --type --path --category --note --ledger --repo; do
+for vflag in --type --path --category --code --note --ledger --repo; do
   timeout 5 "$BIN/jjstack-review-ledger" --list "$vflag" >/dev/null 2>&1
   check "ledger $vflag with no value exits 2, never hangs" "[ \$? -eq 2 ]"
 done
@@ -2716,9 +2798,21 @@ done
 # every check above would pass just as well against a script that cannot run.
 timeout 2 bash -c 'while :; do :; done' >/dev/null 2>&1
 check "positive control: timeout reports a real hang as 124" "[ \$? -eq 124 ]"
+
+# Rule 9: the ladder cap can actually fire. A hand-edited row that claims
+# `suppress` from a path-glob key is the exact failure that keeping three stores
+# apart prevents.
+printf '2026-01-01\t.\tdismissed\tsuppress\tprior-decision\tsrc/*\tstyle\tevil\n' >> "$LD"
+"$BIN/jjstack-review-ledger" --validate --ledger "$LD" > /dev/null 2> "$LD.ladder"; rc=$?
+check "POSITIVE CONTROL: a ledger row may not suppress (exit 4)" "[ $rc -eq 4 ]"
+check "the ladder error names the ceiling" "grep -q \"may emit at most 'demote'\" '$LD.ladder'"
+"$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style --ledger "$LD" >/dev/null 2>&1
+check "a ladder-violating store is not silently matched" "[ \$? -eq 4 ]"
+grep -v '	evil$' "$LD" > "$LD.clean"
+"$BIN/jjstack-review-ledger" --validate --ledger "$LD.clean" >/dev/null 2>&1
+check "the same store without that row validates clean" "[ \$? -eq 0 ]"
 rm -rf "$(dirname "$LDG")" "$(dirname "$LDP")"
 rm -rf "$(dirname "$LD")"
-
 echo "== 7g. review-revert-history (files that burned us before) =="
 # A file that has been reverted is not the same review risk as one that never
 # has, and the diff never shows that. git already holds the record.
@@ -3052,24 +3146,28 @@ runtime_vocab() {  # $1=script  $2=awk array name (DISP|REASON)
     $0 ~ (want "\\[[A-Za-z_]+\\[i\\]\\] = 1") { print last }
   ' "$1" | tr ' ' '\n' | grep -v '^$' | sort -u
 }
+# The reason codes moved OUT of the scripts and into the one shared vocabulary
+# file — four tools, one list — so that is where the runtime side of the reason
+# check reads them from now. Still read out of the artifact, never retyped here.
+shared_reasons() { awk -F'\t' '$1 == "reason" { print $2 }' "$BIN/jjstack-review-vocab.tsv" | sort -u; }
 VOC="$(mktemp -d)"
 skill_vocab   "$SKR" 3                        > "$VOC/skill.disp"
 skill_vocab   "$SKR" 4                        > "$VOC/skill.rsn"
-runtime_vocab "$BIN/jjstack-review-triage" DISP   > "$VOC/script.disp"
-runtime_vocab "$BIN/jjstack-review-triage" REASON > "$VOC/script.rsn"
+runtime_vocab "$BIN/jjstack-review-run-report" DISP > "$VOC/script.disp"
+shared_reasons                                     > "$VOC/script.rsn"
 # An extraction that silently yields nothing turns every loop below into zero
 # assertions, which is the failure mode these guards had in the first place.
 check "skill disposition table yields 7 dispositions" "[ \$(wc -l < '$VOC/skill.disp') -eq 7 ]"
 check "skill reason table yields 11 reason codes"     "[ \$(wc -l < '$VOC/skill.rsn') -eq 11 ]"
 check "script runtime disposition vocabulary has 7"   "[ \$(wc -l < '$VOC/script.disp') -eq 7 ]"
-check "script runtime reason vocabulary has 12"       "[ \$(wc -l < '$VOC/script.rsn') -eq 12 ]"
+check "shared reason vocabulary has 12 codes"         "[ \$(wc -l < '$VOC/script.rsn') -eq 12 ]"
 # skill → script: the model is never told to write a token the validator rejects.
 while read -r tok; do
   check "skill disposition \`$tok\` is in the script's RUNTIME vocabulary" \
         "grep -qxF -- '$tok' '$VOC/script.disp'"
 done < "$VOC/skill.disp"
 while read -r tok; do
-  check "skill reason \`$tok\` is in the script's RUNTIME vocabulary" \
+  check "skill reason \`$tok\` is in the SHARED vocabulary" \
         "grep -qxF -- '$tok' '$VOC/script.rsn'"
 done < "$VOC/skill.rsn"
 # script → skill: the validator never accepts a disposition the skill does not
@@ -3244,7 +3342,7 @@ r2row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$
 # effect Invariant 3 exists to deny, and the rendered page then ASSERTED that a
 # documentation check happened.
 r2row P0 95 src/a.py:7 security refuted stale-api 'I do not think this is real' > "$R2/nourl.tsv"
-"$BIN/jjstack-review-triage" "$R2/nourl.tsv" > "$R2/nourl.out" 2> "$R2/nourl.err"
+"$BIN/jjstack-review-run-report" "$R2/nourl.tsv" > "$R2/nourl.out" 2> "$R2/nourl.err"
 rc=$?
 check "a refuted row with no doc URL is rejected" "[ $rc -eq 4 ]"
 check "nothing is rendered for an unevidenced refutation" \
@@ -3255,36 +3353,36 @@ check "the error names the missing evidence" \
 # A P3 from any lens buys the same unearned deletion, so the guard may not be
 # written against the severity or the lens that happened to be reported.
 r2row P3 10 docs/x.md:1 style refuted stale-api 'the docs say otherwise, trust me' > "$R2/nourl3.tsv"
-"$BIN/jjstack-review-triage" "$R2/nourl3.tsv" > /dev/null 2> "$R2/nourl3.err"
+"$BIN/jjstack-review-run-report" "$R2/nourl3.tsv" > /dev/null 2> "$R2/nourl3.err"
 check "the evidence rule binds every severity, not just P0" "[ \$? -eq 4 ]"
 r2row P2 50 src/b.py:2 perf refuted stale-api 'no link here either' > "$R2/nourl2.tsv"
-"$BIN/jjstack-review-triage" "$R2/nourl2.tsv" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$R2/nourl2.tsv" > /dev/null 2>&1
 check "the evidence rule binds every lens, not just security" "[ \$? -eq 4 ]"
 # Both URL schemes are documentation; neither is special.
 r2row P1 85 src/c.py:3 api refuted stale-api 'correct per https://docs.example/v2/api' > "$R2/https.tsv"
-"$BIN/jjstack-review-triage" "$R2/https.tsv" --out "$R2/https.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$R2/https.tsv" --out "$R2/https.md" > /dev/null 2>&1
 check "a refuted row carrying an https doc URL is accepted" "[ \$? -eq 0 ]"
 r2row P1 85 src/c.py:3 api refuted stale-api 'correct per http://docs.example/v2/api' > "$R2/http.tsv"
-"$BIN/jjstack-review-triage" "$R2/http.tsv" --out "$R2/http.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$R2/http.tsv" --out "$R2/http.md" > /dev/null 2>&1
 check "a refuted row carrying an http doc URL is accepted" "[ \$? -eq 0 ]"
 # NEGATIVE CONTROL — the new rule must bind `refuted` and nothing else. If it
 # leaked onto the other dispositions it would demand a URL from every ordinary
 # suppression, and the loop would have no way out.
 r2row P2 40 src/d.py:4 sec suppress baseline 'a baselined nit with no link at all' > "$R2/sup.tsv"
-"$BIN/jjstack-review-triage" "$R2/sup.tsv" --out "$R2/sup.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$R2/sup.tsv" --out "$R2/sup.md" > /dev/null 2>&1
 check "a non-refuted row still needs no URL (negative control)" "[ \$? -eq 0 ]"
 # And the same claim text that was REJECTED as a refutation is ACCEPTED as a
 # report — proving the rejection is about the disposition's evidence burden,
 # not about some incidental property of the string.
 r2row P0 95 src/a.py:7 security report - 'I do not think this is real' > "$R2/rep.tsv"
-"$BIN/jjstack-review-triage" "$R2/rep.tsv" --out "$R2/rep.md" > /dev/null 2>&1
+"$BIN/jjstack-review-run-report" "$R2/rep.tsv" --out "$R2/rep.md" > /dev/null 2>&1
 check "the identical claim is legal as a report (negative control)" "[ \$? -eq 0 ]"
 # The merged record is where the invariants actually bite: a refutation must
 # not acquire its evidence by being merged with a differently-worded row.
 { r2row P2 50 src/m.py:1 lensA report - 'shared opening phrase for the merge test here'
   r2row P2 50 src/m.py:1 lensB refuted stale-api 'shared opening phrase for the merge test here'
 } > "$R2/mergenourl.tsv"
-"$BIN/jjstack-review-triage" "$R2/mergenourl.tsv" > /dev/null 2> "$R2/mergenourl.err"
+"$BIN/jjstack-review-run-report" "$R2/mergenourl.tsv" > /dev/null 2> "$R2/mergenourl.err"
 check "an unevidenced refutation is caught on the merged record too" "[ \$? -eq 4 ]"
 
 # --- disprank must be TOTAL: no ties, and no order dependence ---------------
@@ -3317,11 +3415,11 @@ for a in $r2disps; do for b in $r2disps; do
   # file from the previous pair would then be compared instead — the comparison
   # would pass on output neither run produced.
   rm -f "$R2/ab.md" "$R2/ba.md" "$R2/ab.out" "$R2/ba.out"
-  "$BIN/jjstack-review-triage" "$R2/ab.tsv" --out "$R2/ab.md" > "$R2/ab.out" 2>/dev/null
-  "$BIN/jjstack-review-triage" "$R2/ba.tsv" --out "$R2/ba.md" > "$R2/ba.out" 2>/dev/null
+  "$BIN/jjstack-review-run-report" "$R2/ab.tsv" --out "$R2/ab.md" > "$R2/ab.out" 2>/dev/null
+  "$BIN/jjstack-review-run-report" "$R2/ba.tsv" --out "$R2/ba.md" > "$R2/ba.out" 2>/dev/null
   [ -f "$R2/ab.md" ] && [ -f "$R2/ba.md" ] || { r2_orderfails=$((r2_orderfails+1)); echo "    pair rendered nothing: $a / $b" >&2; continue; }
-  sed 's#^- source ledger:.*##' "$R2/ab.md" > "$R2/ab.norm"
-  sed 's#^- source ledger:.*##' "$R2/ba.md" > "$R2/ba.norm"
+  sed 's#^- source findings:.*##' "$R2/ab.md" > "$R2/ab.norm"
+  sed 's#^- source findings:.*##' "$R2/ba.md" > "$R2/ba.norm"
   cmp -s "$R2/ab.norm" "$R2/ba.norm" || { r2_orderfails=$((r2_orderfails+1)); echo "    order-dependent pair: $a / $b" >&2; }
   # Compare the TALLY line only: the surrounding stdout names the --out path,
   # which differs between the two runs by construction.
@@ -3338,8 +3436,8 @@ check "no two dispositions tie: every pair renders identically in both orders" \
 { r2row P2 50 src/b.py:3 lensB refuted stale-api 'the same defect described the same way here https://docs.example/y'
   r2row P2 50 src/b.py:3 lensA suppress baseline 'the same defect described the same way here'
 } > "$R2/o2.tsv"
-"$BIN/jjstack-review-triage" "$R2/o1.tsv" --out "$R2/o1.md" > "$R2/o1.out" 2>/dev/null
-"$BIN/jjstack-review-triage" "$R2/o2.tsv" --out "$R2/o2.md" > "$R2/o2.out" 2>/dev/null
+"$BIN/jjstack-review-run-report" "$R2/o1.tsv" --out "$R2/o1.md" > "$R2/o1.out" 2>/dev/null
+"$BIN/jjstack-review-run-report" "$R2/o2.tsv" --out "$R2/o2.md" > "$R2/o2.out" 2>/dev/null
 check "refuted vs suppress lands in the same section in both orders" \
       "[ \"\$(grep -c '^## Refuted.*(1)' '$R2/o1.md')\" = \"\$(grep -c '^## Refuted.*(1)' '$R2/o2.md')\" ]"
 check "refuted vs suppress reports the same tally in both orders" \
@@ -3360,10 +3458,10 @@ for d in $r2disps; do
   r2row P2 50 "src/z_$d.py:1" "lens_$d" "$d" "$(r2reason "$d")" "$d finding text $( [ "$d" = refuted ] && echo 'https://docs.example/z' )" >> "$R2/fwd.tsv"
 done
 tac "$R2/fwd.tsv" > "$R2/rev.tsv"
-"$BIN/jjstack-review-triage" "$R2/fwd.tsv" --out "$R2/fwd.md" > "$R2/fwd.out" 2>/dev/null
-"$BIN/jjstack-review-triage" "$R2/rev.tsv" --out "$R2/rev.md" > "$R2/rev.out" 2>/dev/null
-sed 's#^- source ledger:.*##' "$R2/fwd.md" > "$R2/fwd.norm"
-sed 's#^- source ledger:.*##' "$R2/rev.md" > "$R2/rev.norm"
+"$BIN/jjstack-review-run-report" "$R2/fwd.tsv" --out "$R2/fwd.md" > "$R2/fwd.out" 2>/dev/null
+"$BIN/jjstack-review-run-report" "$R2/rev.tsv" --out "$R2/rev.md" > "$R2/rev.out" 2>/dev/null
+sed 's#^- source findings:.*##' "$R2/fwd.md" > "$R2/fwd.norm"
+sed 's#^- source findings:.*##' "$R2/rev.md" > "$R2/rev.norm"
 check "the rendered ledger is a function of the finding SET, not the row order" \
       "cmp -s '$R2/fwd.norm' '$R2/rev.norm'"
 check "and so is the tally line" \
@@ -3371,8 +3469,8 @@ check "and so is the tally line" \
 # POSITIVE CONTROL on the determinism check itself: it must be able to fail.
 # Two DIFFERENT sets must not compare equal, or `cmp -s` above proves nothing.
 sed 's/z_report/z_reportX/' "$R2/fwd.tsv" > "$R2/other.tsv"
-"$BIN/jjstack-review-triage" "$R2/other.tsv" --out "$R2/other.md" > /dev/null 2>/dev/null
-sed 's#^- source ledger:.*##' "$R2/other.md" > "$R2/other.norm"
+"$BIN/jjstack-review-run-report" "$R2/other.tsv" --out "$R2/other.md" > /dev/null 2>/dev/null
+sed 's#^- source findings:.*##' "$R2/other.md" > "$R2/other.norm"
 check "the determinism comparison can distinguish two different sets (control)" \
       "! cmp -s '$R2/fwd.norm' '$R2/other.norm'"
 
@@ -3380,9 +3478,9 @@ check "the determinism comparison can distinguish two different sets (control)" 
 # physically cannot drift again. A disposition added to the vocabulary without a
 # rank is what produced the tie in the first place.
 check "the script derives disposition rank from the vocabulary list" \
-      "grep -q 'DRANK\[' '$BIN/jjstack-review-triage'"
+      "grep -q 'DRANK\[' '$BIN/jjstack-review-run-report'"
 check "no disposition falls into an unranked default bucket" \
-      "! grep -qE 'return 5[[:space:]]*# suppress' '$BIN/jjstack-review-triage'"
+      "! grep -qE 'return 5[[:space:]]*# suppress' '$BIN/jjstack-review-run-report'"
 rm -rf "$R2"
 
 
@@ -3580,6 +3678,172 @@ check "the duplicate-heading guard actually catches a duplicate (control)" \
       "[ -n \"\$cl_probe_dupes\" ]"
 rm -f "$cl_probe"
 
+echo "== 7r. review memory: one vocabulary, one directory, one format =="
+# Seven PRs built /review in parallel and four of them independently grew a
+# "remember what the team decided" store. Three of those are real and must stay
+# apart — they are an escalation ladder, not four copies of one idea — and the
+# fourth was never memory at all. This section pins the consolidation.
+VOCAB="$BIN/jjstack-review-vocab.tsv"
+check "the shared vocabulary file exists" "[ -f '$VOCAB' ]"
+# The ladder, as DATA. If these three rows change, the whole property changes,
+# so they are asserted literally rather than paraphrased.
+check "calibration's key is the widest, so its ceiling is rank" \
+  "grep -q '^scope	pattern-class	rank	' '$VOCAB'"
+check "the ledger's key is narrower, so it may demote" \
+  "grep -q '^scope	path-glob	demote	' '$VOCAB'"
+check "only the instance-keyed baseline may suppress" \
+  "grep -q '^scope	instance	suppress	' '$VOCAB'"
+# ONE definition. A tool that carries its own copy of the reason codes is a
+# fourth vocabulary, which is what this consolidation removed.
+for t in jjstack-review-run-report jjstack-review-ledger jjstack-review-calibration; do
+  check "$t reads the shared vocabulary" \
+    "grep -q 'jjstack-review-vocab.sh' '$BIN/$t'"
+done
+check "the baseline reads the shared vocabulary" \
+  "grep -q 'jjstack-review-vocab.tsv' '$BIN/jjstack-review-baseline'"
+n_vocab=$(grep -rlc '^reason	unverified	' "$BIN" 2>/dev/null | wc -l)
+check "exactly one file defines the reason codes" "[ \"\$n_vocab\" -eq 1 ]"
+# The stale-API disposition of Phase 4.5b is part of that ONE list too: a
+# `refuted` finding needs a reason code, and inventing a private one here would
+# be the fourth vocabulary all over again.
+check "stale-api lives in the shared vocabulary" "grep -q '^reason	stale-api	' '$VOCAB'"
+# One directory, three files. Collapsing them into one is the mistake this
+# consolidation deliberately did NOT make.
+for t in jjstack-review-baseline jjstack-review-ledger jjstack-review-calibration; do
+  check "$t stores under jjstack/review-memory/" \
+    "grep -q 'jjstack/review-memory' '$BIN/$t'"
+done
+# One format: TSV. All three default store paths end in .tsv — the whole point
+# is that a decision is one line, so it diffs and it greps.
+check "the baseline's default store is TSV" \
+  "grep -q 'review-memory\", \"baseline.tsv' '$BIN/jjstack-review-baseline'"
+check "the ledger's default store is TSV" \
+  "grep -q 'review-memory/ledger.tsv' '$BIN/jjstack-review-ledger'"
+check "calibration's default store is TSV" \
+  "grep -q 'review-memory/calibration.tsv' '$BIN/jjstack-review-calibration'"
+
+echo "== 7s. THE DOUBLE-DEMOTION TEST (demotions never stack into a suppression) =="
+# The one test the external review asked for first. Two independent mechanisms
+# can demote the same finding: a ledger match (path glob + category) and a
+# negative calibration rank (global pattern class). A finding hit by BOTH is
+# demoted exactly ONCE — still active, still printed, never suppressed. If
+# demotions could compound, two wide heuristics would add up to the suppression
+# that only an instance-keyed baseline with a human reason is allowed to make.
+DD="$(mktemp -d)"
+DD_LED="$DD/ledger.tsv"; DD_CAL="$DD/calibration.tsv"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --note 'house style' --ledger "$DD_LED" >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$DD_CAL" --key 'trailing-whitespace' \
+  --verdict rejected --code style-only >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$DD_CAL" --key 'trailing-whitespace' \
+  --verdict rejected --code style-only >/dev/null 2>&1
+
+led_out=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style --ledger "$DD_LED" 2>/dev/null)
+cal_out=$("$BIN/jjstack-review-calibration" suggest --store "$DD_CAL" --key 'trailing-whitespace' 2>&1)
+# Both mechanisms fire on the same finding — the precondition for the test.
+check "PRECONDITION: the ledger demotes this finding"   "grep -q 'DEMOTE' <<<\"\$led_out\""
+check "PRECONDITION: calibration also demotes it"       "grep -q 'placement=demoted' <<<\"\$cal_out\""
+# ...and neither one, hit twice, escalates. `effect=` is stated on both so the
+# claim is checkable rather than implied.
+check "the ledger hit's effect is exactly demote"       "grep -q 'effect=demote' <<<\"\$led_out\""
+check "the calibration hit's effect is only rank"       "grep -q 'effect=rank' <<<\"\$cal_out\""
+check "neither mechanism ever emits suppress"           "! grep -q 'suppress' <<<\"\$led_out\$cal_out\""
+
+# The finding, carrying BOTH demotions, is rendered once — in the Demoted
+# section, active, with its own severity and confidence intact. Not in the
+# suppressed section, not twice, not gone.
+DD_TSV="$DD/findings.tsv"
+printf 'P2\t55\tsrc/a.py:7\tstyle\tdemoted\tprior-decision\ttrailing whitespace on a long line\n' > "$DD_TSV"
+"$BIN/jjstack-review-run-report" "$DD_TSV" --out "$DD/report.md" > "$DD/report.out" 2>/dev/null
+check "a doubly-demoted finding is still rendered"  "grep -q 'trailing whitespace on a long line' '$DD/report.md'"
+check "it is demoted exactly ONCE"                  "[ \"\$(grep -c 'trailing whitespace on a long line' '$DD/report.md')\" -eq 1 ]"
+check "it is counted as demoted, not suppressed"    "grep -q 'demoted=1 defer=0 suppress=0' '$DD/report.out'"
+check "it keeps its own severity and confidence"    "grep -qE '\\| P2 \\| 55 \\|' '$DD/report.md'"
+check "the suppressed section stays empty"          "awk '/^## /{f=0} /^## Suppressed by baseline/{f=1;next} f&&/^_none_/{ok=1} END{exit !ok}' '$DD/report.md'"
+
+# POSITIVE CONTROL — the assertions above must be able to fail. The SAME finding
+# marked `suppress` really does land in the suppressed section and out of the
+# demoted count, so "demoted=1 suppress=0" is a fact about the double demotion
+# rather than about a report that can only ever say one thing.
+printf 'P2\t55\tsrc/a.py:7\tstyle\tsuppress\tbaseline\ttrailing whitespace on a long line\n' > "$DD/sup.tsv"
+"$BIN/jjstack-review-run-report" "$DD/sup.tsv" --out "$DD/sup.md" > "$DD/sup.out" 2>/dev/null
+check "POSITIVE CONTROL: a suppressed finding counts as suppressed" \
+  "grep -q 'demoted=0 defer=0 suppress=1' '$DD/sup.out'"
+check "POSITIVE CONTROL: and the suppressed section is not empty" \
+  "! awk '/^## /{f=0} /^## Suppressed by baseline/{f=1;next} f&&/^_none_/{ok=1} END{exit !ok}' '$DD/sup.md'"
+# And the escalation the whole ladder forbids: neither wide store can produce
+# that suppression in the first place.
+"$BIN/jjstack-review-calibration" record --store "$DD_CAL" --key 'x' --verdict rejected \
+  --code not-reachable >/dev/null 2>&1; rc=$?
+check "a wide store records a weaker-capped reason without escalating" "[ $rc -eq 0 ]"
+check "and the row it wrote still says effect=rank" \
+  "awk -F'\t' '\$2==\"x\"{exit !(\$4==\"rank\")}' '$DD_CAL'"
+rm -rf "$DD"
+
+echo "== 7t. review-memory-migrate (legacy stores: instruct, then convert) =="
+# The stores do NOT migrate themselves. They are version controlled and their
+# whole value is that a change is a reviewed diff, so a tool that silently
+# rewrote one mid-review would produce a diff nobody approved. Legacy detected
+# => stop, name the command, exit 3.
+MG="$(mktemp -d)"
+git -C "$MG" init -q . 2>/dev/null
+mkdir -p "$MG/jjstack"
+printf '#ts\tkey\tverdict\tlens\tfile\tnote\n2026-01-01\tunused-import\trejected\tlint\tsrc/a.py\tnope\n' > "$MG/jjstack/review-calibration.tsv"
+printf '# jjstack review ledger\n\n2026-01-02 | org/repo | dismissed | bin/* | style | house style\n2026-01-03 | org/repo | fixed | lib/* | performance | fixed in 12\n' > "$MG/jjstack/review-ledger.md"
+printf '{"version":2,"jjstack_version":"0.36.0","rules":[{"path":"vendor/*","reason":"upstream owns it"}],"fingerprints":[{"hash":"sha256:0000000000000000000000000000000000000000000000000000000000000001","lens":"security","file":"src/a.py","message":"m","reason":"accepted 2026-01"}]}\n' > "$MG/.jjstack-review-baseline.json"
+
+"$BIN/jjstack-review-calibration" report --repo "$MG" > /dev/null 2> "$MG/cal.err"; rc=$?
+check "a legacy calibration store stops the tool (exit 3)" "[ $rc -eq 3 ]"
+check "and names the migrate command" "grep -q 'jjstack-review-memory-migrate' '$MG/cal.err'"
+"$BIN/jjstack-review-ledger" --list --repo "$MG" > /dev/null 2> "$MG/led.err"; rc=$?
+check "a legacy markdown ledger stops the tool (exit 3)" "[ $rc -eq 3 ]"
+check "and names the migrate command" "grep -q 'jjstack-review-memory-migrate' '$MG/led.err'"
+"$BIN/jjstack-review-baseline" apply /dev/null --baseline "$MG/jjstack/review-memory/baseline.tsv" \
+  > /dev/null 2> "$MG/bl.err"; rc=$?
+check "a legacy JSON baseline stops the tool (exit 3)" "[ $rc -eq 3 ]"
+check "and names the migrate command" "grep -q 'jjstack-review-memory-migrate' '$MG/bl.err'"
+
+"$BIN/jjstack-review-memory-migrate" --repo "$MG" --dry-run >/dev/null 2>&1
+check "--dry-run creates no store" "[ ! -f '$MG/jjstack/review-memory/ledger.tsv' ]"
+"$BIN/jjstack-review-memory-migrate" --repo "$MG" >/dev/null 2>&1
+check "migrate writes all three stores" \
+  "[ -f '$MG/jjstack/review-memory/calibration.tsv' ] && [ -f '$MG/jjstack/review-memory/ledger.tsv' ] && [ -f '$MG/jjstack/review-memory/baseline.tsv' ]"
+check "they stay THREE files, not one" \
+  "[ \"\$(ls -1 '$MG/jjstack/review-memory' | wc -l)\" -eq 3 ]"
+"$BIN/jjstack-review-calibration" validate --repo "$MG" >/dev/null 2>&1
+check "the migrated calibration store validates" "[ \$? -eq 0 ]"
+"$BIN/jjstack-review-ledger" --validate --repo "$MG" >/dev/null 2>&1
+check "the migrated ledger validates" "[ \$? -eq 0 ]"
+"$BIN/jjstack-review-baseline" validate --baseline "$MG/jjstack/review-memory/baseline.tsv" >/dev/null 2>&1
+check "the migrated baseline validates" "[ \$? -eq 0 ]"
+# Both baseline mechanisms survive the JSON->TSV move, each keeping its
+# mandatory human reason. Losing either would silently reactivate or silently
+# broaden every accepted finding.
+check "the fingerprint survives migration" \
+  "grep -q 'sha256:0000000000000000000000000000000000000000000000000000000000000001' '$MG/jjstack/review-memory/baseline.tsv'"
+check "the glob rule survives migration" \
+  "grep -q 'vendor/\\*' '$MG/jjstack/review-memory/baseline.tsv'"
+check "each entry keeps its mandatory reason" \
+  "grep -q 'accepted 2026-01' '$MG/jjstack/review-memory/baseline.tsv' && grep -q 'upstream owns it' '$MG/jjstack/review-memory/baseline.tsv'"
+# The writer's jjstack version must survive too, or the fail-closed drift guard
+# that makes stale fingerprints inert stops firing after a migration.
+check "the original writer's version survives" \
+  "head -n 1 '$MG/jjstack/review-memory/baseline.tsv' | grep -q 'jjstack=0.36.0'"
+# The ledger's history rows must NOT gain a verdict they never had.
+check "a migrated FIXED row carries effect none" \
+  "awk -F'\t' '\$3==\"fixed\"{exit !(\$4==\"none\")}' '$MG/jjstack/review-memory/ledger.tsv'"
+check "a migrated dismissal carries effect demote" \
+  "awk -F'\t' '\$3==\"dismissed\"{exit !(\$4==\"demote\")}' '$MG/jjstack/review-memory/ledger.tsv'"
+# POSITIVE CONTROL — refuse to clobber an existing destination without --force.
+"$BIN/jjstack-review-memory-migrate" --repo "$MG" >/dev/null 2>&1
+check "POSITIVE CONTROL: a second migrate refuses to clobber (exit 4)" "[ \$? -eq 4 ]"
+"$BIN/jjstack-review-memory-migrate" --repo "$MG" --force >/dev/null 2>&1
+check "--force overwrites deliberately" "[ \$? -eq 0 ]"
+MGE="$(mktemp -d)"
+"$BIN/jjstack-review-memory-migrate" --repo "$MGE" >/dev/null 2>&1
+check "nothing to migrate is a clean exit 0" "[ \$? -eq 0 ]"
+rm -rf "$MG" "$MGE"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
@@ -3664,7 +3928,6 @@ check "positive control: the label detector finds a planted duplicate" \
 # empty set: this run has more than a dozen of them.
 check "positive control: the detector reads this file's real labels" \
   "[ \"\$(grep -cE '^echo \"== [0-9]+[a-z]*\\.' '$0')\" -ge 15 ]"
-
 
 
 echo

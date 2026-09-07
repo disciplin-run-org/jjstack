@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# jjstack-review-memory-migrate — move the three /review memory stores into one
+# directory and one format.
+#
+# Before: three stores, three places, three formats.
+#   <repo>/.jjstack-review-baseline.json     JSON
+#   <repo>/jjstack/review-ledger.md          Markdown
+#   <repo>/jjstack/review-calibration.tsv    TSV
+#
+# After: three stores, one directory, one format. They stay THREE files — they
+# are rungs of an escalation ladder (pattern class -> path glob -> instance,
+# ranking -> demoting -> suppressing) and collapsing them would let a global
+# heuristic silently suppress a specific P0.
+#   <repo>/jjstack/review-memory/calibration.tsv    scope=pattern-class
+#   <repo>/jjstack/review-memory/ledger.tsv         scope=path-glob
+#   <repo>/jjstack/review-memory/baseline.tsv       scope=instance
+#
+# TSV for all three, because the review value of these files IS their diff: one
+# decision is one line, a suppression shows as a one-line PR diff, and grep finds
+# it. JSON is the worst choice for a file read as a diff; Markdown the worst for
+# a file a script must parse.
+#
+# The stores do NOT migrate themselves. They are version controlled and their
+# whole point is that a change is a reviewed diff — a tool that silently rewrote
+# one mid-review would produce a diff nobody approved. So they detect a legacy
+# store, stop, and name this command. You run it once, read the diff, commit it.
+#
+# The legacy files are left in place; delete them in the same commit once you
+# have read the new ones.
+#
+# Usage:
+#   jjstack-review-memory-migrate [--repo DIR] [--dry-run] [--force]
+#
+# Exit: 0 migrated (or dry-run ok, or nothing to do), 2 usage error,
+#       3 repo root unresolvable, 4 a destination already exists (pass --force).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+REPO=""
+DRY=0
+FORCE=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)    REPO="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    --force)   FORCE=1; shift ;;
+    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$REPO" ] && REPO="$PWD"
+if [ ! -d "$REPO" ]; then
+  echo -e "${CYA}error${RST} no such directory: $REPO" >&2; exit 3
+fi
+REPO="${REPO%/}"
+
+DEST="$REPO/jjstack/review-memory"
+LEG_CAL="$REPO/jjstack/review-calibration.tsv"
+LEG_LED="$REPO/jjstack/review-ledger.md"
+LEG_BAS="$REPO/.jjstack-review-baseline.json"
+
+say() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $1"; else echo "  $1"; fi; }
+
+guard_dest() {
+  if [ -f "$1" ] && [ "$FORCE" -eq 0 ]; then
+    echo -e "${CYA}error${RST} destination already exists: $1" >&2
+    echo -e "${YEL}fix${RST}   read it, then rerun with --force to overwrite" >&2
+    return 4
+  fi
+  return 0
+}
+
+migrated=0
+[ "$DRY" -eq 0 ] && { mkdir -p "$DEST" || exit 3; }
+
+# --- calibration: TSV -> TSV, gaining the store header and effect/code columns.
+if [ -f "$LEG_CAL" ]; then
+  OUT="$DEST/calibration.tsv"
+  guard_dest "$OUT" || exit 4
+  if [ "$DRY" -eq 0 ]; then
+    {
+      printf '#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1\n'
+      printf '#ts\tkey\tverdict\teffect\tcode\tlens\tfile\tnote\n'
+      awk -F'\t' 'BEGIN { OFS = "\t" }
+        /^[[:space:]]*$/ { next }
+        /^#/             { next }
+        NF >= 3 {
+          # old: ts key verdict lens file note
+          # A rejection is a decision, so it gains a reason code. `prior-decision`
+          # is the honest default: all we know is that someone once said no.
+          code = ($3 == "rejected") ? "prior-decision" : "-"
+          print $1, $2, $3, "rank", code, ($4 == "" ? "-" : $4), ($5 == "" ? "-" : $5), ($6 == "" ? "-" : $6)
+        }' "$LEG_CAL"
+    } > "$OUT" || exit 3
+  fi
+  say "calibration.tsv  <- jjstack/review-calibration.tsv"
+  migrated=$((migrated + 1))
+fi
+
+# --- ledger: Markdown pipe-rows -> TSV.
+if [ -f "$LEG_LED" ]; then
+  OUT="$DEST/ledger.tsv"
+  guard_dest "$OUT" || exit 4
+  if [ "$DRY" -eq 0 ]; then
+    {
+      printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1\n'
+      printf '#ts\trepo\ttype\teffect\tcode\tpath-glob\tcategory\tnote\n'
+      awk -F' *\\| *' 'BEGIN { OFS = "\t" }
+        $0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ { next }
+        {
+          # old: date | repo | type | pattern | category | note
+          # Only a dismissal acts on a future finding, so only a dismissal
+          # carries an effect and a code. History rows are effect `none`.
+          eff  = ($3 == "dismissed") ? "demote" : "none"
+          code = ($3 == "dismissed") ? "prior-decision" : "-"
+          print $1, $2, $3, eff, code, $4, $5, ($6 == "" ? "(no note)" : $6)
+        }' "$LEG_LED"
+    } > "$OUT" || exit 3
+  fi
+  say "ledger.tsv       <- jjstack/review-ledger.md"
+  migrated=$((migrated + 1))
+fi
+
+# --- baseline: JSON -> TSV. Both mechanisms survive: content-hash fingerprints
+# and drift-tolerant globs, each keeping its mandatory human reason.
+if [ -f "$LEG_BAS" ]; then
+  OUT="$DEST/baseline.tsv"
+  guard_dest "$OUT" || exit 4
+  # The legacy JSON records which jjstack wrote it; that value must survive the
+  # move, or the drift guard that makes stale fingerprints inert stops firing.
+  HERE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("jjstack_version","unknown"))' "$LEG_BAS" 2>/dev/null)"
+  if [ "$DRY" -eq 0 ]; then
+    python3 - "$LEG_BAS" "$OUT" "$HERE_VERSION" <<'PY' || exit 3
+import json, sys
+
+src, dst, ver = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as fh:
+    doc = json.load(fh)
+
+
+def clean(v):
+    v = str(v or "").replace("\t", " ").replace("\n", " ").replace("\r", " ").strip()
+    return v or "-"
+
+
+# Carry the ORIGINAL writer's jjstack version across. The fingerprints were
+# computed by that version; claiming they were written by this one would silently
+# disable the fail-closed version-drift guard that makes stale hashes inert.
+ver = ver or str(doc.get("jjstack_version", "unknown"))
+
+rows = []
+for r in doc.get("rules") or []:
+    rows.append(
+        (
+            "rule",
+            "suppress",
+            "accepted-risk",
+            "-",
+            clean(r.get("id") or r.get("rule_id")),
+            clean(r.get("path") or r.get("file")),
+            clean(r.get("message")),
+            clean(r.get("reason")),
+        )
+    )
+for f in doc.get("fingerprints") or []:
+    rows.append(
+        (
+            "fingerprint",
+            "suppress",
+            "baseline",
+            clean(f.get("hash")),
+            clean(f.get("lens")),
+            clean(f.get("file")),
+            clean(f.get("message")),
+            clean(f.get("reason")),
+        )
+    )
+
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write(f"#jjstack-review-store\tscope=instance\tmax-effect=suppress\tv=3\tjjstack={ver}\n")
+    fh.write("#kind\teffect\tcode\tmatch\tlens\tfile\tmessage\treason\n")
+    for row in rows:
+        fh.write("\t".join(row) + "\n")
+PY
+  fi
+  say "baseline.tsv     <- .jjstack-review-baseline.json"
+  migrated=$((migrated + 1))
+fi
+
+if [ "$migrated" -eq 0 ]; then
+  echo -e "${GRN}nothing to migrate${RST} no legacy review store under $REPO"
+  exit 0
+fi
+
+echo -e "${GRN}migrated${RST} $migrated store(s) → $DEST"
+if [ "$DRY" -eq 0 ]; then
+  echo -e "${YEL}next${RST}  read the new files, delete the legacy ones, and commit both in"
+  echo -e "${YEL}next${RST}  one diff — the diff IS the review of this change."
+fi
+exit 0

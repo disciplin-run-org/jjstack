@@ -137,7 +137,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself and the changed files' revert history, reads the change's stated intent, loads prior dismissals, snapshots the test baseline) whose summary never claims more than the artifact under it, then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it — then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration) and files every finding, reported or not, in an audited triage ledger. Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself and the changed files' revert history, reads the change's stated intent, loads prior dismissals, snapshots the test baseline) whose summary never claims more than the artifact under it, then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it — then runs five post-passes (absence, auto-fix review, proof-by-red-test, post-fix sweep, calibration) and files every finding, reported or not, in an audited per-run report. Remembers what your team decided in three version-controlled TSV stores under `jjstack/review-memory/` (see below). Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -300,6 +300,48 @@ never reads or writes your real memory store, learnings or gbrain index, and
 it gives the same verdict on any machine. The suite lints itself for that
 property, so a test that reaches back out to your real environment fails
 loudly instead of passing quietly.
+
+---
+
+## Review memory
+
+`/review` keeps a second, separate memory: what your team decided about a
+finding. It lives in your repo at `jjstack/review-memory/`, in git, as three
+tab-separated files.
+
+| file | keys on | strongest verdict |
+|---|---|---|
+| `calibration.tsv` | a global **pattern class** | **rank** — placement only |
+| `ledger.tsv` | a **path glob + category** | **demote** — filed lower, still active |
+| `baseline.tsv` | one finding **instance** | **suppress** — out of the active set, still printed |
+
+They are three files on purpose. The narrower the key, the stronger the verdict
+it is allowed to emit — so a broad "we usually ignore this pattern" can rank a
+finding down but can never silence a specific P0. Only the baseline suppresses,
+and only with a written human reason on every entry. The rule is enforced by the
+tools, not by convention: a calibration row claiming a suppression is rejected
+with a non-zero exit.
+
+They share one directory, one format and one reason-code vocabulary
+(`bin/jjstack-review-vocab.tsv`). TSV because the point of these files is their
+diff: one decision is one line, so accepting a finding shows up as a one-line PR
+diff, retiring it as a one-line deletion, and `grep` finds either.
+
+Demotion is idempotent. A finding demoted by both the ledger and a negative
+calibration rank is demoted once — still active, still printed, never suppressed.
+
+Repos that used the pre-1.0 layout convert once, explicitly:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-memory-migrate --repo "$(git rev-parse --show-toplevel)"
+```
+
+Nothing migrates itself: these files are version controlled, and a tool that
+rewrote one behind your back would produce a diff nobody approved.
+
+Separate from all of this, each run writes `review-run-report.md` next to the
+findings — the audit trail of that one run, regenerated every time, listing every
+finding and what became of it. It is output, not memory.
 
 ---
 

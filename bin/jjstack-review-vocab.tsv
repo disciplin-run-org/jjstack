@@ -1,0 +1,45 @@
+# jjstack review vocabulary — THE SINGLE SOURCE OF TRUTH.
+#
+# Four tools read this file and nothing else defines these names:
+#   bin/jjstack-review-run-report     the per-run audit trail (not memory)
+#   bin/jjstack-review-baseline       instance-scoped memory   (may suppress)
+#   bin/jjstack-review-ledger         path-glob-scoped memory  (may demote)
+#   bin/jjstack-review-calibration    pattern-class memory     (may rank)
+#
+# Adding a reason code here adds it everywhere at once. Adding one anywhere
+# else is a second vocabulary, which is the bug this file exists to prevent.
+#
+# Three record kinds, tab separated, `#` comments and blanks ignored:
+#
+#   effect  <name>  <ordinal>       how strongly a record may act on a finding
+#   scope   <name>  <max-effect>    the ESCALATION LADDER: the narrower the key,
+#                                   the stronger the verdict it may emit
+#   reason  <code>  <max-effect>    the closed reason-code vocabulary, and the
+#                                   strongest verdict each code may carry
+#
+# The ladder is enforced structurally, not by convention: every store validates
+# effect_ordinal(row) <= effect_ordinal(scope_max) AND <= effect_ordinal(
+# reason_max). A calibration row that says `suppress` is rejected by arithmetic,
+# not by anyone remembering the rule.
+#
+#kind	name	value	note
+effect	none	0	recorded as history only — changes nothing about how a finding is shown
+effect	rank	1	placement only — the finding stays active and keeps its own severity and confidence
+effect	demote	2	filed under "Demoted (prior decision)" — still active, still printed, never dropped
+effect	suppress	3	taken out of the ACTIVE set — still printed and marked, with a mandatory human reason
+scope	pattern-class	rank	calibration: a global pattern class. The widest key, so the weakest verdict.
+scope	path-glob	demote	ledger: a path glob plus a finding category.
+scope	instance	suppress	baseline: one finding instance — file, line and claim content. The narrowest key, so the only one that may suppress.
+scope	run	none	the per-run report. Not memory: it records what THIS run decided and is regenerated every run.
+reason	unverified	suppress	verification could not confirm the claim at the source
+reason	prior-decision	suppress	a past review already ruled on this class
+reason	low-confidence	suppress	the evidence for the claim is thin
+reason	pre-existing	suppress	real, but it predates this diff
+reason	tool-covered	suppress	a typechecker/linter/scanner that actually ran already covers it
+reason	style-only	suppress	pure style, not called out in a CLAUDE.md
+reason	no-repro	suppress	could not be reproduced
+reason	duplicate	suppress	the same defect is already accounted for elsewhere
+reason	not-reachable	demote	unreachable today is reachable after the next refactor — deprioritise, never delete
+reason	accepted-risk	suppress	a human accepted the risk on the record
+reason	baseline	suppress	retired by the committed baseline with its own stated reason
+reason	stale-api	suppress	disproved against current official documentation (Phase 4.5b) — bound exclusively to the `refuted` disposition, which is the only "this finding is WRONG" outcome

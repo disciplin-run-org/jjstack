@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# jjstack-review-triage — turn a raw /review findings list into an audited
-# triage ledger: deduped, exposure-annotated, and fully accounted for.
+# jjstack-review-run-report — the audit trail of ONE /review run: deduped,
+# exposure-annotated, and fully accounted for.
 #
-# Why this exists (the Aikido lesson, see references/vendor-lessons-aikido.md):
+# THIS IS NOT MEMORY. It was called `jjstack-review-triage` and it wrote a file
+# called a "ledger", and four separate PRs then mistook it for one of the three
+# review MEMORY stores and nearly collapsed them all into one. It is renamed to
+# make that impossible to repeat: this tool reads the findings of the run in
+# front of it, renders the accounting, and is regenerated from scratch on the
+# next run. It carries nothing across runs. The three things that DO carry
+# across runs live in {repo}/jjstack/review-memory/ and are keyed, formatted and
+# capped differently on purpose — see bin/jjstack-review-vocab.tsv.
+#
+# Why it exists at all (the Aikido lesson, see references/vendor-lessons-aikido.md):
 # a security scanner cannot delete a finding it does not like — it records a
 # DISPOSITION and a REASON, and the finding stays inspectable forever. An LLM
 # reviewer that simply stops mentioning a finding is indistinguishable from one
@@ -10,10 +19,11 @@
 #
 # So this script enforces four invariants no prose prompt can guarantee:
 #   1. NO SILENT DROP — any disposition other than `report` needs a reason code
-#      from a closed vocabulary.
-#   2. REACHABILITY DEPRIORITISES, IT NEVER DELETES — reason `not-reachable` is
-#      legal only with `defer` or `demoted`, never `suppress`. Unreachable
-#      today is reachable after the next refactor.
+#      from the shared closed vocabulary.
+#   2. A REASON MAY NOT OUTRANK ITS CEILING — every reason code carries a
+#      maximum effect in bin/jjstack-review-vocab.tsv. `not-reachable` caps at
+#      `demote`, so it can never suppress: unreachable today is reachable after
+#      the next refactor.
 #   3. TOP SEVERITY IS NEVER SUPPRESSED — a P0/P1 may be deferred with a stated
 #      reason, but it may not be made to disappear.
 #   4. `refuted` AND `stale-api` PAIR EXCLUSIVELY — the only "this finding is
@@ -51,10 +61,10 @@
 #
 # Everything mechanical happens here, not in the model: fingerprinting and
 # dedup, corroboration counting across lenses, path-exposure classification,
-# vocabulary validation, the tally, and the rendered ledger. The model supplies
+# vocabulary validation, the tally, and the rendered report. The model supplies
 # only judgment — severity, confidence, disposition, reason, claim.
 #
-# Input: a TSV ledger, 7 tab-separated columns; `#` comments and blanks ignored:
+# Input: a TSV, 7 tab-separated columns; `#` comments and blanks ignored:
 #   severity  confidence  path:line  lens  disposition  reason  claim
 #     severity     P0 | P1 | P2 | P3
 #     confidence   integer 0-100
@@ -67,42 +77,49 @@
 #                  never deleted. `refuted` is the sole "this finding is WRONG"
 #                  outcome and belongs to the Phase 4.5b stale-API check, which
 #                  runs BEFORE Phase 5 and decides on external evidence.)
-#     reason       `-` for `report`; otherwise one of:
-#                  unverified prior-decision low-confidence pre-existing
-#                  tool-covered style-only no-repro duplicate not-reachable
-#                  accepted-risk baseline stale-api
-#                  `refuted` and `stale-api` are legal ONLY with each other.
+#     reason       `-` for `report`; otherwise a code from the shared vocabulary
+#                  in bin/jjstack-review-vocab.tsv. `refuted` and `stale-api`
+#                  are legal ONLY with each other.
 #     claim        the finding text (any further columns are rejoined)
 #
 # Usage:
-#   jjstack-review-triage <ledger.tsv> [--out FILE] [--reconcile ADJUDICATED]
+#   jjstack-review-run-report <findings.tsv> [--out FILE] [--dry-run]
+#                             [--reconcile ADJUDICATED]
 #
 #   --reconcile ADJUDICATED turns the page's completeness claim into a checked
 #   fact instead of a sentence. ADJUDICATED is Phase 5d's
-#   `findings.adjudicated.jsonl`; every finding in it must have a ledger row at
+#   `findings.adjudicated.jsonl`; every finding in it must have a findings row at
 #   the same `file:start_line`, counted per location, or nothing is rendered.
 #   A `path:N-M` ledger row reconciles on its START line. An adjudicated set
 #   holding NO findings checks nothing, so it does not earn the stronger
 #   header — reconciling against nothing is not evidence.
 #   Without it the header states plainly that completeness was not verified —
-#   a ledger of nothing but comments must not certify that nothing was dropped.
+#   a findings file of nothing but comments must not certify that nothing was
+#   dropped.
 #
-# Exit: 0 ledger valid and rendered, 2 usage error, 3 input missing,
-#       4 validation failed (nothing rendered — fix the ledger and rerun).
+# Exit: 0 report valid and rendered, 2 usage error, 3 input missing,
+#       4 validation failed (nothing rendered — fix the input and rerun).
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
+HERE="${BASH_SOURCE[0]%/*}"
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-vocab.sh" || exit 3
+vocab_load || exit 3
+
 SRC=""
 OUT=""
 RECON=""
+DRY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:-}"; shift 2 ;;
     --reconcile) RECON="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
     -h|--help)
       # Print the WHOLE leading comment block. A hardcoded line range silently
       # truncated the exit codes — including the exit 4 the design hinges on —
@@ -116,13 +133,24 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$SRC" ]; then
-  echo -e "${CYA}error${RST} usage: $(basename "$0") <ledger.tsv> [--out FILE] [--reconcile ADJUDICATED]" >&2
+  echo -e "${CYA}error${RST} usage: $(basename "$0") <findings.tsv> [--out FILE] [--dry-run] [--reconcile ADJUDICATED]" >&2
   exit 2
 fi
 
 if [ ! -f "$SRC" ]; then
-  echo -e "${YEL}warn${RST}  ledger not found: $SRC" >&2
+  echo -e "${YEL}warn${RST}  findings file not found: $SRC" >&2
   exit 3
+fi
+
+# Structural proof that this tool is not a memory store: every memory store file
+# opens with a `#jjstack-review-store` header. Refuse one outright rather than
+# rendering something that looks like a run report from durable memory.
+if head -n 1 "$SRC" | grep -q '^#jjstack-review-store'; then
+  echo -e "${CYA}error${RST} $SRC is a review MEMORY store, not a per-run findings file." >&2
+  echo -e "${YEL}why${RST}   this tool renders the audit trail of ONE run and keeps nothing." >&2
+  echo -e "${YEL}why${RST}   the memory stores are read by jjstack-review-baseline / -ledger /" >&2
+  echo -e "${YEL}why${RST}   -calibration. See bin/jjstack-review-vocab.tsv." >&2
+  exit 2
 fi
 
 if [ -n "$RECON" ] && [ ! -f "$RECON" ]; then
@@ -138,16 +166,33 @@ if [ -n "$RECON" ]; then
   RECON_N="$(grep -c '[^[:space:]]' "$RECON" 2>/dev/null)" || RECON_N=0
 fi
 
+# The closed reason vocabulary and the per-code effect ceiling both come from the
+# shared TSV. Nothing is defined here.
+REASON_LIST="$VOCAB_REASONS"
+CEILINGS=""
+for _c in $REASON_LIST; do
+  CEILINGS="$CEILINGS $_c=${VOCAB_REASON_MAX[$_c]}"
+done
+CEILINGS="${CEILINGS# }"
+EFF_ORDINALS=""
+for _e in $VOCAB_EFFECTS; do
+  EFF_ORDINALS="$EFF_ORDINALS $_e=${VOCAB_EFFECT_ORD[$_e]}"
+done
+EFF_ORDINALS="${EFF_ORDINALS# }"
+SUPPRESS_ORD="${VOCAB_EFFECT_ORD[suppress]}"
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-RENDER="$WORK/ledger.md"
+RENDER="$WORK/report.md"
 ERRS="$WORK/errors.txt"
 LOCS="$WORK/locations.txt"
 : > "$ERRS"
 : > "$LOCS"
 
 awk -F'\t' -v today="$(date +%F)" -v src="$SRC" -v render="$RENDER" -v errfile="$ERRS" \
-    -v locfile="$LOCS" -v recon="$RECON" -v reconn="$RECON_N" '
+    -v locfile="$LOCS" -v recon="$RECON" -v reconn="$RECON_N" \
+    -v reasonlist="$REASON_LIST" -v ceilings="$CEILINGS" \
+    -v effordinals="$EFF_ORDINALS" -v suppord="$SUPPRESS_ORD" '
 function fail(n, msg) { errs++; print "  line " n ": " msg >> errfile }
 # Same reporter, keyed on the merged record instead of a source line — the
 # violation belongs to the collapsed finding, which has no single line number.
@@ -286,8 +331,12 @@ BEGIN {
   # is still merely suppressed, deferred or reported.
   ndisp = split("report unconfirmed demoted defer out-of-scope suppress refuted", DISPORDER, " ")
   for (i = 1; i <= ndisp; i++) { DISP[DISPORDER[i]] = 1; DRANK[DISPORDER[i]] = i }
-  split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline stale-api", a, " ")
-  for (i in a) REASON[a[i]] = 1
+  # Reason codes and their effect ceilings arrive from the shared vocabulary TSV.
+  n = split(reasonlist, a, " "); for (i = 1; i <= n; i++) REASON[a[i]] = 1
+  n = split(ceilings, a, " ")
+  for (i = 1; i <= n; i++) { split(a[i], kv, "="); CEIL[kv[1]] = kv[2] }
+  n = split(effordinals, a, " ")
+  for (i = 1; i <= n; i++) { split(a[i], kv, "="); ORD[kv[1]] = kv[2] + 0 }
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0; nraised = 0
 }
 
@@ -310,7 +359,7 @@ BEGIN {
   if (loc  !~ /^[^ \t]+:[0-9]+(-[0-9]+)?$/) { fail(NR, "location \"" loc "\" is not path:line");            bad = 1 }
   if (lens == "")                           { fail(NR, "lens is empty — every finding names the pass that raised it"); bad = 1 }
   if (!(disp in DISP))                      { fail(NR, "unknown disposition \"" disp "\"");                 bad = 1 }
-  if (rsn != "-" && !(rsn in REASON))       { fail(NR, "unknown reason code \"" rsn "\"");                  bad = 1 }
+  if (rsn != "-" && !(rsn in REASON))       { fail(NR, "unknown reason code \"" rsn "\" (see bin/jjstack-review-vocab.tsv)"); bad = 1 }
   if (claim == "")                          { fail(NR, "claim is empty");                                   bad = 1 }
 
   # INVARIANT 1 — no silent drop.
@@ -320,9 +369,11 @@ BEGIN {
   if (disp == "report" && rsn != "-") {
     fail(NR, "disposition \"report\" must carry reason \"-\", got \"" rsn "\""); bad = 1
   }
-  # INVARIANT 2 — reachability deprioritises, it never deletes.
-  if (rsn == "not-reachable" && disp == "suppress") {
-    fail(NR, "reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"demoted\""); bad = 1
+  # INVARIANT 2 — a reason may not outrank its ceiling. The ceiling is DATA, in
+  # the shared vocabulary, not a hardcoded special case: `not-reachable` caps at
+  # `demote`, so it can never appear on a suppression.
+  if (disp == "suppress" && rsn in CEIL && ORD[CEIL[rsn]] + 0 < suppord + 0) {
+    fail(NR, "reason \"" rsn "\" may carry at most \"" CEIL[rsn] "\" — it may not suppress; deprioritise with \"defer\" or \"demoted\""); bad = 1
   }
   # INVARIANT 3 — top severity is never made to disappear.
   if ((sev == "P0" || sev == "P1") && disp == "suppress") {
@@ -467,8 +518,10 @@ END {
       failmerged(LOC[fp], "merged disposition \"" DISP_[fp] "\" carries no reason code")
     if (DISP_[fp] == "report" && RSN[fp] != "-")
       failmerged(LOC[fp], "merged disposition \"report\" must carry reason \"-\", got \"" RSN[fp] "\"")
-    if (RSN[fp] == "not-reachable" && DISP_[fp] == "suppress")
-      failmerged(LOC[fp], "merged reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"demoted\"")
+    if (DISP_[fp] == "suppress" && RSN[fp] in CEIL && ORD[CEIL[RSN[fp]]] + 0 < suppord + 0)
+      failmerged(LOC[fp], "merged reason \"" RSN[fp] "\" may carry at most \"" CEIL[RSN[fp]] "\" — it may not suppress; deprioritise with \"defer\" or \"demoted\"")
+    if ((DISP_[fp] == "refuted") != (RSN[fp] == "stale-api"))
+      failmerged(LOC[fp], "merged \"refuted\" and reason \"stale-api\" are only legal together — got disposition \"" DISP_[fp] "\" with reason \"" RSN[fp] "\"")
     if ((SEV_[fp] == "P0" || SEV_[fp] == "P1") && DISP_[fp] == "suppress")
       failmerged(LOC[fp], SEV_[fp] " may not be suppressed — a merge must not absorb top severity into a suppressed row")
 
@@ -563,21 +616,25 @@ END {
   if (rows == 0 && !verified)
     advisories[++nadv] = "source ledger holds 0 findings and was not reconciled — an empty page certifies nothing; pass --reconcile"
 
-  print "# Review triage ledger"                                              >> render
+  print "# Review run report"                                                 >> render
   print ""                                                                    >> render
   print "- generated: " today                                                 >> render
-  print "- source ledger: `" src "`"                                          >> render
+  print "- source findings: `" src "`"                                        >> render
   print "- findings in: " rows "  |  unique after dedup: " uniq "  |  duplicates collapsed: " dupes >> render
   if (recon != "") print "- reconciled against: `" recon "`" (verified ? "" : " (empty — nothing to check against)") >> render
   print ""                                                                    >> render
+  print "This is the audit trail of ONE review run, regenerated every run. It"  >> render
+  print "is not memory: what carries across runs lives in"                      >> render
+  print "`jjstack/review-memory/`."                                             >> render
+  print ""                                                                      >> render
   if (verified) {
     print "Every finding this review raised is on this page, and that is a"    >> render
-    print "checked fact, not a promise: the ledger was reconciled row-for-row" >> render
-    print "against the adjudicated set above, and nothing renders if a finding">> render
-    print "is missing."                                                        >> render
+    print "checked fact, not a promise: the findings file was reconciled"      >> render
+    print "row-for-row against the adjudicated set above, and nothing renders" >> render
+    print "if a finding is missing."                                           >> render
   } else {
-    print "Every finding RECORDED IN THE SOURCE LEDGER is on this page, but"   >> render
-    print "completeness against Phase 5 was NOT verified — rerun with"         >> render
+    print "Every finding RECORDED IN THE SOURCE FINDINGS FILE is on this page," >> render
+    print "but completeness against Phase 5 was NOT verified — rerun with"     >> render
     print "`--reconcile {OUTPUT_DIR}/findings.adjudicated.jsonl` to make that" >> render
     print "claim machine-checked rather than asserted."                        >> render
   }
@@ -634,12 +691,12 @@ END {
 rc=$?
 
 if [ "$rc" -eq 4 ]; then
-  echo -e "${CYA}FAIL${RST} triage ledger is invalid — nothing rendered:" >&2
+  echo -e "${CYA}FAIL${RST} run findings are invalid — nothing rendered:" >&2
   cat "$ERRS" >&2
   exit 4
 fi
 if [ "$rc" -ne 0 ]; then
-  echo -e "${CYA}FAIL${RST} triage render failed (awk exit $rc)" >&2
+  echo -e "${CYA}FAIL${RST} run report render failed (awk exit $rc)" >&2
   exit 4
 fi
 
@@ -703,7 +760,7 @@ for loc, n in sorted(want.items()):
     got = have.get(loc, 0)
     if got < n:
         problems.append(
-            f"  {loc}: adjudicated set has {n} finding(s), ledger has {got} row(s)"
+            f"  {loc}: adjudicated set has {n} finding(s), findings file has {got} row(s)"
             " — a finding left the review without a disposition"
         )
 if problems:
@@ -715,7 +772,7 @@ PY
 
   prc=$?
   if [ "$prc" -eq 3 ]; then
-    echo -e "${CYA}FAIL${RST} ledger does not account for every adjudicated finding — nothing rendered:" >&2
+    echo -e "${CYA}FAIL${RST} findings file does not account for every adjudicated finding — nothing rendered:" >&2
     cat "$WORK/recon.out" >&2
     exit 4
   elif [ "$prc" -ne 0 ]; then
@@ -725,10 +782,12 @@ PY
   fi
 fi
 
-if [ -n "$OUT" ]; then
+if [ "$DRY" -eq 1 ]; then
+  echo -e "${GRN}[dry-run]${RST} findings valid; would write ${OUT:-stdout}"
+elif [ -n "$OUT" ]; then
   mkdir -p "$(dirname "$OUT")" 2>/dev/null
   cp "$RENDER" "$OUT" || exit 3
-  echo -e "${GRN}ledger${RST} → $OUT"
+  echo -e "${GRN}run report${RST} → $OUT"
 else
   cat "$RENDER"
 fi

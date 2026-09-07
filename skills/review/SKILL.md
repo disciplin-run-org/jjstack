@@ -1,6 +1,6 @@
 ---
 name: review
-version: 0.4.0
+version: 1.0.0
 description: |
   The deepest, highest-recall pre-landing review in the stack. Wraps gstack's
   /review but deliberately trades time and tokens for COVERAGE: it opens with a
@@ -537,14 +537,20 @@ answer is not deletion; it is a **committed baseline** that keeps accepted
 findings in the output, marked suppressed with a mandatory reason, and stops
 them counting as active.
 
+The baseline is the **narrowest rung of the review memory ladder** (Module G.4):
+it keys on one finding *instance*, which is the only reason it is allowed to
+suppress at all.
+
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-baseline apply {OUTPUT_DIR}/findings.jsonl \
-  --baseline "$(git rev-parse --show-toplevel)/.jjstack-review-baseline.json" \
+  --baseline "$(git rev-parse --show-toplevel)/jjstack/review-memory/baseline.tsv" \
   > {OUTPUT_DIR}/findings.adjudicated.jsonl
 ```
 
 Skip it when the repo has no baseline file yet — a missing baseline is normal,
-not an error to work around.
+not an error to work around. **Exit 3** means the repo still has the old
+`.jjstack-review-baseline.json`: run `jjstack-review-memory-migrate` once, read
+the diff, commit it, and rerun.
 
 Creating or extending a baseline is a **human decision that mutes future
 reviews**, so do it only when the user explicitly asks. Never generate one
@@ -553,7 +559,7 @@ unprompted to make a report look shorter:
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-baseline generate {OUTPUT_DIR}/findings.jsonl \
   --reason "triaged <date>: accepted, see jjstack/<review>.md" \
-  -o "$(git rev-parse --show-toplevel)/.jjstack-review-baseline.json"
+  -o "$(git rev-parse --show-toplevel)/jjstack/review-memory/baseline.tsv"
 ```
 
 `generate` **extends** the file it points at: existing rules and already
@@ -561,23 +567,27 @@ accepted fingerprints are merged forward, so running it on a repo that already
 has a baseline never destroys the reasons a human typed. `--replace` is the
 explicit way to start over.
 
-Two mechanisms, deliberately aging differently:
+Two mechanisms, deliberately aging differently — both live in the same TSV, one
+row each:
 
-- **`fingerprints`** — machine-generated content hashes, brittle on purpose:
+- **`fingerprint` rows** — machine-generated content hashes, brittle on purpose:
   edit the flagged source and the finding comes back for review. **Prefer these**
   for individually accepted findings.
-- **`rules`** — human-authored globs over `id` (lens) / `path` / `message`,
-  drift-tolerant: they survive line shifts and rewording. Reserve them for
-  deliberate, tightly-scoped policy exclusions, because a broad rule can hide
-  newly malicious content. A rule that states only a universal glob
-  (`{"path": "*"}`) is rejected: it is the "matches everything" rule in
-  disguise, and it would mute the whole repo at exit 0.
+- **`rule` rows** — human-authored globs over `lens` / `file` / `message`
+  (`-` means "unstated", and matches anything), drift-tolerant: they survive
+  line shifts and rewording. Reserve them for deliberate, tightly-scoped policy
+  exclusions, because a broad rule can hide newly malicious content. A rule that
+  states only a universal glob (`file` = `*`) is rejected: it is the "matches
+  everything" rule in disguise, and it would mute the whole repo at exit 0.
 
-Every entry of either kind carries a mandatory `reason`; the script refuses a
-baseline without one, and refuses a rule that names no matching field (a rule
-that matches everything is never what anyone meant). Suppressed findings never
-count toward the active total but **remain in the output**, marked, so the
-report can show them for audit.
+Every entry of either kind carries a mandatory free-text `reason` **and** a
+`code` from the one shared reason-code vocabulary
+(`bin/jjstack-review-vocab.tsv`); the script refuses a baseline without a
+reason, refuses a rule that names no matching field (a rule that matches
+everything is never what anyone meant), and refuses a code whose ceiling is
+below `suppress` (`not-reachable`, for instance, may never suppress anywhere).
+Suppressed findings never count toward the active total but **remain in the
+output**, marked, so the report can show them for audit.
 
 ### 5e. Rank, and treat the summary as a prior — not a verdict
 
@@ -784,8 +794,10 @@ up to a clean sweep; re-run with `--cmd "<the project's real test command>"`.
 
 ### Phase 5.10 — Calibration persistence
 
-Read the ledger, use its rank to PLACE findings before the report is finalized,
-then record this review's verdicts so the next one starts from evidence.
+Read the calibration store, use its rank to PLACE findings before the report is
+finalized, then record this review's verdicts so the next one starts from
+evidence. This is the **widest rung of the review memory ladder** (Module G.4):
+it keys on a global pattern class, so its ceiling is `rank` — placement only.
 
 **Rank is placement, never a score.** A `placement=demoted` finding is printed
 under 5f's **Demoted (prior decision)** section with its severity and confidence
@@ -800,18 +812,26 @@ human reason, removes a finding from the active set.
 ~/.claude/skills/jjstack/bin/jjstack-review-calibration report
 ```
 
-Exit 4 = no ledger yet (first calibrated review) → apply no adjustment, say so,
-and still record verdicts. For each triaged finding:
+Exit 4 = no store yet (first calibrated review) → apply no adjustment, say so,
+and still record verdicts. Exit 3 = the repo still has the old
+`jjstack/review-calibration.tsv`: run `jjstack-review-memory-migrate` once, read
+the diff, commit it, and rerun. For each triaged finding:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-review-calibration record --key <pattern-key> --verdict accepted|rejected --lens <pass> --file <path>
+~/.claude/skills/jjstack/bin/jjstack-review-calibration record --key <pattern-key> \
+  --verdict accepted|rejected --code <reason-code> --lens <pass> --file <path>
 ```
 
-Key on the CLASS of finding, never the instance. Record nothing for findings the
-user never ruled on — a guess pollutes the ledger.
+Key on the CLASS of finding, never the instance. A `rejected` verdict needs a
+`--code` from the shared vocabulary — a rejection is a decision, and a decision
+is explained. Record nothing for findings the user never ruled on — a guess
+pollutes the store.
+
+The store is `{repo}/jjstack/review-memory/calibration.tsv`, alongside its two
+siblings.
 <!-- BEGIN aikido-lessons — additive section, see references/vendor-lessons-aikido.md -->
 
-## Phase 5.11: Triage ledger — account for every finding, drop none silently
+## Phase 5.11: Run report — account for every finding, drop none silently
 
 ```bash
 cat ~/.claude/skills/jjstack/references/vendor-lessons-aikido.md
@@ -825,9 +845,15 @@ deleted, it is given a **disposition** and a **reason code** and stays
 inspectable (the mechanic is drawn from Aikido's triage model; the reference
 above records what was adopted and what was rejected as marketing).
 
+**This is not memory.** It is the audit trail of THIS run, regenerated from
+scratch every run and living in `{OUTPUT_DIR}`, not in the repo's memory
+directory. Four parallel PRs mistook it for a fourth memory store; the tool is
+named `jjstack-review-run-report` so that mistake cannot be made again, and it
+refuses outright to render a report from a `jjstack/review-memory/` file.
+
 Adopt the accountable half. After Phase 5, write the **complete** merged set —
-every finding, whatever became of it — to a TSV ledger at
-`{OUTPUT_DIR}/review-findings.tsv`, one finding per line, 7 tab-separated
+every finding, whatever became of it — to
+`{OUTPUT_DIR}/review-run-findings.tsv`, one finding per line, 7 tab-separated
 columns:
 
 ```
@@ -849,12 +875,14 @@ to delete, and no arithmetic threshold appears here:
 | raised, then DISPROVED by evidence (§4.5b) | `refuted` | `stale-api` |
 | never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` |
 
-`reason` is a **code from the closed vocabulary**, never free text. A
+`reason` is a **code from the closed vocabulary**, never free text. The codes
+come from `bin/jjstack-review-vocab.tsv` — the same closed vocabulary the three
+memory stores validate against. There is exactly one list. A
 baseline-suppressed finding takes the literal token `baseline`; the human
 sentence that justified the suppression already lives in the committed
-`.jjstack-review-baseline.json` and stays there. Pasting it into this column
-makes the validator exit 4 on a ledger that says exactly what it was told to
-say, and the loop has no way out.
+`jjstack/review-memory/baseline.tsv` and stays there. Pasting it into this
+column makes the validator exit 4 on a findings file that says exactly what it
+was told to say, and the loop has no way out.
 
 `refuted` is the one row where the finding leaves the report because it is
 **wrong**, and it is the only row whose decision is made *before* Phase 5 — the
@@ -896,20 +924,20 @@ is listed in **Merges** whenever the group held more than one severity or
 disposition — so the rendered ledger is a function of the SET of findings, not
 of the order they were written down.
 
-Then render the ledger. This is deterministic — dedup, merge, corroboration
+Then render the report. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation
 and the tally are the script's job, not the model's:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-review-triage {OUTPUT_DIR}/review-findings.tsv \
+~/.claude/skills/jjstack/bin/jjstack-review-run-report {OUTPUT_DIR}/review-run-findings.tsv \
   --reconcile {OUTPUT_DIR}/findings.adjudicated.jsonl \
-  --out {OUTPUT_DIR}/review-triage-ledger.md
+  --out {OUTPUT_DIR}/review-run-report.md
 ```
 
 Pass `--reconcile` whenever 5d ran: it counts findings per `file:start_line` on
-both sides and refuses to render if the ledger is short, which is what turns
+both sides and refuses to render if the findings file is short, which is what turns
 "write the **complete** merged set" from an instruction into a checked fact.
-A `path:N-M` ledger row reconciles on its **start** line. An adjudicated file
+A `path:N-M` findings row reconciles on its **start** line. An adjudicated file
 holding no findings earns no stronger header than no flag at all — reconciling
 against nothing checks nothing. Without the flag the rendered header says so
 rather than certifying what nobody verified; drop it only when the repo has no
@@ -919,10 +947,12 @@ The script enforces three invariants that prose cannot:
 
 1. **No silent drop** — any disposition other than `report` must carry a reason
    code. Together with the enrich-only rule in Phase 5, this closes the loop:
-   Phase 5 cannot delete a finding, and this ledger cannot let one leave the
-   report without a stated reason on the record.
-2. **Reachability deprioritises, it never deletes** — `not-reachable` is legal
-   only with `defer` or `demoted`. Code that is unreachable today becomes
+   Phase 5 cannot delete a finding, and this report cannot let one leave without
+   a stated reason on the record.
+2. **A reason may not outrank its ceiling** — every code in the shared
+   vocabulary declares the strongest verdict it may carry, so
+   `not-reachable` (ceiling `demote`) is legal only with `defer` or `demoted`.
+   Code that is unreachable today becomes
    reachable at the next refactor, and a reviewer that deleted the finding has
    no way to bring it back. Even the scanner vendors hold this line: their stated
    policy is that in ambiguous cases they "err on the side of caution: instead of
@@ -948,22 +978,24 @@ member is (highest severity, then highest confidence), its severity, confidence
 and claim always travel together, and **every other member's claim rides on the
 same row** with its own severity and confidence (`· also P0/60: …`). A merge
 that changed severity, disposition **or the finding text** is listed in the
-ledger's own **Merges** section, so the collapse stays as auditable as
+report's own **Merges** section, so the collapse stays as auditable as
 everything else.
 
 The collapse is then **checked rather than trusted**: the script recomputes the
-merged record from an independent per-member ledger and renders nothing if the
+merged record from an independent per-member tally and renders nothing if the
 two disagree. Re-running the same three invariants on the collapsed row would
 be dead code — the per-row pass has already rejected every input that could
 violate them — so what the merged pass actually guards is the fidelity of the
 merge itself.
 
 It exits **4** and renders nothing if any of those is violated, or if
-`--reconcile` finds a finding with no row: fix the ledger and rerun rather than
-working around it. It exits 3 if the ledger or the adjudicated file is missing.
-It also emits yellow `ADVISORY` lines for findings reported against vendored or
+`--reconcile` finds a finding with no row: fix the findings file and rerun
+rather than working around it. It exits 3 if the findings file or the
+adjudicated file is missing, and **2 if you point it at a
+`jjstack/review-memory/` store** — that is the rename made structural. It also
+emits yellow `ADVISORY` lines for findings reported against vendored or
 generated paths — code nobody here authored, and usually noise — and for an
-empty, unreconciled ledger, which certifies nothing.
+empty, unreconciled findings file, which certifies nothing.
 
 Two things it gives you for free that the model should not be doing by hand:
 **dedup with a corroboration count** (the same defect found by three lenses is
@@ -976,8 +1008,10 @@ decides whether a finding is shown.
 Pipes in a claim are escaped for you — a finding quoting `a || b` used to render
 a 9-cell row against a 7-cell header, and the renderer dropped the overflow.
 
-Commit `review-triage-ledger.md` alongside the findings report — it is the
-record of what this review chose not to tell you, and why.
+Commit `review-run-report.md` alongside the findings report — it is the record
+of what this review chose not to tell you, and why. It is per-run output: the
+next run writes a fresh one, and nothing in it is consulted by a later review.
+What a later review DOES consult is the memory ladder in Module G.4.
 
 <!-- END aikido-lessons -->
 
@@ -1005,9 +1039,11 @@ unconfirmed, baseline-suppressed, degraded mode, guardrails) lands in
 `{OUTPUT_DIR}` alongside the normalized `findings.jsonl` it was rendered from,
 together with the `gstack-review-refs/` snapshot from Phase 5.5. All are
 committed to the repo so the findings, the machine-readable record, and the
-rubric that produced them travel together. If Phase 5d wrote or updated
-`.jjstack-review-baseline.json`, commit that too — it is what makes the next
-review show only what is new.
+rubric that produced them travel together. If this run wrote or updated anything
+under `{repo_root}/jjstack/review-memory/` — the baseline (5d), the ledger
+(G.3) or the calibration store (5.10) — commit those too. They are what makes
+the next review show only what is new, and each change is a one-line diff a
+human can review.
 
 ### 6.3 README maintenance
 
@@ -1086,6 +1122,9 @@ degradation rule rather than reading silence as a clean history.
 
 ### G.3 Ledger match — demote, never drop (end of Phase 5)
 
+The ledger is the **middle rung of the review memory ladder** (G.4): it keys on
+a path glob plus a category, so its ceiling is `demote`.
+
 After every finding has a confidence score, check each against the repo's
 ledger of what past reviews decided:
 
@@ -1093,7 +1132,7 @@ ledger of what past reviews decided:
 ~/.claude/skills/jjstack/bin/jjstack-review-ledger --match --path <file> --category <cat>
 ```
 
-- **Exit 0 (`DEMOTE …`)** — a prior review dismissed this class here. File the
+- **Exit 0 (`DEMOTE effect=demote …`)** — a prior review dismissed this class here. File the
   finding under 5f's **`### Demoted (prior decision)`** section and quote the
   ledger's note as the reason. Do **not** drop it, and do not lower its
   confidence score: the score is a claim about the code, the demotion is a claim
@@ -1123,7 +1162,7 @@ Record outcomes only for findings the user actually adjudicates in this session:
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-ledger --record --type <dismissed|fixed|confirmed> \
-  --path <glob> --category <cat> --note "<why>"
+  --path <glob> --category <cat> --code <reason-code> --note "<why>"
 ```
 
 Never record a dismissal the user did not make. An invented dismissal is a
@@ -1155,6 +1194,51 @@ ledger's own location — not from wherever your shell happens to be — so a le
 copied or merged between repos still says what it is about. Pass `--repo` to
 override it explicitly.
 
-The ledger lives at `{repo_root}/jjstack/review-ledger.md` — in git, so a
-suppression is reviewable in a PR and retiring one is a visible diff. Commit it
-with the findings in step 6.2.
+The ledger lives at `{repo_root}/jjstack/review-memory/ledger.tsv` — in git, so
+a demotion is reviewable in a PR and retiring one is a one-line diff. Commit it
+with the findings in step 6.2. **Exit 3** means the repo still has the old
+`jjstack/review-ledger.md`: run `jjstack-review-memory-migrate` once, read the
+diff, commit it, and rerun.
+
+### G.4 The review memory ladder — three stores, one directory, one format
+
+Three things carry across reviews, and they are **not** three copies of one
+idea. They are an escalation ladder: **the narrower the key, the stronger the
+verdict it may emit.**
+
+| store | key scope | ceiling | file |
+|---|---|---|---|
+| `jjstack-review-calibration` | a global **pattern class** | `rank` (placement only) | `jjstack/review-memory/calibration.tsv` |
+| `jjstack-review-ledger` | a **path glob + category** | `demote` | `jjstack/review-memory/ledger.tsv` |
+| `jjstack-review-baseline` | one finding **instance** (file + line + claim) | `suppress` | `jjstack/review-memory/baseline.tsv` |
+
+Collapsing them into one store would flatten the property that stops a global
+heuristic from silently suppressing a specific P0. So they stay three files —
+but they now share one directory, one format, and one reason-code vocabulary.
+
+- **One directory** so the whole of a repo's review memory is one `git log`.
+- **One format — TSV** because the review value of these files IS their diff: a
+  suppression is one line, so it shows as a one-line PR diff and it greps. JSON
+  is the worst choice for a file read as a diff; Markdown the worst for a file a
+  script must parse.
+- **One vocabulary** — `bin/jjstack-review-vocab.tsv` — read by all three stores
+  *and* by the per-run report of Phase 5.11. It also declares the ladder itself,
+  so the ceilings are data, not convention: a calibration row that claims
+  `suppress` is rejected with **exit 4** by arithmetic, not by anyone
+  remembering the rule. Each tool also refuses a store from another rung.
+
+**Demotion is idempotent and terminal.** A finding hit by both the ledger and a
+negative calibration rank is demoted **once** — active, printed, severity and
+confidence untouched. Demotions never stack into a suppression; only the
+instance-keyed baseline, with a mandatory human reason per entry, takes a
+finding out of the active set.
+
+Migration from the pre-1.0 layout is explicit, never automatic — these files are
+version controlled and a tool that silently rewrote one mid-review would produce
+a diff nobody approved:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-memory-migrate --repo "$(git rev-parse --show-toplevel)"
+```
+
+Read the new files, delete the legacy ones, and commit both in one diff.
