@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# jjstack-review-prior-dismissals — load the findings the user already rejected.
+#
+# Re-reporting a finding the user looked at and skipped is worse than missing
+# one. It is pure alert fatigue: it teaches the author that the reviewer does
+# not remember, and once that sets in the whole report gets skimmed. gstack
+# already records the verdict on every finding — but it applies that memory
+# only at its own suppression step, AFTER the passes have burned tokens
+# regenerating them. Loading the dismissals up front lets every pass avoid
+# producing them in the first place.
+#
+# Source of truth: `gstack-review-read`, whose stdout is the reviews JSONL
+# followed by `---CONFIG---` and other sections. Only the lines BEFORE that
+# marker are JSONL; each record's `findings[]` carries
+# `{fingerprint, severity, action}` and `action: "skipped"` is the user's
+# explicit "no".
+#
+# Deterministic parsing, no inference.
+#
+# Usage:
+#   jjstack-review-prior-dismissals --out DIR [options]
+#
+# Options:
+#   --out DIR        where to write prior-dismissals.md (required)
+#   --repo DIR       run the reader from here (it keys its history on cwd)
+#   --input FILE     parse this file instead of running gstack-review-read
+#   --reader PATH    path to gstack-review-read (default: ~/.claude/skills/gstack/bin/…)
+#   --dry-run        report what would be parsed; write nothing
+#
+# Exit: 0 written (even with zero dismissals), 2 usage error,
+#       3 no reader and no input — gstack review history unavailable.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+OUT=""; INPUT=""; REPO=""; READER="$HOME/.claude/skills/gstack/bin/gstack-review-read"; DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)     OUT="${2:-}"; shift 2 ;;
+    --repo)    REPO="${2:-}"; shift 2 ;;
+    --input)   INPUT="${2:-}"; shift 2 ;;
+    --reader)  READER="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--input FILE]" >&2; exit 2; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+if [ -n "$INPUT" ]; then
+  [ -f "$INPUT" ] || { echo -e "${CYA}error${RST} no such file: $INPUT" >&2; exit 2; }
+  cp "$INPUT" "$TMP/raw"
+  SRC="$INPUT"
+elif [ -x "$READER" ]; then
+  # gstack-review-read keys its history on the CURRENT DIRECTORY (slug +
+  # branch). Running it from anywhere else silently reads another project's
+  # dismissals, or none — so always run it inside the repo under review.
+  ( cd "${REPO:-.}" 2>/dev/null && "$READER" ) > "$TMP/raw" 2>/dev/null
+  SRC="$READER (cwd: ${REPO:-.})"
+else
+  echo -e "${YEL}warn${RST}  gstack-review-read not found at $READER" >&2
+  echo -e "${YEL}warn${RST}  no prior-review history — nothing to suppress" >&2
+  exit 3
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] source: $SRC"
+  echo "[dry-run] jsonl lines before ---CONFIG---: $(sed '/^---CONFIG---$/q' "$TMP/raw" | grep -c '^{' || true)"
+  echo "[dry-run] would write: $OUT/prior-dismissals.md"
+  exit 0
+fi
+
+mkdir -p "$OUT" || exit 3
+
+# Everything before the ---CONFIG--- marker is JSONL. Past that are the
+# reader's other sections (HEAD/WTREE/TREE/DIRTY) and feeding them to a JSON
+# parser is how this quietly turns into garbage.
+sed '/^---CONFIG---$/q' "$TMP/raw" | grep '^{' > "$TMP/jsonl" || true
+
+python3 - "$TMP/jsonl" > "$TMP/parsed" <<'PY'
+import json, sys
+seen = {}
+bad = 0
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line or not line.startswith("{"):
+        continue
+    try:
+        rec = json.loads(line)
+    except Exception:
+        bad += 1           # a malformed row is skipped, never fatal
+        continue
+    for f in rec.get("findings") or []:
+        if not isinstance(f, dict) or f.get("action") != "skipped":
+            continue
+        fp = f.get("fingerprint")
+        if not fp:
+            continue
+        prev = seen.get(fp)
+        if prev is None or (rec.get("timestamp") or "") >= prev[0]:
+            seen[fp] = (rec.get("timestamp") or "",
+                        f.get("severity") or "?",
+                        rec.get("skill") or "review")
+print(f"__BAD__ {bad}")
+for fp, (ts, sev, skill) in sorted(seen.items()):
+    print(f"{fp}\t{sev}\t{ts}\t{skill}")
+PY
+
+bad=$(grep '^__BAD__' "$TMP/parsed" | awk '{print $2}')
+grep -v '^__BAD__' "$TMP/parsed" > "$TMP/rows" || true
+n=$(wc -l < "$TMP/rows")
+
+{
+  echo "# Prior dismissals — findings the user already said no to"
+  echo
+  echo "Loaded BEFORE the passes run, not after. Suppressing a repeat finding"
+  echo "after generating it still costs the tokens and still risks it leaking"
+  echo "into the report; not generating it is strictly better."
+  echo
+  echo "- source: \`$SRC\`"
+  echo "- records parsed: $(wc -l < "$TMP/jsonl")"
+  echo "- dismissed fingerprints: $n"
+  [ "${bad:-0}" -gt 0 ] && echo "- malformed rows skipped: $bad"
+  echo
+  if [ "$n" -eq 0 ]; then
+    echo "## No prior dismissals"
+    echo
+    echo "Either this is the first review here, or every past finding was fixed"
+    echo "rather than skipped. Nothing to suppress — review normally."
+  else
+    echo "## Do NOT re-report these"
+    echo
+    echo "| fingerprint (path:line:category) | severity | dismissed | by |"
+    echo "|---|---|---|---|"
+    awk -F'\t' '{printf "| `%s` | %s | %s | %s |\n", $1, $2, $3, $4}' "$TMP/rows"
+    echo
+    echo "Fingerprints are \`path:line:category\`. Line numbers drift, so match"
+    echo "on path + category + the substance of the claim, not on the literal"
+    echo "string."
+    echo
+    echo "**The one exception:** re-raise a dismissed finding if the current diff"
+    echo "materially changed the code it points at — the user dismissed it"
+    echo "against the OLD code, and that judgement does not automatically"
+    echo "transfer. Say explicitly that it was previously dismissed and what"
+    echo "changed."
+  fi
+} > "$OUT/prior-dismissals.md"
+
+echo -e "${GRN}dismissals${RST} $n fingerprint(s) → $OUT/prior-dismissals.md"
+exit 0

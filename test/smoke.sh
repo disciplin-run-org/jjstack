@@ -48,6 +48,9 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-capture-write "$BIN"/jjstack-capture-flush \
          "$BIN"/jjstack-global-learn "$BIN"/jjstack-gbrain-phi-lib.sh \
          "$BIN"/jjstack-capture-review-refs \
+         "$BIN"/jjstack-review-preflight "$BIN"/jjstack-review-tooling-sweep \
+         "$BIN"/jjstack-review-blast-radius "$BIN"/jjstack-review-intent \
+         "$BIN"/jjstack-review-prior-dismissals \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -287,6 +290,161 @@ check "--dry-run writes nothing" "[ ! -d '$CRR/out2' ]"
 "$BIN/jjstack-capture-review-refs" "$CRR/out3" --gstack-review-dir "$CRR/nope" >/dev/null 2>&1
 check "missing gstack dir exits 3" "[ \$? -eq 3 ]"
 rm -rf "$CRR"
+
+echo "== 5c. review pre-flight evidence pack =="
+# /review Phase 0 runs deterministic pre-passes BEFORE any AI pass. Each is
+# tested against a throwaway git repo built to contain the exact defect the
+# pre-pass exists to catch — a public symbol renamed in the diff while a file
+# OUTSIDE the diff still calls it. Nothing here touches the jjstack repo: the
+# sweep would otherwise re-enter this very script.
+# The sweep's re-entrancy guard reads this from the environment, and this suite
+# IS a test runner the sweep can invoke — so it can arrive already set. Clear it
+# so every assertion below tests the script, not the ambient environment; the
+# guard's own test sets it explicitly.
+unset JJSTACK_REVIEW_PREFLIGHT
+PF="$(mktemp -d)"; FX="$PF/fx"
+mkdir -p "$FX/lib" "$FX/test"
+git -C "$FX" init -q -b main 2>/dev/null
+git -C "$FX" config user.email t@t; git -C "$FX" config user.name T
+printf '#!/usr/bin/env bash\ncompute_total() { echo 1; }\nMAX_RETRIES=3\n' > "$FX/lib/core.sh"
+printf '#!/usr/bin/env bash\n. lib/core.sh\ncompute_total\necho "$MAX_RETRIES"\necho DocOnlySymbol CommentOnlySymbol\n' > "$FX/consumer.sh"
+printf '# Fixture docs\n' > "$FX/README.md"
+printf '#!/usr/bin/env bash\necho fixture-ok\nexit 0\n' > "$FX/test/smoke.sh"
+chmod +x "$FX/test/smoke.sh"
+git -C "$FX" add -A >/dev/null 2>&1; git -C "$FX" commit -qm "feat: seed" >/dev/null 2>&1
+# The change under review: rename the public symbol, bump the constant, and
+# add two decoys — a "class" in a doc file and a "type" inside a comment. Both
+# name things consumer.sh mentions, so a broken noise filter shows up as a
+# spurious entry rather than as silence.
+printf '#!/usr/bin/env bash\n# type CommentOnlySymbol\ncompute_grand_total() { echo 1; }\nMAX_RETRIES=5\n' > "$FX/lib/core.sh"
+printf '# Fixture docs\n\nclass DocOnlySymbol\n' > "$FX/README.md"
+git -C "$FX" add -A >/dev/null 2>&1
+git -C "$FX" commit -qm "refactor: rename compute_total, fixes #42" >/dev/null 2>&1
+
+# --- pre-pass 2: blast radius (the defect diff-only review cannot see) ---
+"$BIN/jjstack-review-blast-radius" --out "$PF/br" --repo "$FX" --base HEAD~1 >/dev/null 2>&1
+check "blast-radius exits 0" "[ \$? -eq 0 ]"
+check "blast-radius finds the renamed symbol's outside caller" \
+      "grep -q 'compute_total' '$PF/br/blast-radius.md' && grep -q 'consumer.sh' '$PF/br/blast-radius.md'"
+check "blast-radius finds the changed constant's outside use" \
+      "grep -q 'MAX_RETRIES' '$PF/br/blast-radius.md'"
+# The new definition lives only in the diff, so it must NOT be listed as an
+# outside reference. Positive control for the changed-file exclusion.
+check "blast-radius excludes references inside the diff" \
+      "! grep -q 'lib/core.sh:' '$PF/br/blast-radius.md'"
+# Noise filters: prose files declare no symbols, and neither do comments.
+# Without these, ordinary English becomes a "symbol" matching half the repo and
+# buries the real call sites.
+check "blast-radius ignores symbols declared in doc files" \
+      "! grep -q 'DocOnlySymbol' '$PF/br/blast-radius.md'"
+check "blast-radius ignores symbols declared in comments" \
+      "! grep -q 'CommentOnlySymbol' '$PF/br/blast-radius.md'"
+# Positive control — both guards would also 'pass' if the decoys were never in
+# the diff, or had no outside reference to be reported against.
+check "decoy symbols really are in the diff" \
+      "git -C '$FX' diff HEAD~1 | grep -q 'class DocOnlySymbol' && git -C '$FX' diff HEAD~1 | grep -q 'type CommentOnlySymbol'"
+check "decoy symbols really are referenced outside the diff" \
+      "grep -q 'DocOnlySymbol CommentOnlySymbol' '$FX/consumer.sh'"
+"$BIN/jjstack-review-blast-radius" --out "$PF/br2" --repo "$FX" --base HEAD --dry-run >/dev/null 2>&1
+check "blast-radius --dry-run writes nothing" "[ ! -d '$PF/br2' ]"
+"$BIN/jjstack-review-blast-radius" --out "$PF/br3" --repo "$PF" >/dev/null 2>&1
+check "blast-radius outside a git repo exits 3" "[ \$? -eq 3 ]"
+
+# --- pre-pass 1 + 5: tooling sweep and test baseline ---
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/sw" --repo "$FX" >/dev/null 2>&1
+check "tooling-sweep exits 0 when tools pass" "[ \$? -eq 0 ]"
+check "tooling-sweep detects and runs the test suite" \
+      "grep -q 'test/smoke.sh' '$PF/sw/tooling-results.md'"
+check "tooling-sweep writes a test baseline" "[ -f '$PF/sw/test-baseline.md' ]"
+check "baseline records the green state" "grep -q 'result:  pass' '$PF/sw/test-baseline.md'"
+# The load-bearing rule: a category is COVERED only if its tool RAN and PASSED.
+check "exclusions mark the passing test suite COVERED" \
+      "grep -q 'COVERED.*test suite' '$PF/sw/exclusions.md'"
+check "exclusions keep the absent typechecker IN SCOPE" \
+      "grep -q 'IN SCOPE — no passing typechecker' '$PF/sw/exclusions.md'"
+# A parse sweep is not a style linter; claiming otherwise silences a category
+# nothing checked.
+check "parse sweep does not claim style coverage" \
+      "grep -q 'NOT a style linter' '$PF/sw/exclusions.md'"
+# A FAILING tool must never yield a COVERED claim — this is the guard that
+# stops the review going quiet about the thing that is actually broken.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/sw2" --repo "$FX" \
+   --typecheck none --lint none --test 'echo boom >&2; exit 7' >/dev/null 2>&1
+check "tooling-sweep exits 1 when a tool fails" "[ \$? -eq 1 ]"
+check "a failing tool is reported as a real finding" \
+      "grep -q 'test FAILED' '$PF/sw2/tooling-results.md' && grep -q 'boom' '$PF/sw2/tooling-results.md'"
+check "a failing tool excludes NOTHING" \
+      "! grep -q '^## COVERED' '$PF/sw2/exclusions.md'"
+check "baseline records the RED state" "grep -q 'baseline is RED' '$PF/sw2/test-baseline.md'"
+# Positive control — "no COVERED anywhere" would also pass if the script never
+# wrote COVERED at all. Prove the string CAN appear.
+check "COVERED guard can actually fire" "grep -q '^## COVERED' '$PF/sw/exclusions.md'"
+# Re-entrancy: a project whose test command invokes /review must not recurse.
+JJSTACK_REVIEW_PREFLIGHT=1 "$BIN/jjstack-review-tooling-sweep" \
+  --out "$PF/sw3" --repo "$FX" --dry-run > "$PF/reentry.out" 2>&1
+check "re-entrancy guard suppresses the test suite" \
+      "grep -q 're-entrancy guard' '$PF/reentry.out'"
+# Positive control — the guard's message would also be absent if the fixture
+# simply had no test runner to suppress.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/sw4" --repo "$FX" --dry-run > "$PF/noreentry.out" 2>&1
+check "without the guard the fixture DOES detect a test runner" \
+      "grep -q 'test:      test/smoke.sh' '$PF/noreentry.out'"
+check "tooling-sweep --dry-run writes nothing" "[ ! -d '$PF/sw3' ]"
+
+# --- pre-pass 3: intent gathering ---
+"$BIN/jjstack-review-intent" --out "$PF/it" --repo "$FX" --base HEAD~1 >/dev/null 2>&1
+check "intent exits 0" "[ \$? -eq 0 ]"
+check "intent captures the commit message" \
+      "grep -q 'rename compute_total' '$PF/it/intent.md'"
+check "intent extracts the referenced issue" "grep -q '#42' '$PF/it/intent.md'"
+# No PR here — that must read as 'structurally inapplicable', never as a pass.
+check "intent reports a missing PR as inapplicable" \
+      "grep -qi 'structurally inapplicable' '$PF/it/intent.md'"
+
+# --- pre-pass 4: prior dismissals ---
+# gstack-review-read emits JSONL, then ---CONFIG--- and further sections. Only
+# the lines BEFORE the marker are JSONL; the fixture puts a decoy record after
+# it so the boundary is actually exercised.
+cat > "$PF/reviews.txt" <<'EOF'
+{"skill":"review","timestamp":"2026-01-01T00:00:00Z","findings":[{"fingerprint":"lib/core.sh:2:maintainability","severity":"INFORMATIONAL","action":"skipped"},{"fingerprint":"lib/core.sh:3:security","severity":"CRITICAL","action":"fixed"}]}
+{"truncated json
+{"skill":"review","timestamp":"2026-02-02T00:00:00Z","findings":[{"fingerprint":"consumer.sh:4:performance","severity":"INFORMATIONAL","action":"skipped"}]}
+---CONFIG---
+false
+---WTREE---
+{"skill":"review","timestamp":"2026-03-03T00:00:00Z","findings":[{"fingerprint":"DECOY-PAST-MARKER:1:x","severity":"CRITICAL","action":"skipped"}]}
+EOF
+"$BIN/jjstack-review-prior-dismissals" --out "$PF/pd" --input "$PF/reviews.txt" >/dev/null 2>&1
+check "prior-dismissals exits 0" "[ \$? -eq 0 ]"
+check "collects skipped fingerprints" \
+      "grep -q 'lib/core.sh:2:maintainability' '$PF/pd/prior-dismissals.md'"
+check "ignores non-skipped actions" \
+      "! grep -q 'lib/core.sh:3:security' '$PF/pd/prior-dismissals.md'"
+check "stops at the ---CONFIG--- marker" \
+      "! grep -q 'DECOY-PAST-MARKER' '$PF/pd/prior-dismissals.md'"
+check "a malformed row is skipped, not fatal" \
+      "grep -q 'malformed rows skipped: 1' '$PF/pd/prior-dismissals.md'"
+# Positive control — the marker guard would also 'pass' if the parser found
+# nothing at all. Prove it really parsed both sides' worth of records.
+check "marker guard actually had something to exclude" \
+      "grep -q 'DECOY-PAST-MARKER' '$PF/reviews.txt'"
+check "parser did find the pre-marker records" \
+      "grep -q 'dismissed fingerprints: 2' '$PF/pd/prior-dismissals.md'"
+"$BIN/jjstack-review-prior-dismissals" --out "$PF/pd2" --reader "$PF/no-such-reader" >/dev/null 2>&1
+check "missing gstack reader exits 3" "[ \$? -eq 3 ]"
+
+# --- orchestrator: the pack is always written, and always says what skipped ---
+"$BIN/jjstack-review-preflight" --out "$PF/pack" --repo "$FX" --base HEAD~1 >/dev/null 2>&1
+check "preflight exits 0" "[ \$? -eq 0 ]"
+check "preflight writes the pack index" "[ -f '$PF/pack/EVIDENCE-PACK.md' ]"
+for a in tooling-results.md exclusions.md test-baseline.md blast-radius.md intent.md prior-dismissals.md; do
+  check "pack contains $a" "[ -f '$PF/pack/$a' ]"
+done
+check "pack index lists all five pre-passes" \
+      "[ \$(grep -c '^| [1-5] |' '$PF/pack/EVIDENCE-PACK.md') -eq 5 ]"
+"$BIN/jjstack-review-preflight" --out "$PF/pack2" --repo "$FX" --dry-run >/dev/null 2>&1
+check "preflight --dry-run writes nothing" "[ ! -d '$PF/pack2' ]"
+rm -rf "$PF"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

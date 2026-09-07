@@ -80,6 +80,38 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **`/review` now gathers evidence before it starts thinking.** A new pre-flight
+  step runs before any AI pass and costs no judgement at all, because none of it
+  is guesswork:
+  - **It runs your actual tooling.** Your typechecker, linter and test suite are
+    executed for real, and whatever they find goes into the report as fact.
+    Reviewers normally skip this whole category on the assumption that CI covers
+    it — which is fine for a bot commenting on a PR and wrong for a review you
+    run locally before merging, where the compiler is right there.
+  - **It tells the review what NOT to look at — but only what was really
+    checked.** A category is marked "already covered" only when the tool
+    covering it actually ran and passed. If you have no typechecker, type
+    problems stay firmly in scope instead of being waved through.
+  - **It maps what your change reaches outside itself.** Every public thing the
+    diff touches — function, type, constant, enum member, exported name — is
+    traced to the places that use it in files the diff never opens. That is the
+    bug a diff-only review cannot see by construction: you rename a function,
+    the caller two directories away still uses the old name, and nothing in the
+    diff shows it. Those call sites are now handed to every pass.
+  - **It reads what the change claims to do** — your commit messages, the PR
+    body, any linked issue — before judging it, so "this doesn't actually do
+    what it says" becomes a finding instead of an invisible gap.
+  - **It remembers what you already said no to.** Findings you dismissed in a
+    past review are loaded up front so the passes never regenerate them. Being
+    told the same thing you rejected last week is how a reviewer loses your
+    trust.
+  - **It records which tests pass right now**, so anything the review changes —
+    including fixes applied automatically — can be shown not to have broken
+    something that worked.
+
+  Anything genuinely not applicable (no test runner, no PR, no review history)
+  is reported as a known gap rather than quietly reading as a pass.
+
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,
