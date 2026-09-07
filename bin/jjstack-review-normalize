@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""jjstack-review-normalize — validate and normalize /review finding structs.
+
+A high-recall review is only usable if every finding is ACTIONABLE, and
+"actionable" is a schema property, not a matter of taste. This script is the
+schema gate: it reads findings as JSON Lines, rejects any that are missing a
+field the reader needs, and canonicalizes the fields models get wrong.
+
+Why each required field earns its place:
+  lens         which pass emitted it — the baseline's rule-id glob keys on this
+  file         where; a finding with no file cannot be looked at
+  start_line   grounded location (see bin/jjstack-number-lines)
+  severity     triage order
+  confidence   how sure the pass is, AFTER normalization below
+  message      the one-line claim, for report tables and dedup
+  quote        the verbatim motivating line — an unquotable finding is unverified
+  explanation  why it is wrong
+  remediation  what to do about it. Requiring this AT EMISSION TIME is the
+               cheap filter that removes findings nobody can act on.
+
+Two normalizations, both deterministic and both defensive:
+  * confidence — models emit 0-100 and 0.0-1.0 interchangeably. Following
+    NVIDIA SkillSpector's meta-analyzer validator: a value above 2.0 is read
+    as a percentage and divided by 100, then clamped into [0, 1]. The
+    ambiguity band is real and unresolvable (a bare "1" could mean 1% or
+    100%); the convention resolves it toward 1.0, which is the fail-closed
+    direction for a review tool.
+  * severity — accepted as P0-P3 or CRITICAL/HIGH/MEDIUM/LOW, emitted as
+    P0-P3 so ranking is a plain sort.
+
+An invalid finding is NEVER silently dropped: it is echoed to the invalid
+stream with the reason, counted, and the exit code says so. Silent deletion is
+the defect this whole change set exists to remove.
+
+Usage:
+  jjstack-review-normalize <findings.jsonl|-> [--invalid-out FILE]
+
+Exit: 0 all findings valid, 1 at least one invalid (valid ones still emitted),
+      2 usage error or unreadable input.
+
+No color red anywhere — unreadable on the target terminal.
+"""
+
+import json
+import sys
+
+YEL = "\033[33m"
+CYA = "\033[96m"
+GRN = "\033[32m"
+RST = "\033[0m"
+
+REQUIRED = (
+    "lens",
+    "file",
+    "start_line",
+    "severity",
+    "confidence",
+    "message",
+    "quote",
+    "explanation",
+    "remediation",
+)
+
+SEVERITY_ALIASES = {
+    "CRITICAL": "P0",
+    "HIGH": "P1",
+    "MEDIUM": "P2",
+    "LOW": "P3",
+    "NIT": "P3",
+    "P0": "P0",
+    "P1": "P1",
+    "P2": "P2",
+    "P3": "P3",
+}
+
+
+def err(msg):
+    print(f"{CYA}error{RST} {msg}", file=sys.stderr)
+
+
+def warn(msg):
+    print(f"{YEL}warn{RST}  {msg}", file=sys.stderr)
+
+
+def normalize_confidence(value):
+    """0-100 or 0.0-1.0 in, 0.0-1.0 out. Raises ValueError on non-numerics."""
+    conf = float(value)
+    if conf != conf:  # NaN
+        raise ValueError("confidence is NaN")
+    if conf > 2.0:
+        conf = conf / 100.0
+    return min(1.0, max(0.0, conf))
+
+
+def normalize_severity(value):
+    key = str(value).strip().upper()
+    if key not in SEVERITY_ALIASES:
+        raise ValueError(f"unknown severity {value!r}")
+    return SEVERITY_ALIASES[key]
+
+
+def normalize_finding(obj):
+    """Return a normalized copy. Raises ValueError naming the first problem."""
+    if not isinstance(obj, dict):
+        raise ValueError("finding is not a JSON object")
+    missing = [f for f in REQUIRED if f not in obj]
+    if missing:
+        raise ValueError("missing required field(s): " + ", ".join(missing))
+    blank = [
+        f
+        for f in REQUIRED
+        if isinstance(obj[f], str) and not obj[f].strip()
+    ]
+    if blank:
+        raise ValueError("empty required field(s): " + ", ".join(blank))
+
+    out = dict(obj)
+    out["confidence"] = normalize_confidence(obj["confidence"])
+    # Kept alongside because the human-facing report speaks in 0-100.
+    out["confidence_100"] = int(round(out["confidence"] * 100))
+    out["severity"] = normalize_severity(obj["severity"])
+    try:
+        out["start_line"] = int(obj["start_line"])
+    except (TypeError, ValueError):
+        raise ValueError(f"start_line is not an integer: {obj['start_line']!r}")
+    return out
+
+
+def main(argv):
+    src = None
+    invalid_out = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--invalid-out":
+            if i + 1 >= len(argv):
+                err("--invalid-out needs a FILE")
+                return 2
+            invalid_out = argv[i + 1]
+            i += 2
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        elif a == "-" or not a.startswith("-"):
+            if src is not None:
+                err(f"unexpected arg: {a}")
+                return 2
+            src = a
+            i += 1
+        else:
+            err(f"unknown flag: {a}")
+            return 2
+
+    if src is None:
+        err("usage: jjstack-review-normalize <findings.jsonl|-> [--invalid-out FILE]")
+        return 2
+
+    try:
+        raw = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+    except OSError as exc:
+        err(f"cannot read {src}: {exc}")
+        return 2
+
+    valid, invalid = [], []
+    for lineno, line in enumerate(raw.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            invalid.append({"line": lineno, "reason": f"not JSON: {exc}", "raw": line})
+            continue
+        try:
+            valid.append(normalize_finding(obj))
+        except ValueError as exc:
+            invalid.append({"line": lineno, "reason": str(exc), "raw": line})
+
+    for f in valid:
+        print(json.dumps(f, sort_keys=True))
+
+    if invalid:
+        payload = "".join(json.dumps(r, sort_keys=True) + "\n" for r in invalid)
+        if invalid_out:
+            try:
+                with open(invalid_out, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                err(f"cannot write {invalid_out}: {exc}")
+                return 2
+        else:
+            sys.stderr.write(payload)
+        warn(
+            f"{len(invalid)} malformed finding(s) NOT emitted — fix the emitter, "
+            "do not delete the findings"
+        )
+        print(f"{GRN}normalized{RST} {len(valid)} finding(s)", file=sys.stderr)
+        return 1
+
+    print(f"{GRN}normalized{RST} {len(valid)} finding(s)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

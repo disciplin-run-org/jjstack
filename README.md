@@ -93,7 +93,8 @@ have on a developer machine.
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
 | `/review` evidence | Starts by reading the diff | **Deterministic pre-flight first**: runs your real typechecker/linter/tests, maps changed symbols to callers outside the diff, reads the change's stated intent, loads prior dismissals, snapshots the test baseline |
 | `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 10 passes gstack and Anthropic's `/code-review` skip |
-| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
+| `/review` noise control | Suppress low-confidence findings | Findings are **never deleted**: verification may only enrich or tag them, and a committed baseline retires accepted ones with a stated reason |
+| `/review` verdict | Prose summary | Three-valued `APPROVE` / `CAUTION` / `REJECT` + per-finding review judgment + guardrails + degraded-mode disclosure |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -134,7 +135,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, and self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline), then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then verifies each finding *enrich-only* — it can add evidence or mark a finding unconfirmed, never delete it. Retires accepted findings through a committed baseline. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -185,7 +186,7 @@ loads. Read them directly or let skills load them for you.
 | `product-management.md` | 4P:90 framework, OKR Quantity/Quality/Efficiency, JTBD, RICE, scope control toolbox, agentic PM |
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
-| `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the enrich-don't-suppress architecture borrowed from NVIDIA SkillSpector, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
 | `review-preflight.md` | The five deterministic pre-passes `/review` runs before any AI pass, why each exists, and how the later phases consume the evidence pack |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
@@ -414,6 +415,7 @@ workflows compose.
 - [obra/superpowers](https://github.com/obra/superpowers) — patterns borrowed and attributed
 - [Anthropic](https://github.com/anthropics) — official security-review methodology
 - [Sentry](https://github.com/getsentry) — investigation-first security methodology
+- [NVIDIA/SkillSpector](https://github.com/NVIDIA/SkillSpector) — the enrich-only verification architecture, baseline suppression, and three-valued verdict behind `/review`
 - [agamm/owasp-security](https://github.com/agamm/skill-owasp-security) — OWASP Top 10:2025 + Agentic AI ASI
 - Andrej Karpathy — for the prompt that started this: "I don't think I've typed like a line of code probably since December"
 
