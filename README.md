@@ -97,6 +97,7 @@ have on a developer machine.
 | `/review` accountability | Dropped findings vanish | **Triage ledger**: every finding keeps a disposition + reason code, deduped with a corroboration count and a blast-radius label. Nothing is dropped silently, the one "this finding is wrong" outcome must carry the doc URL that disproves it, and the rendered page is a deterministic function of the findings — not of the order they were written down |
 | `/review` after the review | Ends at the findings list | **Five post-passes**: what's *missing* from the diff, a review of the auto-applied fixes, a red test proving each finding, a re-run of typecheck/lint/tests on the post-fix tree, and persisted accept/reject calibration that ranks without rescoring |
 | `/review` verdict | Prose summary | Three-valued `APPROVE` / `CAUTION` / `REJECT` + per-finding review judgment + guardrails + degraded-mode disclosure |
+| `/review` delivery | Report written to disk | **Posts to the PR** in jj's voice — verdict, blocking findings, link. 12 lines / 900 chars / 3 findings, enforced by a linter, not by asking |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -177,7 +178,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 18 reference documents — the encoded knowledge each skill
+jjstack ships 19 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -191,6 +192,7 @@ loads. Read them directly or let skills load them for you.
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the enrich-don't-suppress architecture borrowed from NVIDIA SkillSpector, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
 | `review-preflight.md` | The five deterministic pre-passes `/review` runs before any AI pass, why each exists, and how the later phases consume the evidence pack |
 | `review-post-passes.md` | The five blind spots no diff-reader can cover — absence, the auto-fix diff, proof-by-red-test, the post-fix sweep, calibration — and how `/review` runs each |
+| `pr-comment-voice.md` | How a jjstack review sounds on a PR: the doorbell-not-delivery rule, the structure, the mechanics, and the correction framing |
 | `vendor-lessons-aikido.md` | What a commercial scanner-plus-LLM product's triage actually does — adopted mechanics, and the claims rejected as marketing, with sources |
 | `vendor-lessons-greptile.md` | What Greptile's reviewer actually does, which claims are verifiable mechanics vs marketing, and exactly what `/review` adopted and rejected |
 | `vendor-lessons-macroscope.md` | What Macroscope's AI reviewer actually does, which claims survive scrutiny, and what `/review` adopted vs rejected — the research behind the stale-API pass |
