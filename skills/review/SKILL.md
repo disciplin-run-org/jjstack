@@ -1,6 +1,6 @@
 ---
 name: review
-version: 1.0.0
+version: 0.4.0
 description: |
   The deepest, highest-recall pre-landing review in the stack. Wraps gstack's
   /review but deliberately trades time and tokens for COVERAGE: it opens with a
