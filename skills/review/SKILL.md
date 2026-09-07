@@ -657,9 +657,17 @@ checks available → SKIP and say so.
 
 ### Phase 5.10 — Calibration persistence
 
-Read the ledger, apply its deltas to borderline findings before the report is
-finalized, then record this review's verdicts so the next one starts from
-evidence.
+Read the ledger, use its rank to PLACE findings before the report is finalized,
+then record this review's verdicts so the next one starts from evidence.
+
+**Rank is placement, never a score.** A `placement=demoted` finding is printed
+under 5f's **Demoted (prior decision)** section with its severity and confidence
+untouched. Never subtract the rank from a finding's confidence: Phase 5 is
+enrich-only, and the score is a claim about the code while the demotion is a
+claim about the team's prior decision — conflate them and a genuine P0 can be
+arithmetically decayed out of the report by past dismissals of a superficially
+similar finding. Only the committed baseline (5d), which requires an explicit
+human reason, removes a finding from the active set.
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-calibration report

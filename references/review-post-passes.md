@@ -219,12 +219,23 @@ Record a verdict for every finding whose fate you actually know:
 ~/.claude/skills/jjstack/bin/jjstack-review-calibration suggest --key <pattern-key>
 ```
 
-`suggest` prints a `delta` to add to the Phase 5 confidence score before the
-reporting gate: `10*accepted - 10*rejected`, floored at -30 and capped at +20.
-Asymmetric on purpose — suppressing noise is cheaper to get wrong than inventing
-signal. Two prior rejections push a 75 to 55 (appendix instead of main report);
-a third pushes it to 45; the cap keeps a confirmed pattern from ever manufacturing
-certainty it did not earn.
+`suggest` prints a `rank` and a `placement`: `10*accepted - 10*rejected`,
+floored at -30 and capped at +20. A negative rank sets `placement=demoted`,
+which files the finding under the report's **Demoted (prior decision)** section
+— still active, still printed, still carrying its own severity and confidence.
+
+**The rank is placement, never a score.** Phase 5 is enrich-only: verification
+may raise a confidence or tag a finding unconfirmed, never lower or delete one.
+This pass obeys the same rule, because the confidence score is a claim about the
+CODE while a demotion is a claim about the TEAM'S PRIOR DECISION. Conflating
+them destroys both — a repeatedly-rejected pattern would come back looking like
+weaker evidence rather than like a team that keeps saying no, and a genuine P0
+could be arithmetically decayed out of a report by three past dismissals of a
+superficially similar finding. Only the committed baseline, which demands an
+explicit human reason, removes anything from the active set.
+
+Asymmetric on purpose — under-ranking noise is cheaper to get wrong than
+over-ranking it.
 
 The ledger is `{repo}/jjstack/review-calibration.tsv` — version-controlled, so
 calibration is a property of the codebase and its reviewers rather than of one
