@@ -244,6 +244,31 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   scores bugs caught while *excluding false positives from scoring*, so it
   measures recall only), and an explicit list of what jjstack adopted, what it
   rejected, and why. Useful on its own if you are evaluating AI review tools.
+- **`/review` now looks outside the diff, and stops flagging code that is
+  actually correct.** Two additions, both aimed at bug classes a diff-only
+  reviewer cannot reach:
+  - **The caller nobody updated.** When a change alters a function's signature,
+    return contract or error behaviour, the resulting bug isn't in the diff — it
+    is in the files that call it and were left alone. `/review` now lists, for
+    every definition the change touched, which files reference it and which of
+    those the diff never opened, and goes and checks them. That list is the
+    review's map to a defect it previously had no way to see.
+  - **Stale-knowledge false alarms.** An AI reviewer judges your library calls
+    against the version it saw in training. When the library has moved on,
+    correct code gets reported as broken — one of the most common ways an AI
+    review wastes your time. `/review` now reads the versions your repo actually
+    pins (npm, Python, Go, Cargo, RubyGems, Maven) and checks any "you're using
+    this API wrong" finding against the real documentation for *that* version
+    before showing it to you. Findings that survive arrive with a doc link;
+    findings that don't are dropped as what they were — the reviewer
+    misremembering. This is the rare filter that costs you nothing: it removes
+    findings that are wrong, never findings that are merely minor.
+- **`references/vendor-lessons-macroscope.md`** — the research behind the above:
+  what Macroscope's AI reviewer does, which of its claims stand up, and which do
+  not. Includes the working: their headline "2X more bugs than Greptile" rests on
+  a benchmark their own methodology page shows was run on unequal samples after
+  the competitor's access was cut off mid-evaluation. Written so you can see what
+  was rejected and why, not just what was adopted.
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,

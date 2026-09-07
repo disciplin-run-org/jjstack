@@ -337,6 +337,52 @@ claim before verification.
 
 ---
 
+## Phase 4.5: Stale-API check
+
+Derived from the Macroscope research (`references/vendor-lessons-macroscope.md`,
+which also records what was rejected as marketing and why). Backed by a
+deterministic script — the mechanical half is mechanical, so no model does it by
+hand. Run it after the Phase 4 merge and before Phase 5.
+
+*This section originally also carried a blast-radius pass. It was dropped, not
+lost: blast radius is computed once, in Phase 0's pre-flight pack, and its map is
+already handed to every pass. Three independent PRs each built that scan; running
+all three would mean three scans, three output files and three noise profiles for
+one question. The `bin/` guard in the smoke suite now enforces the single
+implementation.*
+
+### 4.5b Stale-API check — kill the false positives that are simply wrong
+
+A well-documented false-positive class: the reviewer judges a call against the
+library API it remembers from training, the library has since moved, and correct
+code gets flagged. Macroscope cut third-party-library review comments 55% by
+looking up current docs instead of trusting recall.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-dep-inventory --tsv
+```
+
+That prints the versions **this repo actually pins**. Then, for every merged
+finding that asserts a third-party library/framework/API is used incorrectly:
+
+1. Find the library in the inventory and note its pinned version.
+2. WebSearch the **current official documentation for that version** and confirm
+   the asserted misuse is real for it.
+3. If current docs show the code is correct as written, **drop the finding** and
+   record it as a stale-knowledge false positive.
+4. If docs confirm the misuse, cite the doc URL in the finding — it raises the
+   Phase 5 confidence score with real evidence.
+5. If the library is absent from the inventory, or docs cannot settle it, keep
+   the finding and cap its Phase 5 confidence at 50 (unverified).
+
+Note the asymmetry: this drops findings that are **wrong**, never findings that
+are merely low-priority. It costs no recall, which is why it is the one noise
+control adopted here. Exit 3 (no manifests) is normal in a repo with no external
+dependencies — note it, skip to Phase 5.
+
+---
+
+
 ## Phase 5: Verify by ENRICHING — never by deleting
 
 High recall without verification is noise. But a verification pass that *deletes*

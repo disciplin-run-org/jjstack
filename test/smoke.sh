@@ -26,6 +26,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-sweep "$BIN"/jjstack-review-autofix-diff \
          "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-triage \
          "$BIN"/jjstack-review-ledger "$BIN"/jjstack-review-revert-history \
+         "$BIN"/jjstack-review-dep-inventory \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -1536,7 +1537,7 @@ for vflag in --repo --base --diff-file --since --limit; do
 done
 rm -rf "$RH" "$NOGIT" "$SH"
 
-echo "== 7e. value-less flags must be a usage error, never a hang =="
+echo "== 7l. value-less flags must be a usage error, never a hang =="
 # Reproduced before the fix: every one of these returned 124 under `timeout 5`.
 # `shift 2` is a silent no-op when only one argument remains, and `set -e` is
 # deliberately off in these scripts, so the arg loop spun on the same argv
@@ -1567,7 +1568,7 @@ timeout 30 "$BIN/jjstack-review-sweep" --repo "$SWV" --cmd "true" >/dev/null 2>&
 check "a flag WITH a value still works (exit 0)" "[ $rc -eq 0 ]"
 rm -rf "$SWV"
 
-echo "== 7f. --help is derived from the header, not a hand-kept line range =="
+echo "== 7m. --help is derived from the header, not a hand-kept line range =="
 # A `sed -n 'A,Bp'` range drifts the moment a line is added: calibration's help
 # stopped mid-sentence and dropped the Usage and Exit sections that usage() sends
 # the reader to find, while its two siblings leaked `set -uo pipefail` and the
@@ -1587,7 +1588,7 @@ probe_help=$(printf 'Usage:\nset -uo pipefail\n')
 check "help leak guard actually catches leaked source" \
   "printf '%s' \"\$probe_help\" | grep -qE 'set -uo pipefail'"
 
-echo "== 7g. review-sweep PARTIAL: a check set with no test runner is not clean =="
+echo "== 7n. review-sweep PARTIAL: a check set with no test runner is not clean =="
 # Detection only adds a tool that is installed, so a Python project with ruff but
 # no pytest ran the linter alone and printed SWEEP CLEAN at exit 0 — while the
 # pass's headline promise (catching the fix that turned a passing test red) went
@@ -1700,6 +1701,65 @@ for tok in unverified prior-decision baseline pre-existing not-reachable accepte
   check "skill reason \`$tok\` exists in the script vocabulary" \
         "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
 done
+rm -rf "$RH" "$NOGIT"
+echo "== 7k. review-dep-inventory (manifest parsing + vendored-tree exclusion) =="
+# /review Phase 4.5b checks stale-API findings against the versions the repo
+# ACTUALLY pins, instead of against the model's training-era memory of a library.
+# That only works if the parse is right and vendored trees stay out — a
+# node_modules manifest would bury the repo's own declarations under thousands
+# of foreign ones.
+DEP="$(mktemp -d)"
+mkdir -p "$DEP/node_modules/evil"
+cat > "$DEP/package.json" <<'EOF'
+{ "name": "fixture",
+  "dependencies": { "react": "^18.2.0", "zod": "3.22.4" },
+  "devDependencies": { "vitest": "~1.0.0" } }
+EOF
+cat > "$DEP/requirements.txt" <<'EOF'
+# a comment
+fastapi==0.110.1
+requests[security]~=2.31.0
+bare-package
+EOF
+cat > "$DEP/go.mod" <<'EOF'
+module example.com/fixture
+require (
+	github.com/stretchr/testify v1.9.0
+)
+EOF
+cat > "$DEP/Cargo.toml" <<'EOF'
+[dependencies]
+serde = "1.0.197"
+tokio = { version = "1.37.0", features = ["full"] }
+EOF
+cat > "$DEP/node_modules/evil/package.json" <<'EOF'
+{ "dependencies": { "should-not-appear": "9.9.9" } }
+EOF
+
+# Assertions read a FILE, never `printf ... | grep -q`: under `set -o pipefail`
+# a `grep -q` that exits on its first match can leave the pipeline carrying
+# printf's SIGPIPE status, which makes the check fail at random. Same reason the
+# 5d block below writes its output to a file.
+DEPOUT="$(mktemp)"
+"$BIN/jjstack-review-dep-inventory" "$DEP" --tsv > "$DEPOUT" 2>/dev/null
+check "dep-inventory parses npm version"   "grep -q '^npm	react	\\^18.2.0' '$DEPOUT'"
+check "dep-inventory parses pypi ==pin"    "grep -q '^pypi	fastapi	0.110.1' '$DEPOUT'"
+check "dep-inventory strips pypi extras"   "grep -q '^pypi	requests	2.31.0' '$DEPOUT'"
+check "dep-inventory marks unpinned as *"  "grep -q '^pypi	bare-package	\\*' '$DEPOUT'"
+check "dep-inventory parses go.mod"        "grep -q '^go	github.com/stretchr/testify	v1.9.0' '$DEPOUT'"
+check "dep-inventory parses cargo inline table" "grep -q '^cargo	tokio	1.37.0' '$DEPOUT'"
+# The exclusion that keeps the inventory readable.
+check "dep-inventory excludes node_modules" "! grep -q 'should-not-appear' '$DEPOUT'"
+# Positive control — an exclusion assertion whose fixture never contained the
+# excluded thing passes forever while the prune silently rots.
+check "node_modules fixture really holds a manifest to exclude" \
+      "grep -q 'should-not-appear' '$DEP/node_modules/evil/package.json'"
+# No manifests at all is a clean exit 3, not a crash or an empty success.
+DEPEMPTY="$(mktemp -d)"
+"$BIN/jjstack-review-dep-inventory" "$DEPEMPTY" >/dev/null 2>&1
+check "dep-inventory exits 3 with no manifests" "[ \$? -eq 3 ]"
+rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT"
+
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
