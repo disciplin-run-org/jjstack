@@ -12,7 +12,7 @@
 #   1. NO SILENT DROP — any disposition other than `report` needs a reason code
 #      from a closed vocabulary.
 #   2. REACHABILITY DEPRIORITISES, IT NEVER DELETES — reason `not-reachable` is
-#      legal only with `defer` or `appendix`, never `suppress`. Unreachable
+#      legal only with `defer` or `demoted`, never `suppress`. Unreachable
 #      today is reachable after the next refactor.
 #   3. TOP SEVERITY IS NEVER SUPPRESSED — a P0/P1 may be deferred with a stated
 #      reason, but it may not be made to disappear.
@@ -28,10 +28,14 @@
 #     confidence   integer 0-100
 #     path:line    file path, colon, line number (or range N-M)
 #     lens         the pass that flagged it (free text, no tabs)
-#     disposition  report | appendix | defer | suppress
+#     disposition  report | unconfirmed | demoted | defer | suppress |
+#                  out-of-scope   (tracks the enrich-only model: `unconfirmed`
+#                  and `demoted` are SHOWN sections, and no disposition here is
+#                  a score threshold, because a finding is never deleted)
 #     reason       `-` for `report`; otherwise one of:
-#                  low-confidence pre-existing tool-covered style-only
-#                  no-repro duplicate not-reachable accepted-risk
+#                  unverified prior-decision low-confidence pre-existing
+#                  tool-covered style-only no-repro duplicate not-reachable
+#                  accepted-risk baseline
 #     claim        the finding text (any further columns are rejoined)
 #
 # Usage:
@@ -114,7 +118,7 @@ function section(title, want,   i, fp, n) {
   print "## " title " (" n ")"      >> render
   print ""                          >> render
   if (n == 0) { print "_none_"      >> render; return }
-  if (want == "report" || want == "appendix") {
+  if (want == "report" || want == "unconfirmed" || want == "demoted") {
     print "| sev | conf | location | exposure | lenses | corrob | finding |" >> render
     print "|---|---|---|---|---|---|---|"                                    >> render
   } else {
@@ -124,7 +128,7 @@ function section(title, want,   i, fp, n) {
   for (i = 1; i <= uniq; i++) {
     fp = order[i]
     if (DISP_[fp] != want) continue
-    if (want == "report" || want == "appendix")
+    if (want == "report" || want == "unconfirmed" || want == "demoted")
       printf("| %s | %s | `%s` | %s | %s | %d | %s |\n", SEV_[fp], CONF[fp], LOC[fp], CLS[fp], lenslist(fp), CORROB[fp], CLAIM[fp]) >> render
     else
       printf("| %s | %s | `%s` | %s | `%s` | %s | %s |\n", SEV_[fp], CONF[fp], LOC[fp], CLS[fp], RSN[fp], lenslist(fp), CLAIM[fp]) >> render
@@ -133,8 +137,11 @@ function section(title, want,   i, fp, n) {
 
 BEGIN {
   split("P0 P1 P2 P3", a, " ");                    for (i in a) SEV[a[i]] = 1
-  split("report appendix defer suppress", a, " "); for (i in a) DISP[a[i]] = 1
-  split("low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk", a, " ")
+  # Vocabulary tracks the enrich-only verification model: a finding is never
+  # deleted, so there is no score-threshold disposition. "unconfirmed" and
+  # "demoted" are SHOWN sections; only the committed baseline suppresses.
+  split("report unconfirmed demoted defer suppress out-of-scope", a, " "); for (i in a) DISP[a[i]] = 1
+  split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline", a, " ")
   for (i in a) REASON[a[i]] = 1
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0
 }
@@ -170,7 +177,7 @@ BEGIN {
   }
   # INVARIANT 2 — reachability deprioritises, it never deletes.
   if (rsn == "not-reachable" && disp == "suppress") {
-    fail(NR, "reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"appendix\""); bad = 1
+    fail(NR, "reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"demoted\""); bad = 1
   }
   # INVARIANT 3 — top severity is never made to disappear.
   if ((sev == "P0" || sev == "P1") && disp == "suppress") {
@@ -219,16 +226,19 @@ END {
   print ""                                                                    >> render
   print "| disposition | count |"                                             >> render
   print "|---|---|"                                                           >> render
-  split("report appendix defer suppress", d, " ")
-  for (i = 1; i <= 4; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)      >> render
+  split("report unconfirmed demoted defer suppress out-of-scope", d, " ")
+  for (i = 1; i <= 6; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)      >> render
 
   section("Reported — main report", "report")
-  section("Appendix — verify, medium confidence", "appendix")
+  section("Unconfirmed — kept deliberately, nobody could verify at the source", "unconfirmed")
+  section("Demoted (prior decision) — still active, ranked lower", "demoted")
   section("Deferred — real, out of scope for this diff", "defer")
-  section("Suppressed — with a recorded reason (nothing is dropped silently)", "suppress")
+  section("Suppressed by baseline — with a recorded reason", "suppress")
+  section("Out of scope — never raised, per Phase 4 emission scope", "out-of-scope")
 
-  print "TALLY report=" TALLY["report"] + 0 " appendix=" TALLY["appendix"] + 0 \
-        " defer=" TALLY["defer"] + 0 " suppress=" TALLY["suppress"] + 0 \
+  print "TALLY report=" TALLY["report"] + 0 " unconfirmed=" TALLY["unconfirmed"] + 0 \
+        " demoted=" TALLY["demoted"] + 0 " defer=" TALLY["defer"] + 0 \
+        " suppress=" TALLY["suppress"] + 0 " out-of-scope=" TALLY["out-of-scope"] + 0 \
         " unique=" uniq " collapsed=" dupes
   for (i = 1; i <= nadv; i++) print "ADVISORY " advisories[i]
   exit 0
