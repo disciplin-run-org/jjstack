@@ -893,3 +893,93 @@ review show only what is new.
 ### 6.3 README maintenance
 
 Create or update `{repo_root}/README.md` if session changes affect it.
+
+---
+
+## Module G: repo-context inputs + the review ledger (Greptile lessons)
+
+Self-contained additive module. It does not replace any phase above; it feeds
+two of them.
+
+**When it runs:**
+- The two **scans** run at the **start of Phase 4**, before the parallel passes
+  launch. Their output is context every pass gets, not a pass of its own.
+- The **ledger match** runs at the **end of Phase 5**, after each finding already
+  has its confidence score — never before, so a prior dismissal can never stop a
+  finding from being verified on its own merits.
+
+Rationale, sourcing, and the explicit list of what was rejected as marketing:
+
+```bash
+cat ~/.claude/skills/jjstack/references/vendor-lessons-greptile.md
+```
+
+### G.1 Cross-file blast radius (start of Phase 4)
+
+A diff-only reviewer structurally cannot see the callers of the function the
+diff just changed. This is the defect class repo-context reviewers genuinely
+catch and diff-only reviewers genuinely cannot — so compute it deterministically
+instead of hoping a pass wanders into it.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-blast-radius > {OUTPUT_DIR}/blast-radius.md
+```
+
+Add `--also-repo <path>` once per sibling repo when the diff touches a shared
+module whose consumers live elsewhere.
+
+Feed the report to every Phase 4 pass. For each listed site, the question is:
+**does the changed definition still satisfy this out-of-diff caller?** A site
+that no longer holds is a P0 that the diff alone cannot show — and it is exempt
+from the "review the diff, not the whole file" rule in
+`code-review-best-practices.md`, because the diff is what broke it.
+
+Absence of sites is weak evidence, never proof: the map is textual, so dynamic
+dispatch, reflection, string-keyed lookup and cross-language callers are
+invisible to it. Never report "no external callers" as a safety claim.
+
+### G.2 Revert and incident history (start of Phase 4)
+
+A file that has been reverted or hotfixed before is a higher review risk than
+one that never has, and the diff never shows it.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-revert-history > {OUTPUT_DIR}/revert-history.md
+```
+
+This is a pre-computed input to the **git-history pass (Phase 4.1)**, which
+should read the named commits rather than re-deriving them. A change that
+reintroduces the condition behind a listed revert, or removes the guard added to
+fix it, is a P0 finding.
+
+### G.3 Ledger match — demote, never drop (end of Phase 5)
+
+After every finding has a confidence score, check each against the repo's
+ledger of what past reviews decided:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-ledger --match --path <file> --category <cat>
+```
+
+- **Exit 0 (`DEMOTE …`)** — a prior review dismissed this class here. Move the
+  finding to the **appendix** and quote the ledger's note as the reason. Do
+  **not** drop it, and do not lower its confidence score: the score is a claim
+  about the code, the demotion is a claim about the team's prior decision, and
+  conflating them destroys both.
+- **Exit 1** — no prior decision applies. Report normally. A `PROTECTED …` line
+  on exit 1 means a dismissal exists but the category never demotes; report the
+  finding at full weight and mention the prior dismissal in the finding body.
+
+Record outcomes only for findings the user actually adjudicates in this session:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-ledger --record --type <dismissed|fixed|confirmed> \
+  --path <glob> --category <cat> --note "<why>"
+```
+
+Never record a dismissal the user did not make. An invented dismissal is a
+permanent, self-inflicted blind spot in every future review of this repo.
+
+The ledger lives at `{repo_root}/jjstack/review-ledger.md` — in git, so a
+suppression is reviewable in a PR and retiring one is a visible diff. Commit it
+with the findings in step 6.2.
