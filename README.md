@@ -92,7 +92,8 @@ have on a developer machine.
 | Review quality target | 8/10 | **10/10** (configurable) |
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
 | `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
-| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
+| `/review` scope | The diff | The diff **plus the callers it left behind** — repo-wide referrer census on every changed definition |
+| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence; stale-API claims checked against the versions the repo actually pins |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -133,7 +134,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, checks the callers left outside the diff, verifies stale-API findings against your pinned versions, then self-verifies each finding. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -185,6 +186,7 @@ loads. Read them directly or let skills load them for you.
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `vendor-lessons-macroscope.md` | What Macroscope's AI reviewer actually does, which claims survive scrutiny, and what `/review` adopted vs rejected — the research behind the blast-radius and stale-API passes |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |

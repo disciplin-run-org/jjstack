@@ -20,6 +20,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-capture-write "$BIN"/jjstack-capture-flush \
          "$BIN"/jjstack-global-learn "$BIN"/jjstack-gbrain-phi-lib.sh \
          "$BIN"/jjstack-capture-review-refs \
+         "$BIN"/jjstack-review-dep-inventory "$BIN"/jjstack-review-blast-radius \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -97,6 +98,99 @@ check "--dry-run writes nothing" "[ ! -d '$CRR/out2' ]"
 "$BIN/jjstack-capture-review-refs" "$CRR/out3" --gstack-review-dir "$CRR/nope" >/dev/null 2>&1
 check "missing gstack dir exits 3" "[ \$? -eq 3 ]"
 rm -rf "$CRR"
+
+echo "== 5c. review-dep-inventory (manifest parsing + vendored-tree exclusion) =="
+# /review Phase 4.5b checks stale-API findings against the versions the repo
+# ACTUALLY pins, instead of against the model's training-era memory of a library.
+# That only works if the parse is right and vendored trees stay out — a
+# node_modules manifest would bury the repo's own declarations under thousands
+# of foreign ones.
+DEP="$(mktemp -d)"
+mkdir -p "$DEP/node_modules/evil"
+cat > "$DEP/package.json" <<'EOF'
+{ "name": "fixture",
+  "dependencies": { "react": "^18.2.0", "zod": "3.22.4" },
+  "devDependencies": { "vitest": "~1.0.0" } }
+EOF
+cat > "$DEP/requirements.txt" <<'EOF'
+# a comment
+fastapi==0.110.1
+requests[security]~=2.31.0
+bare-package
+EOF
+cat > "$DEP/go.mod" <<'EOF'
+module example.com/fixture
+require (
+	github.com/stretchr/testify v1.9.0
+)
+EOF
+cat > "$DEP/Cargo.toml" <<'EOF'
+[dependencies]
+serde = "1.0.197"
+tokio = { version = "1.37.0", features = ["full"] }
+EOF
+cat > "$DEP/node_modules/evil/package.json" <<'EOF'
+{ "dependencies": { "should-not-appear": "9.9.9" } }
+EOF
+
+# Assertions read a FILE, never `printf ... | grep -q`: under `set -o pipefail`
+# a `grep -q` that exits on its first match can leave the pipeline carrying
+# printf's SIGPIPE status, which makes the check fail at random. Same reason the
+# 5d block below writes its output to a file.
+DEPOUT="$(mktemp)"
+"$BIN/jjstack-review-dep-inventory" "$DEP" --tsv > "$DEPOUT" 2>/dev/null
+check "dep-inventory parses npm version"   "grep -q '^npm	react	\\^18.2.0' '$DEPOUT'"
+check "dep-inventory parses pypi ==pin"    "grep -q '^pypi	fastapi	0.110.1' '$DEPOUT'"
+check "dep-inventory strips pypi extras"   "grep -q '^pypi	requests	2.31.0' '$DEPOUT'"
+check "dep-inventory marks unpinned as *"  "grep -q '^pypi	bare-package	\\*' '$DEPOUT'"
+check "dep-inventory parses go.mod"        "grep -q '^go	github.com/stretchr/testify	v1.9.0' '$DEPOUT'"
+check "dep-inventory parses cargo inline table" "grep -q '^cargo	tokio	1.37.0' '$DEPOUT'"
+# The exclusion that keeps the inventory readable.
+check "dep-inventory excludes node_modules" "! grep -q 'should-not-appear' '$DEPOUT'"
+# Positive control — an exclusion assertion whose fixture never contained the
+# excluded thing passes forever while the prune silently rots.
+check "node_modules fixture really holds a manifest to exclude" \
+      "grep -q 'should-not-appear' '$DEP/node_modules/evil/package.json'"
+# No manifests at all is a clean exit 3, not a crash or an empty success.
+DEPEMPTY="$(mktemp -d)"
+"$BIN/jjstack-review-dep-inventory" "$DEPEMPTY" >/dev/null 2>&1
+check "dep-inventory exits 3 with no manifests" "[ \$? -eq 3 ]"
+rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT"
+
+echo "== 5d. review-blast-radius (referrers inside vs outside the diff) =="
+# /review Phase 4.5a exists for one bug class: the caller that was NOT updated
+# when a definition changed. The whole value is the in-diff / NOT-in-diff split,
+# so the fixture changes a signature and updates only ONE of two callers.
+BR="$(mktemp -d)"
+printf 'def calculate_total(items):\n    return sum(items)\n' > "$BR/core.py"
+printf 'from core import calculate_total\nprint(calculate_total([1]))\n' > "$BR/caller_untouched.py"
+printf 'from core import calculate_total\nprint(calculate_total([2]))\n' > "$BR/caller_touched.py"
+git -C "$BR" init -q 2>/dev/null
+git -C "$BR" config user.email t@t.t
+git -C "$BR" config user.name t
+git -C "$BR" add -A 2>/dev/null
+git -C "$BR" commit -qm base 2>/dev/null
+# Signature change; caller_touched is updated with it, caller_untouched is not.
+printf 'def calculate_total(items, tax):\n    return sum(items) * tax\n' > "$BR/core.py"
+printf 'from core import calculate_total\nprint(calculate_total([2], 1.1))\n' > "$BR/caller_touched.py"
+
+BROUT="$(mktemp)"
+"$BIN/jjstack-review-blast-radius" --repo "$BR" --tsv > "$BROUT" 2>/dev/null
+check "blast-radius exits 0" "[ \$? -eq 0 ]"
+check "blast-radius finds the changed definition" "grep -q '^calculate_total	' '$BROUT'"
+# The finding that matters: the caller nobody updated.
+check "blast-radius flags the un-updated caller as NOT-in-diff" \
+      "grep -q '^calculate_total	NOT-in-diff	caller_untouched.py' '$BROUT'"
+# Positive control — if the classifier labelled EVERY referrer NOT-in-diff the
+# assertion above would still pass while the split was meaningless. This proves
+# the in-diff branch actually fires.
+check "blast-radius classifies the updated caller as in-diff" \
+      "grep -q '^calculate_total	in-diff	caller_touched.py' '$BROUT'"
+# A non-git directory is a clean exit 3, not a crash.
+BRPLAIN="$(mktemp -d)"
+"$BIN/jjstack-review-blast-radius" --repo "$BRPLAIN" >/dev/null 2>&1
+check "blast-radius exits 3 outside a git repo" "[ \$? -eq 3 ]"
+rm -rf "$BR" "$BRPLAIN" "$BROUT"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0

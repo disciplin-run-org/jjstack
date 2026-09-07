@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# jjstack-review-blast-radius — who else uses the definitions this diff changed.
+#
+# Why this exists. Every reviewer in this stack, ours included, reads the diff.
+# That is correct for scope and wrong for one specific bug class: the caller that
+# was NOT updated. Change a function's signature, its return contract, its
+# nullability or its error behaviour, and the defect does not appear anywhere in
+# the diff — it appears in the files the diff never touched. A diff-scoped
+# reviewer structurally cannot see it, because the evidence is out of frame.
+#
+# Macroscope's stated architectural claim against diff/agentic-search reviewers
+# is exactly this class ("bugs that span files, functions and services"), which
+# they answer with a pre-built AST reference graph. We cannot ship an AST index
+# in a skill, and we do not need one to get the useful part: the list of files
+# that reference a changed symbol and are absent from the diff. That list is
+# mechanical — a definition scan plus a word-boundary census — so it belongs in
+# a script, not in a model's head. The judgment (is this caller actually broken?)
+# stays with the review. See references/vendor-lessons-macroscope.md.
+#
+# It is a RECALL instrument, not a filter: it hands the review a place to look.
+# It never decides anything and never suppresses a finding.
+#
+# Usage:
+#   jjstack-review-blast-radius [--base REF] [--repo DIR]
+#                               [--max-symbols N] [--max-refs N] [--tsv]
+#
+#   --base   anything `git diff` accepts (a ref, or a RANGE like main..HEAD).
+#            Default HEAD — staged + unstaged working-tree changes.
+#
+# Output: per changed symbol, referrers split into IN-DIFF and NOT-IN-DIFF.
+# The NOT-IN-DIFF list is the whole point. With --tsv:
+#   symbol<TAB>in-diff|NOT-in-diff<TAB>path
+#
+# Exit: 0 census printed (including a clean "no changed definitions"),
+#       2 usage error, 3 not a git repo / diff could not be read.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+BASE="HEAD"
+REPO=""
+MAX_SYMBOLS=40
+MAX_REFS=25
+TSV=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base)        BASE="${2:-}"; shift 2 ;;
+    --repo)        REPO="${2:-}"; shift 2 ;;
+    --max-symbols) MAX_SYMBOLS="${2:-}"; shift 2 ;;
+    --max-refs)    MAX_REFS="${2:-}"; shift 2 ;;
+    --tsv)         TSV=1; shift ;;
+    -h|--help)
+      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+for n in "$MAX_SYMBOLS" "$MAX_REFS"; do
+  case "$n" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --max-* must be numbers" >&2; exit 2 ;; esac
+done
+
+[ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1 || {
+  echo -e "${YEL}warn${RST}  not a git repository: $REPO" >&2; exit 3; }
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+git -C "$REPO" diff --unified=0 "$BASE" > "$T/diff" 2>"$T/err" || {
+  echo -e "${YEL}warn${RST}  git diff '$BASE' failed: $(head -1 "$T/err")" >&2; exit 3; }
+git -C "$REPO" diff --name-only "$BASE" 2>/dev/null | sort -u > "$T/changed"
+
+# Definition lines only — added or removed, never the +++/--- file headers.
+grep -E '^[+-]' "$T/diff" | grep -Ev '^(\+\+\+|---)' | cut -c2- > "$T/lines"
+
+# Keyword-led definitions across the languages this stack actually meets, plus
+# the two shapes the keyword form misses: Go methods (`func (r *T) Name(`) and
+# shell functions (`name() {`). Deliberately conservative — a missed symbol
+# costs one unexamined caller; a bogus symbol costs a repo-wide grep of noise.
+{
+  grep -ohE '(^|[^A-Za-z0-9_])(def|function|func|fn|class|struct|interface|type|const|let|var|procedure|sub)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$T/lines" \
+    | awk '{print $NF}'
+  grep -ohE 'func[[:space:]]*\([^)]*\)[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' "$T/lines" \
+    | sed 's/^.*)[[:space:]]*//'
+  grep -ohE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{' "$T/lines" \
+    | sed 's/[[:space:]]*().*$//;s/^[[:space:]]*//'
+} 2>/dev/null | sort -u > "$T/raw_symbols"
+
+# Names too short or too generic produce a census of the entire repo, which is
+# the same as no census at all.
+cat > "$T/stop" <<'EOF'
+main
+init
+test
+tests
+setup
+teardown
+name
+type
+data
+value
+result
+error
+string
+number
+object
+config
+options
+props
+state
+self
+this
+true
+false
+null
+none
+void
+default
+index
+util
+utils
+helper
+helpers
+handler
+EOF
+
+awk 'length($0) >= 4' "$T/raw_symbols" | grep -vxFf "$T/stop" | sort -u > "$T/symbols"
+
+total_symbols=$(wc -l < "$T/symbols")
+head -n "$MAX_SYMBOLS" "$T/symbols" > "$T/symbols.capped"
+
+if [ ! -s "$T/symbols.capped" ]; then
+  if [ "$TSV" -eq 0 ]; then
+    echo "Blast radius — $REPO (base: $BASE)"
+    echo
+    echo "  no changed definitions in this diff — nothing to census."
+    echo "  (a diff that only edits statement bodies has no cross-file surface"
+    echo "   of this kind; it does not mean the change is safe.)"
+  fi
+  exit 0
+fi
+
+EXCL="--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=vendor
+--exclude-dir=target --exclude-dir=dist --exclude-dir=build --exclude-dir=.venv
+--exclude-dir=venv --exclude-dir=__pycache__ --exclude-dir=.next"
+
+: > "$T/rows"
+while read -r sym; do
+  # -w word boundary, -F fixed string: a symbol named `c++` or `a.b` must not be
+  # read as a regex, and `foo` must not match `foobar`.
+  # shellcheck disable=SC2086
+  grep -rlwF $EXCL --binary-files=without-match -- "$sym" "$REPO" 2>/dev/null \
+    | sed "s#^$REPO/##" | sort -u | head -n "$MAX_REFS" > "$T/refs"
+  while read -r f; do
+    [ -n "$f" ] || continue
+    if grep -qxF -- "$f" "$T/changed" 2>/dev/null; then
+      printf '%s\tin-diff\t%s\n' "$sym" "$f" >> "$T/rows"
+    else
+      printf '%s\tNOT-in-diff\t%s\n' "$sym" "$f" >> "$T/rows"
+    fi
+  done < "$T/refs"
+done < "$T/symbols.capped"
+
+if [ "$TSV" -eq 1 ]; then
+  cat "$T/rows"
+  exit 0
+fi
+
+echo "Blast radius — $REPO (base: $BASE)"
+echo "Definitions this diff changed, and every file that references them."
+echo "Files marked NOT-in-diff are the ones the review has no other way to see."
+echo
+while read -r sym; do
+  echo "== $sym =="
+  outside=$(awk -F'\t' -v s="$sym" '$1==s && $2=="NOT-in-diff"{print "  NOT-in-diff  " $3}' "$T/rows")
+  inside=$(awk -F'\t' -v s="$sym" '$1==s && $2=="in-diff"{print "  in-diff      " $3}' "$T/rows")
+  [ -n "$outside" ] && echo "$outside"
+  [ -n "$inside" ]  && echo "$inside"
+  [ -z "$outside$inside" ] && echo "  (no referrers found)"
+  echo
+done < "$T/symbols.capped"
+
+untouched=$(awk -F'\t' '$2=="NOT-in-diff"' "$T/rows" | wc -l)
+shown=$(wc -l < "$T/symbols.capped")
+if [ "$total_symbols" -gt "$shown" ]; then
+  echo -e "${YEL}note${RST}  $total_symbols changed definitions found, $shown censused (--max-symbols)"
+fi
+echo -e "${GRN}blast radius${RST} $shown symbol(s), $untouched referrer(s) outside the diff"
+exit 0
