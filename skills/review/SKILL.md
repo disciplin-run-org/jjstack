@@ -248,6 +248,82 @@ review still stands, it just isn't snapshot-reproducible.
 
 ---
 
+<!-- BEGIN aikido-lessons — additive section, see references/vendor-lessons-aikido.md -->
+
+## Phase 5.7: Triage ledger — account for every finding, drop none silently
+
+```bash
+cat ~/.claude/skills/jjstack/references/vendor-lessons-aikido.md
+```
+
+Phases 2 and 4 cast wide; Phase 5 decides what the human reads. The problem is
+that the *decisions* evaporate: a finding scored 38 and dropped leaves no trace,
+so nobody can tell a reviewer that looked and dismissed from one that never
+looked at all. Security scanners solved this long ago — a finding is never
+deleted, it is given a **disposition** and a **reason code** and stays
+inspectable (the mechanic is drawn from Aikido's triage model; the reference
+above records what was adopted and what was rejected as marketing).
+
+Adopt the accountable half. After Phase 5 has scored every finding, write the
+**complete** merged set — including everything Phase 5 gated out — to a TSV
+ledger at `{OUTPUT_DIR}/review-findings.tsv`, one finding per line, 7
+tab-separated columns:
+
+```
+severity  confidence  path:line  lens  disposition  reason  claim
+```
+
+Map Phase 5's outcome onto the disposition, and give every non-reported finding
+a reason code from the closed vocabulary:
+
+| Phase 5 outcome | disposition | reason |
+|---|---|---|
+| ≥ 60, in the main report | `report` | `-` |
+| 40–59, appendix | `appendix` | `low-confidence` |
+| real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` |
+| < 40, or on the do-NOT-report list | `suppress` | `low-confidence` / `tool-covered` / `style-only` / `no-repro` / `duplicate` |
+
+Then render the ledger. This is deterministic — dedup, corroboration counting,
+path-exposure classification, vocabulary validation and the tally are the
+script's job, not the model's:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-triage {OUTPUT_DIR}/review-findings.tsv --out {OUTPUT_DIR}/review-triage-ledger.md
+```
+
+The script enforces three invariants that prose cannot:
+
+1. **No silent drop** — any disposition other than `report` must carry a reason
+   code. This is the one that changes behaviour: Phase 5's `< 40` band is no
+   longer deleted, it is filed under `suppress` with a stated reason and stays
+   readable in the ledger.
+2. **Reachability deprioritises, it never deletes** — `not-reachable` is legal
+   only with `defer` or `appendix`. Code that is unreachable today becomes
+   reachable at the next refactor, and a reviewer that deleted the finding has
+   no way to bring it back.
+3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
+   reason; it may not be made to disappear.
+
+It exits **4** and renders nothing if any of those is violated: fix the ledger
+and rerun rather than working around it. It exits 3 if the ledger file is
+missing. It also emits yellow `ADVISORY` lines for findings reported against
+vendored or generated paths — code nobody here authored, and usually noise.
+
+Two things it gives you for free that the model should not be doing by hand:
+**dedup with a corroboration count** (the same defect found by three lenses is
+one finding with `corrob 3`, and that agreement is itself a ranking signal —
+rank the main report by severity, then corroboration, then confidence), and
+**exposure class** (`prod` / `test` / `fixture` / `vendor` / `generated` /
+`docs`), a deterministic blast-radius annotation. Exposure *annotates*; it never
+decides whether a finding is shown.
+
+Commit `review-triage-ledger.md` alongside the findings report — it is the
+record of what this review chose not to tell you, and why.
+
+<!-- END aikido-lessons -->
+
+---
+
 ## Phase 6: jjstack finish
 
 ### 6.1 Quality iteration loop

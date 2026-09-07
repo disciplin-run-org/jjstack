@@ -93,6 +93,7 @@ have on a developer machine.
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
 | `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
 | `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
+| `/review` accountability | Dropped findings vanish | **Triage ledger**: every finding keeps a disposition + reason code, deduped with a corroboration count and a blast-radius label. Nothing is dropped silently |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -133,7 +134,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding and files every one — reported or not — in an audited triage ledger. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -185,6 +186,7 @@ loads. Read them directly or let skills load them for you.
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `vendor-lessons-aikido.md` | What a commercial scanner-plus-LLM product's triage actually does — adopted mechanics, and the claims rejected as marketing, with sources |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
