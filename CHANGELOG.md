@@ -21,10 +21,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   `/code-review` drops by design. Casting that wide normally means noise, so
   every finding must now survive a verification step: quote the line that
   motivates it, name a concrete failure scenario (the input that triggers it and
-  the wrong result), and carry a 0–100 confidence score. Anything under 40 is
-  dropped, 40–59 lands in an appendix instead of vanishing silently, and the
-  main report is ranked by severity. Use it before a merge that matters; use
-  gstack's `/review` or the code-review plugin when you want fast and cheap.
+  the wrong result), and say what to do about it. Use it before a merge that
+  matters; use gstack's `/review` or the code-review plugin when you want fast
+  and cheap.
+- **`/review` no longer throws findings away.** The verification step used to
+  score each finding out of 100 and silently delete anything under 40 — inside
+  the one skill built to catch what everything else misses. It now works the
+  other way round: verification may add evidence, add a fix, or raise its
+  confidence in a finding, and it may mark one *unconfirmed* — but it can never
+  remove one. Low-confidence and unconfirmed items move to a clearly labelled
+  section further down the report instead of disappearing. If the verification
+  step itself fails, every finding passes through untouched and the report says
+  so, rather than quietly showing you a shorter list.
+- **`/review` now ends in a verdict you can act on.** Reports close with
+  `APPROVE`, `CAUTION`, or `REJECT` — `CAUTION` exists so a real concern never
+  has to be rounded down to "fine" — plus a per-finding *review judgment* saying
+  why each one is acceptable, suspicious, or blocking, and a **Guardrails**
+  section listing the conditions under which the verdict holds. If a review pass
+  could not run, the report states which one and lowers its own confidence
+  instead of presenting a partial review as a complete one.
 - **gstack upgraded 1.58.5.0 → 1.81.0.0** for everyone on jjstack. Highlights:
   browsing skills are far more resilient (setup no longer aborts when the
   bundled browser fails to download), gstack no longer clobbers same-named
@@ -34,6 +49,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **Re-reviews now show you only what is new.** `/review` can keep a small
+  baseline file in your repo recording the findings you have already looked at
+  and accepted, each with a reason you wrote. Accepted findings stop counting
+  and drop out of the active list, but they stay visible in the report marked as
+  suppressed, so nothing is ever quietly lost and anyone can see what was waved
+  through and why. Two flavours: an exact fingerprint for a single accepted
+  finding — edit that code later and the finding comes straight back for a fresh
+  look — and a broader pattern rule for a deliberate policy exclusion. A
+  suppression without a written reason is rejected outright.
+- **Fewer "right bug, wrong line" reports.** `/review` now feeds code to its
+  review passes with the line numbers already attached, so a reported location
+  is copied rather than counted. It also insists every finding arrive complete —
+  including a suggested fix — which quietly removes the findings nobody could
+  have acted on anyway.
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,

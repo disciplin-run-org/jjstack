@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# jjstack-number-lines — prefix file content with L-numbers for grounded review.
+#
+# A review pass that is shown bare source has to COUNT lines to report a
+# location, and models count badly: the classic false positive is a real bug
+# reported at the wrong line, which the author then cannot find and dismisses.
+# Feeding the pass line-numbered text ("L100: def foo()") makes the number a
+# thing to COPY rather than derive, so reported locations are grounded in the
+# prompt instead of reconstructed from it.
+#
+# Borrowed from NVIDIA SkillSpector's llm_analyzer_base (`number_lines()` +
+# the L-prefixed prompt convention). Deterministic text transformation — this
+# is exactly the kind of work that must not be done by inference.
+#
+# Usage:
+#   jjstack-number-lines <file> [--start N]
+#   ... | jjstack-number-lines - [--start N]
+#
+#   --start N   number the first emitted line as N (default 1). Use it when
+#               feeding a CHUNK of a large file so the L-numbers still match
+#               the real file: --start 100 renders "L100:" first.
+#
+# Exit: 0 numbered, 2 usage error, 3 file not found.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+CYA="\033[96m"; RST="\033[0m"
+
+SRC=""
+START=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --start)
+      START="${2:-}"
+      case "$START" in
+        ''|*[!0-9]*) echo -e "${CYA}error${RST} --start needs a non-negative integer" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
+    -h|--help)
+      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -)  [ -z "$SRC" ] && SRC="-" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
+        shift ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  [ -z "$SRC" ] && SRC="$1" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
+        shift ;;
+  esac
+done
+
+[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file|-> [--start N]" >&2; exit 2; }
+
+if [ "$SRC" != "-" ] && [ ! -f "$SRC" ]; then
+  echo -e "${CYA}error${RST} no such file: $SRC" >&2
+  exit 3
+fi
+
+# awk, not a bash read-loop: a read-loop mangles backslashes and drops a
+# trailing line with no newline. Blank lines are numbered too — a gap in the
+# numbering would defeat the whole point.
+if [ "$SRC" = "-" ]; then
+  awk -v s="$START" '{ printf "L%d: %s\n", NR + s - 1, $0 }'
+else
+  awk -v s="$START" '{ printf "L%d: %s\n", NR + s - 1, $0 }' "$SRC"
+fi
+exit 0

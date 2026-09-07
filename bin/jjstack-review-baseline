@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""jjstack-review-baseline — accept known /review findings without losing them.
+
+A recall-max reviewer re-run on the same repo re-reports everything it reported
+last time. The naive fix is to delete the ones you already looked at, which
+destroys the audit trail and hides the day one of them changes meaning. The
+right fix — NVIDIA SkillSpector's — is a COMMITTED baseline: accepted findings
+stay in the output, marked suppressed with a mandatory reason, and simply stop
+counting as active. Re-reviews then surface only what is NEW.
+
+Two complementary mechanisms, deliberately different in how they age:
+
+  rules         human-authored, glob-based, DRIFT-TOLERANT. Keyed on any of
+                id (the lens), path (the file), message (claim or quoted line);
+                every field a rule states must match, unstated fields match
+                anything. Survives line shifts and rewording — which is the
+                danger: a broad rule can hide newly malicious content. Reserve
+                them for deliberate, tightly-scoped policy exclusions.
+  fingerprints  machine-generated SHA-256 over the finding's content,
+                deliberately BRITTLE. Editing the flagged source changes the
+                quote, changes the hash, and the finding comes back for review.
+                This is the right default for individually accepted findings.
+
+Fail-closed choices, all of them in the direction of showing more:
+  * a mandatory non-empty `reason` on every entry — an unexplained suppression
+    is indistinguishable from a bug;
+  * a rule that names no matching field at all (reason only) is REJECTED
+    rather than silently matching every finding;
+  * a baseline written by a different jjstack version makes fingerprints inert
+    (they cannot be trusted to still mean what they meant); rules still apply.
+    Override with --allow-version-drift once you have re-read them;
+  * suppressed findings are still printed, annotated, by default. Pass
+    --active-only for the "just the new stuff" view.
+
+Fingerprint inputs are lens + file + severity + message + quote — deliberately
+NOT start_line, so an unrelated edit ABOVE the finding does not reactivate it,
+while editing the finding's own line does.
+
+Usage:
+  jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]
+  jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE
+                                [--active-only] [--allow-version-drift]
+
+`apply` writes annotated JSON Lines to stdout (each finding gains a
+`suppressed` field: null, or {by, reason, matched}) and a count summary to
+stderr.
+
+Exit: 0 ok, 1 (apply) at least one ACTIVE finding remains, 2 usage error or a
+      missing / malformed / unsupported baseline.
+
+No color red anywhere — unreadable on the target terminal.
+"""
+
+import fnmatch
+import hashlib
+import json
+import os
+import sys
+
+YEL = "\033[33m"
+CYA = "\033[96m"
+GRN = "\033[32m"
+RST = "\033[0m"
+
+BASELINE_VERSION = 2
+DEFAULT_BASELINE = ".jjstack-review-baseline.json"
+HASH_FIELDS = ("lens", "file", "severity", "message", "quote")
+
+
+def err(msg):
+    print(f"{CYA}error{RST} {msg}", file=sys.stderr)
+
+
+def warn(msg):
+    print(f"{YEL}warn{RST}  {msg}", file=sys.stderr)
+
+
+def jjstack_version():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "VERSION")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return "unknown"
+
+
+def fingerprint(finding):
+    """Deliberately brittle content hash. Editing the source reactivates it."""
+    payload = {
+        "v": BASELINE_VERSION,
+        **{k: str(finding.get(k, "")) for k in HASH_FIELDS},
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def read_findings(src):
+    try:
+        raw = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+    except OSError as exc:
+        err(f"cannot read {src}: {exc}")
+        return None
+    out = []
+    for lineno, line in enumerate(raw.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            err(f"{src}:{lineno} not JSON: {exc}")
+            return None
+        if not isinstance(obj, dict):
+            err(f"{src}:{lineno} finding is not a JSON object")
+            return None
+        out.append(obj)
+    return out
+
+
+def load_baseline(path):
+    """Return (rules, fingerprints, scanner_version) or None after reporting."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        err(f"baseline unreadable: {exc}")
+        return None
+    except json.JSONDecodeError as exc:
+        err(f"baseline is not valid JSON: {exc}")
+        return None
+
+    if not isinstance(data, dict):
+        err("baseline must be a JSON object")
+        return None
+    if data.get("version") != BASELINE_VERSION:
+        err(
+            f"unsupported baseline version {data.get('version')!r} "
+            f"(this tool speaks version {BASELINE_VERSION})"
+        )
+        return None
+
+    rules = data.get("rules") or []
+    fps = data.get("fingerprints") or []
+    if not isinstance(rules, list) or not isinstance(fps, list):
+        err("baseline `rules` and `fingerprints` must be lists")
+        return None
+
+    for i, r in enumerate(rules):
+        if not isinstance(r, dict):
+            err(f"rules[{i}] is not an object")
+            return None
+        if not str(r.get("reason", "")).strip():
+            err(f"rules[{i}] has no reason — every suppression must be explained")
+            return None
+        if not any(str(r.get(k, "")).strip() for k in ("id", "path", "message")):
+            err(
+                f"rules[{i}] names none of id/path/message — a rule that matches "
+                "every finding is never what you meant"
+            )
+            return None
+
+    seen = set()
+    for i, f in enumerate(fps):
+        if not isinstance(f, dict):
+            err(f"fingerprints[{i}] is not an object")
+            return None
+        h = str(f.get("hash", ""))
+        if not h.startswith("sha256:") or len(h) != len("sha256:") + 64:
+            err(f"fingerprints[{i}] hash is not a sha256:<64 hex> digest: {h!r}")
+            return None
+        try:
+            int(h[7:], 16)
+        except ValueError:
+            err(f"fingerprints[{i}] hash is not hexadecimal: {h!r}")
+            return None
+        if not str(f.get("reason", "")).strip():
+            err(f"fingerprints[{i}] has no reason — every suppression must be explained")
+            return None
+        if h in seen:
+            err(f"fingerprints[{i}] duplicates an earlier hash: {h}")
+            return None
+        seen.add(h)
+
+    return rules, fps, str(data.get("jjstack_version", "unknown"))
+
+
+def rule_matches(rule, finding):
+    """Every field the rule states must match; unstated fields match anything."""
+    rid = str(rule.get("id") or rule.get("rule_id") or "").strip()
+    if rid and not fnmatch.fnmatchcase(str(finding.get("lens", "")), rid):
+        return False
+    path = str(rule.get("path") or rule.get("file") or "").strip()
+    if path and not fnmatch.fnmatchcase(str(finding.get("file", "")), path):
+        return False
+    msg = str(rule.get("message") or "").strip()
+    if msg:
+        pat = msg.lower()
+        haystacks = (
+            str(finding.get("message", "")).lower(),
+            str(finding.get("quote", "")).lower(),
+        )
+        if not any(fnmatch.fnmatchcase(h, pat) for h in haystacks):
+            return False
+    return True
+
+
+def cmd_generate(argv):
+    src, out_path, reason = None, DEFAULT_BASELINE, None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--reason":
+            if i + 1 >= len(argv):
+                err("--reason needs TEXT")
+                return 2
+            reason = argv[i + 1]
+            i += 2
+        elif a in ("-o", "--output"):
+            if i + 1 >= len(argv):
+                err("-o needs a FILE")
+                return 2
+            out_path = argv[i + 1]
+            i += 2
+        elif a == "-" or not a.startswith("-"):
+            if src is not None:
+                err(f"unexpected arg: {a}")
+                return 2
+            src = a
+            i += 1
+        else:
+            err(f"unknown flag: {a}")
+            return 2
+
+    if src is None:
+        err("usage: jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]")
+        return 2
+    if reason is None or not reason.strip():
+        err("--reason is mandatory — an unexplained suppression is indistinguishable from a bug")
+        return 2
+
+    findings = read_findings(src)
+    if findings is None:
+        return 2
+
+    entries, seen = [], set()
+    for f in findings:
+        h = fingerprint(f)
+        if h in seen:
+            continue
+        seen.add(h)
+        entries.append(
+            {
+                "hash": h,
+                "lens": f.get("lens", ""),
+                "file": f.get("file", ""),
+                "message": f.get("message", ""),
+                "reason": reason,
+            }
+        )
+
+    doc = {
+        "version": BASELINE_VERSION,
+        "jjstack_version": jjstack_version(),
+        "rules": [],
+        "fingerprints": entries,
+    }
+    try:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    except OSError as exc:
+        err(f"cannot write {out_path}: {exc}")
+        return 2
+
+    print(f"{GRN}baseline{RST} {len(entries)} fingerprint(s) → {out_path}", file=sys.stderr)
+    return 0
+
+
+def cmd_apply(argv):
+    src, bl_path = None, None
+    active_only, allow_drift = False, False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-b", "--baseline"):
+            if i + 1 >= len(argv):
+                err("--baseline needs a FILE")
+                return 2
+            bl_path = argv[i + 1]
+            i += 2
+        elif a == "--active-only":
+            active_only = True
+            i += 1
+        elif a == "--allow-version-drift":
+            allow_drift = True
+            i += 1
+        elif a == "-" or not a.startswith("-"):
+            if src is not None:
+                err(f"unexpected arg: {a}")
+                return 2
+            src = a
+            i += 1
+        else:
+            err(f"unknown flag: {a}")
+            return 2
+
+    if src is None or bl_path is None:
+        err("usage: jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE")
+        return 2
+
+    loaded = load_baseline(bl_path)
+    if loaded is None:
+        return 2
+    rules, fps, bl_version = loaded
+
+    fp_index = {f["hash"]: f for f in fps}
+    here = jjstack_version()
+    if fps and bl_version != here and not allow_drift:
+        warn(
+            f"baseline was written by jjstack {bl_version}, this is {here} — "
+            f"{len(fp_index)} fingerprint(s) treated as INERT (fail-closed). "
+            "Re-read them and regenerate, or pass --allow-version-drift."
+        )
+        fp_index = {}
+
+    findings = read_findings(src)
+    if findings is None:
+        return 2
+
+    active = 0
+    suppressed = 0
+    for f in findings:
+        hit = None
+        h = fingerprint(f)
+        if h in fp_index:
+            hit = {
+                "by": "fingerprint",
+                "reason": fp_index[h]["reason"],
+                "matched": h,
+            }
+        else:
+            for r in rules:
+                if rule_matches(r, f):
+                    hit = {
+                        "by": "rule",
+                        "reason": r["reason"],
+                        "matched": json.dumps(
+                            {k: r[k] for k in ("id", "rule_id", "path", "file", "message") if k in r},
+                            sort_keys=True,
+                        ),
+                    }
+                    break
+        out = dict(f)
+        out["suppressed"] = hit
+        out["fingerprint"] = h
+        if hit:
+            suppressed += 1
+            if active_only:
+                continue
+        else:
+            active += 1
+        print(json.dumps(out, sort_keys=True))
+
+    print(
+        f"{GRN}baseline{RST} {active} active, {suppressed} suppressed "
+        f"(suppressed findings never count toward the active total)",
+        file=sys.stderr,
+    )
+    return 1 if active else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0 if argv else 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "generate":
+        return cmd_generate(rest)
+    if cmd == "apply":
+        return cmd_apply(rest)
+    err(f"unknown subcommand: {cmd} (expected `generate` or `apply`)")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

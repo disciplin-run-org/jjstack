@@ -1,6 +1,6 @@
 ---
 name: review
-version: 0.2.0
+version: 0.3.0
 description: |
   The deepest, highest-recall pre-landing review in the stack. Wraps gstack's
   /review but deliberately trades time and tokens for COVERAGE: it forces every
@@ -8,10 +8,12 @@ description: |
   passes that Anthropic's /code-review and gstack both skip (security, test
   coverage, performance, concurrency, resource leaks, error handling, API
   misuse, git-history context, prior-PR comments, code-comment + CLAUDE.md
-  compliance), then controls the resulting noise with per-finding
-  self-verification instead of suppressing whole dimensions. Saves findings to
-  {repo}/jjstack/, injects DNA, iterates to 10/10. Use on the diff about to merge
-  when you want to catch what a fast review would miss.
+  compliance), then controls the resulting noise with an enrich-only
+  verification pass and a committed baseline — never by deleting findings.
+  Emits a three-valued APPROVE/CAUTION/REJECT verdict with per-finding review
+  judgments and guardrails. Saves findings to {repo}/jjstack/, injects DNA,
+  iterates to 10/10. Use on the diff about to merge when you want to catch what
+  a fast review would miss.
   Trigger on: "review my changes", "pre-landing review", "review the diff",
   "review before merge", "deep review", "adversarial review", "review this PR",
   "catch everything review", "thorough review".
@@ -42,19 +44,23 @@ skip small diffs, and drop whole dimensions (security, test coverage, general
 quality) to stay low-noise. This skill inverts that trade — it runs **every**
 lens and then earns its low noise back through per-finding verification.
 
-**Design provenance:** the multi-agent fan-out, the git-history / prior-PR /
-code-comment / CLAUDE.md-compliance passes, and the confidence-scored
-self-verification gate are drawn from Anthropic's official `/code-review`
-command and folded on top of gstack's Review Army. The best-practices behind
-the extra passes and the noise-control are documented (with sources) in
+**Design provenance:** the multi-agent fan-out and the git-history / prior-PR /
+code-comment / CLAUDE.md-compliance passes are drawn from Anthropic's official
+`/code-review` command, folded on top of gstack's Review Army. The verification
+architecture — enrich-only, fail-closed, a committed baseline instead of
+deletion, line-numbered grounding, and the three-valued verdict — is drawn from
+NVIDIA's `SkillSpector`. The best practices behind the extra passes and the
+noise-control are documented (with sources) in
 `references/code-review-best-practices.md`, loaded in Phase 3.
 
 Four enhancements over the gstack base:
 1. **Recall-max delegation** — force all specialists, disable adaptive gating
    and the small-diff skip, run extra adversarial passes.
 2. **Superset dimension sweep** — add the passes gstack + Anthropic skip.
-3. **Self-verified findings** — every finding carries a concrete failure
-   scenario and a verified confidence score; this is how recall stays usable.
+3. **Enrich-only verification** — every finding carries a quote, a concrete
+   failure scenario, a remediation, and a review judgment. Verification may
+   enrich a finding or mark it unconfirmed; it may never delete one. Noise is
+   controlled by a committed baseline with a stated reason, not by deletion.
 4. **jjstack finish** — repo-local output, DNA injection, quality loop to 10/10,
    README maintenance.
 
@@ -136,10 +142,13 @@ context passes AND the dropped dimensions — as independent parallel agents so
 each reviews with a clean, single-lens context window.
 
 **Launch all applicable passes in ONE message (multiple Agent calls) so they run
-concurrently.** Each agent returns a list of findings; each finding MUST name
-the file:line, the lens that flagged it, and (per Phase 5) a concrete failure
-scenario. Skip a pass only when it is structurally inapplicable (e.g. no prior
-PRs on a brand-new repo), never merely to save tokens.
+concurrently.** Each agent returns findings in the struct Phase 5b defines
+(lens, file, start_line, severity, confidence, message, quote, explanation,
+remediation) — and per Phase 5a it must be fed line-numbered content, so those
+line numbers are copied rather than counted. Skip a pass only when it is
+structurally inapplicable (e.g. no prior PRs on a brand-new repo), never merely
+to save tokens — and when you skip one, record it for the degraded-mode section
+in 5f.
 
 Context passes (from Anthropic's `/code-review`, adapted from PR to local diff):
 
@@ -180,42 +189,223 @@ claim before verification.
 
 ---
 
-## Phase 5: Self-verify every finding (this is how recall stays usable)
+## Phase 5: Verify by ENRICHING — never by deleting
 
-High recall without verification is just noise. Before any finding reaches the
-user's report, it passes an adversarial self-check that unions gstack's pre-emit
-gate with Anthropic's 0–100 confidence scoring.
+High recall without verification is noise. But a verification pass that *deletes*
+findings from a recall-max review is self-defeating: it hands back to a single
+unaudited LLM judgement exactly the coverage the previous four phases spent time
+and tokens buying. This skill's earlier design scored each finding 0–100 and
+dropped everything under 40 — silent deletion, no record, no appeal.
 
-For **each** merged finding, run the verification (batch them as parallel agents
-when there are many):
+That is fixed here. Phase 5 now follows NVIDIA SkillSpector's meta-analyzer
+architecture: the LLM pass is **architecturally forbidden from suppressing**. It
+may add explanation, add remediation, and *raise* confidence; it may mark a
+finding unconfirmed; it may not remove one. The rationale and sources are in
+`references/code-review-best-practices.md` (loaded in Phase 3) under "Enrich, do
+not suppress".
 
-1. **Quote the motivating code** — file:line plus the verbatim line(s) that
-   trigger the finding. If you cannot quote it, the finding is unverified.
+### 5a. Ground every pass in line numbers
+
+Wherever this skill feeds file content to a pass — Phase 4's lenses and the
+verification below alike — feed it **line-numbered**, never bare:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-number-lines <file> [--start N]
+```
+
+It renders `L100: def foo()`, so a reported line number is something the pass
+**copies** rather than counts. Counting is where the "real bug, wrong line"
+false positive comes from: the author looks at the cited line, sees nothing
+wrong, and dismisses a true finding as a hallucination. Use `--start` when you
+feed a chunk of a large file so the numbers still match the real file.
+
+### 5b. Every finding is a struct, or it is not a finding
+
+Each pass emits findings as JSON Lines with **all** of these fields:
+
+| field | why it is required |
+|---|---|
+| `lens` | which pass found it — the baseline's rule glob keys on this |
+| `file`, `start_line` | grounded location (5a) |
+| `severity` | `P0`–`P3` (or CRITICAL/HIGH/MEDIUM/LOW, normalized) |
+| `confidence` | 0–100 or 0.0–1.0; normalized deterministically, not by eye |
+| `message` | the one-line claim |
+| `quote` | the verbatim motivating line — unquotable means unverified |
+| `explanation` | why it is wrong |
+| `remediation` | what to do. **Required at emission time**: a finding nobody can act on is not worth a line in the report. |
+
+Validate and canonicalize the merged set before anything else touches it:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-normalize {OUTPUT_DIR}/findings.raw.jsonl \
+  --invalid-out {OUTPUT_DIR}/findings.malformed.jsonl > {OUTPUT_DIR}/findings.jsonl
+```
+
+It normalizes confidence (a model emitting `75` and one emitting `0.75` mean the
+same thing) and severity, and coerces `start_line`. Exit 1 means some findings
+were malformed — they are written to `findings.malformed.jsonl`, never dropped
+on the floor. **Fix the emitting pass and re-emit; do not delete the finding.**
+
+### 5c. Verify each finding — enrich-only
+
+For **each** normalized finding (batch as parallel agents when there are many):
+
+1. **Read the source around the quote.** Confirm the quoted line is really there
+   and really means what the finding says.
 2. **Write a concrete failure scenario** — the specific input/state that reaches
    the bug and the wrong output/crash/leak it produces. A finding with no
-   reproducible failure scenario is a nitpick, not a bug.
-3. **Score confidence 0–100** using this rubric (from Anthropic's `/code-review`):
-   - **0** — false positive under light scrutiny, or a pre-existing issue on
-     unmodified lines.
-   - **25** — might be real, could not verify.
-   - **50** — verified real, but a nitpick or rare in practice.
-   - **75** — verified, very likely hit in practice; approach is insufficient.
-   - **100** — certain; evidence directly confirms it will happen frequently.
-4. **Gate.** Report findings scoring **≥ 60** in the main report (a deliberately
-   more permissive gate than Anthropic's 80 — this skill is tuned for recall).
-   Findings scoring 40–59 go to an **appendix** ("verify — medium confidence"),
-   never dropped silently. Findings < 40 are dropped.
-5. **Rank** the main report by severity (P0→P3) then confidence.
+   reproducible failure scenario is a nitpick, not a bug — and it is reported as
+   a nitpick, not deleted.
+3. **Adjudicate**, and record the adjudication as the finding's *review
+   judgment* (this is what the report's judgment column carries):
+   - **confirmed** — evidence supports it. You MAY improve `explanation` and
+     `remediation`, and you MAY **raise** `confidence`.
+   - **unconfirmed** — you could not confirm it from the source. Append the tag
+     `llm-unconfirmed` and say in the judgment what you could not establish.
 
-**Do NOT report** (these are noise, per `references/code-review-best-practices.md`):
+**Hard rules — these are the point of the phase:**
+
+- **Never delete a finding.** Not for low confidence, not for "probably a false
+  positive", not to tidy the report.
+- **Never lower** a finding's confidence or severity in verification. Enrichment
+  is one-directional. A doubt is expressed as `llm-unconfirmed`, not as a
+  quietly-reduced number.
+- **Unconfirmed findings move, they do not vanish** — into the report's clearly
+  labelled `Unconfirmed` section, with the tag visible.
+- **Fail closed.** If verification cannot run at all (agent failure, budget
+  exhaustion, a pass that errored), pass **every** finding through unchanged,
+  mark the report degraded per 5f, and lower the stated confidence in the
+  verdict. Showing more findings is safer than silently dropping them.
+
+**Emission scope** (what a pass should never raise in the first place — this is
+a scoping rule for Phase 4, *not* a licence to delete in Phase 5):
+
 - Anything a linter / typechecker / formatter / compiler would catch — assume CI
   runs them.
 - Pure style nitpicks not called out in a CLAUDE.md.
 - Pre-existing issues on lines the diff did not touch.
-- Findings with no quotable motivating line or no failure scenario.
 
-Finding format:
-`[SEVERITY] (confidence: N/100) file:line — description | failure scenario: <input → wrong output>`
+If such an item is already in hand at Phase 5, it is suppressed through the
+baseline in 5d — with a reason on the record — not deleted.
+
+### 5d. Apply the committed baseline (how a re-review shows only what is NEW)
+
+Re-running a recall-max review re-reports everything it reported last time. The
+answer is not deletion; it is a **committed baseline** that keeps accepted
+findings in the output, marked suppressed with a mandatory reason, and stops
+them counting as active.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-baseline apply {OUTPUT_DIR}/findings.jsonl \
+  --baseline "$(git rev-parse --show-toplevel)/.jjstack-review-baseline.json" \
+  > {OUTPUT_DIR}/findings.adjudicated.jsonl
+```
+
+Skip it when the repo has no baseline file yet — a missing baseline is normal,
+not an error to work around.
+
+Creating or extending a baseline is a **human decision that mutes future
+reviews**, so do it only when the user explicitly asks. Never generate one
+unprompted to make a report look shorter:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-baseline generate {OUTPUT_DIR}/findings.jsonl \
+  --reason "triaged <date>: accepted, see jjstack/<review>.md" \
+  -o "$(git rev-parse --show-toplevel)/.jjstack-review-baseline.json"
+```
+
+Two mechanisms, deliberately aging differently:
+
+- **`fingerprints`** — machine-generated content hashes, brittle on purpose:
+  edit the flagged source and the finding comes back for review. **Prefer these**
+  for individually accepted findings.
+- **`rules`** — human-authored globs over `id` (lens) / `path` / `message`,
+  drift-tolerant: they survive line shifts and rewording. Reserve them for
+  deliberate, tightly-scoped policy exclusions, because a broad rule can hide
+  newly malicious content.
+
+Every entry of either kind carries a mandatory `reason`; the script refuses a
+baseline without one, and refuses a rule that names no matching field (a rule
+that matches everything is never what anyone meant). Suppressed findings never
+count toward the active total but **remain in the output**, marked, so the
+report can show them for audit.
+
+### 5e. Rank, and treat the summary as a prior — not a verdict
+
+Rank active findings by severity (P0→P3), then confidence. Then read the profile
+as a **default posture**, which the evidence may move — the profile is where you
+start arguing from, not the answer:
+
+| Active findings profile | Default posture |
+|---|---|
+| Nothing above P3 | `APPROVE` after a quick read of the P3s. |
+| P2s only | `APPROVE` only when each P2 is explained; otherwise `CAUTION`. |
+| Any P1 | `CAUTION`. `REJECT` unless every P1 is explained, bounded, and deliberate. |
+| Any P0 | `REJECT` unless every P0 is explained AND has a landed mitigation. |
+| Any unconfirmed P0/P1 nobody read at source | `REJECT` — unread is not the same as fine. |
+| A required pass or the verification could not run | Drop one step (`APPROVE`→`CAUTION`, `CAUTION`→`REJECT`) and say so per 5f. |
+
+**Anti-rationalization guardrail — the dominant failure mode of high-recall
+review is talking findings away:**
+
+> **Never downgrade an unexplained P0 or P1 finding based only on author
+> reputation, repo familiarity, a green CI, the size of the diff, or the overall
+> posture.** Only evidence read at the source downgrades a finding.
+
+We key the table on the active-finding profile rather than on a synthesized 0–100
+risk number: inventing one would add a precision the inputs do not have. The
+posture semantics are NVIDIA's; the band definition is ours.
+
+### 5f. Report format
+
+Write a concise triage report, not a raw dump of every pass's output. Prefer
+specific evidence over generic advice; use tables where they make scanning
+easier; **omit empty sections**.
+
+```text
+## /review: <target>
+
+**Verdict:** {APPROVE | CAUTION | REJECT} — <short meaning>
+**Posture:** <profile from 5e> · <active count> active, <n> suppressed, <n> unconfirmed
+**Coverage:** <passes run> / <passes applicable><, degraded: see below>
+
+### Bottom line
+2–3 sentences: land it or not, the main risk, and why the posture alone is not
+the whole answer.
+
+### Findings
+| Sev | Conf | Location | Finding | Review judgment |
+|---|---|---|---|---|
+| P1 | 80 | src/a.py:112 | <claim> | <why this blocks / is acceptable / is suspicious> |
+
+Each row expands below with its quote, failure scenario, and remediation.
+
+### Unconfirmed  (tagged `llm-unconfirmed` — kept deliberately, not verified)
+Same shape. These were NOT deleted; nobody could confirm them at the source.
+
+### Suppressed by baseline  (not active; shown for audit)
+| Location | Finding | Suppressed by | Reason |
+
+### Degraded mode
+Only when something did not run. Name the pass, why, and what that leaves
+unknown — e.g. "the prior-review pass did not run (no GitHub remote), so
+previously-agreed guidance was not re-applied; the verdict is semantic-only and
+carries lower confidence."
+
+### Guardrails
+The conditions under which this verdict holds — 2–5 numbered items. If one
+stops being true, the verdict is void.
+```
+
+Verdict semantics, kept to exactly these three labels:
+
+- **`APPROVE`** — no active P0/P1, no unexplained risky behavior, the change does
+  what it says.
+- **`CAUTION`** — risky behavior exists, but it is **documented, necessary,
+  bounded, and controllable**. This value exists so a reviewer never has to
+  round a real concern to "fine" for lack of a label.
+- **`REJECT`** — unexplained P0/P1, a mismatch between what the change claims and
+  what it does, or a risk with no bound.
 
 ---
 
@@ -265,11 +455,14 @@ the target. Iterate to `MIN_SCORE` (default 10/10) or `MAX_ITERATIONS`.
 cat ~/.claude/skills/jjstack/references/output-capture.md
 ```
 
-Follow the output capture protocol — the full findings report (main +
-appendix), with the confidence scores and failure scenarios, lands in
-`{OUTPUT_DIR}`, together with the `gstack-review-refs/` snapshot from Phase 5.5.
-Both are committed to the repo so the findings and the rubric that produced them
-travel together.
+Follow the output capture protocol — the full report from 5f (findings,
+unconfirmed, baseline-suppressed, degraded mode, guardrails) lands in
+`{OUTPUT_DIR}` alongside the normalized `findings.jsonl` it was rendered from,
+together with the `gstack-review-refs/` snapshot from Phase 5.5. All are
+committed to the repo so the findings, the machine-readable record, and the
+rubric that produced them travel together. If Phase 5d wrote or updated
+`.jjstack-review-baseline.json`, commit that too — it is what makes the next
+review show only what is new.
 
 ### 6.3 README maintenance
 
