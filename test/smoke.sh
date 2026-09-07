@@ -681,6 +681,40 @@ check "positive control: drifted baseline has a different version" \
   "! cmp -s '$RB/bl.json' '$RB/old.json'"
 rm -rf "$RB"
 
+echo "== 6. review skill structural guards =="
+# Two five-line greps that would have caught two defects the parallel PR stack
+# actually produced, both invisible to a per-PR review against main:
+#
+#  1. A PR written against the OLD Phase 5 re-introduces the heading a later PR
+#     deleted — and git merges that hunk WITHOUT reporting a conflict, because
+#     the heading arrives as innocent context lines. Result: two "## Phase 5"
+#     headings and two contradictory verification models in one file.
+#  2. Three PRs independently created bin/jjstack-review-blast-radius with three
+#     incompatible CLIs (--out DIR vs stdout). Whichever merged last won the
+#     filename, and the caller that passes --out died with exit 2.
+#
+# These pass at this point in the chain and are meant to go RED the moment
+# either defect is reintroduced downstream. That is the guard doing its job:
+# the defect cannot land silently, which is how it landed the first time.
+SK="$DIR/skills/review/SKILL.md"
+n_phase5=$(grep -c '^## Phase 5: ' "$SK" 2>/dev/null)
+check "exactly one '## Phase 5: ' heading in the review skill" "[ \"\$n_phase5\" = 1 ]"
+
+n_blast=$(ls -1 "$BIN" 2>/dev/null | grep -c '^jjstack-review-blast-radius')
+check "exactly one blast-radius implementation in bin/" "[ \"\$n_blast\" = 1 ]"
+
+# Positive controls — a grep that can never fire looks exactly like a clean tree.
+probe_sk="$(mktemp)"
+printf '## Phase 5: one\nbody\n## Phase 5: two\n' > "$probe_sk"
+check "phase-5 guard actually catches a duplicate" \
+  "[ \"\$(grep -c '^## Phase 5: ' '$probe_sk')\" = 2 ]"
+rm -f "$probe_sk"
+probe_bin="$(mktemp -d)"
+: > "$probe_bin/jjstack-review-blast-radius"; : > "$probe_bin/jjstack-review-blast-radius-census"
+check "blast-radius guard actually catches a duplicate" \
+  "[ \"\$(ls -1 '$probe_bin' | grep -c '^jjstack-review-blast-radius')\" = 2 ]"
+rm -rf "$probe_bin"
+
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
 else printf '\033[95m%d FAIL\033[0m, %d pass\n' "$fail" "$pass"; exit 1; fi
