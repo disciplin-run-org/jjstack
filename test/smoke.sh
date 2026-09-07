@@ -73,6 +73,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-sweep "$BIN"/jjstack-review-autofix-diff \
          "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-triage \
          "$BIN"/jjstack-review-ledger "$BIN"/jjstack-review-revert-history \
+         "$BIN"/jjstack-review-dep-inventory \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -2945,6 +2946,64 @@ while read -r tok; do
         "grep -qxF -- '$tok' '$VOC/skill.disp'"
 done < "$VOC/script.disp"
 rm -rf "$VOC"
+
+echo "== 7n. review-dep-inventory (manifest parsing + vendored-tree exclusion) =="
+# /review Phase 4.5b checks stale-API findings against the versions the repo
+# ACTUALLY pins, instead of against the model's training-era memory of a library.
+# That only works if the parse is right and vendored trees stay out — a
+# node_modules manifest would bury the repo's own declarations under thousands
+# of foreign ones.
+DEP="$(mktemp -d)"
+mkdir -p "$DEP/node_modules/evil"
+cat > "$DEP/package.json" <<'EOF'
+{ "name": "fixture",
+  "dependencies": { "react": "^18.2.0", "zod": "3.22.4" },
+  "devDependencies": { "vitest": "~1.0.0" } }
+EOF
+cat > "$DEP/requirements.txt" <<'EOF'
+# a comment
+fastapi==0.110.1
+requests[security]~=2.31.0
+bare-package
+EOF
+cat > "$DEP/go.mod" <<'EOF'
+module example.com/fixture
+require (
+	github.com/stretchr/testify v1.9.0
+)
+EOF
+cat > "$DEP/Cargo.toml" <<'EOF'
+[dependencies]
+serde = "1.0.197"
+tokio = { version = "1.37.0", features = ["full"] }
+EOF
+cat > "$DEP/node_modules/evil/package.json" <<'EOF'
+{ "dependencies": { "should-not-appear": "9.9.9" } }
+EOF
+
+# Assertions read a FILE, never `printf ... | grep -q`: under `set -o pipefail`
+# a `grep -q` that exits on its first match can leave the pipeline carrying
+# printf's SIGPIPE status, which makes the check fail at random. Same reason the
+# 5d block below writes its output to a file.
+DEPOUT="$(mktemp)"
+"$BIN/jjstack-review-dep-inventory" "$DEP" --tsv > "$DEPOUT" 2>/dev/null
+check "dep-inventory parses npm version"   "grep -q '^npm	react	\\^18.2.0' '$DEPOUT'"
+check "dep-inventory parses pypi ==pin"    "grep -q '^pypi	fastapi	0.110.1' '$DEPOUT'"
+check "dep-inventory strips pypi extras"   "grep -q '^pypi	requests	2.31.0' '$DEPOUT'"
+check "dep-inventory marks unpinned as *"  "grep -q '^pypi	bare-package	\\*' '$DEPOUT'"
+check "dep-inventory parses go.mod"        "grep -q '^go	github.com/stretchr/testify	v1.9.0' '$DEPOUT'"
+check "dep-inventory parses cargo inline table" "grep -q '^cargo	tokio	1.37.0' '$DEPOUT'"
+# The exclusion that keeps the inventory readable.
+check "dep-inventory excludes node_modules" "! grep -q 'should-not-appear' '$DEPOUT'"
+# Positive control — an exclusion assertion whose fixture never contained the
+# excluded thing passes forever while the prune silently rots.
+check "node_modules fixture really holds a manifest to exclude" \
+      "grep -q 'should-not-appear' '$DEP/node_modules/evil/package.json'"
+# No manifests at all is a clean exit 3, not a crash or an empty success.
+DEPEMPTY="$(mktemp -d)"
+"$BIN/jjstack-review-dep-inventory" "$DEPEMPTY" >/dev/null 2>&1
+check "dep-inventory exits 3 with no manifests" "[ \$? -eq 3 ]"
+rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

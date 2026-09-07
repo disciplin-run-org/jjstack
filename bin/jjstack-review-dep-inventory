@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# jjstack-review-dep-inventory — the third-party versions this repo ACTUALLY pins.
+#
+# Why this exists. A large, well-documented class of AI-review false positive is
+# the stale-API flag: the model reviews a call against the library API it
+# remembers from training, the library has since changed, and correct code gets
+# reported as a bug. Macroscope measured this class and cut third-party-library
+# review comments by 55% simply by looking up current docs during review instead
+# of trusting recall (see references/vendor-lessons-macroscope.md).
+#
+# The lookup itself needs judgment. Knowing WHICH library at WHICH version does
+# not — that is written down, in the repo, in the manifests. So this script
+# reads them: deterministic parsing, no model inference, no network. The review
+# then verifies a suspected stale-API finding against the version printed here,
+# rather than against whatever the model half-remembers.
+#
+# Ecosystems parsed: npm (package.json), pypi (requirements*.txt, pyproject.toml),
+# go (go.mod), cargo (Cargo.toml), rubygems (Gemfile), maven (pom.xml).
+# Lockfiles are deliberately NOT read — they are enormous, mostly transitive, and
+# the declared constraint is what a reviewer argues about.
+#
+# Usage:
+#   jjstack-review-dep-inventory [repo-dir] [--depth N] [--tsv]
+#
+# Output: grouped human table, or `ecosystem<TAB>name<TAB>version<TAB>manifest`
+# with --tsv. Version is `*` when the manifest declares no constraint.
+#
+# Exit: 0 inventory printed, 2 usage error, 3 no dependency manifests found.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+REPO=""
+DEPTH=3
+TSV=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --depth) DEPTH="${2:-}"; shift 2 ;;
+    --tsv)   TSV=1; shift ;;
+    -h|--help)
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  [ -z "$REPO" ] && REPO="$1" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
+        shift ;;
+  esac
+done
+
+case "$DEPTH" in
+  ''|*[!0-9]*) echo -e "${CYA}error${RST} --depth must be a number" >&2; exit 2 ;;
+esac
+
+[ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+[ -d "$REPO" ] || { echo -e "${CYA}error${RST} not a directory: $REPO" >&2; exit 2; }
+
+# Vendored trees carry thousands of foreign manifests. They are not this repo's
+# declared dependencies, and including them would bury the ones that are.
+find "$REPO" -maxdepth "$DEPTH" \
+  \( -name .git -o -name node_modules -o -name vendor -o -name target \
+     -o -name dist -o -name build -o -name .venv -o -name venv \
+     -o -name __pycache__ -o -name .next -o -name .tox \) -prune -o \
+  -type f \( -name package.json -o -name 'requirements*.txt' -o -name pyproject.toml \
+     -o -name go.mod -o -name Cargo.toml -o -name Gemfile -o -name pom.xml \) \
+  -print 2>/dev/null | sort > "${TMPDIR:-/tmp}/.jjdep.$$.manifests"
+
+MANIFESTS="${TMPDIR:-/tmp}/.jjdep.$$.manifests"
+ROWS="${TMPDIR:-/tmp}/.jjdep.$$.rows"
+trap 'rm -f "$MANIFESTS" "$ROWS"' EXIT
+
+if [ ! -s "$MANIFESTS" ]; then
+  echo -e "${YEL}warn${RST}  no dependency manifests found under $REPO (depth $DEPTH)" >&2
+  exit 3
+fi
+
+: > "$ROWS"
+
+parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-regex
+  # Handles both pretty-printed and compact package.json: a dependency block may
+  # open, list every entry and close on a single line.
+  awk -v eco="$2" -v file="$1" -v keys="$3" '
+    function emit(chunk,   pair, n, v) {
+      while (match(chunk, /"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+        pair  = substr(chunk, RSTART, RLENGTH)
+        chunk = substr(chunk, RSTART + RLENGTH)
+        n = pair; sub(/^"/, "", n); sub(/"[[:space:]]*:[[:space:]]*".*$/, "", n)
+        # Strip the whole "name": prefix so a colon inside the version (a git or
+        # https specifier) is not mistaken for the key separator.
+        v = pair; sub(/^"[^"]*"[[:space:]]*:[[:space:]]*"/, "", v); sub(/"$/, "", v)
+        if (n != "" && v != "") print eco "\t" n "\t" v "\t" file
+      }
+    }
+    {
+      line = $0
+      if (!indep && line ~ "\"(" keys ")\"[[:space:]]*:[[:space:]]*\\{") {
+        indep = 1
+        sub(/^.*"[[:space:]]*:[[:space:]]*\{/, "", line)   # keep only what follows the {
+      }
+      if (!indep) next
+      if (line ~ /\}/) { sub(/\}.*$/, "", line); indep = 0 }
+      emit(line)
+    }
+  ' "$1"
+}
+
+parse_requirements() {
+  awk -v file="$1" '
+    /^[[:space:]]*($|#|-)/ { next }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line); sub(/;.*/, "", line)
+      n = line; v = "*"
+      if (match(line, /[=><~!]+/)) {
+        n = substr(line, 1, RSTART - 1)
+        v = substr(line, RSTART + RLENGTH)
+      }
+      sub(/\[.*\]/, "", n)
+      gsub(/[[:space:]"]/, "", n); gsub(/[[:space:]",]/, "", v)
+      if (n != "") print "pypi\t" n "\t" (v == "" ? "*" : v) "\t" file
+    }
+  ' "$1"
+}
+
+parse_pyproject() {
+  awk -v file="$1" '
+    # PEP 621 / setuptools:  dependencies = [ "fastapi>=0.1", ... ]
+    /^[[:space:]]*(dependencies|requires)[[:space:]]*=[[:space:]]*\[/ { inarr = 1 }
+    inarr {
+      if ($0 ~ /\]/) inarr = 0
+      line = $0
+      while (match(line, /"[^"]+"/)) {
+        spec = substr(line, RSTART + 1, RLENGTH - 2)
+        line = substr(line, RSTART + RLENGTH)
+        n = spec; v = "*"
+        if (match(spec, /[=><~!]+/)) {
+          n = substr(spec, 1, RSTART - 1); v = substr(spec, RSTART + RLENGTH)
+        }
+        sub(/\[.*\]/, "", n); gsub(/[[:space:]]/, "", n); gsub(/[[:space:]]/, "", v)
+        if (n != "" && n !~ /^(dependencies|requires)$/) print "pypi\t" n "\t" (v == "" ? "*" : v) "\t" file
+      }
+      next
+    }
+    # Poetry:  [tool.poetry.dependencies]  fastapi = "^0.1"
+    /^\[tool\.poetry(\.[a-z-]+)?\.dependencies\]/ { inpoetry = 1; next }
+    /^\[/ { inpoetry = 0 }
+    inpoetry && /=/ {
+      n = $0; sub(/[[:space:]]*=.*/, "", n); gsub(/[[:space:]"]/, "", n)
+      v = "*"
+      if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]*"/) || match($0, /=[[:space:]]*"[^"]*"/)) {
+        v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
+      }
+      if (n != "" && n != "python") print "pypi\t" n "\t" (v == "" ? "*" : v) "\t" file
+    }
+  ' "$1"
+}
+
+parse_gomod() {
+  awk -v file="$1" '
+    /^require[[:space:]]*\(/ { inreq = 1; next }
+    inreq && /^\)/          { inreq = 0; next }
+    inreq && NF >= 2 && $1 !~ /^\/\// { print "go\t" $1 "\t" $2 "\t" file; next }
+    /^require[[:space:]]+[^(]/ && NF >= 3 { print "go\t" $2 "\t" $3 "\t" file }
+  ' "$1"
+}
+
+parse_cargo() {
+  awk -v file="$1" '
+    /^\[(dependencies|dev-dependencies|build-dependencies)\]/ { indep = 1; next }
+    /^\[/ { indep = 0 }
+    indep && /=/ {
+      n = $0; sub(/[[:space:]]*=.*/, "", n); gsub(/[[:space:]"]/, "", n)
+      v = "*"
+      if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]*"/)) {
+        v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
+      } else if (match($0, /=[[:space:]]*"[^"]*"/)) {
+        v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
+      }
+      if (n != "") print "cargo\t" n "\t" (v == "" ? "*" : v) "\t" file
+    }
+  ' "$1"
+}
+
+parse_gemfile() {
+  awk -v file="$1" '
+    /^[[:space:]]*gem[[:space:]]+["'"'"']/ {
+      line = $0; n = ""; v = "*"; i = 0
+      while (match(line, /["'"'"'][^"'"'"']*["'"'"']/)) {
+        tok = substr(line, RSTART + 1, RLENGTH - 2)
+        line = substr(line, RSTART + RLENGTH)
+        i++
+        if (i == 1) n = tok
+        else if (v == "*" && tok ~ /[0-9]/) v = tok
+      }
+      if (n != "") print "rubygems\t" n "\t" v "\t" file
+    }
+  ' "$1"
+}
+
+parse_pom() {
+  awk -v file="$1" '
+    /<dependency>/  { indep = 1; a = ""; v = "*"; next }
+    indep && /<artifactId>/ { a = $0; sub(/^.*<artifactId>/, "", a); sub(/<\/artifactId>.*$/, "", a) }
+    indep && /<version>/    { v = $0; sub(/^.*<version>/, "", v);    sub(/<\/version>.*$/, "", v) }
+    /<\/dependency>/ { if (indep && a != "") print "maven\t" a "\t" v "\t" file; indep = 0 }
+  ' "$1"
+}
+
+while read -r m; do
+  rel="${m#$REPO/}"
+  case "$(basename "$m")" in
+    package.json)     parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' ;;
+    requirements*.txt) parse_requirements "$m" ;;
+    pyproject.toml)   parse_pyproject "$m" ;;
+    go.mod)           parse_gomod "$m" ;;
+    Cargo.toml)       parse_cargo "$m" ;;
+    Gemfile)          parse_gemfile "$m" ;;
+    pom.xml)          parse_pom "$m" ;;
+  esac | sed "s#\t$m\$#\t$rel#" >> "$ROWS"
+done < "$MANIFESTS"
+
+sort -u -o "$ROWS" "$ROWS"
+
+if [ ! -s "$ROWS" ]; then
+  echo -e "${YEL}warn${RST}  manifests found but no declared dependencies parsed" >&2
+  exit 3
+fi
+
+if [ "$TSV" -eq 1 ]; then
+  cat "$ROWS"
+  exit 0
+fi
+
+echo "Declared third-party dependencies — $REPO"
+echo "(the versions THIS repo pins; verify stale-API findings against these, not recall)"
+echo
+awk -F'\t' '
+  { if ($1 != eco) { if (eco != "") print ""; print "== " $1 " =="; eco = $1 }
+    printf "  %-40s %-20s %s\n", $2, $3, $4 }
+' "$ROWS"
+echo
+echo -e "${GRN}inventoried${RST} $(wc -l < "$ROWS") declared dependencies from $(wc -l < "$MANIFESTS") manifest(s)"
+exit 0

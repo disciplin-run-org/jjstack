@@ -193,6 +193,7 @@ loads. Read them directly or let skills load them for you.
 | `review-post-passes.md` | The five blind spots no diff-reader can cover — absence, the auto-fix diff, proof-by-red-test, the post-fix sweep, calibration — and how `/review` runs each |
 | `vendor-lessons-aikido.md` | What a commercial scanner-plus-LLM product's triage actually does — adopted mechanics, and the claims rejected as marketing, with sources |
 | `vendor-lessons-greptile.md` | What Greptile's reviewer actually does, which claims are verifiable mechanics vs marketing, and exactly what `/review` adopted and rejected |
+| `vendor-lessons-macroscope.md` | What Macroscope's AI reviewer actually does, which claims survive scrutiny, and what `/review` adopted vs rejected — the research behind the stale-API pass |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
