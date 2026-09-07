@@ -961,11 +961,19 @@ ledger of what past reviews decided:
 ~/.claude/skills/jjstack/bin/jjstack-review-ledger --match --path <file> --category <cat>
 ```
 
-- **Exit 0 (`DEMOTE …`)** — a prior review dismissed this class here. Move the
-  finding to the **appendix** and quote the ledger's note as the reason. Do
-  **not** drop it, and do not lower its confidence score: the score is a claim
-  about the code, the demotion is a claim about the team's prior decision, and
-  conflating them destroys both.
+- **Exit 0 (`DEMOTE …`)** — a prior review dismissed this class here. File the
+  finding under 5f's **`### Demoted (prior decision)`** section and quote the
+  ledger's note as the reason. Do **not** drop it, and do not lower its
+  confidence score: the score is a claim about the code, the demotion is a claim
+  about the team's prior decision, and conflating them destroys both.
+
+  **Demotion is idempotent and terminal.** Two independent mechanisms can demote
+  the same finding — this ledger (path + category) and Phase 5.10's calibration
+  rank (global pattern class). A finding matched by both is demoted **once**: it
+  appears in `Demoted (prior decision)`, still active, still carrying its own
+  severity and confidence. Demotions never stack, never compound, and can never
+  add up to a suppression. Only the committed baseline (5d), which requires an
+  explicit human reason per entry, removes a finding from the active set.
 - **Exit 1** — no prior decision applies. Report normally. A `PROTECTED …` line
   on exit 1 means a dismissal exists but the category never demotes; report the
   finding at full weight and mention the prior dismissal in the finding body.

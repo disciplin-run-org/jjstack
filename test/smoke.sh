@@ -1480,6 +1480,21 @@ probe_bin="$(mktemp -d)"
 check "blast-radius guard actually catches a duplicate" \
   "[ \"\$(ls -1 '$probe_bin' | grep -c '^jjstack-review-blast-radius')\" = 2 ]"
 rm -rf "$probe_bin"
+
+# Every disposition must route to a section 5f actually defines. Two separate
+# PRs independently routed findings to "the appendix" — a section that stopped
+# existing when verification became enrich-only. A finding with a disposition
+# and nowhere to be printed is invisible in exactly the way this skill exists to
+# prevent, and prose review missed it twice.
+n_appendix=$(grep -ciE 'to the \*{0,2}appendix\*{0,2}' "$SK" 2>/dev/null)
+check "no finding is routed to a section 5f does not define" "[ \"\$n_appendix\" = 0 ]"
+check "the Demoted section it routes to instead exists" \
+  "grep -q '^### Demoted (prior decision)' '$SK'"
+probe_sec="$(mktemp)"
+printf 'Move the finding to the **appendix** and quote it.\n' > "$probe_sec"
+check "routing guard actually catches a dead section" \
+  "[ \"\$(grep -ciE 'to the \\*{0,2}appendix\\*{0,2}' '$probe_sec')\" = 1 ]"
+rm -f "$probe_sec"
 echo "== 7a. review-sweep (post-fix deterministic checks) =="
 # /review's post-pass 4 re-runs the project's typechecker/linter/tests AFTER the
 # fixes land, to catch a fix that broke the build. The two states that must never
