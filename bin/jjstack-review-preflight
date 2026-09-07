@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# jjstack-review-preflight — build the /review evidence pack before any AI runs.
+#
+# Orchestrates the four deterministic pre-passes and writes an index. One
+# command, so the SKILL.md prompt stays prose and the logic stays testable:
+#
+#   1. tooling sweep      — run the real typechecker/linter/tests, and derive
+#                           the "already covered, do NOT report" exclusion list
+#                           from what actually ran   (jjstack-review-tooling-sweep)
+#   5. test baseline      — what passes right now, so a later pass can prove
+#                           nothing broke        (same script, same execution)
+#   2. blast-radius map   — every changed public symbol's callers OUTSIDE the
+#                           diff                 (jjstack-review-blast-radius)
+#   3. intent gathering   — commit messages, PR body, linked issues
+#                                                (jjstack-review-intent)
+#   4. prior dismissals   — findings the user already rejected
+#                                                (jjstack-review-prior-dismissals)
+#
+# Every sub-pass degrades gracefully: a missing tool, no PR, no review history
+# is recorded as "skipped — structurally inapplicable", never as a failure.
+# The pack is always written, even when every pass had nothing to say, because
+# an absent artifact and an empty one mean very different things to the review.
+#
+# Usage:
+#   jjstack-review-preflight --out DIR [--base REF] [--repo DIR]
+#                            [--skip-tests] [--dry-run]
+#
+# Exit: 0 pack built, 2 usage error, 3 could not build a pack at all.
+#       A sub-pass that skips or finds failures does NOT fail the pack — the
+#       review must continue and report what it learned.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+OUT=""; REPO=""; BASE=""; DRY=0; SKIP_TESTS=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)        OUT="${2:-}"; shift 2 ;;
+    --repo)       REPO="${2:-}"; shift 2 ;;
+    --base)       BASE="${2:-}"; shift 2 ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
+    --dry-run)    DRY=1; shift ;;
+    -h|--help)    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF] [--repo DIR]" >&2; exit 2; }
+
+if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
+
+declare -A RC
+run_pass() { # run_pass <label> <script> [args...]
+  local label="$1"; shift
+  local script="$1"; shift
+  if [ ! -x "$HERE/$script" ]; then
+    RC["$label"]=127
+    echo -e "${YEL}warn${RST}  $script missing or not executable" >&2
+    return 0
+  fi
+  "$HERE/$script" "$@"
+  RC["$label"]=$?
+  return 0
+}
+
+DRYFLAG=(); [ "$DRY" -eq 1 ] && DRYFLAG=(--dry-run)
+REPOFLAG=(); [ -n "$REPO" ] && REPOFLAG=(--repo "$REPO")
+BASEFLAG=(); [ -n "$BASE" ] && BASEFLAG=(--base "$BASE")
+TESTFLAG=(); [ "$SKIP_TESTS" -eq 1 ] && TESTFLAG=(--skip-tests)
+
+echo "== preflight evidence pack → $OUT =="
+run_pass tooling   jjstack-review-tooling-sweep     --out "$OUT" "${REPOFLAG[@]}" "${TESTFLAG[@]}" "${DRYFLAG[@]}"
+run_pass blast     jjstack-review-blast-radius      --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
+run_pass intent    jjstack-review-intent            --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
+run_pass dismissed jjstack-review-prior-dismissals  --out "$OUT" "${REPOFLAG[@]}" "${DRYFLAG[@]}"
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] would write: $OUT/EVIDENCE-PACK.md"
+  exit 0
+fi
+
+mkdir -p "$OUT" || exit 3
+
+verdict() { # verdict <rc> <ok-text>
+  case "$1" in
+    0) echo "$2" ;;
+    1) echo "ran — **deterministic failures found**" ;;
+    3) echo "skipped — structurally inapplicable" ;;
+    127) echo "unavailable — script missing" ;;
+    *) echo "error (rc=$1)" ;;
+  esac
+}
+
+{
+  echo "# /review pre-flight evidence pack"
+  echo
+  echo "Built before any AI pass ran, by deterministic tooling. Phase 2 (gstack"
+  echo "delegation) and Phase 4 (superset sweep) consume this — they do not"
+  echo "rediscover it."
+  echo
+  echo "- repo:      \`${REPO:-<unknown>}\`"
+  echo "- generated: $(date -u +%FT%TZ)"
+  echo
+  echo "| # | pre-pass | artifact | status |"
+  echo "|---|----------|----------|--------|"
+  echo "| 1 | Deterministic tooling sweep | \`tooling-results.md\`, \`exclusions.md\` | $(verdict "${RC[tooling]:-9}" 'ran — all detected tools passed') |"
+  echo "| 2 | Blast-radius map | \`blast-radius.md\` | $(verdict "${RC[blast]:-9}" 'ran — map built') |"
+  echo "| 3 | Intent extraction | \`intent.md\` | $(verdict "${RC[intent]:-9}" 'ran — claim gathered') |"
+  echo "| 4 | Prior-dismissal load | \`prior-dismissals.md\` | $(verdict "${RC[dismissed]:-9}" 'ran — dismissals loaded') |"
+  # Row 5 shares row 1's execution but not its meaning: a red baseline is a
+  # recorded fact, not a broken pre-pass.
+  case "${RC[tooling]:-9}" in
+    0) b="ran — baseline recorded (green)" ;;
+    1) b="ran — baseline recorded (**RED**: pre-existing failures)" ;;
+    *) b="$(verdict "${RC[tooling]:-9}" 'ran — baseline recorded')" ;;
+  esac
+  echo "| 5 | Test baseline snapshot | \`test-baseline.md\` | $b |"
+  echo
+  echo "## Reading order for the review"
+  echo
+  echo "1. \`intent.md\` — what the change claims. Read FIRST, before judging."
+  echo "2. \`exclusions.md\` — what tooling already covers. Never spend a finding"
+  echo "   on a category marked COVERED; every category marked IN SCOPE is yours."
+  echo "3. \`blast-radius.md\` — the call sites outside the diff. This is the"
+  echo "   defect class a diff-only reviewer cannot see at all."
+  echo "4. \`prior-dismissals.md\` — do not regenerate what was already rejected."
+  echo "5. \`tooling-results.md\` — real failures, already found. Fold them into"
+  echo "   the report as-is; they need no confidence score, they are facts."
+  echo "6. \`test-baseline.md\` — the green/red state before the review, so"
+  echo "   \"nothing broke\" is a comparison rather than an assertion."
+  echo
+  echo "A pass marked *skipped — structurally inapplicable* is a legitimate"
+  echo "outcome (no test runner, no PR, no review history). Say so in the report"
+  echo "instead of implying the check passed."
+} > "$OUT/EVIDENCE-PACK.md"
+
+echo -e "${GRN}evidence pack${RST} → $OUT/EVIDENCE-PACK.md"
+exit 0

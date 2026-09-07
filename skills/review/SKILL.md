@@ -1,9 +1,13 @@
 ---
 name: review
-version: 0.2.0
+version: 0.3.0
 description: |
   The deepest, highest-recall pre-landing review in the stack. Wraps gstack's
-  /review but deliberately trades time and tokens for COVERAGE: it forces every
+  /review but deliberately trades time and tokens for COVERAGE: it opens with a
+  deterministic pre-flight evidence pack (runs the real typechecker/linter/tests,
+  maps every changed public symbol's callers outside the diff, gathers the
+  change's stated intent, loads previously dismissed findings, snapshots the test
+  baseline), forces every
   specialist to run (no adaptive gating, no small-diff skip), adds the review
   passes that Anthropic's /code-review and gstack both skip (security, test
   coverage, performance, concurrency, resource leaks, error handling, API
@@ -47,15 +51,23 @@ code-comment / CLAUDE.md-compliance passes, and the confidence-scored
 self-verification gate are drawn from Anthropic's official `/code-review`
 command and folded on top of gstack's Review Army. The best-practices behind
 the extra passes and the noise-control are documented (with sources) in
-`references/code-review-best-practices.md`, loaded in Phase 3.
+`references/code-review-best-practices.md`, loaded in Phase 3. Phase 0 is the
+jjstack-original half: it applies the "Algorithm First, Inference Last" rule to
+review — run the compiler, grep the callers, read the commit message — so no
+token of judgement is spent on a fact. Its reasoning lives in
+`references/review-preflight.md`, loaded in Phase 0.
 
-Four enhancements over the gstack base:
-1. **Recall-max delegation** — force all specialists, disable adaptive gating
+Five enhancements over the gstack base:
+1. **Pre-flight evidence pack** — five deterministic pre-passes run BEFORE any
+   AI pass: run the real tooling, map the diff's blast radius outside itself,
+   gather the change's stated intent, load prior dismissals, snapshot the test
+   baseline. Nothing here costs a token of judgement.
+2. **Recall-max delegation** — force all specialists, disable adaptive gating
    and the small-diff skip, run extra adversarial passes.
-2. **Superset dimension sweep** — add the passes gstack + Anthropic skip.
-3. **Self-verified findings** — every finding carries a concrete failure
+3. **Superset dimension sweep** — add the passes gstack + Anthropic skip.
+4. **Self-verified findings** — every finding carries a concrete failure
    scenario and a verified confidence score; this is how recall stays usable.
-4. **jjstack finish** — repo-local output, DNA injection, quality loop to 10/10,
+5. **jjstack finish** — repo-local output, DNA injection, quality loop to 10/10,
    README maintenance.
 
 ## Preamble
@@ -87,6 +99,56 @@ Load DNA files if configured.
 
 ---
 
+## Phase 0: Pre-flight evidence pack (runs BEFORE the AI review)
+
+*Numbered 0 because it precedes every reviewing phase; it is written after
+Phase 1 only because it needs `{OUTPUT_DIR}` to exist.*
+
+Deterministic evidence first. An AI pass that has to *infer* what a compiler
+already knows, what the change claims, or what the user already rejected is
+spending judgement on facts — and it will be worse at it. Build the pack, then
+review.
+
+```bash
+cat ~/.claude/skills/jjstack/references/review-preflight.md
+```
+
+That reference is the operating manual for this phase: what each pre-pass
+gathers, the reasoning for it, and how the later phases must consume it. Read
+it before running the command below.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-preflight --out {OUTPUT_DIR}/preflight
+```
+
+One command runs all five pre-passes and writes `EVIDENCE-PACK.md` plus the
+artifacts. Then read the pack:
+
+```bash
+cat {OUTPUT_DIR}/preflight/EVIDENCE-PACK.md
+```
+
+```bash
+cat {OUTPUT_DIR}/preflight/intent.md {OUTPUT_DIR}/preflight/exclusions.md {OUTPUT_DIR}/preflight/blast-radius.md {OUTPUT_DIR}/preflight/prior-dismissals.md {OUTPUT_DIR}/preflight/tooling-results.md
+```
+
+Then, before anything else, do the one judgement-shaped part of Phase 0
+(pre-pass 3, intent):
+
+> **Restate, in one or two sentences, what this change claims to do** — drawn
+> from `intent.md`, not from the diff. Write it down. Every later pass compares
+> the code against this restatement. If `intent.md` recovered no claim, say
+> "no stated intent was recoverable" and carry that into the report; do not
+> invent a claim and grade the code against your own invention.
+
+Pass options worth knowing: `--base REF` to review against a specific base,
+`--skip-tests` when the suite is too slow to sit through, `--dry-run` to see
+what would run. A pre-pass reported as *skipped — structurally inapplicable*
+(no test runner, no PR, no review history) is a legitimate outcome: carry it
+into the report as a **known gap**, never let its absence read as a pass.
+
+---
+
 ## Phase 2: Delegate to gstack — recall-max
 
 ```bash
@@ -111,6 +173,15 @@ review toward coverage over speed:
   from a fresh attacker/maintainer angle.
 - **Keep gstack's pre-emit verification gate** (quote the motivating line) — it
   is not overridden; it is the floor that Phase 5 builds on.
+- **Hand every specialist the Phase 0 evidence pack.** In each dispatch include,
+  verbatim: the intent restatement, the `exclusions.md` COVERED/IN SCOPE lists,
+  the `blast-radius.md` symbol→call-site map, and the `prior-dismissals.md`
+  fingerprints. A specialist that does not receive them will rediscover
+  (expensively) or miss (silently) exactly what Phase 0 already established.
+- **Fold `tooling-results.md` failures straight into the findings** — they are
+  facts from a compiler or test runner, not claims. They skip Phase 5 scoring.
+- **When gstack auto-applies a fix, re-check it against `test-baseline.md`**
+  before accepting it. An auto-fix that turns a green baseline red is a P0.
 
 ---
 
@@ -141,6 +212,18 @@ the file:line, the lens that flagged it, and (per Phase 5) a concrete failure
 scenario. Skip a pass only when it is structurally inapplicable (e.g. no prior
 PRs on a brand-new repo), never merely to save tokens.
 
+**Every Phase 4 agent prompt MUST carry the Phase 0 evidence pack inline** —
+sub-agents start with an empty context window, so an artifact they were not
+handed does not exist for them. Include in each dispatch:
+
+- the **intent restatement** — the claim the pass judges the code against;
+- `exclusions.md` — "do NOT report the COVERED categories; the IN SCOPE ones
+  are yours and got no free pass";
+- `blast-radius.md` — "these call sites are outside the diff; verify each one
+  still holds against the new definition";
+- `prior-dismissals.md` — "do not regenerate these fingerprints, unless this
+  diff materially changed the code they point at (then say so explicitly)."
+
 Context passes (from Anthropic's `/code-review`, adapted from PR to local diff):
 
 1. **Git-history pass** — for each hunk in the diff, read `git log -p` / `git
@@ -151,7 +234,10 @@ Context passes (from Anthropic's `/code-review`, adapted from PR to local diff):
    comments/learnings from prior reviews on these files
    (`~/.claude/skills/gstack/bin/gstack-review-read`, plus any PR comments
    reachable via `gh pr view`/`gh pr list` when a GitHub remote exists). Re-apply
-   any guidance that still holds against the current diff.
+   any guidance that still holds against the current diff. (Phase 0 already
+   extracted the *dismissed* fingerprints into `prior-dismissals.md` — this pass
+   mines the rest: advice that was accepted, and comments that were never
+   findings at all.)
 3. **Code-comment-compliance pass** — read the comments and docstrings in the
    modified files; flag changes that now violate an invariant, contract, or
    "must/never" note stated in-code.
@@ -174,6 +260,21 @@ Dropped-dimension passes (the coverage Anthropic explicitly skips — run them):
    the OWASP-class issues on the diff (injection, authz/authn gaps, secret
    exposure, unsafe deserialization, SSRF, LLM trust-boundary). Cross-reference
    `references/owasp-security/` if present.
+
+Evidence-pack passes (these exist only because Phase 0 ran — they read files the
+diff does not contain, and no diff-only pass can produce them):
+
+9. **Blast-radius pass** — work `blast-radius.md` symbol by symbol. For each
+   call site listed, open it and answer: does it still hold against the NEW
+   definition — arity, argument types, contract, constant's new value, and every
+   enum member still handled at every switch/match/dispatch? A broken call site
+   is a P0 even though it appears in no hunk. Report the map's own limits as a
+   known gap (tracked files in this repo only; blind to dynamic dispatch,
+   reflection, string-keyed lookup and serialized data).
+10. **Intent-fidelity pass** — compare the diff against the Phase 0 intent
+    restatement in both directions: a stated case not implemented, and a
+    behavior change the claim never mentions. If no claim was recoverable, this
+    pass reports that as a gap rather than inventing one.
 
 Merge all Phase 4 findings with the Phase 2 findings and dedup by file:line +
 claim before verification.
@@ -208,8 +309,9 @@ when there are many):
 5. **Rank** the main report by severity (P0→P3) then confidence.
 
 **Do NOT report** (these are noise, per `references/code-review-best-practices.md`):
-- Anything a linter / typechecker / formatter / compiler would catch — assume CI
-  runs them.
+- Anything a category marked **COVERED** in Phase 0's `exclusions.md` — that
+  tooling actually ran and passed here. Categories marked **IN SCOPE** got no
+  free pass: do not silence them on the assumption that CI covers them.
 - Pure style nitpicks not called out in a CLAUDE.md.
 - Pre-existing issues on lines the diff did not touch.
 - Findings with no quotable motivating line or no failure scenario.

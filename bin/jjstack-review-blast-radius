@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# jjstack-review-blast-radius — map every changed public symbol to its callers
+# OUTSIDE the diff.
+#
+# gstack's review checklist names enum completeness as "the one category where
+# within-diff review is insufficient" — you cannot see a missing switch arm by
+# reading the enum. That is not special to enums. It is true of every renamed
+# function, every changed signature, every retyped constant: the defect lives
+# in a file the diff never touches, so a diff-only reviewer is structurally
+# blind to it. No amount of extra AI passes fixes that; the information is not
+# in the input.
+#
+# So: extract the public symbols the diff adds, removes or changes, then find
+# their references elsewhere in the repo. The resulting map is handed to every
+# downstream pass, which can then ask the only question that matters —
+# "does each of these N call sites still hold?"
+#
+# Deterministic: git diff + git grep. No model inference. Symbol extraction is
+# regex-based and best-effort across languages; it is tuned to over-collect
+# (a spurious symbol just yields an empty reference list) rather than to miss.
+#
+# Usage:
+#   jjstack-review-blast-radius --out DIR [--base REF] [--repo DIR]
+#                               [--max-symbols N] [--max-refs N] [--dry-run]
+#
+# Exit: 0 map written (even if empty), 2 usage error, 3 no repo / no diff.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+OUT=""; REPO=""; BASE=""; MAXSYM=200; MAXREF=25; DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)          OUT="${2:-}"; shift 2 ;;
+    --repo)         REPO="${2:-}"; shift 2 ;;
+    --base)         BASE="${2:-}"; shift 2 ;;
+    --max-symbols)  MAXSYM="${2:-}"; shift 2 ;;
+    --max-refs)     MAXREF="${2:-}"; shift 2 ;;
+    --dry-run)      DRY=1; shift ;;
+    -h|--help)      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF]" >&2; exit 2; }
+
+if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
+if [ -z "$REPO" ] || ! git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo -e "${YEL}warn${RST}  not a git repo — no blast radius to map" >&2
+  exit 3
+fi
+
+# Base ref: explicit, else merge-base with the default branch, else HEAD~1.
+if [ -z "$BASE" ]; then
+  for cand in main master; do
+    if git -C "$REPO" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
+      BASE="$(git -C "$REPO" merge-base HEAD "$cand" 2>/dev/null)"
+      [ -n "$BASE" ] && break
+    fi
+  done
+fi
+[ -z "$BASE" ] && BASE="$(git -C "$REPO" rev-parse --verify --quiet HEAD~1 2>/dev/null)"
+[ -z "$BASE" ] && BASE="$(git -C "$REPO" hash-object -t tree /dev/null)"   # empty tree: first commit
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# Files the diff touches (committed + working tree), so we can exclude them
+# from the reference search — a reference inside the diff is not blast radius.
+git -C "$REPO" diff --name-only "$BASE" -- > "$TMP/changed" 2>/dev/null
+git -C "$REPO" diff --name-only --cached >> "$TMP/changed" 2>/dev/null
+sort -u "$TMP/changed" -o "$TMP/changed"
+
+if [ ! -s "$TMP/changed" ]; then
+  echo -e "${YEL}warn${RST}  no changes against $BASE — nothing to map" >&2
+  if [ "$DRY" -eq 0 ]; then
+    mkdir -p "$OUT" || exit 3
+    {
+      echo "# Blast-radius map"
+      echo
+      echo "No changes against \`$BASE\`. Structurally inapplicable — skipped, not failed."
+    } > "$OUT/blast-radius.md"
+  fi
+  exit 3
+fi
+
+# --- symbol extraction -----------------------------------------------------
+# Over-collect on purpose. Every pattern below names a thing another file can
+# depend on by name: a spurious hit costs one empty grep, a miss costs a bug.
+git -C "$REPO" diff -U0 "$BASE" -- > "$TMP/diff" 2>/dev/null
+git -C "$REPO" diff -U0 --cached >> "$TMP/diff" 2>/dev/null
+
+# Mine changed lines from CODE files only. Prose files define no symbols, and
+# mining them turns ordinary English into "symbols" that then match hundreds of
+# lines of documentation — noise that buries the real call sites.
+awk '
+  /^\+\+\+ / { p = $2; sub(/^b\//, "", p)
+               skip = (p ~ /\.(md|markdown|rst|txt|adoc|json|lock|csv|tsv|svg|png|jpg|pdf)$/) || p == "/dev/null"
+               next }
+  /^--- /    { next }
+  /^[+-]/    { if (skip) next
+               l = substr($0, 2)
+               # Comment lines declare nothing. Mining them turns prose words
+               # ("a decoy record after the marker") into fake symbols.
+               t = l; sub(/^[[:space:]]+/, "", t)
+               if (t ~ /^(#|\/\/|\/\*|\*|--|<!--|;)/) next
+               print l }
+' "$TMP/diff" > "$TMP/lines"
+
+{
+  # python / js / ts / php / shell function definitions
+  grep -oE '\bdef[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'          "$TMP/lines" | awk '{print $2}'
+  grep -oE '\bfunction[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*'   "$TMP/lines" | awk '{print $2}'
+  grep -oE '\bfunc[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'         "$TMP/lines" | awk '{print $2}'
+  grep -oE '\bfn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*'           "$TMP/lines" | awk '{print $2}'
+  grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{' "$TMP/lines" \
+    | sed 's/[[:space:]]//g; s/().*//'
+  # type-ish declarations
+  grep -oE '\b(class|type|struct|enum|interface|trait|record)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$TMP/lines" | awk '{print $2}'
+  # exported names
+  grep -oE '\bexport[[:space:]]+(default[[:space:]]+)?(const|let|var|function|class|type|interface|enum)[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*' "$TMP/lines" | awk '{print $NF}'
+  # SCREAMING_CASE constants and enum members (assignment or bare member line)
+  grep -oE '^[[:space:]]*[A-Z][A-Z0-9_]{2,}[[:space:]]*[:=]' "$TMP/lines" | sed 's/[[:space:]]//g; s/[:=]$//'
+  grep -oE '^[[:space:]]*[A-Z][A-Z0-9_]{2,},[[:space:]]*$'   "$TMP/lines" | sed 's/[[:space:]]//g; s/,$//'
+  # module-level assignments that read like public constants
+  grep -oE '\bconst[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*'     "$TMP/lines" | awk '{print $2}'
+} 2>/dev/null | sed 's/^[[:space:]]*//' | grep -E '^[A-Za-z_$][A-Za-z0-9_$]*$' \
+  | grep -vE '^(if|for|in|is|of|to|as|at|by|on|or|and|not|new|the|def|fn|func|let|var|self|this|true|false|null|none|None|True|False|main|test|tests|init|__init__|str|int|dict|list|set|bool)$' \
+  | awk 'length($0) >= 3' | sort -u > "$TMP/symbols"
+
+nsym=$(wc -l < "$TMP/symbols")
+head -n "$MAXSYM" "$TMP/symbols" > "$TMP/symbols.capped"
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] base:     $BASE"
+  echo "[dry-run] changed:  $(wc -l < "$TMP/changed") file(s)"
+  echo "[dry-run] symbols:  $nsym (capped at $MAXSYM)"
+  echo "[dry-run] would write: $OUT/blast-radius.md"
+  exit 0
+fi
+
+mkdir -p "$OUT" || exit 3
+
+# --- reference search ------------------------------------------------------
+# git grep only searches tracked files and is fast enough to run per symbol.
+# Exclude the changed files: a reference inside the diff is not blast radius.
+exposed=0; isolated=0
+: > "$TMP/body"
+while read -r sym; do
+  [ -n "$sym" ] || continue
+  # Drop hits whose FILE (the part before the first colon) is itself in the
+  # diff — matching the path anywhere in the line would also drop unrelated
+  # hits that merely quote the filename.
+  git -C "$REPO" grep -n -w -F "$sym" -- . 2>/dev/null \
+    | awk -v L="$TMP/changed" 'BEGIN{while((getline l < L)>0) c[l]=1}
+                               {split($0,p,":"); if(!(p[1] in c)) print}' > "$TMP/hits" || true
+  n=$(wc -l < "$TMP/hits")
+  if [ "$n" -eq 0 ]; then
+    isolated=$((isolated + 1))
+    continue
+  fi
+  exposed=$((exposed + 1))
+  {
+    echo "### \`$sym\` — $n reference(s) outside the diff"
+    echo
+    echo '```'
+    head -n "$MAXREF" "$TMP/hits"
+    [ "$n" -gt "$MAXREF" ] && echo "... $((n - MAXREF)) more"
+    echo '```'
+    echo
+  } >> "$TMP/body"
+done < "$TMP/symbols.capped"
+
+{
+  echo "# Blast-radius map"
+  echo
+  echo "Every public symbol this diff touches, and where else in the repo it is"
+  echo "referenced. **These files are not in the diff.** A reviewer reading only"
+  echo "the diff cannot see them, which is why this map exists: it is the defect"
+  echo "class diff-only review is structurally blind to."
+  echo
+  echo "- base:            \`$BASE\`"
+  echo "- changed files:   $(wc -l < "$TMP/changed")"
+  echo "- symbols found:   $nsym (analysed: $(wc -l < "$TMP/symbols.capped"), cap $MAXSYM)"
+  echo "- with outside refs: $exposed"
+  echo "- self-contained:  $isolated"
+  echo
+  echo "## How every downstream pass must use this"
+  echo
+  echo "For each symbol below, check each listed call site against the NEW"
+  echo "definition: signature/arity still satisfied, contract still honoured,"
+  echo "constant's new value still valid, every enum member still handled at"
+  echo "every switch/match/dispatch. A call site that no longer holds is a P0"
+  echo "even though it appears in no hunk."
+  echo
+  if [ "$exposed" -eq 0 ]; then
+    echo "## No symbol has references outside the diff"
+    echo
+    echo "The change is self-contained by this measure. Note the measure's"
+    echo "limits: it sees tracked files in THIS repo only — not other repos,"
+    echo "dynamic dispatch, reflection, string-keyed lookup, or serialized data."
+  else
+    cat "$TMP/body"
+  fi
+} > "$OUT/blast-radius.md"
+
+echo -e "${GRN}blast-radius${RST} $exposed/$nsym symbol(s) reach outside the diff → $OUT/blast-radius.md"
+exit 0
