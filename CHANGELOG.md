@@ -34,6 +34,34 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **`/review` now looks outside the diff — at the rest of your repo, and at your
+  repo's past.** Two things a diff-only reviewer structurally cannot catch, now
+  computed before the review starts. First, the **blast radius**: for every
+  function, class or constant whose definition your change touches, `/review`
+  lists every place in the repo that still calls it and that your diff did *not*
+  update — the "you changed the signature, three callers elsewhere are now
+  broken" class of bug. Point it at sibling repos too when a shared module's
+  consumers live in another checkout. Second, the **revert history**: which of
+  the files you are touching have been reverted, rolled back or hotfixed before,
+  with the commits named, so a change that quietly reintroduces an old incident
+  gets flagged as a P0 instead of sailing through.
+- **`/review` remembers what you already decided — without ever going quiet on
+  you.** Findings you adjudicate can be recorded in a ledger at
+  `jjstack/review-ledger.md` in your repo, and future reviews check against it.
+  A finding you previously dismissed moves to the report's appendix with your own
+  note quoted as the reason — it is **demoted, never dropped**, so you can always
+  see what was set aside and why. Security, correctness, concurrency,
+  error-handling, resource-leak and test-coverage findings never demote at all,
+  however many times they were waved off; those are the classes where a wrong
+  suppression ships an incident. And unlike the hosted tools this idea came from,
+  the memory is a plain file in git: a suppression is reviewable in a PR, and
+  retiring one is a visible diff instead of a setting nobody can audit.
+- **`references/vendor-lessons-greptile.md`** — the homework behind the above.
+  What Greptile's reviewer verifiably does, which of its claims are real
+  mechanics and which are unfalsifiable marketing (their headline benchmark
+  scores bugs caught while *excluding false positives from scoring*, so it
+  measures recall only), and an explicit list of what jjstack adopted, what it
+  rejected, and why. Useful on its own if you are evaluating AI review tools.
 - **Reviews now keep the rubric that produced them.** `/review` snapshots
   gstack's durable review docs (the checklist, every specialist definition, the
   Review Army and adversarial procedures) into your repo next to the findings,

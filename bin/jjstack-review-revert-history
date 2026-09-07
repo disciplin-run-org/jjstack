@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# jjstack-review-revert-history — which changed files have burned us before.
+#
+# Greptile's per-repo knowledge base carries a "Reverts" section: past
+# revert / rollback / incident PRs, kept so reviews are history-aware
+# (greptile.com/docs/how-greptile-works/knowledge-bases). The insight is sound
+# and underrated — a file that has been reverted twice is not the same review
+# risk as a file that never has, and no amount of staring at the diff reveals
+# that. The implementation does not need a hosted knowledge base: git already
+# holds the record, and finding it is a query, not a judgement.
+#
+# So this script asks git, for each file the diff touches, whether that file has
+# a history of reverts, rollbacks, hotfixes or regression fixes — and hands the
+# list to /review's git-history pass as a pre-computed input instead of making
+# the model spelunk `git log -p` and hope.
+#
+# Usage:
+#   jjstack-review-revert-history [--repo DIR] [--base REF] [--diff-file FILE|-]
+#                                 [--since WHEN] [--limit N]
+#
+#   --repo       repo root (default: git rev-parse --show-toplevel)
+#   --base       diff base ref (default: first of origin/main, origin/master,
+#                main, master that exists)
+#   --diff-file  take the changed-file list from a unified diff ("-" = stdin)
+#   --since      how far back to look (default "24 months ago")
+#   --limit      incidents listed per file (default 5)
+#
+# Writes a markdown report to stdout; status and errors go to stderr.
+# Exit: 0 report produced (no history found is still a 0), 2 usage error,
+#       3 no usable repo or diff source.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; RST="\033[0m"
+
+REPO=""; BASE=""; DIFF_FILE=""; SINCE="24 months ago"; LIMIT=5
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)      REPO="${2:-}";      shift 2 ;;
+    --base)      BASE="${2:-}";      shift 2 ;;
+    --diff-file) DIFF_FILE="${2:-}"; shift 2 ;;
+    --since)     SINCE="${2:-}";     shift 2 ;;
+    --limit)     LIMIT="${2:-}";     shift 2 ;;
+    -h|--help)
+      sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$LIMIT" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --limit must be a number" >&2; exit 2 ;; esac
+
+[ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
+  echo -e "${YEL}warn${RST}  no repo root: pass --repo or run inside a git repo" >&2
+  exit 3
+fi
+REPO="${REPO%/}"
+
+if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  echo -e "${YEL}warn${RST}  not a git repository: $REPO" >&2
+  exit 3
+fi
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+FILES="$TMP/files"
+
+if [ -n "$DIFF_FILE" ]; then
+  if [ "$DIFF_FILE" = "-" ]; then cat > "$TMP/diff"
+  elif [ -f "$DIFF_FILE" ]; then cp "$DIFF_FILE" "$TMP/diff"
+  else echo -e "${YEL}warn${RST}  diff file not found: $DIFF_FILE" >&2; exit 3; fi
+  grep -E '^\+\+\+ ' "$TMP/diff" \
+    | sed -E 's/^\+\+\+ [ab]\///; s/^\+\+\+ //' \
+    | grep -v '^/dev/null$' | sort -u > "$FILES"
+else
+  if [ -z "$BASE" ]; then
+    for c in origin/main origin/master main master; do
+      if git -C "$REPO" rev-parse --verify --quiet "$c" >/dev/null 2>&1; then BASE="$c"; break; fi
+    done
+  fi
+  if [ -z "$BASE" ]; then
+    echo -e "${YEL}warn${RST}  no base ref found; pass --base or --diff-file" >&2
+    exit 3
+  fi
+  git -C "$REPO" diff --name-only "$BASE...HEAD" > "$FILES" 2>/dev/null \
+    || git -C "$REPO" diff --name-only "$BASE" > "$FILES" 2>/dev/null
+fi
+
+# The vocabulary teams actually use when something shipped broken.
+PATTERN='revert|roll ?back|rolled back|hotfix|hot-fix|back ?out|backed out|regress|incident|postmortem|post-mortem|emergency fix|breaking fix'
+
+echo "# Revert and incident history of the changed files"
+echo
+echo "Files in this diff that have previously been reverted, rolled back, hotfixed"
+echo "or regression-fixed. A file with a scar is a higher review risk than a file"
+echo "without one, and the diff alone never shows that."
+echo
+
+N=$(wc -l < "$FILES" | tr -d ' ')
+echo "- repo: \`$REPO\`"
+echo "- changed files examined: $N"
+echo "- window: since $SINCE"
+echo
+
+if [ "$N" -eq 0 ]; then
+  echo "No changed files — nothing to check."
+  exit 0
+fi
+
+found=0
+while read -r f; do
+  [ -n "$f" ] || continue
+  git -C "$REPO" log --no-merges --date=short -i -E \
+      --grep="$PATTERN" --since="$SINCE" \
+      --format='%h|%ad|%an|%s' -- "$f" 2>/dev/null | head -n "$LIMIT" > "$TMP/hits"
+  [ -s "$TMP/hits" ] || continue
+  found=$((found + 1))
+  c=$(wc -l < "$TMP/hits" | tr -d ' ')
+  echo "## \`$f\` — $c incident commit(s)"
+  awk -F'|' '{ printf "- `%s` %s (%s) — %s\n", $1, $2, $3, $4 }' "$TMP/hits"
+  echo
+done < "$FILES"
+
+if [ "$found" -eq 0 ]; then
+  echo "No revert, rollback or hotfix history on any changed file in this window."
+  echo
+  echo "That is weak evidence of safety, not proof — the search is over commit"
+  echo "subjects, so an incident fixed under a neutral subject line is invisible."
+  exit 0
+fi
+
+echo "---"
+echo
+echo "For each file above, read the named commit before approving the diff. Ask"
+echo "whether this change reintroduces the condition that caused the revert, or"
+echo "removes the guard that was added to fix it. A rhyme with a past incident is"
+echo "a P0 finding, not a nit."
+exit 0
