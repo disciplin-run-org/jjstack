@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
-"""jjstack-review-baseline — accept known /review findings without losing them.
+"""jjstack-review-baseline — the NARROWEST rung of the review memory ladder.
 
-A recall-max reviewer re-run on the same repo re-reports everything it reported
-last time. The naive fix is to delete the ones you already looked at, which
-destroys the audit trail and hides the day one of them changes meaning. The
-right fix — NVIDIA SkillSpector's — is a COMMITTED baseline: accepted findings
-stay in the output, marked suppressed with a mandatory reason, and simply stop
-counting as active. Re-reviews then surface only what is NEW.
+Three stores remember what the team decided about a finding, and they are NOT
+three copies of one idea. They are an escalation ladder, and the rung is set by
+how narrow the key is:
+
+  -calibration     key = a global PATTERN CLASS   -> may only RANK
+  -ledger          key = path glob + category     -> may DEMOTE
+  this file        key = one finding INSTANCE     -> may SUPPRESS
+
+The narrower the key, the stronger the verdict. This store is the only one that
+may suppress, and it may do so only because it keys on one specific finding —
+lens, file, severity, message and quote — with a mandatory human reason. Flatten
+that and a global heuristic can silently suppress a specific P0. The cap is
+enforced structurally, from bin/jjstack-review-vocab.tsv, not by anyone
+remembering the rule.
+
+Why a baseline at all: a recall-max reviewer re-run on the same repo re-reports
+everything it reported last time. The naive fix is to delete the ones you already
+looked at, which destroys the audit trail and hides the day one of them changes
+meaning. The right fix — NVIDIA SkillSpector's — is a COMMITTED baseline:
+accepted findings stay in the output, marked suppressed with a mandatory reason,
+and simply stop counting as active. Re-reviews then surface only what is NEW.
 
 Two complementary mechanisms, deliberately different in how they age:
 
   rules         human-authored, glob-based, DRIFT-TOLERANT. Keyed on any of
-                id (the lens), path (the file), message (claim or quoted line);
-                every field a rule states must match, unstated fields match
+                lens (the pass), file (the path), message (claim or quoted line);
+                every field a rule states must match, unstated fields (`-`) match
                 anything. Survives line shifts and rewording — which is the
                 danger: a broad rule can hide newly malicious content. Reserve
                 them for deliberate, tightly-scoped policy exclusions.
@@ -22,13 +37,15 @@ Two complementary mechanisms, deliberately different in how they age:
                 This is the right default for individually accepted findings.
 
 Fail-closed choices, all of them in the direction of showing more:
-  * a mandatory non-empty `reason` on every entry — an unexplained suppression
-    is indistinguishable from a bug;
+  * a mandatory non-empty free-text `reason` on every entry — an unexplained
+    suppression is indistinguishable from a bug;
+  * a mandatory `code` from the ONE shared reason-code vocabulary, so a
+    suppression here is classified the same way as everywhere else in /review;
   * a rule that names no matching field at all (reason only) is REJECTED
     rather than silently matching every finding — and so is one that names a
-    field but fills it with a universal glob (`{"path": "*"}`), which is the
-    same "matches everything" rule wearing a disguise;
-  * `generate` EXTENDS an existing baseline: human-written rules and already
+    field but fills it with a universal glob (`file` = `*`), which is the same
+    "matches everything" rule wearing a disguise;
+  * `generate` EXTENDS an existing store: human-written rules and already
     accepted fingerprints are merged forward, never rewritten away. Pass
     --replace to deliberately start over;
   * a baseline written by a different jjstack version makes fingerprints inert
@@ -41,18 +58,36 @@ Fingerprint inputs are lens + file + severity + message + quote — deliberately
 NOT start_line, so an unrelated edit ABOVE the finding does not reactivate it,
 while editing the finding's own line does.
 
+Store format — TSV, 8 tab-separated columns under a store header, at
+{repo}/jjstack/review-memory/baseline.tsv. TSV rather than the JSON this used to
+be, because the review value of this file IS its diff: a suppression is one line,
+so it shows as a one-line PR diff and grep finds it. JSON is the worst possible
+choice for a file whose whole point is being read as a diff.
+
+  #jjstack-review-store<TAB>scope=instance<TAB>max-effect=suppress<TAB>v=3
+  kind  effect  code  match  lens  file  message  reason
+    kind    fingerprint | rule
+    effect  always `suppress` here — the scope cap; nothing stronger exists
+    code    a reason code from bin/jjstack-review-vocab.tsv
+    match   sha256:<64 hex> for a fingerprint; `-` for a rule
+    lens/file/message
+            context for a fingerprint; the GLOBS for a rule (`-` = unstated)
+    reason  mandatory free text — why a human accepted this
+
 Usage:
-  jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]
-                                   [--replace]
+  jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT
+                                [--code CODE] [-o FILE] [--replace]
   jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE
                                 [--active-only] [--allow-version-drift]
+  jjstack-review-baseline validate --baseline FILE
 
 `apply` writes annotated JSON Lines to stdout (each finding gains a
-`suppressed` field: null, or {by, reason, matched}) and a count summary to
-stderr.
+`suppressed` field: null, or {by, code, effect, reason, matched}) and a count
+summary to stderr.
 
 Exit: 0 ok, 1 (apply) at least one ACTIVE finding remains, 2 usage error or a
-      missing / malformed / unsupported baseline.
+      missing / malformed / unsupported baseline, 3 a legacy store needs
+      migrating, 4 a store row violates the ladder.
 
 No color red anywhere — unreadable on the target terminal.
 """
@@ -68,9 +103,21 @@ CYA = "\033[96m"
 GRN = "\033[32m"
 RST = "\033[0m"
 
-BASELINE_VERSION = 2
-DEFAULT_BASELINE = ".jjstack-review-baseline.json"
+# Two versions, deliberately independent. STORE_VERSION describes the FILE
+# format (v3 = the TSV that replaced the JSON). FINGERPRINT_VERSION is baked into
+# every content hash, so bumping it invalidates every fingerprint ever written —
+# it must NOT move just because the serialization changed, or the JSON→TSV
+# migration would silently reactivate every finding a human already accepted.
+STORE_VERSION = 3
+FINGERPRINT_VERSION = 2
+SCOPE = "instance"
+EFFECT = "suppress"
+STORE_HEADER = f"#jjstack-review-store\tscope={SCOPE}\tmax-effect={EFFECT}\tv={STORE_VERSION}"
+COL_HEADER = "#kind\teffect\tcode\tmatch\tlens\tfile\tmessage\treason"
+DEFAULT_STORE = os.path.join("jjstack", "review-memory", "baseline.tsv")
+LEGACY_STORE = ".jjstack-review-baseline.json"
 HASH_FIELDS = ("lens", "file", "severity", "message", "quote")
+NCOLS = 8
 
 
 def err(msg):
@@ -81,44 +128,74 @@ def warn(msg):
     print(f"{YEL}warn{RST}  {msg}", file=sys.stderr)
 
 
+def here(*parts):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
+
+
 def jjstack_version():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "VERSION")
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(here("..", "VERSION"), encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return "unknown"
 
 
-# Every key `rule_matches` below will actually read. The guard MUST inspect the
-# same set: checking only id/path/message let `{"file": "*"}` — an alias
-# `rule_matches` honours — walk straight past it.
-RULE_MATCH_KEYS = ("id", "rule_id", "path", "file", "message")
+# --- the ONE shared vocabulary ------------------------------------------------
+# Parsed from bin/jjstack-review-vocab.tsv, the same file the bash tools read.
+# Nothing about reason codes, effects or the ladder is defined in this script.
+def load_vocab():
+    path = os.environ.get("JJSTACK_REVIEW_VOCAB") or here("jjstack-review-vocab.tsv")
+    effects, scopes, reasons = {}, {}, {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                cols = line.split("\t")
+                if len(cols) < 3:
+                    continue
+                kind, name, value = cols[0], cols[1], cols[2]
+                if kind == "effect":
+                    effects[name] = int(value)
+                elif kind == "scope":
+                    scopes[name] = value
+                elif kind == "reason":
+                    reasons[name] = value
+    except OSError as exc:
+        err(f"review vocabulary unreadable ({path}): {exc}")
+        return None
+    if not (effects and scopes and reasons):
+        err(f"review vocabulary is empty or malformed: {path}")
+        return None
+    return effects, scopes, reasons
 
 
-def is_universal_glob(pattern):
-    """True when an fnmatch pattern can only ever match — i.e. it says nothing.
-
-    `*` is not "present and non-empty means the human named something": a rule
-    keyed on `*` matches every finding in the repo, which is the one thing the
-    non-empty guard exists to prevent. A pattern built only from wildcards
-    (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
-    rejected the same way an absent field is.
-    """
-    p = pattern.strip()
-    return p == "" or set(p) <= {"*", "?"}
+VOCAB = None
 
 
-def fingerprint(finding):
-    """Deliberately brittle content hash. Editing the source reactivates it."""
-    payload = {
-        "v": BASELINE_VERSION,
-        **{k: str(finding.get(k, "")) for k in HASH_FIELDS},
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def vocab_check(scope, code, effect):
+    """The ladder check: effect must be within BOTH the scope's and the code's
+    ceiling. Returns None when legal, else the reason it is not."""
+    effects, scopes, reasons = VOCAB
+    if scope not in scopes:
+        return f"unknown scope '{scope}'"
+    if effect not in effects:
+        return f"unknown effect '{effect}' (want: {' '.join(sorted(effects, key=effects.get))})"
+    if effects[effect] > effects.get(scopes[scope], 0):
+        return (
+            f"scope '{scope}' may emit at most '{scopes[scope]}', not '{effect}' — "
+            "the narrower the key, the stronger the verdict"
+        )
+    if code != "-":
+        if code not in reasons:
+            return f"unknown reason code '{code}' (valid: {' '.join(sorted(reasons))})"
+        if effects[effect] > effects.get(reasons[code], 0):
+            return f"reason '{code}' may carry at most '{reasons[code]}', not '{effect}'"
+    return None
 
 
+# --- findings I/O -------------------------------------------------------------
 def read_findings(src):
     try:
         raw = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
@@ -141,95 +218,163 @@ def read_findings(src):
     return out
 
 
-def load_baseline(path):
-    """Return (rules, fingerprints, scanner_version) or None after reporting."""
+# Every column `rule_matches` below will actually read. The guard MUST inspect
+# the same set: checking only some of them let a universal glob in one of the
+# others — a column `rule_matches` honours — walk straight past it.
+RULE_MATCH_KEYS = ("lens", "file", "message")
+
+
+def is_universal_glob(pattern):
+    """True when an fnmatch pattern can only ever match — i.e. it says nothing.
+
+    `*` is not "present and non-empty means the human named something": a rule
+    keyed on `*` matches every finding in the repo, which is the one thing the
+    non-empty guard exists to prevent. A pattern built only from wildcards
+    (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
+    rejected the same way an absent field is.
+    """
+    p = str(pattern).strip()
+    return p in ("", "-") or set(p) <= {"*", "?"}
+
+
+def fingerprint(finding):
+    """Deliberately brittle content hash. Editing the source reactivates it."""
+    payload = {
+        "v": FINGERPRINT_VERSION,
+        **{k: str(finding.get(k, "")) for k in HASH_FIELDS},
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# --- the store ----------------------------------------------------------------
+def load_store(path):
+    """Return (rules, fingerprints, scanner_version) or an int exit code."""
+    if not os.path.exists(path):
+        # Only look for the legacy JSON where the default store implies a repo
+        # root: <root>/jjstack/review-memory/baseline.tsv -> <root>/…json.
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+        legacy = os.path.join(root, LEGACY_STORE)
+        if path.replace(os.sep, "/").endswith(DEFAULT_STORE.replace(os.sep, "/")) and os.path.exists(legacy):
+            # Migrate-vs-instruct: INSTRUCT. These stores are version controlled
+            # and their whole point is that a change is a reviewed diff — a tool
+            # that silently rewrote one mid-review would produce a diff nobody
+            # approved.
+            warn(f"legacy JSON baseline found: {legacy}")
+            warn("the three review memory stores now live together in")
+            warn("jjstack/review-memory/ as TSV. Migrate it, then commit the diff:")
+            warn(f"  jjstack-review-memory-migrate --repo '{root}'")
+            return 3
+        err(f"baseline unreadable: no such file: {path}")
+        return 2
+
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            lines = fh.read().splitlines()
     except OSError as exc:
         err(f"baseline unreadable: {exc}")
-        return None
-    except json.JSONDecodeError as exc:
-        err(f"baseline is not valid JSON: {exc}")
-        return None
+        return 2
 
-    if not isinstance(data, dict):
-        err("baseline must be a JSON object")
-        return None
-    if data.get("version") != BASELINE_VERSION:
+    if not lines or not lines[0].startswith("#jjstack-review-store"):
+        err(f"{path} has no #jjstack-review-store header — is it a legacy store?")
+        warn("fix: jjstack-review-memory-migrate --repo <dir>")
+        return 4
+    meta = dict(
+        part.split("=", 1)
+        for part in lines[0].split("\t")[1:]
+        if "=" in part
+    )
+    if meta.get("scope") != SCOPE:
+        err(f"{path} declares scope {meta.get('scope')!r} but this tool owns scope {SCOPE!r}.")
+        warn("the three stores are rungs of a ladder, not interchangeable files.")
+        return 4
+    store_version = meta.get("v", "")
+    if store_version != str(STORE_VERSION):
         err(
-            f"unsupported baseline version {data.get('version')!r} "
-            f"(this tool speaks version {BASELINE_VERSION})"
+            f"unsupported baseline version {store_version!r} "
+            f"(this tool speaks version {STORE_VERSION})"
         )
-        return None
+        return 2
 
-    rules = data.get("rules") or []
-    fps = data.get("fingerprints") or []
-    if not isinstance(rules, list) or not isinstance(fps, list):
-        err("baseline `rules` and `fingerprints` must be lists")
-        return None
-
-    for i, r in enumerate(rules):
-        if not isinstance(r, dict):
-            err(f"rules[{i}] is not an object")
-            return None
-        if not str(r.get("reason", "")).strip():
-            err(f"rules[{i}] has no reason — every suppression must be explained")
-            return None
-        named = {
-            k: str(r.get(k, "")).strip()
-            for k in RULE_MATCH_KEYS
-            if str(r.get(k, "")).strip()
+    rules, fps, seen = [], [], set()
+    for n, line in enumerate(lines[1:], 2):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) != NCOLS:
+            err(f"{path}:{n} expected {NCOLS} tab-separated columns, got {len(cols)}")
+            return 4
+        kind, effect, code, match, lens, fil, msg, reason = cols
+        if kind not in ("fingerprint", "rule"):
+            err(f"{path}:{n} unknown kind {kind!r} (want fingerprint|rule)")
+            return 4
+        bad = vocab_check(SCOPE, code, effect)
+        if bad:
+            err(f"{path}:{n} {bad}")
+            return 4
+        if not reason.strip() or reason.strip() == "-":
+            err(f"{path}:{n} has no reason — every suppression must be explained")
+            return 4
+        entry = {
+            "effect": effect,
+            "code": code,
+            "lens": lens,
+            "file": fil,
+            "message": msg,
+            "reason": reason,
         }
-        if not named:
-            err(
-                f"rules[{i}] names none of id/path/message — a rule that matches "
-                "every finding is never what you meant"
-            )
-            return None
-        if all(is_universal_glob(v) for v in named.values()):
-            shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
-            err(
-                f"rules[{i}] states only universal glob(s) ({shown}) — a rule "
-                "that matches every finding is never what you meant"
-            )
-            return None
+        if kind == "fingerprint":
+            if not match.startswith("sha256:") or len(match) != len("sha256:") + 64:
+                err(f"{path}:{n} match is not a sha256:<64 hex> digest: {match!r}")
+                return 4
+            try:
+                int(match[7:], 16)
+            except ValueError:
+                err(f"{path}:{n} match is not hexadecimal: {match!r}")
+                return 4
+            if match in seen:
+                err(f"{path}:{n} duplicates an earlier fingerprint: {match}")
+                return 4
+            seen.add(match)
+            entry["hash"] = match
+            fps.append(entry)
+        else:
+            named = {
+                k: entry[k].strip()
+                for k in RULE_MATCH_KEYS
+                if entry[k].strip() and entry[k].strip() != "-"
+            }
+            if not named:
+                err(
+                    f"{path}:{n} names none of lens/file/message — a rule that matches "
+                    "every finding is never what you meant"
+                )
+                return 4
+            # ...and a field that IS stated but says only `*` is the same rule
+            # wearing a disguise. Non-empty is not the same question as
+            # discriminating, and only the second one keeps a rule scoped.
+            if all(is_universal_glob(v) for v in named.values()):
+                shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
+                err(
+                    f"{path}:{n} states only universal glob(s) ({shown}) — a rule "
+                    "that matches every finding is never what you meant"
+                )
+                return 4
+            rules.append(entry)
 
-    seen = set()
-    for i, f in enumerate(fps):
-        if not isinstance(f, dict):
-            err(f"fingerprints[{i}] is not an object")
-            return None
-        h = str(f.get("hash", ""))
-        if not h.startswith("sha256:") or len(h) != len("sha256:") + 64:
-            err(f"fingerprints[{i}] hash is not a sha256:<64 hex> digest: {h!r}")
-            return None
-        try:
-            int(h[7:], 16)
-        except ValueError:
-            err(f"fingerprints[{i}] hash is not hexadecimal: {h!r}")
-            return None
-        if not str(f.get("reason", "")).strip():
-            err(f"fingerprints[{i}] has no reason — every suppression must be explained")
-            return None
-        if h in seen:
-            err(f"fingerprints[{i}] duplicates an earlier hash: {h}")
-            return None
-        seen.add(h)
-
-    return rules, fps, str(data.get("jjstack_version", "unknown"))
+    return rules, fps, meta.get("jjstack", "unknown")
 
 
 def rule_matches(rule, finding):
-    """Every field the rule states must match; unstated fields match anything."""
-    rid = str(rule.get("id") or rule.get("rule_id") or "").strip()
-    if rid and not fnmatch.fnmatchcase(str(finding.get("lens", "")), rid):
+    """Every field the rule states must match; `-` fields match anything."""
+    rid = rule.get("lens", "-").strip()
+    if rid and rid != "-" and not fnmatch.fnmatchcase(str(finding.get("lens", "")), rid):
         return False
-    path = str(rule.get("path") or rule.get("file") or "").strip()
-    if path and not fnmatch.fnmatchcase(str(finding.get("file", "")), path):
+    path = rule.get("file", "-").strip()
+    if path and path != "-" and not fnmatch.fnmatchcase(str(finding.get("file", "")), path):
         return False
-    msg = str(rule.get("message") or "").strip()
-    if msg:
+    msg = rule.get("message", "-").strip()
+    if msg and msg != "-":
         pat = msg.lower()
         haystacks = (
             str(finding.get("message", "")).lower(),
@@ -240,8 +385,13 @@ def rule_matches(rule, finding):
     return True
 
 
+def tsv_clean(value):
+    return str(value).replace("\t", " ").replace("\n", " ").replace("\r", " ").strip() or "-"
+
+
+# --- commands -----------------------------------------------------------------
 def cmd_generate(argv):
-    src, out_path, reason = None, DEFAULT_BASELINE, None
+    src, out_path, reason, code = None, DEFAULT_STORE, None, "baseline"
     replace = False
     i = 0
     while i < len(argv):
@@ -254,6 +404,12 @@ def cmd_generate(argv):
                 err("--reason needs TEXT")
                 return 2
             reason = argv[i + 1]
+            i += 2
+        elif a == "--code":
+            if i + 1 >= len(argv):
+                err("--code needs a CODE")
+                return 2
+            code = argv[i + 1]
             i += 2
         elif a in ("-o", "--output"):
             if i + 1 >= len(argv):
@@ -274,72 +430,114 @@ def cmd_generate(argv):
     if src is None:
         err(
             "usage: jjstack-review-baseline generate <findings.jsonl|-> "
-            "--reason TEXT [-o FILE] [--replace]"
+            "--reason TEXT [--code CODE] [-o FILE] [--replace]"
         )
         return 2
     if reason is None or not reason.strip():
         err("--reason is mandatory — an unexplained suppression is indistinguishable from a bug")
         return 2
 
+    # The structural cap, applied before a single byte is written.
+    bad = vocab_check(SCOPE, code, EFFECT)
+    if bad:
+        err(bad)
+        return 4
+
     # EXTEND, do not truncate. SKILL.md documents this command for "creating or
-    # extending a baseline"; building the doc from scratch with `rules: []` and
-    # opening "w" destroyed every human-written rule and previously accepted
-    # fingerprint on the second run. Merging is the only reading of "extending"
-    # that does not lose the reasons a human typed.
+    # extending a baseline"; rewriting the file from scratch destroyed every
+    # human-written rule and previously accepted fingerprint on the second run.
+    # Merging is the only reading of "extending" that does not lose the reasons
+    # a human typed.
     old_rules, old_fps, old_version = [], [], None
     if os.path.exists(out_path) and not replace:
-        loaded = load_baseline(out_path)
-        if loaded is None:
+        loaded = load_store(out_path)
+        if isinstance(loaded, int):
             err(
-                f"refusing to overwrite {out_path}: the existing baseline did not "
+                f"refusing to overwrite {out_path}: the existing store did not "
                 "load (see above). Fix it, or pass --replace to start fresh."
             )
-            return 2
+            return loaded
         old_rules, old_fps, old_version = loaded
-        here = jjstack_version()
-        if old_fps and old_version != here:
+        now = jjstack_version()
+        if old_fps and old_version != now:
             warn(
-                f"existing baseline was written by jjstack {old_version}, this is "
-                f"{here} — merging re-stamps the version, which REACTIVATES those "
+                f"existing store was written by jjstack {old_version}, this is "
+                f"{now} — merging re-stamps the version, which REACTIVATES those "
                 f"{len(old_fps)} fingerprint(s) for `apply`. Re-read them."
             )
+
+    def rule_row(r):
+        return "\t".join(
+            (
+                "rule",
+                r["effect"],
+                r["code"],
+                "-",
+                tsv_clean(r["lens"]),
+                tsv_clean(r["file"]),
+                tsv_clean(r["message"]),
+                tsv_clean(r["reason"]),
+            )
+        )
+
+    def fp_row(e):
+        return "\t".join(
+            (
+                "fingerprint",
+                e["effect"],
+                e["code"],
+                e["hash"],
+                tsv_clean(e["lens"]),
+                tsv_clean(e["file"]),
+                tsv_clean(e["message"]),
+                tsv_clean(e["reason"]),
+            )
+        )
 
     findings = read_findings(src)
     if findings is None:
         return 2
 
-    entries = list(old_fps)
-    seen = {str(f.get("hash", "")) for f in old_fps}
+    rows = [rule_row(r) for r in old_rules] + [fp_row(e) for e in old_fps]
+    seen = {e["hash"] for e in old_fps}
     added = 0
     for f in findings:
         h = fingerprint(f)
         if h in seen:
             continue
         seen.add(h)
-        entries.append(
-            {
-                "hash": h,
-                "lens": f.get("lens", ""),
-                "file": f.get("file", ""),
-                "message": f.get("message", ""),
-                "reason": reason,
-            }
+        rows.append(
+            "\t".join(
+                (
+                    "fingerprint",
+                    EFFECT,
+                    code,
+                    h,
+                    tsv_clean(f.get("lens", "")),
+                    tsv_clean(f.get("file", "")),
+                    tsv_clean(f.get("message", "")),
+                    tsv_clean(reason),
+                )
+            )
         )
         added += 1
 
-    doc = {
-        "version": BASELINE_VERSION,
-        "jjstack_version": jjstack_version(),
-        "rules": old_rules,
-        "fingerprints": entries,
-    }
+    header = (
+        f"#jjstack-review-store\tscope={SCOPE}\tmax-effect={EFFECT}"
+        f"\tv={STORE_VERSION}\tjjstack={jjstack_version()}"
+    )
     # Write-then-rename: a failure part-way through must not leave the caller
-    # with a truncated baseline, which reads as "nothing was ever accepted".
+    # with a truncated store, which reads as "nothing was ever accepted".
     tmp_path = out_path + ".tmp"
     try:
+        parent = os.path.dirname(out_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+            fh.write(header + "\n")
+            fh.write(COL_HEADER + "\n")
+            for row in rows:
+                fh.write(row + "\n")
         os.replace(tmp_path, out_path)
     except OSError as exc:
         err(f"cannot write {out_path}: {exc}")
@@ -350,7 +548,7 @@ def cmd_generate(argv):
         return 2
 
     print(
-        f"{GRN}baseline{RST} +{added} new, {len(entries)} fingerprint(s), "
+        f"{GRN}baseline{RST} +{added} new, {len(seen)} fingerprint(s), "
         f"{len(old_rules)} rule(s) kept → {out_path}",
         file=sys.stderr,
     )
@@ -389,16 +587,16 @@ def cmd_apply(argv):
         err("usage: jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE")
         return 2
 
-    loaded = load_baseline(bl_path)
-    if loaded is None:
-        return 2
+    loaded = load_store(bl_path)
+    if isinstance(loaded, int):
+        return loaded
     rules, fps, bl_version = loaded
 
     fp_index = {f["hash"]: f for f in fps}
-    here = jjstack_version()
-    if fps and bl_version != here and not allow_drift:
+    now = jjstack_version()
+    if fps and bl_version != now and not allow_drift:
         warn(
-            f"baseline was written by jjstack {bl_version}, this is {here} — "
+            f"baseline was written by jjstack {bl_version}, this is {now} — "
             f"{len(fp_index)} fingerprint(s) treated as INERT (fail-closed). "
             "Re-read them and regenerate, or pass --allow-version-drift."
         )
@@ -414,9 +612,12 @@ def cmd_apply(argv):
         hit = None
         h = fingerprint(f)
         if h in fp_index:
+            e = fp_index[h]
             hit = {
                 "by": "fingerprint",
-                "reason": fp_index[h]["reason"],
+                "effect": e["effect"],
+                "code": e["code"],
+                "reason": e["reason"],
                 "matched": h,
             }
         else:
@@ -424,9 +625,11 @@ def cmd_apply(argv):
                 if rule_matches(r, f):
                     hit = {
                         "by": "rule",
+                        "effect": r["effect"],
+                        "code": r["code"],
                         "reason": r["reason"],
                         "matched": json.dumps(
-                            {k: r[k] for k in ("id", "rule_id", "path", "file", "message") if k in r},
+                            {k: r[k] for k in ("lens", "file", "message") if r[k] != "-"},
                             sort_keys=True,
                         ),
                     }
@@ -450,16 +653,54 @@ def cmd_apply(argv):
     return 1 if active else 0
 
 
+def cmd_validate(argv):
+    bl_path = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-b", "--baseline"):
+            if i + 1 >= len(argv):
+                err("--baseline needs a FILE")
+                return 2
+            bl_path = argv[i + 1]
+            i += 2
+        elif a == "-" or not a.startswith("-"):
+            bl_path = a
+            i += 1
+        else:
+            err(f"unknown flag: {a}")
+            return 2
+    if bl_path is None:
+        err("usage: jjstack-review-baseline validate --baseline FILE")
+        return 2
+    loaded = load_store(bl_path)
+    if isinstance(loaded, int):
+        return loaded
+    rules, fps, _ = loaded
+    print(
+        f"{GRN}ok{RST}  {bl_path} is a valid scope={SCOPE} store "
+        f"({len(fps)} fingerprint(s), {len(rules)} rule(s), max-effect={EFFECT})",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv):
+    global VOCAB
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0 if argv else 2
+    VOCAB = load_vocab()
+    if VOCAB is None:
+        return 3
     cmd, rest = argv[0], argv[1:]
     if cmd == "generate":
         return cmd_generate(rest)
     if cmd == "apply":
         return cmd_apply(rest)
-    err(f"unknown subcommand: {cmd} (expected `generate` or `apply`)")
+    if cmd == "validate":
+        return cmd_validate(rest)
+    err(f"unknown subcommand: {cmd} (expected `generate`, `apply` or `validate`)")
     return 2
 
 

@@ -69,7 +69,10 @@ Four things in that are directly transferable:
 Their triage layer is described the same way — AutoTriage "checks exploitability,
 reads real code context, and **reprioritizes** issues" **[MECHANIC]**. The verb is
 *reprioritize*. That is the accountable half of the model, and it is what
-`bin/jjstack-review-triage` implements.
+`bin/jjstack-review-run-report` implements. (It was called
+`jjstack-review-triage` until four parallel PRs mistook its per-run output for
+one of the three durable review MEMORY stores; the name now says what it is —
+the audit trail of ONE run, regenerated every run, keeping nothing.)
 
 ## Suppression as a reversible, typed, reason-carrying state
 

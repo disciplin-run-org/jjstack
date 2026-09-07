@@ -1,21 +1,37 @@
 #!/usr/bin/env bash
-# jjstack-review-calibration — remember which findings the user accepted.
+# jjstack-review-calibration — the WIDEST rung of the review memory ladder.
 #
-# Without this, every review starts from zero: the same false positive is
+# Three stores remember what the team decided about a finding, and they are NOT
+# three copies of one idea. They are an escalation ladder, and the rung is set
+# by how narrow the key is:
+#
+#   this file        key = a global PATTERN CLASS   -> may only RANK
+#   -ledger          key = path glob + category     -> may DEMOTE
+#   -baseline        key = one finding INSTANCE     -> may SUPPRESS
+#
+# The narrower the key, the stronger the verdict. Flatten that and a global
+# heuristic can silently suppress a specific P0 — which is exactly what the
+# ladder exists to prevent. The cap is enforced structurally here, from
+# bin/jjstack-review-vocab.tsv, not by anyone remembering the rule: a row in
+# this store that claims `demote` or `suppress` is rejected with exit 4.
+#
+# Without calibration, every review starts from zero: the same false positive is
 # re-raised at the same confidence forever, and a pattern the user confirmed
 # three times gets no more credit than a guess. The reviewer never learns, so the
 # user does the same triage again and again until alert fatigue kills the whole
 # report's credibility.
 #
-# So record the verdicts and let them RANK the next review.
-# Deterministic arithmetic on a tab-separated ledger — no model inference. The
-# only judgment is choosing the pattern key, which is the skill's job, exactly as
-# `pattern_key` works in the jjstack memory system.
+# So record the verdicts and let them RANK the next review. Deterministic
+# arithmetic on a tab-separated store — no model inference. The only judgment is
+# choosing the pattern key, which is the skill's job, exactly as `pattern_key`
+# works in the jjstack memory system.
 #
-# The ledger lives in the repo ({repo}/jjstack/review-calibration.tsv) on
+# The store lives in the repo ({repo}/jjstack/review-memory/calibration.tsv) on
 # purpose: calibration is a property of the codebase and its reviewers, so it
 # belongs under version control with the findings, not in a machine-local cache
-# only one laptop can see.
+# only one laptop can see. TSV, like its two siblings, because the review value
+# of these files IS their diff: one decision is one line, a suppression shows as
+# a one-line PR diff, and grep finds it.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO: it never touches a finding's confidence
 # score, and it never removes a finding from the report. Phase 5 is enrich-only
@@ -39,15 +55,25 @@
 #   Asymmetric on purpose — under-ranking noise is cheaper to get wrong than
 #   over-ranking it.
 #
+# Store format — 8 tab-separated columns under a store header:
+#   #jjstack-review-store<TAB>scope=pattern-class<TAB>max-effect=rank<TAB>v=1
+#   ts  key  verdict  effect  code  lens  file  note
+#     verdict  accepted | rejected
+#     effect   always `rank` here — the scope cap; anything stronger is rejected
+#     code     `-` for `accepted`; a reason code from the shared vocabulary for
+#              `rejected` (a rejection is a decision, and a decision is explained)
+#
 # Usage:
 #   jjstack-review-calibration record --key K --verdict accepted|rejected \
-#                                     [--lens L] [--file F] [--note N]
+#                                     [--code CODE] [--lens L] [--file F] [--note N]
 #   jjstack-review-calibration suggest --key K
 #   jjstack-review-calibration report
+#   jjstack-review-calibration validate
 #   (all accept [--repo DIR] [--store PATH] [--dry-run])
 #
-# Exit: 0 ok, 2 usage error, 3 store unwritable/unreadable,
-#       4 no prior calibration data (leave placement normal and say so).
+# Exit: 0 ok, 2 usage error, 3 store unwritable/unreadable or a legacy store
+#       needs migrating, 4 no prior calibration data (leave placement normal and
+#       say so) or a store row violates the ladder.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -76,24 +102,35 @@ need_val() { # need_val <flag> <remaining argc, i.e. "$#">
   exit 2
 }
 
+HERE="${BASH_SOURCE[0]%/*}"
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-vocab.sh" || exit 3
+vocab_load || exit 3
+
+SCOPE="pattern-class"
+EFFECT="rank"
+STORE_HEADER="#jjstack-review-store	scope=pattern-class	max-effect=rank	v=1"
+COL_HEADER="#ts	key	verdict	effect	code	lens	file	note"
+
 CMD=""
 REPO=""
 STORE=""
 KEY=""
 VERDICT=""
+CODE="-"
 LENS="-"
 FILE="-"
 NOTE="-"
 DRY=0
 
 usage() {
-  echo -e "${CYA}error${RST} usage: $(basename "$0") {record|suggest|report} [flags] — see --help" >&2
+  echo -e "${CYA}error${RST} usage: $(basename "$0") {record|suggest|report|validate} [flags] — see --help" >&2
   exit 2
 }
 
 [ $# -gt 0 ] || usage
 case "$1" in
-  record|suggest|report) CMD="$1"; shift ;;
+  record|suggest|report|validate) CMD="$1"; shift ;;
   -h|--help) show_help; exit 0 ;;
   *) usage ;;
 esac
@@ -104,6 +141,7 @@ while [ $# -gt 0 ]; do
     --store)   need_val "$1" "$#"; STORE="$2"; shift 2 ;;
     --key)     need_val "$1" "$#"; KEY="$2"; shift 2 ;;
     --verdict) need_val "$1" "$#"; VERDICT="$2"; shift 2 ;;
+    --code)    need_val "$1" "$#"; CODE="$2"; shift 2 ;;
     --lens)    need_val "$1" "$#"; LENS="$2"; shift 2 ;;
     --file)    need_val "$1" "$#"; FILE="$2"; shift 2 ;;
     --note)    need_val "$1" "$#"; NOTE="$2"; shift 2 ;;
@@ -115,7 +153,7 @@ done
 
 # Slugify a pattern key the same way every time: lowercase, non-alphanumeric to
 # '-', collapsed, trimmed, capped. Two reviews naming the same pattern slightly
-# differently must land on the same ledger row or the memory is worthless.
+# differently must land on the same store row or the memory is worthless.
 slugify() {
   printf '%s' "$1" \
     | tr '[:upper:]' '[:lower:]' \
@@ -123,7 +161,7 @@ slugify() {
     | cut -c1-60
 }
 
-# Tabs and newlines would corrupt the row; the ledger's whole value is that it
+# Tabs and newlines would corrupt the row; the store's whole value is that it
 # parses exactly.
 clean() { printf '%s' "${1:-}" | tr '\t\n\r' '   ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
 
@@ -134,10 +172,61 @@ if [ -z "$STORE" ]; then
   if [ ! -d "$ROOT" ]; then
     echo -e "${CYA}error${RST} no such directory: $ROOT" >&2; exit 3
   fi
-  STORE="$ROOT/jjstack/review-calibration.tsv"
+  STORE="$ROOT/jjstack/review-memory/calibration.tsv"
+  LEGACY="$ROOT/jjstack/review-calibration.tsv"
+  # Migrate-vs-instruct: INSTRUCT. These stores are version controlled and their
+  # whole point is that a change is a reviewed diff — a tool that silently
+  # rewrote one mid-review would produce a diff nobody approved.
+  if [ ! -f "$STORE" ] && [ -f "$LEGACY" ]; then
+    echo -e "${YEL}warn${RST}  legacy calibration store found: $LEGACY" >&2
+    echo -e "${YEL}warn${RST}  the three review memory stores now live together in" >&2
+    echo -e "${YEL}warn${RST}  jjstack/review-memory/ as TSV. Migrate it, then commit the diff:" >&2
+    echo -e "${YEL}warn${RST}    jjstack-review-memory-migrate --repo '$ROOT'" >&2
+    exit 3
+  fi
 fi
 
-HEADER='#ts	key	verdict	lens	file	note'
+# --- validate the store's ladder compliance ----------------------------------
+# Runs before every read and after every write. A hand-edited row claiming a
+# stronger effect than this scope allows is the exact failure the ladder exists
+# to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
+validate_store() {
+  local f="$1" line n=0 kind hdr_scope
+  [ -f "$f" ] || return 0
+  hdr_scope="$(head -n 1 "$f" | awk -F'\t' '$1 == "#jjstack-review-store" { for (i = 2; i <= NF; i++) if ($i ~ /^scope=/) { sub(/^scope=/, "", $i); print $i } }')"
+  if [ -z "$hdr_scope" ]; then
+    echo -e "${CYA}error${RST} $f has no #jjstack-review-store header — is it a legacy store?" >&2
+    echo -e "${YEL}fix${RST}   jjstack-review-memory-migrate --repo <dir>" >&2
+    return 4
+  fi
+  if [ "$hdr_scope" != "$SCOPE" ]; then
+    echo -e "${CYA}error${RST} $f declares scope '$hdr_scope' but this tool owns scope '$SCOPE'." >&2
+    echo -e "${YEL}why${RST}   the three stores are rungs of a ladder, not interchangeable files." >&2
+    return 4
+  fi
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$line" in ''|'#'*) continue ;; esac
+    local f_verdict f_effect f_code
+    f_verdict="$(printf '%s' "$line" | cut -f3)"
+    f_effect="$(printf '%s' "$line" | cut -f4)"
+    f_code="$(printf '%s' "$line" | cut -f5)"
+    case "$f_verdict" in
+      accepted|rejected) ;;
+      *) echo -e "${CYA}error${RST} $f:$n verdict '$f_verdict' is not accepted|rejected" >&2; return 4 ;;
+    esac
+    if ! vocab_check "$SCOPE" "$f_code" "$f_effect" 2>/dev/null; then
+      echo -e "${CYA}error${RST} $f:$n effect '$f_effect' with code '$f_code' violates the ladder:" >&2
+      vocab_check "$SCOPE" "$f_code" "$f_effect"
+      return 4
+    fi
+    if [ "$f_verdict" = "rejected" ] && [ "$f_code" = "-" ]; then
+      echo -e "${CYA}error${RST} $f:$n a 'rejected' verdict carries no reason code — a decision is explained, never silent" >&2
+      return 4
+    fi
+  done < "$f"
+  return 0
+}
 
 # --- record ------------------------------------------------------------------
 if [ "$CMD" = "record" ]; then
@@ -146,9 +235,24 @@ if [ "$CMD" = "record" ]; then
     accepted|rejected) ;;
     *) echo -e "${CYA}error${RST} --verdict must be accepted or rejected (got '${VERDICT}')" >&2; exit 2 ;;
   esac
+  if [ "$VERDICT" = "rejected" ] && [ "$CODE" = "-" ]; then
+    echo -e "${CYA}error${RST} a 'rejected' verdict needs --code from the shared vocabulary" >&2
+    echo -e "${YEL}valid${RST} $VOCAB_REASONS" >&2
+    exit 2
+  fi
+  if [ "$CODE" != "-" ] && ! vocab_is_reason "$CODE"; then
+    echo -e "${CYA}error${RST} unknown reason code '$CODE' (see bin/jjstack-review-vocab.tsv)" >&2
+    echo -e "${YEL}valid${RST} $VOCAB_REASONS" >&2
+    exit 2
+  fi
+  # The structural cap. This scope may only emit `rank`; anything stronger dies
+  # here, before it can ever be written to the store.
+  if ! vocab_check "$SCOPE" "$CODE" "$EFFECT"; then
+    exit 4
+  fi
   slug="$(slugify "$KEY")"
   [ -n "$slug" ] || { echo -e "${CYA}error${RST} --key slugifies to nothing: '$KEY'" >&2; exit 2; }
-  row="$(date +%F)	$slug	$VERDICT	$(clean "$LENS")	$(clean "$FILE")	$(clean "$NOTE")"
+  row="$(date +%F)	$slug	$VERDICT	$EFFECT	$(clean "$CODE")	$(clean "$LENS")	$(clean "$FILE")	$(clean "$NOTE")"
   if [ "$DRY" -eq 1 ]; then
     echo "[dry-run] would append to $STORE:"
     echo "[dry-run] $row"
@@ -156,19 +260,31 @@ if [ "$CMD" = "record" ]; then
   fi
   mkdir -p "$(dirname "$STORE")" 2>/dev/null
   if [ ! -f "$STORE" ]; then
-    printf '%s\n' "$HEADER" > "$STORE" || { echo -e "${CYA}error${RST} cannot write $STORE" >&2; exit 3; }
+    printf '%s\n%s\n' "$STORE_HEADER" "$COL_HEADER" > "$STORE" \
+      || { echo -e "${CYA}error${RST} cannot write $STORE" >&2; exit 3; }
   fi
   printf '%s\n' "$row" >> "$STORE" || { echo -e "${CYA}error${RST} cannot append to $STORE" >&2; exit 3; }
-  echo -e "${GRN}recorded${RST} $slug=$VERDICT -> $STORE"
+  echo -e "${GRN}recorded${RST} $slug=$VERDICT effect=$EFFECT -> $STORE"
   exit 0
 fi
 
 # --- shared read path --------------------------------------------------------
 if [ ! -f "$STORE" ]; then
-  echo -e "${YEL}skip${RST}  no calibration ledger yet ($STORE)."
+  if [ "$CMD" = "validate" ]; then
+    echo -e "${YEL}skip${RST}  no calibration store yet ($STORE)."
+    exit 4
+  fi
+  echo -e "${YEL}skip${RST}  no calibration store yet ($STORE)."
   echo -e "${YEL}skip${RST}  first calibrated review — every finding takes normal placement, and say so."
   echo -e "${YEL}skip${RST}  (a later run changes PLACEMENT only; no run ever adjusts a confidence.)"
   exit 4
+fi
+
+validate_store "$STORE" || exit 4
+
+if [ "$CMD" = "validate" ]; then
+  echo -e "${GRN}ok${RST}  $STORE is a valid scope=$SCOPE store (max-effect=$(vocab_scope_max "$SCOPE"))"
+  exit 0
 fi
 
 # --- suggest -----------------------------------------------------------------
@@ -184,25 +300,27 @@ if [ "$CMD" = "suggest" ]; then
   [ "$rank" -lt -30 ] && rank=-30
   [ "$rank" -gt 20 ] && rank=20
   if [ "$((acc + rej))" -eq 0 ]; then
-    echo "key=$slug accepted=0 rejected=0 rank=0 placement=normal (no prior data)"
+    echo "key=$slug accepted=0 rejected=0 rank=0 placement=normal effect=rank (no prior data)"
     exit 4
   fi
   # Placement, never a score. A negative rank files the finding under the
   # report's "Demoted (prior decision)" section; it stays active and keeps its
-  # own severity and confidence untouched.
+  # own severity and confidence untouched. Note `effect=rank` on every line: a
+  # negative rank still only RANKS, and two demotions from different rungs are
+  # one demotion, never a suppression.
   if [ "$rank" -lt 0 ]; then placement="demoted"; else placement="normal"; fi
-  echo "key=$slug accepted=$acc rejected=$rej rank=$rank placement=$placement"
+  echo "key=$slug accepted=$acc rejected=$rej rank=$rank placement=$placement effect=rank"
   exit 0
 fi
 
 # --- report ------------------------------------------------------------------
 rows="$(awk -F'\t' '$0 !~ /^#/ && NF >= 3 { print }' "$STORE" | grep -c . 2>/dev/null)"
 if [ "${rows:-0}" -eq 0 ]; then
-  echo -e "${YEL}skip${RST}  calibration ledger is empty ($STORE) — every finding takes normal placement."
+  echo -e "${YEL}skip${RST}  calibration store is empty ($STORE) — every finding takes normal placement."
   exit 4
 fi
 
-echo "jjstack-review-calibration — $STORE ($rows verdict(s))"
+echo "jjstack-review-calibration — $STORE ($rows verdict(s), scope=$SCOPE, max-effect=$(vocab_scope_max "$SCOPE"))"
 echo
 printf '  %-40s %5s %5s %6s  %s\n' "pattern key" "acc" "rej" "rank" "placement"
 awk -F'\t' '
@@ -222,4 +340,6 @@ echo "Rank is PLACEMENT, not score. A demoted finding is printed under"
 echo "\"Demoted (prior decision)\" with its severity and confidence untouched."
 echo "Never subtract this from a finding's confidence: the score is a claim"
 echo "about the code, the demotion is a claim about the team's prior decision."
+echo "This store's ceiling is effect=rank. It cannot demote and it cannot"
+echo "suppress — those are the ledger's and the baseline's rungs."
 exit 0

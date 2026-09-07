@@ -1,31 +1,65 @@
 #!/usr/bin/env bash
-# jjstack-review-ledger — per-repo memory of what past reviews decided.
+# jjstack-review-ledger — the MIDDLE rung of the review memory ladder.
 #
-# Every AI reviewer that people keep using eventually grows a memory: Greptile
-# markets "learns from your team's feedback", CodeRabbit has learnings, gstack
-# already carries a suppression history for Greptile's own comments
-# (~/.claude/skills/gstack/review/greptile-triage.md). The mechanic is real —
-# re-reporting a finding the team already dismissed is the purest form of alert
-# fatigue. The vendor implementations are opaque: the memory lives on their
-# server, you cannot read it, diff it, or review a change to it.
+# Three stores remember what the team decided about a finding, and they are NOT
+# three copies of one idea. They are an escalation ladder, and the rung is set
+# by how narrow the key is:
 #
-# This is the same mechanic with the opacity removed. The ledger is a plain
-# markdown file inside the repo, so it is version controlled, reviewable in a
-# PR, and greppable. And it deliberately does NOT do what the vendors do: a
-# match here DEMOTES a finding into 5f's `### Demoted (prior decision)` section
-# with the prior decision cited. It never drops one, and it never rescores one:
-# the finding keeps its severity and confidence and only moves down the page.
-# jjstack /review is tuned for recall; silently suppressing a whole class
-# because someone once waved it off is exactly the failure this stack exists to
-# avoid. Only `dismissed` entries demote — `fixed` and `confirmed` entries are
-# history, not suppression.
+#   -calibration     key = a global PATTERN CLASS   -> may only RANK
+#   this file        key = path glob + category     -> may DEMOTE
+#   -baseline        key = one finding INSTANCE     -> may SUPPRESS
+#
+# The narrower the key, the stronger the verdict. Flatten that and a global
+# heuristic can silently suppress a specific P0 — which is exactly what the
+# ladder exists to prevent. The cap is enforced structurally here, from
+# bin/jjstack-review-vocab.tsv, not by anyone remembering the rule: a row in
+# this store that claims `suppress` is rejected with exit 4.
+#
+# Why a per-repo memory at all: every AI reviewer that people keep using
+# eventually grows one. Greptile markets "learns from your team's feedback",
+# CodeRabbit has learnings, gstack already carries a suppression history for
+# Greptile's own comments (~/.claude/skills/gstack/review/greptile-triage.md).
+# The mechanic is real — re-reporting a finding the team already dismissed is
+# the purest form of alert fatigue. The vendor implementations are opaque: the
+# memory lives on their server, you cannot read it, diff it, or review a change
+# to it.
+#
+# This is the same mechanic with the opacity removed. The store is a plain TSV
+# inside the repo, so it is version controlled, reviewable in a PR, and
+# greppable. TSV rather than markdown because the review value of this file IS
+# its diff: one decision is one line, retiring one is a one-line deletion, and a
+# script can parse it without a markdown reader. And it deliberately does NOT do
+# what the vendors do: a match here DEMOTES a finding into the report's
+# "Demoted (prior decision)" section with the prior decision cited. It never
+# drops one, and it never hides one. jjstack /review is tuned
+# for recall; silently suppressing a whole class because someone once waved it
+# off is exactly the failure this stack exists to avoid. Only `dismissed`
+# entries demote — `fixed` and `confirmed` entries are history, not suppression.
+#
+# DEMOTION IS IDEMPOTENT AND TERMINAL. Two independent mechanisms can demote the
+# same finding — this store (path + category) and the calibration store's
+# negative rank (global pattern class). A finding matched by both is demoted
+# ONCE: still active, still printed, still carrying its own severity and
+# confidence. Demotions never stack, never compound, and can never add up to a
+# suppression. `--match` prints `effect=demote` on every hit precisely so that
+# nothing downstream can read two hits as something stronger than one.
+#
+# Store format — 8 tab-separated columns under a store header:
+#   #jjstack-review-store<TAB>scope=path-glob<TAB>max-effect=demote<TAB>v=1
+#   ts  repo  type  effect  code  path-glob  category  note
+#     type    dismissed | fixed | confirmed
+#     effect  `demote` for dismissed, `none` for fixed/confirmed. Never
+#             `suppress` — the scope cap rejects it.
+#     code    `-` for fixed/confirmed; a reason code from the shared vocabulary
+#             for dismissed (a dismissal is a decision, and a decision is explained)
 #
 # Usage:
 #   jjstack-review-ledger --record --type TYPE --path PATTERN --category CAT
-#                         [--note TEXT] [--ledger FILE] [--repo DIR]
+#                         [--code CODE] [--note TEXT] [--ledger FILE] [--repo DIR]
 #   jjstack-review-ledger --match --path FILE --category CAT
 #                         [--ledger FILE] [--repo DIR]
 #   jjstack-review-ledger --list [--ledger FILE] [--repo DIR]
+#   jjstack-review-ledger --validate [--ledger FILE] [--repo DIR]
 #
 #   TYPE  = dismissed | fixed | confirmed
 #   CAT   = correctness | security | concurrency | error-handling | resource-leak
@@ -45,16 +79,48 @@
 # the same statement as "no prior decision applies", and it is never reported as
 # if it were.
 #
-# Default ledger: <repo-root>/jjstack/review-ledger.md
+# Default store: <repo-root>/jjstack/review-memory/ledger.tsv
 #
-# Exit: 0 recorded / listed / a demotion matched, 1 --match found nothing or
-#       found no ledger, 2 usage error — an invalid type or category, a flag
-#       given with no value, or an unscoped path glob — 3 repo root unresolvable.
+# Exit: 0 recorded / listed / validated / a demotion matched, 1 --match found
+#       nothing or found no store, 2 usage error — an invalid type, category or
+#       code, a flag given with no value, or an unscoped path glob — 3 repo root
+#       unresolvable or a legacy store needs migrating, 4 a store row violates
+#       the ladder.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+# Help is DERIVED from the leading comment block, never a hand-maintained
+# `sed -n 'A,Bp'` range. A range silently drifts the moment a line is added,
+# which is how sibling scripts came to truncate their help mid-sentence or spill
+# `set -uo pipefail` and the raw colour definitions into it.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
+# A flag given with no value used to hang this script for ever: `shift 2` is a
+# no-op when only one argument remains, `set -e` is off so the failure is
+# swallowed, and the loop re-reads the same $1 on the next pass. An unattended
+# /review step that spins instead of failing is worse than a crash — nothing
+# reports, nothing times out, and the caller waits on it. Call this before every
+# `shift 2` so a missing value is a clean usage error instead.
+need_val() {
+  [ $# -ge 2 ] || { echo -e "${CYA}error${RST} $1 requires a value" >&2; exit 2; }
+}
+
+HERE="${BASH_SOURCE[0]%/*}"
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-vocab.sh" || exit 3
+vocab_load || exit 3
+
+TAB=$'\t'
+SCOPE="path-glob"
+STORE_HEADER="#jjstack-review-store	scope=path-glob	max-effect=demote	v=1"
+COL_HEADER="#ts	repo	type	effect	code	path-glob	category	note"
 
 VALID_TYPES="dismissed fixed confirmed"
 VALID_CATS="correctness security concurrency error-handling resource-leak test-coverage performance api-contract style type-safety dependency other"
@@ -69,23 +135,13 @@ VALID_CATS="correctness security concurrency error-handling resource-leak test-c
 # still RECORDED — the history stays honest — it just never demotes.
 PROTECTED_CATS="security correctness concurrency error-handling resource-leak test-coverage"
 
-MODE=""; TYPE=""; PATH_ARG=""; CATEGORY=""; NOTE=""; LEDGER=""; REPO=""
+MODE=""; TYPE=""; PATH_ARG=""; CATEGORY=""; CODE="-"; NOTE=""; LEDGER=""; REPO=""
 
 set_mode() {
   if [ -n "$MODE" ]; then
-    echo -e "${CYA}error${RST} pick one mode: --record, --match or --list" >&2; exit 2
+    echo -e "${CYA}error${RST} pick one mode: --record, --match, --list or --validate" >&2; exit 2
   fi
   MODE="$1"
-}
-
-# A flag given with no value used to hang this script for ever: `shift 2` is a
-# no-op when only one argument remains, `set -e` is off so the failure is
-# swallowed, and the loop re-reads the same $1 on the next pass. An unattended
-# /review step that spins instead of failing is worse than a crash — nothing
-# reports, nothing times out, and the caller waits on it. Call this before every
-# `shift 2` so a missing value is a clean usage error instead.
-need_val() {
-  [ $# -ge 2 ] || { echo -e "${CYA}error${RST} $1 requires a value" >&2; exit 2; }
 }
 
 while [ $# -gt 0 ]; do
@@ -93,28 +149,30 @@ while [ $# -gt 0 ]; do
     --record)   set_mode record; shift ;;
     --match)    set_mode match;  shift ;;
     --list)     set_mode list;   shift ;;
+    --validate) set_mode validate; shift ;;
     --type)     need_val "$@"; TYPE="$2";     shift 2 ;;
     --path)     need_val "$@"; PATH_ARG="$2"; shift 2 ;;
     --category) need_val "$@"; CATEGORY="$2"; shift 2 ;;
+    --code)     need_val "$@"; CODE="$2";     shift 2 ;;
     --note)     need_val "$@"; NOTE="$2";     shift 2 ;;
     --ledger)   need_val "$@"; LEDGER="$2";   shift 2 ;;
     --repo)     need_val "$@"; REPO="$2";     shift 2 ;;
     -h|--help)
-      sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
+      show_help
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
 
-[ -z "$MODE" ] && { echo -e "${CYA}error${RST} one of --record, --match, --list is required" >&2; exit 2; }
+[ -z "$MODE" ] && { echo -e "${CYA}error${RST} one of --record, --match, --list, --validate is required" >&2; exit 2; }
 
 in_set() {
   for v in $2; do [ "$1" = "$v" ] && return 0; done
   return 1
 }
 
-# Validate BEFORE touching the ledger: a typo'd category silently written is a
+# Validate BEFORE touching the store: a typo'd category silently written is a
 # suppression that can never match, and a typo'd category silently matched is a
 # suppression that fires on the wrong class.
 if [ "$MODE" = "record" ] || [ "$MODE" = "match" ]; then
@@ -136,7 +194,7 @@ if [ "$MODE" = "record" ]; then
   # The category and the path glob are the two halves of the key, and only one
   # of them was checked. `--path '*'` records a dismissal that then demotes
   # every finding in that category, repo-wide and permanently — the demoted
-  # section becomes the whole report, and the ledger line reads like any other
+  # section becomes the whole report, and the store line reads like any other
   # in a PR diff. A glob with no literal character in it (`*`, `**`, `*/*`,
   # `/*`) matches every path there is, so it is never a decision about a place
   # in the repo; it is a blanket. Name a real prefix instead.
@@ -147,6 +205,25 @@ if [ "$MODE" = "record" ]; then
       echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
       exit 2 ;;
   esac
+  # Only a dismissal acts on a future finding, so only a dismissal carries an
+  # effect and a reason code. History rows have effect `none`.
+  if [ "$TYPE" = "dismissed" ]; then
+    EFFECT="demote"
+    if [ "$CODE" = "-" ]; then CODE="prior-decision"; fi
+  else
+    EFFECT="none"
+    CODE="-"
+  fi
+  if [ "$CODE" != "-" ] && ! vocab_is_reason "$CODE"; then
+    echo -e "${CYA}error${RST} unknown reason code '$CODE' (see bin/jjstack-review-vocab.tsv)" >&2
+    echo -e "${YEL}valid${RST} $VOCAB_REASONS" >&2
+    exit 2
+  fi
+  # The structural cap. This scope may emit at most `demote`; a `suppress` dies
+  # here, before it can ever be written to the store.
+  if ! vocab_check "$SCOPE" "$CODE" "$EFFECT"; then
+    exit 4
+  fi
 fi
 
 if [ -z "$LEDGER" ]; then
@@ -155,10 +232,21 @@ if [ -z "$LEDGER" ]; then
     echo -e "${YEL}warn${RST}  no repo root: pass --ledger or --repo, or run inside a git repo" >&2
     exit 3
   fi
-  LEDGER="${REPO%/}/jjstack/review-ledger.md"
+  LEDGER="${REPO%/}/jjstack/review-memory/ledger.tsv"
+  LEGACY="${REPO%/}/jjstack/review-ledger.md"
+  # Migrate-vs-instruct: INSTRUCT. These stores are version controlled and their
+  # whole point is that a change is a reviewed diff — a tool that silently
+  # rewrote one mid-review would produce a diff nobody approved.
+  if [ ! -f "$LEDGER" ] && [ -f "$LEGACY" ]; then
+    echo -e "${YEL}warn${RST}  legacy markdown ledger found: $LEGACY" >&2
+    echo -e "${YEL}warn${RST}  the three review memory stores now live together in" >&2
+    echo -e "${YEL}warn${RST}  jjstack/review-memory/ as TSV. Migrate it, then commit the diff:" >&2
+    echo -e "${YEL}warn${RST}    jjstack-review-memory-migrate --repo '${REPO%/}'" >&2
+    exit 3
+  fi
 fi
 
-# Repo slug for the record, so a ledger stays readable if it is ever merged or
+# Repo slug for the record, so a store stays readable if it is ever merged or
 # copied between repos.
 slug() {
   local url
@@ -171,30 +259,56 @@ slug() {
   fi
 }
 
+# --- validate the store's ladder compliance ----------------------------------
+# Runs before every read and after every write. A hand-edited row claiming a
+# stronger effect than this scope allows is the exact failure the ladder exists
+# to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
+validate_store() {
+  local f="$1" line n=0 hdr_scope f_type f_effect f_code
+  [ -f "$f" ] || return 0
+  hdr_scope="$(head -n 1 "$f" | awk -F'\t' '$1 == "#jjstack-review-store" { for (i = 2; i <= NF; i++) if ($i ~ /^scope=/) { sub(/^scope=/, "", $i); print $i } }')"
+  if [ -z "$hdr_scope" ]; then
+    echo -e "${CYA}error${RST} $f has no #jjstack-review-store header — is it a legacy store?" >&2
+    echo -e "${YEL}fix${RST}   jjstack-review-memory-migrate --repo <dir>" >&2
+    return 4
+  fi
+  if [ "$hdr_scope" != "$SCOPE" ]; then
+    echo -e "${CYA}error${RST} $f declares scope '$hdr_scope' but this tool owns scope '$SCOPE'." >&2
+    echo -e "${YEL}why${RST}   the three stores are rungs of a ladder, not interchangeable files." >&2
+    return 4
+  fi
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$line" in ''|'#'*) continue ;; esac
+    f_type="$(printf '%s' "$line" | cut -f3)"
+    f_effect="$(printf '%s' "$line" | cut -f4)"
+    f_code="$(printf '%s' "$line" | cut -f5)"
+    if ! in_set "$f_type" "$VALID_TYPES"; then
+      echo -e "${CYA}error${RST} $f:$n unknown type '$f_type'" >&2; return 4
+    fi
+    if ! vocab_check "$SCOPE" "$f_code" "$f_effect" 2>/dev/null; then
+      echo -e "${CYA}error${RST} $f:$n effect '$f_effect' with code '$f_code' violates the ladder:" >&2
+      vocab_check "$SCOPE" "$f_code" "$f_effect"
+      return 4
+    fi
+    if [ "$f_type" = "dismissed" ] && [ "$f_code" = "-" ]; then
+      echo -e "${CYA}error${RST} $f:$n a dismissal carries no reason code — a decision is explained, never silent" >&2
+      return 4
+    fi
+  done < "$f"
+  return 0
+}
+
 case "$MODE" in
   record)
     mkdir -p "$(dirname "$LEDGER")" || exit 3
     if [ ! -f "$LEDGER" ]; then
-      {
-        echo "# jjstack review ledger"
-        echo
-        echo "What past /review runs decided, so the next run does not relitigate it."
-        echo "One record per line:"
-        echo
-        echo '```'
-        echo "<date> | <repo> | <dismissed|fixed|confirmed> | <path-glob> | <category> | <note>"
-        echo '```'
-        echo
-        echo "Only \`dismissed\` records suppress, and they DEMOTE a repeat finding into"
-        echo "the report's \`Demoted (prior decision)\` section with this note cited —"
-        echo "they never drop it. Delete a line to retire a decision; the deletion shows"
-        echo "up in the diff like any other reviewed change."
-        echo
-      } > "$LEDGER"
+      printf '%s\n%s\n' "$STORE_HEADER" "$COL_HEADER" > "$LEDGER" || exit 3
     fi
-    printf '%s | %s | %s | %s | %s | %s\n' \
-      "$(date +%F)" "$(slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" "${NOTE:-(no note)}" >> "$LEDGER"
-    echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] → $LEDGER"
+    validate_store "$LEDGER" || exit 4
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date +%F)" "$(slug)" "$TYPE" "$EFFECT" "$CODE" "$PATH_ARG" "$CATEGORY" "${NOTE:-(no note)}" >> "$LEDGER"
+    echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] effect=$EFFECT → $LEDGER"
     if [ "$TYPE" = "dismissed" ] && in_set "$CATEGORY" "$PROTECTED_CATS"; then
       echo -e "${YEL}note${RST}  '$CATEGORY' is a protected category — this record is kept as" >&2
       echo -e "${YEL}note${RST}  history but will NEVER demote a future finding." >&2
@@ -207,13 +321,24 @@ case "$MODE" in
       echo -e "${YEL}warn${RST}  no ledger yet: $LEDGER" >&2
       exit 0
     fi
-    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LEDGER" || true
+    validate_store "$LEDGER" || exit 4
+    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}	' "$LEDGER" || true
+    exit 0
+    ;;
+
+  validate)
+    if [ ! -f "$LEDGER" ]; then
+      echo -e "${YEL}warn${RST}  no ledger yet: $LEDGER" >&2
+      exit 0
+    fi
+    validate_store "$LEDGER" || exit 4
+    echo -e "${GRN}ok${RST}  $LEDGER is a valid scope=$SCOPE store (max-effect=$(vocab_scope_max "$SCOPE"))"
     exit 0
     ;;
 
   match)
-    # A missing ledger used to exit 1 in silence, which is indistinguishable
-    # from "I read the ledger and no prior decision applies". A mistyped
+    # A missing store used to exit 1 in silence, which is indistinguishable
+    # from "I read the store and no prior decision applies". A mistyped
     # --ledger path therefore reported an authoritative all-clear for the whole
     # review. --list already warns on exactly this condition; so does match now.
     if [ ! -f "$LEDGER" ]; then
@@ -221,23 +346,19 @@ case "$MODE" in
       echo -e "${YEL}warn${RST}  (this is NOT 'no prior decision applies'; check --ledger/--repo)" >&2
       exit 1
     fi
+    validate_store "$LEDGER" || exit 4
     hits=0; protected=0
     while IFS= read -r line; do
       case "$line" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ \|*) ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"$TAB"*) ;;
         *) continue ;;
       esac
-      # date | repo | type | pattern | category | note
-      l_type=$(printf '%s' "$line" | awk -F' *\\| *' '{print $3}')
-      l_pat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $4}')
-      l_cat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $5}')
-      # The note is the LAST field, not the sixth: a note may legitimately
-      # contain the delimiter ("safe today | revisit when we drop py38"), and
-      # taking $6 alone silently dropped the condition attached to the
-      # dismissal — which the skill then quotes as the whole reason. Rejoin
-      # every field from 6 on so the note survives intact.
-      l_note=$(printf '%s' "$line" \
-        | awk -F' *\\| *' '{ n=$6; for (i=7; i<=NF; i++) n = n " | " $i; print n }')
+      # ts | repo | type | effect | code | path-glob | category | note
+      l_type=$(printf  '%s' "$line" | cut -f3)
+      l_eff=$(printf   '%s' "$line" | cut -f4)
+      l_pat=$(printf   '%s' "$line" | cut -f6)
+      l_cat=$(printf   '%s' "$line" | cut -f7)
+      l_note=$(printf  '%s' "$line" | cut -f8)
       [ "$l_type" = "dismissed" ] || continue
       [ "$l_cat" = "$CATEGORY" ]  || continue
       # The path glob is part of the key, so it must be consulted BEFORE any
@@ -258,7 +379,10 @@ case "$MODE" in
         protected=$((protected + 1))
         continue
       fi
-      printf 'DEMOTE %s [%s] — dismissed previously: %s\n' "$l_pat" "$l_cat" "$l_note"
+      # `effect=demote` on every hit, deliberately. Demotion is idempotent and
+      # terminal: two hits here, or a hit here plus a negative calibration rank,
+      # are ONE demotion. Nothing downstream may read repetition as escalation.
+      printf 'DEMOTE effect=%s %s [%s] — dismissed previously: %s\n' "$l_eff" "$l_pat" "$l_cat" "$l_note"
       hits=$((hits + 1))
     done < "$LEDGER"
     [ "$hits" -gt 0 ] && exit 0
