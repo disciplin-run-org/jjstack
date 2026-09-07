@@ -127,6 +127,34 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **`/review` now posts its verdict on the pull request, in your voice, in about
+  six seconds of reading.** Until now the review wrote a thorough report into
+  `{repo}/jjstack/` and stopped: a report nobody opens is a review that did not
+  happen. The verdict now lands as a PR comment.
+
+  The comment is a doorbell, not the delivery. Verdict line, the findings that
+  actually block the merge, and a link to the full report - which still holds
+  every finding, every repro, every confidence score. Brevity moves evidence, it
+  never deletes it: a finding cut from the comment is a finding still in the
+  report, and cutting one to fit the budget is refused outright.
+
+  The budget is enforced by code, not by asking. Twelve lines, 900 characters, at
+  most three findings inline, and a link is mandatory. "Be brief" written as a
+  prose instruction loses to a model's pull toward completeness on every single
+  run, so `jjstack-pr-comment-lint` blocks the post instead of hoping. It also
+  enforces the voice: no emdash, no superlatives selling a finding, no
+  meta-commentary, no softening qualifiers, no sentence too long to survive as a
+  tweet.
+
+  The jj in jjstack is Jesper Jurcenoks, and a review posted under this name
+  sounds like he wrote it: conclusion first, one line per finding, and a
+  correction framed as "this is my concern" rather than "you are wrong". The
+  review-scoped voice ships in `references/pr-comment-voice.md`; point
+  `dna.voice` at a fuller voice file to layer it on top.
+
+  No pull request is a normal outcome, not an error: the review says so and stops
+  rather than inventing one.
+
 - **`/review` now gathers evidence before it starts thinking.** A new pre-flight
   step runs before any AI pass and costs no judgement at all, because none of it
   is guesswork:

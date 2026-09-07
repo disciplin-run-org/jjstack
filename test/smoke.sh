@@ -25,6 +25,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-prior-dismissals \
          "$BIN"/jjstack-review-sweep "$BIN"/jjstack-review-autofix-diff \
          "$BIN"/jjstack-review-calibration "$BIN"/jjstack-review-run-report \
+         "$BIN"/jjstack-pr-comment-lint \
          "$BIN"/jjstack-review-vocab.sh "$BIN"/jjstack-review-memory-migrate \
          "$BIN"/jjstack-review-ledger "$BIN"/jjstack-review-revert-history \
          "$BIN"/jjstack-review-dep-inventory \
@@ -914,6 +915,68 @@ check "--allow-version-drift re-enables them"  "[ ! -s '$RB/ovr.out' ]"
 check "positive control: drifted baseline has a different version" \
   "! cmp -s '$RB/bl.tsv' '$RB/old.tsv'"
 rm -rf "$RB"
+
+echo "== 5g. pr-comment-lint (the wall-of-text gate) =="
+# /review posts its verdict to the PR. The failure mode is not a wrong finding,
+# it is forty lines of correct findings the author scrolls past. "Be brief" in
+# prose loses to the pull toward completeness on every run, so the budget is
+# enforced by code. Every rule below is one a machine can decide.
+PCL="$(mktemp -d)"
+# In-voice comment: verdict, two blocking findings, a link. Must pass clean.
+cat > "$PCL/good.md" <<'PCLEOF'
+**CAUTION** - 2 blocking, 7 total.
+
+**P0** `bin/loader.py:88` retry catches `Exception`: a revoked token exits 0.
+**P1** `api/routes.py:210` `OrderStatus` gained `CANCELLED`; handler still raises.
+
+5 more + repros: `jjstack/review-2026-09-07.md`
+PCLEOF
+"$BIN/jjstack-pr-comment-lint" "$PCL/good.md" >/dev/null 2>&1
+check "an in-voice comment passes clean" "[ \$? -eq 0 ]"
+
+# Each guard gets a fixture that trips exactly it.
+printf '**P0** a.py:1 leaks\nreport.md\n%.0s' 1 > "$PCL/base.md"
+yes '**CAUTION** filler line' | head -20 > "$PCL/long.md"; echo 'report.md' >> "$PCL/long.md"
+"$BIN/jjstack-pr-comment-lint" "$PCL/long.md" >/dev/null 2>&1
+check "over the line budget is rejected" "[ \$? -eq 1 ]"
+
+printf '**P0** a:1 x\n**P1** b:2 y\n**P2** c:3 z\n**P3** d:4 w\nreport.md\n' > "$PCL/many.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/many.md" 2>&1)
+check "more than 3 inline findings is rejected" "grep -q 'too-many' <<<\"\$out\""
+
+# The guard that stops "be brief" degrading into "drop findings".
+printf '**CAUTION**\n\n**P0** a:1 leaks a handle\n' > "$PCL/nolink.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/nolink.md" 2>&1)
+check "a comment with no link to the report is rejected" "grep -q 'no-link' <<<\"\$out\""
+
+printf '**P0** a:1 an incredible and robust finding\nreport.md\n' > "$PCL/sell.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/sell.md" 2>&1)
+check "superlatives used to sell are rejected" "grep -q 'superlative' <<<\"\$out\""
+
+printf '**P0** a:1 the handle leaks \xe2\x80\x94 on the error path\nreport.md\n' > "$PCL/dash.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/dash.md" 2>&1)
+check "an emdash is rejected" "grep -q 'emdash' <<<\"\$out\""
+
+printf 'In this review, we will cover the findings.\n**P0** a:1 x\nreport.md\n' > "$PCL/meta.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/meta.md" 2>&1)
+check "meta-commentary openers are rejected" "grep -q 'meta' <<<\"\$out\""
+
+printf '**P0** a:1 this is arguably a bit of a problem\nreport.md\n' > "$PCL/soft.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/soft.md" 2>&1)
+check "softening qualifiers are rejected" "grep -q 'softener' <<<\"\$out\""
+
+# POSITIVE CONTROL — a linter that passes everything looks exactly like a clean
+# comment. Prove the good fixture is what passes, not the checks being inert.
+check "POSITIVE CONTROL: the good fixture really is under budget" \
+  "[ \"\$(wc -l < '$PCL/good.md')\" -le 12 ]"
+# Literal emdash on purpose: this asserts the FIXTURE contains the character the
+# linter must reject. grep -P '\xe2\x80\x94' does not match it under this locale.
+check "POSITIVE CONTROL: the emdash fixture really contains one" \
+  "grep -q '—' '$PCL/dash.md'"
+check "missing file exits 3" \
+  "\"\$BIN/jjstack-pr-comment-lint\" '$PCL/nope.md' >/dev/null 2>&1; [ \$? -eq 3 ]"
+rm -rf "$PCL"
+
 echo "== 6. review skill structural guards =="
 # Two five-line greps that would have caught two defects the parallel PR stack
 # actually produced, both invisible to a per-PR review against main:

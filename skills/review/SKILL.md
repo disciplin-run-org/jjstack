@@ -1,6 +1,6 @@
 ---
 name: review
-version: 1.0.0
+version: 1.1.0
 description: |
   The deepest, highest-recall pre-landing review in the stack. Wraps gstack's
   /review but deliberately trades time and tokens for COVERAGE: it opens with a
@@ -986,7 +986,62 @@ under `{repo_root}/jjstack/review-memory/` — the baseline (5d), the ledger
 the next review show only what is new, and each change is a one-line diff a
 human can review.
 
-### 6.3 README maintenance
+### 6.3 Post the review to the PR
+
+A report nobody sees is a review that did not happen. Everything above lands in
+`{repo}/jjstack/`, which nobody opens unless they already know it is there. If
+this branch has a pull request, the review goes **on the PR**.
+
+```bash
+cat ~/.claude/skills/jjstack/references/pr-comment-voice.md
+```
+
+That reference is the voice. The jj in jjstack is Jesper Jurcenoks and a review
+posted under this name sounds like he wrote it: conclusion first, one line per
+finding, no selling. Read it before composing.
+
+Detect the PR. No PR is a legitimate outcome, not an error:
+
+```bash
+gh pr view --json number,url --jq '"PR #\(.number) \(.url)"' 2>/dev/null || echo "NO_PR"
+```
+
+If `NO_PR`: say so in the session output and stop here. Never invent a PR, and
+never post to a different one.
+
+Compose the comment to `{OUTPUT_DIR}/pr-comment.md` following the structure in
+the reference. **The comment is a doorbell, not the delivery** — verdict, the
+blocking findings only, and a link to the full report committed in 6.2.
+
+Then lint it. This is a **HARD GATE**: the linter exits non-zero and you fix the
+comment rather than posting it anyway.
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md
+```
+
+It enforces what a machine can decide: 12 lines / 900 chars, at most 3 findings
+inline, a mandatory link, no emdash, no superlatives, no meta-commentary, no
+softening qualifiers, no sentence over 180 chars. A prose instruction to "be
+brief" loses to the pull toward completeness on every run, so the budget is
+code.
+
+When it reports `too-long` or `too-many`, **move findings into the report, never
+delete them.** Cutting a finding to fit the budget is the one failure this whole
+skill exists to prevent. The report already holds all of them; the comment shows
+what blocks the merge.
+
+Post it:
+
+```bash
+gh pr comment --body-file {OUTPUT_DIR}/pr-comment.md
+```
+
+If `dna.voice` is set in the jjstack config, load it first and let it govern the
+prose — the reference above is the review-scoped subset of that voice, and the
+full DNA wins where the two differ.
+
+### 6.4 README maintenance
 
 Create or update `{repo_root}/README.md` if session changes affect it.
 
