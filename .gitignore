@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 .env
 .install-manifest
+
+# Claude Code local state. Scoped deliberately rather than ignoring all of
+# .claude/ — a shared .claude/settings.json or a committed agent definition is
+# legitimate repo content, and a blanket ignore would silently swallow it.
+.claude/settings.local.json
+.claude/worktrees/
