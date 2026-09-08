@@ -51,6 +51,34 @@ Recall-max (force every gstack specialist, ignore the small-diff skip) is
 **opt-in** with `--deep`. Without it, gstack's own gating applies — it exists
 because it works.
 
+## Idempotence — the property that outranks recall
+
+**A review of code that has not changed returns the verdict the last review
+gave it.** Same code in, same answer out. A reviewer whose output changes while
+its input does not is not measuring the code; its findings are not evidence,
+and its approval is worth nothing either.
+
+Three rules follow, and they bind harder than anything else in this file:
+
+1. **Once every finding is resolved, the next review says so and stops.** It
+   does not go looking for something else to justify the run. A clean result
+   from a review that ran every applicable lens is a strong statement; padding
+   it with a nit is not thoroughness, it is manufacturing work.
+2. **Nothing is raised on a line the diff did not touch**, at any severity —
+   including a line an earlier round already read and passed.
+3. **A new finding on unchanged code is a finding about the PREVIOUS review.**
+   If a pass genuinely believes it has found something the last round missed,
+   that is a miss, and it is reported as one: name what was missed, and name
+   why the earlier pass did not see it. If you cannot say why it was missed,
+   you have not found a defect — you have found a new opinion, and an opinion
+   that arrives on round three about code that was clean on round two is the
+   ratchet this skill exists to stop.
+
+The measured failure this prevents: three rounds over one artifact published
+75, then 71, then 84 findings while the code was converging. Almost none were
+re-raised items. They were new nits about machinery the previous round had
+caused to be written, each defensible on its own and worthless in aggregate.
+
 ## Preamble
 
 ```bash
@@ -190,6 +218,7 @@ Rank by severity, then confidence. Cap the main table at 10.
 | Any P1 | `CAUTION`; `REJECT` only if a P1 is unexplained and unbounded |
 | Any P0 | `REJECT` unless it has a landed mitigation |
 | A lens or the verification did not run | Drop one step and say so |
+| Every prior finding resolved, nothing new on changed lines | `APPROVE`, one line, and stop |
 
 Only evidence read at the source moves a finding. Author reputation, green
 CI, diff size, and the overall posture do not.
@@ -200,8 +229,12 @@ CI, diff size, and the overall posture do not.
   against the commit the last report names) and the previous finding count.
 - Verify only the prior P0/P1: does the reproduction still reproduce? Mark
   each *fixed / still open / regressed*.
-- **Raise nothing below P1 at all — new or previously listed.** Not "nothing
-  already listed": that weaker rule is the measured failure. Across the stack
+- **Raise nothing at all on unchanged code**, per Idempotence above. New
+  findings are admissible only against lines this round's diff actually
+  changed, and a belief that unchanged code hides something is reported as a
+  miss by the previous review, with its reason, or not at all.
+- **Raise nothing below P1 even on changed code.** Not "nothing already
+  listed": that weaker rule is the measured failure. Across the stack
   this skill replaces, P0/P1 fell 29 → 13 → 15 while P2/P3 ROSE 46 → 58 → 69,
   and almost none of those were re-raised — they were fresh nits about
   machinery the previous round had caused to be written. A new low-severity

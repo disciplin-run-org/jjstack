@@ -811,9 +811,24 @@ check "the skill caps the parallel agents" "grep -qE '\*\*4\*\*, one message' '$
 check "recall-max is opt-in, not the default" "grep -q -- '--deep' '$SK'"
 check "a P2-only posture never REJECTs" "grep -q 'never .REJECT' '$SK'"
 check "a re-review that does not shrink returns STOP" "grep -q 'the verdict is .STOP' '$SK'"
+# IDEMPOTENCE. Same code in, same answer out - the property the measured
+# failure violated: 75, then 71, then 84 findings over one converging artifact,
+# almost none of them re-raised.
+check "the skill states idempotence as a governing property" \
+      "grep -q '^## Idempotence' '$SK'"
+check "…once all findings are resolved, the next review says so and stops" \
+      "grep -qi 'the next review says so and stops' '$SK'"
+check "…nothing is raised on a line the diff did not touch" \
+      "grep -q 'Raise nothing at all on unchanged code' '$SK'"
+check "…and a new finding on unchanged code is a MISS by the previous review" \
+      "grep -q 'finding about the PREVIOUS review' '$SK'"
+# The weaker rule this replaces must be gone, or both are in the file and the
+# reader follows whichever they reach first.
+check "…and the weaker 'only what was already listed' rule is gone" \
+      "! grep -q 'Raise nothing below P1 that the previous report already listed' '$SK'"
 # The ratchet the post-mortem measured: barring only RE-RAISED nits still lets
 # a round invent unlimited NEW ones about the fix it just asked for.
-check "a re-review raises nothing below P1 at all, new or listed"       "grep -q 'Raise nothing below P1 at all' '$SK'"
+check "a re-review raises nothing below P1 even on changed code" "grep -q 'Raise nothing below P1 even on changed code' '$SK'"
 check "…and says so rather than only barring what was already listed"       "! grep -q 'Raise nothing below P1 that the previous report already listed' '$SK'"
 # The lint and the post must share a shell or the gate is decorative, and the
 # skill must say so where a reader would otherwise split them for CLAUDE.md.
