@@ -25,13 +25,17 @@
 #   jjstack-review-dep-inventory [repo-dir] [--depth N] [--tsv]
 #
 # Output: grouped human table, or `ecosystem<TAB>name<TAB>version<TAB>manifest`
-# with --tsv. Version is `*` when the manifest declares no constraint.
+# with --tsv. Version is `*` when the manifest declares no constraint, and
+# `workspace` when the constraint is inherited from a workspace root that was
+# not part of this scan — never `*`, which would say the opposite.
 #
 # Exit: 0 inventory printed, 2 usage error, 3 no dependency manifests found
 #       (this repo declares nothing external — a normal, safe state),
-#       4 manifests found but NOTHING parsed (the inventory FAILED — a parser
-#       bug or an unsupported dialect; the stale-API phase must not treat this
-#       as "no dependencies").
+#       4 the inventory FAILED and must not be read as "no dependencies":
+#         either NOTHING parsed at all, or ANY ONE manifest declared
+#         dependencies that could not be parsed. Per-manifest, because a
+#         repo-wide test made detection depend on what else was in the repo —
+#         one unreadable manifest beside one readable one exited 0.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -52,7 +56,10 @@ while [ $# -gt 0 ]; do
       DEPTH="$2"; shift 2 ;;
     --tsv)   TSV=1; shift ;;
     -h|--help)
-      sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+      # The whole leading comment block, computed. A hardcoded line range
+      # truncated three sibling tools mid-sentence the moment their header grew
+      # — and this header just grew by a dozen lines.
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  [ -z "$REPO" ] && REPO="$1" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
@@ -77,6 +84,8 @@ TMPD="$(mktemp -d "${TMPDIR:-/tmp}/jjdep.XXXXXXXXXX")" || {
 trap 'rm -rf "$TMPD"' EXIT
 MANIFESTS="$TMPD/manifests"
 ROWS="$TMPD/rows"
+WSDEPS="$TMPD/workspace-deps"
+UNPARSED="$TMPD/unparsed"
 
 # Vendored trees carry thousands of foreign manifests. They are not this repo's
 # declared dependencies, and including them would bury the ones that are.
@@ -86,14 +95,62 @@ find "$REPO" -maxdepth "$DEPTH" \
      -o -name __pycache__ -o -name .next -o -name .tox \) -prune -o \
   -type f \( -name package.json -o -name 'requirements*.txt' -o -name pyproject.toml \
      -o -name go.mod -o -name Cargo.toml -o -name Gemfile -o -name pom.xml \) \
-  -print 2>/dev/null | sort > "$MANIFESTS"
+  -print0 2>/dev/null | sort -z > "$MANIFESTS"
 
 if [ ! -s "$MANIFESTS" ]; then
   echo -e "${YEL}warn${RST}  no dependency manifests found under $REPO (depth $DEPTH)" >&2
   exit 3
 fi
+# Count NUL-separated records, not lines: a manifest path may contain a newline.
+MANIFEST_N=$(tr -cd '\0' < "$MANIFESTS" | wc -c | tr -d ' ')
 
 : > "$ROWS"
+: > "$WSDEPS"
+: > "$UNPARSED"
+
+# ---------------------------------------------------------------------------
+# "Did this manifest declare anything?" — asked along a path the PARSER never
+# takes, which is the whole point.
+#
+# The failure state used to be repo-wide: exit 4 fired only when NOTHING
+# anywhere parsed. A legal-TOML `pyproject.toml` the parser cannot read, sitting
+# beside a working `package.json`, emitted only the npm row and exited 0 — the
+# green light the exit-4 comment says it exists to prevent, with detection
+# depending on what ELSE happens to be in the repo. Alone, the same file
+# correctly exits 4.
+#
+# So each manifest is judged on its own, by a DELIBERATELY COARSER grammar than
+# the parser: it recognises a dependency declaration in shapes the parser may
+# not be able to read (either quote style, any table prefix, any nesting). If
+# the coarse reader sees a declaration and the parser produced no row, that
+# manifest FAILED — whatever else the repo contains. The bias is one-directional
+# on purpose: a detector that under-detects loses a check, while one that
+# over-detects would fail a manifest that genuinely declares nothing.
+declares_deps() {   # $1 = file, $2 = manifest kind → exit 0 when it declares one
+  awk -v kind="$2" '
+    { buf = buf $0 "\n" }
+    END {
+      if (kind == "package.json")
+        ok = (buf ~ /"(dependencies|devDependencies|peerDependencies|optionalDependencies)"[ \t\r\n]*:[ \t\r\n]*\{[^{}]*"[^"]+"[ \t\r\n]*:/)
+      else if (kind == "requirements")
+        ok = (buf ~ /(^|\n)[ \t]*[A-Za-z0-9_]/)
+      else if (kind == "pyproject")
+        ok = (buf ~ /(^|\n)[ \t]*(dependencies|requires)[ \t]*=[ \t]*\[[ \t\r\n]*["\047]/) ||
+             (buf ~ /\[project\.optional-dependencies\][^\[]*=[ \t]*\[[ \t\r\n]*["\047]/) ||
+             (buf ~ /\[tool\.poetry[^]\n]*(dependencies|dev-dependencies)\][ \t]*\r?\n([ \t]*(#[^\n]*)?\r?\n)*[ \t]*[A-Za-z0-9_."\047-]+[ \t]*=/)
+      else if (kind == "go.mod")
+        ok = (buf ~ /(^|\n)require[ \t]*\([ \t\r\n]*[A-Za-z0-9]/) ||
+             (buf ~ /(^|\n)require[ \t]+[^ \t\n(]+[ \t]+[^ \t\n]/)
+      else if (kind == "Cargo.toml")
+        ok = (buf ~ /\[[^]\n]*dependencies[^]\n]*\][ \t]*\r?\n([ \t]*(#[^\n]*)?\r?\n)*[ \t]*[A-Za-z0-9_."\047-]+[ \t]*=/)
+      else if (kind == "Gemfile")
+        ok = (buf ~ /(^|\n)[ \t]*gem[ \t]+["\047]/)
+      else if (kind == "pom.xml")
+        ok = (buf ~ /<dependency>/ && buf ~ /<artifactId>/)
+      exit (ok ? 0 : 1)
+    }
+  ' "$1"
+}
 
 parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-alternation  $4=display path
   # Handles both pretty-printed and compact package.json: a dependency block may
@@ -223,35 +280,75 @@ parse_gomod() {
 }
 
 parse_cargo() {
-  JJDEP_MANIFEST="$2" awk '
-    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
-    # `[dependencies.tokio]` is how every dependency that needs features or a
-    # git source is written, and the generic `/^\[/ { indep = 0 }` closed the
-    # section on it and dropped the entry entirely. Flushing on the NEXT header
-    # (and at END) keeps the version that follows on its own line.
+  JJDEP_MANIFEST="$2" JJDEP_WSFILE="${3:-/dev/null}" JJDEP_DIR="$4" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"]; wsfile = ENVIRON["JJDEP_WSFILE"]
+            dir  = ENVIRON["JJDEP_DIR"]; subver = "*" }
+    # A dependency table is decided by the TOML table-path GRAMMAR, not by a
+    # list of spellings. Round 1 matched `[dependencies]`; round 2 added
+    # `[dependencies.tokio]`; both times the fix was exactly as wide as the
+    # spelling reported, and `[workspace.dependencies]` (stable since Rust 1.64
+    # and the standard multi-crate layout) and `[target.\047cfg(unix)\047.dependencies]`
+    # still parsed to nothing. The rule instead: split the table path into
+    # segments, and it is a dependency table when the LAST segment is one of the
+    # three dependency keywords, or a per-crate sub-table when the
+    # SECOND-TO-LAST is. That covers every prefix anyone can write, including
+    # ones nobody has written yet.
+    function isdepkw(x) { return (x == "dependencies" || x == "dev-dependencies" || x == "build-dependencies") }
+    # Segment on "." OUTSIDE quotes: a cfg predicate is a quoted segment and may
+    # itself contain dots (`target.\047cfg(target_os = "linux")\047.dependencies`).
+    function segs(hdr, out,   i, c, n, cur, q) {
+      n = 0; cur = ""; q = ""
+      for (i = 1; i <= length(hdr); i++) {
+        c = substr(hdr, i, 1)
+        if (q != "") { cur = cur c; if (c == q) q = ""; continue }
+        if (c == "\047" || c == "\"") { q = c; cur = cur c; continue }
+        if (c == ".") { out[++n] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      out[++n] = cur
+      return n
+    }
+    function unq(x) { sub(/^["\047]/, "", x); sub(/["\047]$/, "", x); return x }
+    function emit(n, v) {
+      if (n == "" || n == "workspace") return
+      print "cargo\t" n "\t" (v == "" ? "*" : v) "\t" file
+      # A workspace-root pin is also the constraint every member inherits, so
+      # record where it was declared for the resolution pass.
+      if (isws && v != "" && v != "*" && v != "workspace")
+        printf "%s\t%s\t%s\n", dir, n, v >> wsfile
+    }
     function flushsub() {
-      if (insub && subname != "") print "cargo\t" subname "\t" (subver == "" ? "*" : subver) "\t" file
+      if (insub && subname != "") emit(subname, subver)
       insub = 0; subname = ""; subver = "*"
     }
-    /^\[(dependencies|dev-dependencies|build-dependencies)\.[A-Za-z0-9_-]+\][[:space:]]*$/ {
-      flushsub()
-      subname = $0; sub(/^\[[a-z-]+\./, "", subname); sub(/\].*$/, "", subname)
-      insub = 1; subver = "*"; indep = 0; next
+    /^[[:space:]]*\[/ {
+      flushsub(); indep = 0
+      hdr = $0
+      sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*(#.*)?$/, "", hdr)
+      ns = segs(hdr, P)
+      isws = (unq(P[1]) == "workspace")
+      if (isdepkw(unq(P[ns]))) indep = 1
+      else if (ns >= 2 && isdepkw(unq(P[ns-1]))) { insub = 1; subname = unq(P[ns]); subver = "*" }
+      next
     }
-    /^\[(dependencies|dev-dependencies|build-dependencies)\]/ { flushsub(); indep = 1; next }
-    /^\[/ { flushsub(); indep = 0 }
+    # `serde = { workspace = true }` declares a constraint — the one the
+    # workspace root pins — so it is NEVER version `*`, which the header
+    # documents as "declares no constraint". §4.5b would then be told to look up
+    # the docs "for that version" with no version at all.
+    insub && /^[[:space:]]*workspace[[:space:]]*=[[:space:]]*true/ { subver = "workspace"; next }
     insub && /^[[:space:]]*version[[:space:]]*=[[:space:]]*"/ {
       subver = $0; sub(/^[^"]*"/, "", subver); sub(/".*$/, "", subver); next
     }
     indep && /=/ {
       n = $0; sub(/[[:space:]]*=.*/, "", n); gsub(/[[:space:]"]/, "", n)
       v = "*"
-      if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]*"/)) {
+      if ($0 ~ /workspace[[:space:]]*=[[:space:]]*true/) v = "workspace"
+      else if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]*"/)) {
         v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
       } else if (match($0, /=[[:space:]]*"[^"]*"/)) {
         v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
       }
-      if (n != "") print "cargo\t" n "\t" (v == "" ? "*" : v) "\t" file
+      emit(n, v)
     }
     END { flushsub() }
   ' "$1"
@@ -320,21 +417,75 @@ parse_pom() {
 # newline, which no transport can carry through a line-oriented TSV — so those
 # are folded to spaces here, in pure parameter expansion, before the value ever
 # leaves the shell.
-while read -r m; do
+# NUL-delimited, because that is the only delimiter a path cannot contain. Read
+# line-by-line, a path holding a NEWLINE arrived already split across two
+# records — so the newline fold below could never fire, and the two halves were
+# then looked up as two nonexistent manifests. `find -print0` / `read -d ''`
+# delivers the path whole, which is what makes the fold a live guard rather than
+# a comment about one.
+while IFS= read -r -d '' m; do
   rel="${m#"$REPO"/}"
   rel="${rel//$'\t'/ }"; rel="${rel//$'\n'/ }"; rel="${rel//$'\r'/ }"
+  mdir="${rel%/*}"; [ "$mdir" = "$rel" ] && mdir="."
+  before=$(wc -l < "$ROWS")
   case "$(basename "$m")" in
-    package.json)     parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' "$rel" ;;
-    requirements*.txt) parse_requirements "$m" "$rel" ;;
-    pyproject.toml)   parse_pyproject "$m" "$rel" ;;
-    go.mod)           parse_gomod "$m" "$rel" ;;
-    Cargo.toml)       parse_cargo "$m" "$rel" ;;
-    Gemfile)          parse_gemfile "$m" "$rel" ;;
-    pom.xml)          parse_pom "$m" "$rel" ;;
+    package.json)     kind=package.json;  parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' "$rel" ;;
+    requirements*.txt) kind=requirements; parse_requirements "$m" "$rel" ;;
+    pyproject.toml)   kind=pyproject;     parse_pyproject "$m" "$rel" ;;
+    go.mod)           kind=go.mod;        parse_gomod "$m" "$rel" ;;
+    Cargo.toml)       kind=Cargo.toml;    parse_cargo "$m" "$rel" "$WSDEPS" "$mdir" ;;
+    Gemfile)          kind=Gemfile;       parse_gemfile "$m" "$rel" ;;
+    pom.xml)          kind=pom.xml;       parse_pom "$m" "$rel" ;;
   esac >> "$ROWS"
+  if [ "$(wc -l < "$ROWS")" = "$before" ] && declares_deps "$m" "$kind"; then
+    printf '%s\n' "$rel" >> "$UNPARSED"
+  fi
 done < "$MANIFESTS"
 
+# WORKSPACE INHERITANCE. `serde = { workspace = true }` is a constraint declared
+# one directory up; the member manifest is not where it lives. Resolve each
+# inherited row against the NEAREST ancestor manifest that pins that name, and
+# leave the marker in place when no such root was scanned — never `*`, which the
+# header defines as "declares no constraint" and would send §4.5b looking up
+# documentation for no version at all.
+if [ -s "$ROWS" ]; then
+  awk -F'\t' -v wsf="$WSDEPS" '
+    function dirof(p,   d) { d = p; if (d ~ /\//) sub(/\/[^\/]*$/, "", d); else d = "."; return d }
+    BEGIN {
+      while ((getline l < wsf) > 0) {
+        if (split(l, a, "\t") < 3) continue
+        k = a[2]; WN[k]++; WD[k, WN[k]] = a[1]; WV[k, WN[k]] = a[3]
+      }
+      close(wsf)
+    }
+    {
+      if ($3 == "workspace") {
+        d = dirof($4); best = -1; bv = ""
+        for (i = 1; i <= WN[$2]; i++) {
+          wd = WD[$2, i]
+          if (wd == "." || wd == d || index(d "/", wd "/") == 1) {
+            if (length(wd) > best) { best = length(wd); bv = WV[$2, i] }
+          }
+        }
+        if (bv != "") $3 = bv
+      }
+      print $1 "\t" $2 "\t" $3 "\t" $4
+    }
+  ' "$ROWS" > "$ROWS.resolved" && mv "$ROWS.resolved" "$ROWS"
+fi
+
 sort -u -o "$ROWS" "$ROWS"
+
+# A manifest that declares dependencies and yielded none is a parse FAILURE, and
+# it is one whether or not some other manifest in the repo parsed fine.
+if [ -s "$UNPARSED" ]; then
+  echo -e "${YEL}warn${RST}  $(wc -l < "$UNPARSED") manifest(s) declare dependencies that could NOT be parsed:" >&2
+  sed 's/^/        /' "$UNPARSED" >&2
+  echo -e "${YEL}    ${RST}  do not read this inventory as complete: every library declared in those" >&2
+  echo -e "${YEL}    ${RST}  files is missing from it, and §4.5b would cap each finding at 50 while" >&2
+  echo -e "${YEL}    ${RST}  the phase reports success. Raise the parse failure as a P2 tooling finding." >&2
+  exit 4
+fi
 
 # Exit 4, NOT 3. The two states are opposite conclusions and were sharing a code:
 # exit 3 means "this repo declares no external dependencies", which the review
@@ -358,7 +509,7 @@ if ! awk -F'\t' 'NF != 4 { bad++ } END { exit (bad > 0) }' "$ROWS"; then
 fi
 
 if [ ! -s "$ROWS" ]; then
-  echo -e "${YEL}warn${RST}  $(wc -l < "$MANIFESTS") manifest(s) found under $REPO but NO declared dependencies parsed —" >&2
+  echo -e "${YEL}warn${RST}  $MANIFEST_N manifest(s) found under $REPO but NO declared dependencies parsed —" >&2
   echo -e "${YEL}    ${RST}  this is a parse failure, not an empty repo; do not read it as 'no dependencies'" >&2
   exit 4
 fi
@@ -376,5 +527,5 @@ awk -F'\t' '
     printf "  %-40s %-20s %s\n", $2, $3, $4 }
 ' "$ROWS"
 echo
-echo -e "${GRN}inventoried${RST} $(wc -l < "$ROWS") declared dependencies from $(wc -l < "$MANIFESTS") manifest(s)"
+echo -e "${GRN}inventoried${RST} $(wc -l < "$ROWS") declared dependencies from $MANIFEST_N manifest(s)"
 exit 0
