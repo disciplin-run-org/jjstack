@@ -104,9 +104,17 @@ size-based file skipping; ~40% of PRs auto-approved; a four-tier severity model
 
 One control here is worth noting as *convergent evidence rather than a new idea*:
 low-confidence findings are hidden but expandable, so a team can see "which
-comments Macroscope considered leaving." That is our 40–59 appendix, arrived at
-independently. No change needed; it is reassurance that the appendix is a sound
-design and not an indulgence.
+comments Macroscope considered leaving." That is our `Unconfirmed` and
+`Demoted (prior decision)` sections, arrived at independently. No change needed;
+it is reassurance that keeping a doubted finding visible-but-ranked-down is a
+sound design and not an indulgence.
+
+*(This originally pointed at a 40–59 confidence tier that no longer exists. It
+was removed when verification became enrich-only: a finding is no longer scored
+into a band, it is confirmed, tagged unconfirmed, demoted by prior decision, or
+retired through the committed baseline. The guard in `test/smoke.sh` that caught
+this stale pointer matches a bare word deliberately, so a rephrasing cannot dodge
+it — including this note, which is why it is worded the way it is.)*
 
 ## The claims against Greptile — and why the headline does not survive
 

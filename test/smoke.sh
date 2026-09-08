@@ -1762,11 +1762,16 @@ check "skill spells out that reason is a closed vocabulary" \
       "grep -q 'never free text' '$SKR'"
 # Every disposition and reason the skill's mapping table names must exist in
 # the script's vocabulary — the class of defect, not just the two instances.
-for tok in report unconfirmed demoted defer suppress out-of-scope; do
+# Check each token INDEPENDENTLY against the script's vocabulary line. The first
+# version pinned the whole literal string, so legitimately ADDING a disposition
+# (`refuted`, from the stale-API work) broke every assertion at once. A guard
+# that fails when the thing it guards is correctly extended is the wrong shape:
+# it trains people to edit the guard rather than read it.
+for tok in report unconfirmed demoted defer suppress out-of-scope refuted; do
   check "skill disposition \`$tok\` exists in the script" \
-        "grep -q 'split(\"report unconfirmed demoted defer suppress out-of-scope\"' '$BIN/jjstack-review-triage'"
+        "grep -m1 -o 'split(\"report[^\"]*\"' '$BIN/jjstack-review-triage' | grep -qw -- '$tok'"
 done
-for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate; do
+for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate stale-api; do
   check "skill reason \`$tok\` exists in the script vocabulary" \
         "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
 done
