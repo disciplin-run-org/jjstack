@@ -562,6 +562,22 @@ check "fixture really has a blank line" "grep -qx '' '$NL/src.py'"
 check "missing file exits 3"          "[ $rc -eq 3 ]"
 "$BIN/jjstack-number-lines" "$NL/src.py" --start abc >/dev/null 2>&1; rc=$?
 check "non-numeric --start exits 2"   "[ $rc -eq 2 ]"
+# PR #16 review (P2): an unconditional `exit 0` masked awk failure. Reproduced
+# by writing to /dev/full — awk fails, output is empty, and the old script
+# still exited 0. A lens then reports zero findings on a file it never read,
+# which is indistinguishable from a clean file. /dev/full fails for root too,
+# so this does not depend on the uid the suite runs as.
+check "positive control: /dev/full exists" "[ -c /dev/full ]"
+"$BIN/jjstack-number-lines" "$NL/src.py" > /dev/full 2>/dev/null; rc=$?
+check "a failed write exits 4, not 0"  "[ $rc -eq 4 ]"
+# Positive control — the SAME command to a working sink must still succeed, or
+# "exits 4" could just mean the script is broken for every input.
+"$BIN/jjstack-number-lines" "$NL/src.py" > /dev/null 2>&1; rc=$?
+check "positive control: same command to a good sink exits 0" "[ $rc -eq 0 ]"
+# --help is delimited by the first non-comment line, not a hardcoded range, so
+# editing the header block above cannot silently truncate it.
+check "--help reaches the end of the header" \
+  "\"$BIN/jjstack-number-lines\" --help 2>/dev/null | grep -q 'No color red anywhere'"
 rm -rf "$NL"
 
 echo "== 5e. review-normalize (finding struct + confidence) =="
@@ -601,6 +617,91 @@ check "positive control: same record + remediation passes" "[ $rc -eq 0 ]"
 printf 'not json at all\n' > "$RN/junk.jsonl"
 "$BIN/jjstack-review-normalize" "$RN/junk.jsonl" >/dev/null 2>&1; rc=$?
 check "unparseable line exits 1, not a crash" "[ $rc -eq 1 ]"
+
+# --- PR #16 review (P0): one bad field discarded the ENTIRE findings set ---
+# `float(None)` raises TypeError, only ValueError was caught, and valid findings
+# were printed only AFTER the loop — so a single `"confidence": null` emptied
+# stdout, never wrote the malformed file, and exited 1: the same code as "some
+# malformed". Two real P0s vanished with no record. The fixture puts the bad
+# line BETWEEN two good ones so buffering-vs-streaming is actually exercised.
+P0A='{"lens":"security","file":"a.py","start_line":12,"severity":"P0","confidence":0.9,"message":"valid p0 one","quote":"os.system(x)","explanation":"e","remediation":"r"}'
+P0B='{"lens":"perf","file":"c.py","start_line":5,"severity":"P0","confidence":0.8,"message":"valid p0 two","quote":"q2","explanation":"e","remediation":"r"}'
+NULLCONF='{"lens":"security","file":"b.py","start_line":3,"severity":"P0","confidence":null,"message":"null conf","quote":"q","explanation":"e","remediation":"r"}'
+printf '%s\n%s\n%s\n' "$P0A" "$NULLCONF" "$P0B" > "$RN/nullconf.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/nullconf.jsonl" \
+  --invalid-out "$RN/nullconf.bad.jsonl" > "$RN/nullconf.out" 2>/dev/null; rc=$?
+check "a null confidence does not crash the run"   "[ $rc -eq 1 ]"
+check "the surrounding valid P0s survive"          "[ \"\$(wc -l < '$RN/nullconf.out')\" -eq 2 ]"
+check "the P0 BEFORE the bad line is emitted"      "grep -q 'valid p0 one' '$RN/nullconf.out'"
+check "the P0 AFTER the bad line is emitted"       "grep -q 'valid p0 two' '$RN/nullconf.out'"
+check "the malformed finding IS recorded"          "[ -s '$RN/nullconf.bad.jsonl' ]"
+check "the malformed record names the bad field"   "grep -q 'confidence' '$RN/nullconf.bad.jsonl'"
+# Positive control — the identical three lines with a real confidence must all
+# pass, or "2 survived" could mean the guard rejects far more than null.
+printf '%s\n%s\n%s\n' "$P0A" "${NULLCONF/\"confidence\":null/\"confidence\":0.5}" "$P0B" \
+  > "$RN/nullconf.ok.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/nullconf.ok.jsonl" > "$RN/nullconf.ok.out" 2>/dev/null; rc=$?
+check "positive control: same 3 lines with a number all pass" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/nullconf.ok.out')\" -eq 3 ]"
+# The other JSON shapes float() rejects with TypeError, not ValueError. Assert
+# on the RECORD, not just rc=1: a crash also exits 1, so an rc-only check would
+# read a total loss as a clean rejection — the exact confusion this P0 was.
+for bad in '[]' '{}' 'true' '"high"'; do
+  printf '%s\n' "${P0A/\"confidence\":0.9/\"confidence\":$bad}" > "$RN/conf.jsonl"
+  rm -f "$RN/conf.bad.jsonl"
+  "$BIN/jjstack-review-normalize" "$RN/conf.jsonl" --invalid-out "$RN/conf.bad.jsonl" \
+    > "$RN/conf.out" 2>/dev/null; rc=$?
+  check "confidence $bad is rejected AND recorded" \
+    "[ $rc -eq 1 ] && [ ! -s '$RN/conf.out' ] && [ -s '$RN/conf.bad.jsonl' ]"
+done
+
+# PR #16 review (P2): the non-blank guard only inspected `str`, so a null quote
+# and an empty-list remediation walked through the schema gate this file exists
+# to enforce — a P1 reaching the report with an uncheckable location.
+printf '%s\n' "${GOOD/\"quote\":\"os.system(x)\"/\"quote\":null}" > "$RN/nullquote.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/nullquote.jsonl" > "$RN/nullquote.out" 2>"$RN/nullquote.err"; rc=$?
+check "a null quote is rejected"        "[ $rc -eq 1 ] && [ ! -s '$RN/nullquote.out' ]"
+check "the null quote is REPORTED"      "grep -q 'quote' '$RN/nullquote.err'"
+printf '%s\n' "${GOOD/\"remediation\":\"r\"/\"remediation\":[]}" > "$RN/emptyrem.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/emptyrem.jsonl" > "$RN/emptyrem.out" 2>/dev/null; rc=$?
+check "an empty-list remediation is rejected" "[ $rc -eq 1 ] && [ ! -s '$RN/emptyrem.out' ]"
+# Positive control — a numeric 0 is CONTENT, not blankness. If the guard were
+# written as a plain falsiness test it would reject this, and the two checks
+# above would be proving nothing about null in particular.
+printf '%s\n' "${GOOD/\"confidence\":75/\"confidence\":0}" > "$RN/zeroconf.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/zeroconf.jsonl" > "$RN/zeroconf.out" 2>/dev/null; rc=$?
+check "positive control: a zero confidence is content, not blank" \
+  "[ $rc -eq 0 ] && grep -q '\"confidence\": 0.0' '$RN/zeroconf.out'"
+
+# PR #16 review (P0, second half): a crash must NOT share exit 1 with "some
+# malformed", or the caller reads total loss as partial success. Load the
+# script as a module and force an exception the per-finding handler does not
+# catch — the only way to reach the last-resort guard from outside.
+cat > "$RN/internal.py" <<'PYEOF'
+import importlib.machinery, importlib.util, sys
+
+loader = importlib.machinery.SourceFileLoader("jjnorm", sys.argv[1])
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+
+def boom(_obj):
+    raise RuntimeError("injected internal failure")
+
+
+if "--patch" in sys.argv:
+    mod.normalize_finding = boom
+sys.exit(mod.main([sys.argv[2]]))
+PYEOF
+python3 "$RN/internal.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" --patch \
+  >/dev/null 2>&1; rc=$?
+check "an internal error exits 3, never 1"  "[ $rc -eq 3 ]"
+# Positive control — the same harness without the injected fault must exit 0,
+# proving 3 came from the fault and not from the loading shim.
+python3 "$RN/internal.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" \
+  >/dev/null 2>&1; rc=$?
+check "positive control: unpatched harness exits 0" "[ $rc -eq 0 ]"
 rm -rf "$RN"
 
 echo "== 5f. review-baseline (suppression, never deletion) =="
@@ -658,7 +759,64 @@ printf '{"version":2,"rules":[{"id":"per*"}],"fingerprints":[]}\n' > "$RB/noreas
 check "rule without a reason exits 2" "[ $rc -eq 2 ]"
 printf '{"version":2,"rules":[{"reason":"because"}],"fingerprints":[]}\n' > "$RB/catchall.json"
 "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/catchall.json" >/dev/null 2>&1; rc=$?
-check "rule matching everything exits 2" "[ $rc -eq 2 ]"
+check "reason-only rule exits 2" "[ $rc -eq 2 ]"
+# PR #16 review (P1): the guard above only asked whether a field was PRESENT
+# and non-empty, so a universal glob sailed through and muted the whole repo at
+# exit 0 — the posture table then read "nothing above P3" and emitted APPROVE.
+# Reproduced with {"path":"*"}: 0 active, 2 suppressed, rc=0. `file` and
+# `rule_id` are aliases `rule_matches` honours, so they are covered too.
+for wk in path file id rule_id message; do
+  printf '{"version":2,"jjstack_version":"x","rules":[{"%s":"*","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$wk" > "$RB/wild.json"
+  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild.json" \
+    > "$RB/wild.out" 2>/dev/null; rc=$?
+  check "wildcard rule on $wk exits 2, suppresses nothing" \
+    "[ $rc -eq 2 ] && [ ! -s '$RB/wild.out' ]"
+done
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"**","message":"*","reason":"noisy"}],"fingerprints":[]}\n' > "$RB/wild2.json"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/wild2.json" >/dev/null 2>&1; rc=$?
+check "several universal globs together still exit 2" "[ $rc -eq 2 ]"
+# Positive control — the guard must reject WILDCARDS, not globbing itself. A
+# real glob with a discriminating character has to keep working, or the tests
+# above would pass just as well with the rules feature switched off.
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"b*","reason":"policy: b.py is vendored"}],"fingerprints":[]}\n' > "$RB/narrow.json"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/narrow.json" \
+  --active-only > "$RB/narrow.out" 2>/dev/null; rc=$?
+check "positive control: a real glob still suppresses" \
+  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/narrow.out')\" -eq 1 ]"
+check "positive control: it suppressed only b.py" "grep -q 'shell injection' '$RB/narrow.out'"
+
+# PR #16 review (P1): `generate` built the doc from scratch with `rules: []` and
+# opened "w", so following SKILL.md's documented flow for EXTENDING a baseline
+# destroyed every human-written rule and previously accepted fingerprint.
+printf '{"version":2,"jjstack_version":"x","rules":[{"id":"docs","reason":"human policy exclusion"}],"fingerprints":[{"hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","reason":"accepted by a human last quarter"}]}\n' \
+  > "$RB/prior.json"
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "second pass" \
+  -o "$RB/prior.json" >/dev/null 2>&1; rc=$?
+check "generate onto an existing baseline exits 0" "[ $rc -eq 0 ]"
+check "the human-written RULE survives"      "grep -q 'human policy exclusion' '$RB/prior.json'"
+check "the prior fingerprint survives"       "grep -q 'accepted by a human last quarter' '$RB/prior.json'"
+check "the new findings are appended"        "[ \"\$(grep -c 'sha256:' '$RB/prior.json')\" -eq 3 ]"
+# Positive control — merging must be idempotent, not merely additive: a second
+# identical run must add nothing, or "3 fingerprints" would grow every run.
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "third pass" \
+  -o "$RB/prior.json" >/dev/null 2>&1
+check "positive control: re-running adds no duplicates" \
+  "[ \"\$(grep -c 'sha256:' '$RB/prior.json')\" -eq 3 ]"
+check "positive control: the merged file is still valid to apply" \
+  "\"$BIN/jjstack-review-baseline\" apply '$RB/findings.jsonl' --baseline '$RB/prior.json' >/dev/null 2>&1; [ \$? -ne 2 ]"
+# --replace is the explicit way to start over; nothing else may truncate.
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "fresh" \
+  -o "$RB/prior.json" --replace >/dev/null 2>&1
+check "--replace drops the prior rules on purpose" \
+  "! grep -q 'human policy exclusion' '$RB/prior.json'"
+# A corrupt existing baseline must stop the run, not be silently overwritten.
+printf 'this is not json\n' > "$RB/corrupt.json"
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "x" \
+  -o "$RB/corrupt.json" >/dev/null 2>&1; rc=$?
+check "generate refuses to clobber a corrupt baseline" "[ $rc -eq 2 ]"
+check "the corrupt baseline is left untouched" "grep -q 'this is not json' '$RB/corrupt.json'"
+check "no .tmp file is left behind" "[ ! -f '$RB/corrupt.json.tmp' ]"
 printf '{"version":1,"rules":[],"fingerprints":[]}\n' > "$RB/v1.json"
 "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/v1.json" >/dev/null 2>&1; rc=$?
 check "unsupported baseline version exits 2" "[ $rc -eq 2 ]"

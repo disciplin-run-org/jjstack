@@ -20,7 +20,8 @@
 #               feeding a CHUNK of a large file so the L-numbers still match
 #               the real file: --start 100 renders "L100:" first.
 #
-# Exit: 0 numbered, 2 usage error, 3 file not found.
+# Exit: 0 numbered, 2 usage error, 3 file not found, 4 awk could not read the
+#       file or write the output (never reported as a clean empty run).
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -39,7 +40,9 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     -h|--help)
-      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+      # Delimit the header by the first non-comment line, not a hardcoded line
+      # number: editing the doc block above must not silently truncate --help.
+      awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
       exit 0 ;;
     -)  [ -z "$SRC" ] && SRC="-" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
         shift ;;
@@ -63,5 +66,15 @@ if [ "$SRC" = "-" ]; then
   awk -v s="$START" '{ printf "L%d: %s\n", NR + s - 1, $0 }'
 else
   awk -v s="$START" '{ printf "L%d: %s\n", NR + s - 1, $0 }' "$SRC"
+fi
+rc=$?
+
+# Propagate awk's status. An unconditional `exit 0` here reported SUCCESS on
+# empty output when awk could not read the file or could not write the result —
+# and a review lens fed an empty prompt reports zero findings, which is
+# indistinguishable from a clean file. Failing loudly is the whole point.
+if [ "$rc" -ne 0 ]; then
+  echo -e "${CYA}error${RST} awk exited $rc numbering ${SRC} — refusing to report success on incomplete output" >&2
+  exit 4
 fi
 exit 0

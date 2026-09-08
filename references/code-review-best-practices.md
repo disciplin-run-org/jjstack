@@ -90,9 +90,19 @@ baseline — never by dropping dimensions and never by deleting findings.
     the list — which is exactly this skill's shape (Phase 4 casts wide, Phase 5
     verifies and tiers). That is why jjstack's main-report bar can sit lower
     than Anthropic's 80: the quote, failure-scenario and remediation
-    requirements do the filtering the higher bar would otherwise do, and
-    everything below the bar is demoted to a labelled section rather than
-    deleted.
+    requirements do the filtering the higher bar would otherwise do, and a
+    low-confidence finding is RANKED down, never deleted. Be precise about
+    where it lands, because 5f's three lower sections mean three different
+    things and only one of them is about confidence:
+    - low confidence stays in **`Findings`**, sorted below its betters by 5e's
+      severity-then-confidence rank. There is no confidence-tiered section;
+    - **`Unconfirmed`** is for a finding nobody could confirm at the source
+      (tag `llm-unconfirmed`) — a statement about the *verification*, not the
+      score;
+    - **`Demoted (prior decision)`** is for a class this team has repeatedly
+      rejected. It is explicitly NOT a confidence bucket: routing a
+      low-confidence finding there fabricates a prior decision that was never
+      taken.
 
 ## Enrich, do not suppress (the SkillSpector architecture)
 

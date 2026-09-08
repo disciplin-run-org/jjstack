@@ -30,13 +30,23 @@ Two normalizations, both deterministic and both defensive:
 
 An invalid finding is NEVER silently dropped: it is echoed to the invalid
 stream with the reason, counted, and the exit code says so. Silent deletion is
-the defect this whole change set exists to remove.
+the defect this whole change set exists to remove. Three mechanisms make that
+claim true rather than aspirational:
+
+  * every per-finding failure is caught as (ValueError, TypeError). A model
+    emitting `"confidence": null` used to raise an UNCAUGHT TypeError out of
+    float(), aborting the run and taking every valid finding with it;
+  * valid findings are STREAMED to stdout as they normalize, not buffered
+    until the end, so nothing already validated can be lost by a later line;
+  * an internal error gets its own exit code (3), so "the tool crashed" can
+    never be misread by a caller as "some findings were malformed" (1). The
+    invalid stream is still written on that path.
 
 Usage:
   jjstack-review-normalize <findings.jsonl|-> [--invalid-out FILE]
 
 Exit: 0 all findings valid, 1 at least one invalid (valid ones still emitted),
-      2 usage error or unreadable input.
+      2 usage error or unreadable input, 3 internal error (partial output).
 
 No color red anywhere — unreadable on the target terminal.
 """
@@ -82,11 +92,41 @@ def warn(msg):
     print(f"{YEL}warn{RST}  {msg}", file=sys.stderr)
 
 
+def is_blank(value):
+    """True for a required field carrying no content, whatever its JSON type.
+
+    `""` is not the only way a model says nothing: `null`, `[]` and `{}` all
+    reach the report as an uncheckable quote or an empty remediation, which is
+    exactly what this schema gate exists to stop. A number (0 included) is
+    content, so `start_line: 0` and `confidence: 0` are NOT blank.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    return False
+
+
 def normalize_confidence(value):
-    """0-100 or 0.0-1.0 in, 0.0-1.0 out. Raises ValueError on non-numerics."""
-    conf = float(value)
+    """0-100 or 0.0-1.0 in, 0.0-1.0 out. Raises ValueError on non-numerics.
+
+    Type-checked BEFORE coercion on purpose: float(None) and float([]) raise
+    TypeError, not ValueError, and an uncaught TypeError here aborted the whole
+    run — losing every valid finding and never writing the invalid stream.
+    """
+    # bool is an int subclass; `"confidence": true` is nonsense, not 1.0.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"confidence is not a number: {value!r}")
+    try:
+        conf = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"confidence is not a number: {value!r}")
     if conf != conf:  # NaN
         raise ValueError("confidence is NaN")
+    if conf in (float("inf"), float("-inf")):
+        raise ValueError("confidence is infinite")
     if conf > 2.0:
         conf = conf / 100.0
     return min(1.0, max(0.0, conf))
@@ -106,11 +146,7 @@ def normalize_finding(obj):
     missing = [f for f in REQUIRED if f not in obj]
     if missing:
         raise ValueError("missing required field(s): " + ", ".join(missing))
-    blank = [
-        f
-        for f in REQUIRED
-        if isinstance(obj[f], str) and not obj[f].strip()
-    ]
+    blank = [f for f in REQUIRED if is_blank(obj[f])]
     if blank:
         raise ValueError("empty required field(s): " + ", ".join(blank))
 
@@ -161,22 +197,42 @@ def main(argv):
         err(f"cannot read {src}: {exc}")
         return 2
 
-    valid, invalid = [], []
-    for lineno, line in enumerate(raw.splitlines(), 1):
-        if not line.strip():
-            continue
+    # STREAM the valid ones. Buffering them until after the loop meant a single
+    # bad line could take the whole run's output with it.
+    n_valid, invalid = 0, []
+    internal = None
+    try:
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                invalid.append(
+                    {"line": lineno, "reason": f"not JSON: {exc}", "raw": line}
+                )
+                continue
+            try:
+                out = normalize_finding(obj)
+            except (ValueError, TypeError) as exc:
+                # TypeError is caught with ValueError deliberately: a null or
+                # list where a scalar belongs is malformed INPUT, not a crash.
+                invalid.append({"line": lineno, "reason": str(exc), "raw": line})
+                continue
+            print(json.dumps(out, sort_keys=True))
+            n_valid += 1
+    except Exception as exc:  # last-resort guard: never exit 1 on a crash
+        internal = exc
+    finally:
         try:
-            obj = json.loads(line)
-        except json.JSONDecodeError as exc:
-            invalid.append({"line": lineno, "reason": f"not JSON: {exc}", "raw": line})
-            continue
-        try:
-            valid.append(normalize_finding(obj))
-        except ValueError as exc:
-            invalid.append({"line": lineno, "reason": str(exc), "raw": line})
+            sys.stdout.flush()
+        except OSError:
+            pass
 
-    for f in valid:
-        print(json.dumps(f, sort_keys=True))
+    if internal is not None:
+        # The invalid stream is still written below, then exit 3 — a code no
+        # caller can confuse with "some findings were malformed".
+        err(f"internal error after {n_valid} valid finding(s): {internal!r}")
 
     if invalid:
         payload = "".join(json.dumps(r, sort_keys=True) + "\n" for r in invalid)
@@ -193,11 +249,11 @@ def main(argv):
             f"{len(invalid)} malformed finding(s) NOT emitted — fix the emitter, "
             "do not delete the findings"
         )
-        print(f"{GRN}normalized{RST} {len(valid)} finding(s)", file=sys.stderr)
-        return 1
+        print(f"{GRN}normalized{RST} {n_valid} finding(s)", file=sys.stderr)
+        return 3 if internal is not None else 1
 
-    print(f"{GRN}normalized{RST} {len(valid)} finding(s)", file=sys.stderr)
-    return 0
+    print(f"{GRN}normalized{RST} {n_valid} finding(s)", file=sys.stderr)
+    return 3 if internal is not None else 0
 
 
 if __name__ == "__main__":

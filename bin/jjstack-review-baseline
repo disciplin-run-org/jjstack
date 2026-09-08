@@ -25,7 +25,12 @@ Fail-closed choices, all of them in the direction of showing more:
   * a mandatory non-empty `reason` on every entry — an unexplained suppression
     is indistinguishable from a bug;
   * a rule that names no matching field at all (reason only) is REJECTED
-    rather than silently matching every finding;
+    rather than silently matching every finding — and so is one that names a
+    field but fills it with a universal glob (`{"path": "*"}`), which is the
+    same "matches everything" rule wearing a disguise;
+  * `generate` EXTENDS an existing baseline: human-written rules and already
+    accepted fingerprints are merged forward, never rewritten away. Pass
+    --replace to deliberately start over;
   * a baseline written by a different jjstack version makes fingerprints inert
     (they cannot be trusted to still mean what they meant); rules still apply.
     Override with --allow-version-drift once you have re-read them;
@@ -38,6 +43,7 @@ while editing the finding's own line does.
 
 Usage:
   jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]
+                                   [--replace]
   jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE
                                 [--active-only] [--allow-version-drift]
 
@@ -82,6 +88,25 @@ def jjstack_version():
             return fh.read().strip()
     except OSError:
         return "unknown"
+
+
+# Every key `rule_matches` below will actually read. The guard MUST inspect the
+# same set: checking only id/path/message let `{"file": "*"}` — an alias
+# `rule_matches` honours — walk straight past it.
+RULE_MATCH_KEYS = ("id", "rule_id", "path", "file", "message")
+
+
+def is_universal_glob(pattern):
+    """True when an fnmatch pattern can only ever match — i.e. it says nothing.
+
+    `*` is not "present and non-empty means the human named something": a rule
+    keyed on `*` matches every finding in the repo, which is the one thing the
+    non-empty guard exists to prevent. A pattern built only from wildcards
+    (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
+    rejected the same way an absent field is.
+    """
+    p = pattern.strip()
+    return p == "" or set(p) <= {"*", "?"}
 
 
 def fingerprint(finding):
@@ -151,10 +176,22 @@ def load_baseline(path):
         if not str(r.get("reason", "")).strip():
             err(f"rules[{i}] has no reason — every suppression must be explained")
             return None
-        if not any(str(r.get(k, "")).strip() for k in ("id", "path", "message")):
+        named = {
+            k: str(r.get(k, "")).strip()
+            for k in RULE_MATCH_KEYS
+            if str(r.get(k, "")).strip()
+        }
+        if not named:
             err(
                 f"rules[{i}] names none of id/path/message — a rule that matches "
                 "every finding is never what you meant"
+            )
+            return None
+        if all(is_universal_glob(v) for v in named.values()):
+            shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
+            err(
+                f"rules[{i}] states only universal glob(s) ({shown}) — a rule "
+                "that matches every finding is never what you meant"
             )
             return None
 
@@ -205,10 +242,14 @@ def rule_matches(rule, finding):
 
 def cmd_generate(argv):
     src, out_path, reason = None, DEFAULT_BASELINE, None
+    replace = False
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--reason":
+        if a == "--replace":
+            replace = True
+            i += 1
+        elif a == "--reason":
             if i + 1 >= len(argv):
                 err("--reason needs TEXT")
                 return 2
@@ -231,17 +272,45 @@ def cmd_generate(argv):
             return 2
 
     if src is None:
-        err("usage: jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]")
+        err(
+            "usage: jjstack-review-baseline generate <findings.jsonl|-> "
+            "--reason TEXT [-o FILE] [--replace]"
+        )
         return 2
     if reason is None or not reason.strip():
         err("--reason is mandatory — an unexplained suppression is indistinguishable from a bug")
         return 2
 
+    # EXTEND, do not truncate. SKILL.md documents this command for "creating or
+    # extending a baseline"; building the doc from scratch with `rules: []` and
+    # opening "w" destroyed every human-written rule and previously accepted
+    # fingerprint on the second run. Merging is the only reading of "extending"
+    # that does not lose the reasons a human typed.
+    old_rules, old_fps, old_version = [], [], None
+    if os.path.exists(out_path) and not replace:
+        loaded = load_baseline(out_path)
+        if loaded is None:
+            err(
+                f"refusing to overwrite {out_path}: the existing baseline did not "
+                "load (see above). Fix it, or pass --replace to start fresh."
+            )
+            return 2
+        old_rules, old_fps, old_version = loaded
+        here = jjstack_version()
+        if old_fps and old_version != here:
+            warn(
+                f"existing baseline was written by jjstack {old_version}, this is "
+                f"{here} — merging re-stamps the version, which REACTIVATES those "
+                f"{len(old_fps)} fingerprint(s) for `apply`. Re-read them."
+            )
+
     findings = read_findings(src)
     if findings is None:
         return 2
 
-    entries, seen = [], set()
+    entries = list(old_fps)
+    seen = {str(f.get("hash", "")) for f in old_fps}
+    added = 0
     for f in findings:
         h = fingerprint(f)
         if h in seen:
@@ -256,22 +325,35 @@ def cmd_generate(argv):
                 "reason": reason,
             }
         )
+        added += 1
 
     doc = {
         "version": BASELINE_VERSION,
         "jjstack_version": jjstack_version(),
-        "rules": [],
+        "rules": old_rules,
         "fingerprints": entries,
     }
+    # Write-then-rename: a failure part-way through must not leave the caller
+    # with a truncated baseline, which reads as "nothing was ever accepted".
+    tmp_path = out_path + ".tmp"
     try:
-        with open(out_path, "w", encoding="utf-8") as fh:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=2, sort_keys=True)
             fh.write("\n")
+        os.replace(tmp_path, out_path)
     except OSError as exc:
         err(f"cannot write {out_path}: {exc}")
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         return 2
 
-    print(f"{GRN}baseline{RST} {len(entries)} fingerprint(s) → {out_path}", file=sys.stderr)
+    print(
+        f"{GRN}baseline{RST} +{added} new, {len(entries)} fingerprint(s), "
+        f"{len(old_rules)} rule(s) kept → {out_path}",
+        file=sys.stderr,
+    )
     return 0
 
 
