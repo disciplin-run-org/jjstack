@@ -1068,9 +1068,123 @@ check "vendor-path report emits an ADVISORY"       "grep -q 'ADVISORY' '$TRI/adv
 "$BIN/jjstack-review-triage" "$TRI/nope.tsv" > /dev/null 2>&1
 rc=$?
 check "missing ledger exits 3" "[ $rc -eq 3 ]"
+
+# --- REGRESSION: dedup absorbed a reported P0 into a suppressed P3 ----------
+# The three invariants used to run PER ROW, BEFORE dedup, and dedup kept only
+# the first-seen row. Two findings at one location whose claims share an
+# opening phrase share a fingerprint, so a baseline-suppressed P3 sorted first
+# SWALLOWED a reported P0: TALLY report=0 suppress=1, exit 0, rendered as a
+# suppressed P3 — under a header promising every finding was on the page.
+# Invariant 3 never fired, because the P0 row itself said `report`. The
+# suppression happened by ABSORPTION, not by violation.
+{
+  row P3 20 src/a.py:10 style    suppress baseline 'the request handler does not validate the incoming field length'
+  row P0 95 src/a.py:10 security report   -        'the request handler does not validate the incoming token allowing auth bypass'
+} > "$TRI/absorb.tsv"
+"$BIN/jjstack-review-triage" "$TRI/absorb.tsv" --out "$TRI/absorb.md" > "$TRI/absorb.out" 2>&1
+rc=$?
+check "merged group is not suppressed (exit 0)"    "[ $rc -eq 0 ]"
+check "merge keeps the HIGHEST severity"           "grep -q '| P0 | 95 |' '$TRI/absorb.md'"
+check "merge keeps the WEAKEST disposition"        "grep -q 'report=1 unconfirmed=0 demoted=0 defer=0 suppress=0' '$TRI/absorb.out'"
+check "absorbed P0 lands in the reported section"  "grep -q 'allowing auth bypass' '$TRI/absorb.md'"
+check "suppressed section no longer holds the P0"  "! grep -q 'field length' '$TRI/absorb.md'"
+check "the merge itself is audited on the page"    "grep -q 'P3 → P0' '$TRI/absorb.md'"
+check "the merge records the disposition change"   "grep -q 'suppress → report' '$TRI/absorb.md'"
+# POSITIVE CONTROL 4 — proof that the post-dedup pass genuinely runs on the
+# MERGED record and not on the first-seen row. The vendor/generated advisory
+# lives in that same pass, and it is the one signal a per-row implementation
+# provably gets wrong: a vendor finding first seen as `suppress` that only
+# becomes `report` through the merge emitted NO advisory before this fix, and
+# emits one now. Same collision recipe as the absorption case, on a vendor path.
+{
+  row P3 20 vendor/lib/x.js:5 style    suppress baseline 'the bundled helper concatenates the incoming request value without any check'
+  row P1 88 vendor/lib/x.js:5 security report   -        'the bundled helper concatenates the incoming request value into a shell command'
+} > "$TRI/vendmerge.tsv"
+"$BIN/jjstack-review-triage" "$TRI/vendmerge.tsv" --out "$TRI/vendmerge.md" > /dev/null 2> "$TRI/vendmerge.err"
+check "POSITIVE CONTROL: merged-up vendor report warns after the merge" \
+      "grep -q 'vendor/lib/x.js:5 (vendor) is reported' '$TRI/vendmerge.err'"
+# Defence in depth: an all-suppressed group whose merged severity is P0 must
+# never render. The per-row check already rejects this input, and the merged
+# check rejects it again — invariant 3 must hold on both sides of the collapse.
+{
+  row P3 20 src/e.py:7 style    suppress baseline 'the parser accepts a header value without any bound'
+  row P0 91 src/e.py:7 security suppress baseline 'the parser accepts a header value without checking the signature'
+} > "$TRI/absorb2.tsv"
+"$BIN/jjstack-review-triage" "$TRI/absorb2.tsv" --out "$TRI/absorb2.md" > /dev/null 2> "$TRI/absorb2.err"
+rc=$?
+check "an all-suppressed merge reaching P0 is rejected" "[ $rc -eq 4 ]"
+check "merged P0 rejection renders nothing"             "[ ! -f '$TRI/absorb2.md' ]"
+# A group that agrees changes nothing, so it must NOT be listed as a merge —
+# otherwise the Merges section is noise and nobody reads the real entries.
+check "an agreeing dedup is not reported as a merge" "grep -q 'merges-raised=0' '$TRI/good.out'"
+
+# --- REGRESSION: an unescaped `|` in a claim shifted the markdown table -----
+# `lenslist()` already stripped `|` from the lens column, so the hazard was
+# known for one field and missed for the other. A claim quoting `a || b`
+# produced a 9-cell row against a 7-cell header and renderers dropped the
+# overflow, making the finding text unreadable in the committed artifact.
+row P2 50 src/x.py:3 correctness report - 'the guard uses a || b when it should use a && b' > "$TRI/pipe.tsv"
+"$BIN/jjstack-review-triage" "$TRI/pipe.tsv" --out "$TRI/pipe.md" > /dev/null 2>&1
+check "pipe in a claim is escaped for the table" "grep -q 'a \\\\|\\\\| b' '$TRI/pipe.md'"
+# POSITIVE CONTROL 5 — count the cells a renderer would actually see: strip
+# the escapes, then the row must have exactly 7 cells like its header.
+cells=$(grep 'src/x.py:3' "$TRI/pipe.md" | sed 's/\\|//g' | awk -F'|' '{print NF-2}')
+check "POSITIVE CONTROL: escaped row still renders 7 cells" "[ '$cells' = 7 ]"
+check "the claim text survives intact"                      "grep -q 'when it should use a && b' '$TRI/pipe.md'"
+
+# --- REGRESSION: "write the complete merged set" was enforced nowhere -------
+# A TSV of nothing but comments rendered six `_none_` sections and exited 0 —
+# a ledger certifying "every finding is on this page" while listing none.
+# Phase 5d already emits findings.adjudicated.jsonl, so completeness is a
+# deterministic count, not a promise.
+printf '# nothing but a comment\n\n' > "$TRI/empty.tsv"
+adj() { printf '{"lens":"%s","file":"%s","start_line":%s,"severity":"%s","confidence":0.9,"message":"%s","quote":"q","explanation":"e","remediation":"r"}\n' "$1" "$2" "$3" "$4" "$5"; }
+{
+  adj security src/a.py 10 P0 'auth bypass'
+  adj perf     src/b.py 4  P2 'n+1 query'
+} > "$TRI/adjudicated.jsonl"
+"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --out "$TRI/empty.md" > /dev/null 2> "$TRI/empty.err"
+rc=$?
+check "an empty ledger still exits 0 unreconciled" "[ $rc -eq 0 ]"
+check "empty unreconciled ledger warns it certifies nothing" "grep -q 'certifies nothing' '$TRI/empty.err'"
+check "unreconciled header does not claim completeness"      "grep -q 'was NOT verified' '$TRI/empty.md'"
+# POSITIVE CONTROL 6 — the same empty ledger against a real adjudicated set
+# must refuse to render and name every finding that left without a disposition.
+"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --reconcile "$TRI/adjudicated.jsonl" \
+  --out "$TRI/recon.md" > /dev/null 2> "$TRI/recon.err"
+rc=$?
+check "POSITIVE CONTROL: a dropped finding fails reconciliation (exit 4)" "[ $rc -eq 4 ]"
+check "reconciliation names the missing location"  "grep -q 'src/a.py:10' '$TRI/recon.err'"
+check "failed reconciliation renders nothing"      "[ ! -f '$TRI/recon.md' ]"
+# The complete ledger reconciles, and only then does the page claim completeness.
+{
+  row P0 90 src/a.py:10 security report -            'auth bypass'
+  row P2 50 src/b.py:4  perf     defer  pre-existing 'n+1 query'
+} > "$TRI/full.tsv"
+"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/adjudicated.jsonl" \
+  --out "$TRI/full.md" > /dev/null 2>&1
+rc=$?
+check "a complete ledger reconciles (exit 0)"          "[ $rc -eq 0 ]"
+check "reconciled header states it is a checked fact"  "grep -q 'checked fact, not a promise' '$TRI/full.md'"
+check "reconciled ledger names its adjudicated source" "grep -q 'reconciled against' '$TRI/full.md'"
+# A missing adjudicated file is exit 3, the same clean signal as a missing ledger.
+"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/nope.jsonl" > /dev/null 2>&1
+rc=$?
+check "missing --reconcile file exits 3" "[ $rc -eq 3 ]"
+
+# --- REGRESSION: --help truncated at a hardcoded line number ----------------
+# `sed -n '2,43p'` cut the block before the Exit line, so the documented exit
+# codes — including the exit 4 the whole design hinges on — never reached the
+# user. The range is now computed from the comment block itself.
+"$BIN/jjstack-review-triage" --help > "$TRI/help.txt" 2>&1
+check "--help documents the exit codes"      "grep -q 'Exit: 0 ledger valid' '$TRI/help.txt'"
+check "--help documents exit 4"              "grep -q '4 validation failed' '$TRI/help.txt'"
+check "--help documents --reconcile"         "grep -q -- '--reconcile' '$TRI/help.txt'"
+# POSITIVE CONTROL 7 — the help must stop at the code, not spill the script.
+check "POSITIVE CONTROL: --help stops at the comment block" "! grep -q 'set -uo pipefail' '$TRI/help.txt'"
 rm -rf "$TRI"
 
-echo "== 7d. value-less flags must be a usage error, never a hang =="
+echo "== 7e. value-less flags must be a usage error, never a hang =="
 # Reproduced before the fix: every one of these returned 124 under `timeout 5`.
 # `shift 2` is a silent no-op when only one argument remains, and `set -e` is
 # deliberately off in these scripts, so the arg loop spun on the same argv
@@ -1101,7 +1215,7 @@ timeout 30 "$BIN/jjstack-review-sweep" --repo "$SWV" --cmd "true" >/dev/null 2>&
 check "a flag WITH a value still works (exit 0)" "[ $rc -eq 0 ]"
 rm -rf "$SWV"
 
-echo "== 7e. --help is derived from the header, not a hand-kept line range =="
+echo "== 7f. --help is derived from the header, not a hand-kept line range =="
 # A `sed -n 'A,Bp'` range drifts the moment a line is added: calibration's help
 # stopped mid-sentence and dropped the Usage and Exit sections that usage() sends
 # the reader to find, while its two siblings leaked `set -uo pipefail` and the
@@ -1121,7 +1235,7 @@ probe_help=$(printf 'Usage:\nset -uo pipefail\n')
 check "help leak guard actually catches leaked source" \
   "printf '%s' \"\$probe_help\" | grep -qE 'set -uo pipefail'"
 
-echo "== 7f. review-sweep PARTIAL: a check set with no test runner is not clean =="
+echo "== 7g. review-sweep PARTIAL: a check set with no test runner is not clean =="
 # Detection only adds a tool that is installed, so a Python project with ruff but
 # no pytest ran the linter alone and printed SWEEP CLEAN at exit 0 — while the
 # pass's headline promise (catching the fix that turned a passing test red) went
@@ -1147,7 +1261,7 @@ check "same plan plus a test runner exits 0"       "[ $rc -eq 0 ]"
 check "with a test runner it says SWEEP CLEAN"     "printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
 rm -rf "$SHIM" "$PSW"
 
-echo "== 7g. the docs must not teach the deleted rescoring/deletion model =="
+echo "== 7h. the docs must not teach the deleted rescoring/deletion model =="
 # The single guard that existed (a grep for 'delta=' on one command's stdout)
 # could not see PROSE, which is exactly how four written copies of the deleted
 # model survived a fix that corrected the tool. This guard reads the documents.
@@ -1183,7 +1297,7 @@ check "prose guard actually catches the deleted model" \
   "grep -qF -- 'decay out' '$probe_doc'"
 rm -f "$probe_doc"
 
-echo "== 7h. --mark is actually invoked, not just implemented =="
+echo "== 7i. --mark is actually invoked, not just implemented =="
 # The marker is the ONLY thing separating the reviewer's auto-fixes from the
 # user's own uncommitted work. Before this fix `--mark` appeared nowhere but the
 # script and this test file, so post-pass 2 always fell back to HEAD and diffed
@@ -1205,6 +1319,35 @@ printf 'cat ~/.claude/skills/gstack/review/SKILL.md\njjstack-review-autofix-diff
 check "ordering guard actually catches a late marker" \
   "[ \$(grep -n 'jjstack-review-autofix-diff --mark' '$probe_ord' | head -1 | cut -d: -f1) -gt \$(grep -n 'cat ~/.claude/skills/gstack/review/SKILL.md' '$probe_ord' | head -1 | cut -d: -f1) ]"
 rm -f "$probe_ord"
+echo "== 7j. review skill/reference internal consistency =="
+# The triage invariants are stated in three places. When they disagree, the
+# reference wins by accident: Phase 5.11 cat-s it BEFORE stating any rule, so a
+# wrong disposition name there is the first thing the model reads. `appendix`
+# was never a disposition and 5f never defined such a section.
+AIK="$DIR/references/vendor-lessons-aikido.md"
+SKR="$DIR/skills/review/SKILL.md"
+check "no phantom \`appendix\` disposition in the reference" "! grep -q 'appendix' '$AIK'"
+check "no phantom \`appendix\` disposition in the skill"     "! grep -q 'appendix' '$SKR'"
+check "reference states invariant 2 with a real disposition" \
+      "grep -q 'not-reachable\` is legal only with \`defer\` or \`demoted\`' '$AIK'"
+check "reference cross-references the triage phase (5.11)"   "grep -q 'Phase 5.11 now files' '$AIK'"
+# The skill told the model to write the baseline's free-text reason into a
+# column the validator gates on a closed vocabulary — exit 4 on a ledger that
+# said exactly what the skill asked for, and Phase 5.11 offers no way out.
+check "skill maps the baseline row to the \`baseline\` code" \
+      "grep -q 'committed baseline (§5d) | \`suppress\` | \`baseline\` |' '$SKR'"
+check "skill spells out that reason is a closed vocabulary" \
+      "grep -q 'never free text' '$SKR'"
+# Every disposition and reason the skill's mapping table names must exist in
+# the script's vocabulary — the class of defect, not just the two instances.
+for tok in report unconfirmed demoted defer suppress out-of-scope; do
+  check "skill disposition \`$tok\` exists in the script" \
+        "grep -q 'split(\"report unconfirmed demoted defer suppress out-of-scope\"' '$BIN/jjstack-review-triage'"
+done
+for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate; do
+  check "skill reason \`$tok\` exists in the script vocabulary" \
+        "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
+done
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
