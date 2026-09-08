@@ -153,5 +153,15 @@ n=$(wc -l < "$TMP/rows")
   fi
 } > "$OUT/prior-dismissals.md"
 
+# Machine-readable, for the same reason rows 1 and 5 already read facts: an
+# empty history exits 0 too, so a row rendered from the rc said "ran —
+# dismissals loaded" over an artifact reading "No prior dismissals".
+{
+  echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
+  echo "DISMISSALS_STATUS=$([ "$n" -gt 0 ] && echo loaded || echo none)"
+  echo "DISMISSED_N=$n"
+  echo "DISMISSAL_RECORDS=$(wc -l < "$TMP/jsonl" | tr -d ' ')"
+} > "$OUT/dismissals-status.env"
+
 echo -e "${GRN}dismissals${RST} $n fingerprint(s) → $OUT/prior-dismissals.md"
 exit 0

@@ -156,9 +156,14 @@ limit of this review.
 
 Phase 0 **executes the reviewed repo's own tooling** — its `npm run` scripts,
 `make` targets, `test/smoke.sh`. That is the point on a tree you trust, and it
-is not appropriate on one you do not. To review without executing anything, run
-the sweep with `--typecheck none --lint none --test none` and note in the report
-that all three categories are IN SCOPE.
+is not appropriate on one you do not. To review without executing anything, add
+`--typecheck none --lint none --test none` to the same
+`jjstack-review-preflight` command above — the flags pass straight through to
+the sweep — and note in the report that all three categories are IN SCOPE.
+
+`--base` must name a ref this repo can resolve. A typo is refused with a named
+error before any pass runs, rather than producing an evidence pack full of empty
+artifacts that read like clean results.
 
 ---
 

@@ -86,6 +86,21 @@ if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
 fi
 REPO="${REPO%/}"
 
+# An explicitly named --base MUST resolve, and the check happens here — before
+# the --out redirect, so a bad ref leaves no artifact behind to be read as a
+# result. A typo like `orgin/main` otherwise made merge-base fail, `git diff`
+# fail with its stderr discarded and its rc ignored, and the report render
+# "Empty diff — nothing to map" at exit 0: a green pre-flight row over a map
+# that was never built. An unresolvable ref is a usage error, and it is named.
+if [ -n "$BASE" ] && [ -z "$DIFF_FILE" ]; then
+  if ! git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
+    echo -e "${CYA}error${RST} --base '$BASE' does not resolve to a commit in $REPO" >&2
+    echo -e "${YEL}hint${RST}  check the spelling and that the ref is fetched:" >&2
+    echo -e "${YEL}hint${RST}    git -C '$REPO' rev-parse --verify '$BASE'" >&2
+    exit 2
+  fi
+fi
+
 # --out adapter. Phase 0's jjstack-review-preflight calls this with `--out DIR`
 # and then reads DIR/blast-radius.md; stdout is the default so the tool stays
 # usable by hand. --dry-run must not create the directory: the pre-flight pack
@@ -100,7 +115,26 @@ if [ -n "$OUT" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+
+# The pre-flight index used to render row 2 from this script's exit code alone,
+# so "ran — map built" appeared over an empty map. It now reads these facts, on
+# the same principle rows 1 and 5 already follow: no row may claim more than the
+# artifact beneath it. Written on every exit path, from the EXIT trap.
+BLAST_STATUS="error"; BLAST_SYMBOLS=0; BLAST_MAPPED=0
+BLAST_CONTAINED=0; BLAST_GENERIC=0; BLAST_TRUNCATED=0
+write_blast_status() {
+  [ -n "$OUT" ] && [ -d "$OUT" ] || return 0
+  {
+    echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
+    echo "BLAST_STATUS=$BLAST_STATUS"
+    echo "BLAST_SYMBOLS=$BLAST_SYMBOLS"
+    echo "BLAST_MAPPED=$BLAST_MAPPED"
+    echo "BLAST_CONTAINED=$BLAST_CONTAINED"
+    echo "BLAST_GENERIC=$BLAST_GENERIC"
+    echo "BLAST_TRUNCATED=$BLAST_TRUNCATED"
+  } > "$OUT/blast-status.env"
+}
+trap 'write_blast_status; rm -rf "$TMP"' EXIT
 DIFF="$TMP/diff"
 SOURCE=""
 SCOPE=""
@@ -138,7 +172,13 @@ else
   # case that must work, not the exception.
   MB="$(git -C "$REPO" merge-base "$BASE" HEAD 2>/dev/null)"
   [ -n "$MB" ] || MB="$BASE"
-  git -C "$REPO" diff "$MB" > "$DIFF" 2>/dev/null
+  # rc was discarded here, so a failed diff and a genuinely empty one were the
+  # same thing to every caller. They are not: one is a gap, the other a fact.
+  if ! git -C "$REPO" diff "$MB" > "$DIFF" 2>"$TMP/differr"; then
+    echo -e "${CYA}error${RST} git diff against '$MB' failed in $REPO" >&2
+    sed 's/^/  /' "$TMP/differr" >&2
+    exit 3
+  fi
   SOURCE="git diff \$(git merge-base $BASE HEAD)"
   SCOPE="working tree vs the merge base of \`$BASE\` and HEAD — committed AND uncommitted changes to tracked files. Untracked files are invisible to \`git diff\`, so a brand-new file's symbols are not mapped."
 fi
@@ -157,6 +197,7 @@ if [ ! -s "$DIFF" ]; then
   echo "Empty diff — nothing to map. Read that as \"this scope contains no"
   echo "change\", not as \"the change is contained\": anything outside the scope"
   echo "named above was never looked at."
+  BLAST_STATUS="empty"
   exit 0
 fi
 
@@ -198,6 +239,20 @@ function isshell(p,  b) {
   return (p ~ /\.(sh|bash|zsh|ksh)$/) || (b !~ /\./)
 }
 function isjs(p) { return (p ~ /\.(js|jsx|mjs|cjs|ts|tsx)$/) }
+# A WHOLE-LINE comment declares nothing, in any language. Without this the
+# keyword scan mines `# class Foo` and `// class Foo` exactly as if they were
+# definitions — and the reference doc already promised it did not. The filter
+# is deliberately restricted to lines that are ONLY a comment: stripping a
+# trailing `#` would cut into shell strings and URLs, and over-collecting a
+# real symbol costs one empty grep while dropping one costs a bug.
+function cmtre(p) {
+  if (p ~ /\.(py|rb|pl|r|tf)$/)          return "^[ \t]*#"
+  if (p ~ /\.(js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|kts|scala|cs|c|h|cc|cpp|hpp|hh|php|swift|dart)$/)
+                                        return "^[ \t]*(//|/\\*|\\*[ \t]|\\*$)"
+  if (p ~ /\.(sql|lua|hs|elm|adb|ads)$/) return "^[ \t]*--"
+  if (isshell(p))                       return "^[ \t]*#"
+  return "^[ \t]*(#|//|--)"
+}
 BEGIN {
   # Keyword-capture misfires and shell names that are never worth tracing.
   split("def class func fn function interface struct type trait enum module " \
@@ -213,7 +268,7 @@ BEGIN {
 /^\+\+\+ / {
   p = substr($0, 5); sub(/^[ab]\//, "", p)
   skip = (p ~ /\.(md|markdown|txt|rst|adoc|json|ya?ml|toml|ini|cfg|csv|tsv|lock|svg|html?|xml|po|pot)$/)
-  kw = kwfor(p); shellfile = isshell(p); jsfile = isjs(p)
+  kw = kwfor(p); shellfile = isshell(p); jsfile = isjs(p); cre = cmtre(p)
   next
 }
 /^--- / { next }
@@ -245,6 +300,7 @@ BEGIN {
 /^ / {
   if (skip || kw == "") next
   line = substr($0, 2)
+  if (cre != "" && line ~ cre) next
   if (match(line, "^[ \t]*") && RLENGTH >= 0) ind = RLENGTH
   if (match(line, "(^|[^A-Za-z0-9_])(" kw ")[ \t]+[A-Za-z_][A-Za-z0-9_]*")) {
     m = substr(line, RSTART, RLENGTH)
@@ -262,6 +318,10 @@ BEGIN {
   if (match(line, "^[ \t]*")) chind = RLENGTH; else chind = 0
   if (encsym != "" && chind > encind) { emit(encsym); encsym = "" }
   if (pending_hdr != "") { emit(pending_hdr); pending_hdr = "" }
+
+  # A changed comment is still a change inside the enclosing definition (above),
+  # but the comment line itself declares nothing — never mine it for symbols.
+  if (cre != "" && line ~ cre) next
 
   # keyword-introduced definitions, in the languages that use these keywords
   if (kw != "") {
@@ -307,9 +367,11 @@ echo "- changed files: $TOUCHED_N"
 echo "- definition symbols extracted: $SYM_N"
 # --max-symbols was parsed and validated but never applied, so the loop below
 # was unbounded and the flag was a promise the code did not keep.
+BLAST_SYMBOLS="$SYM_N"
 if [ "$SYM_N" -gt "$MAX_SYMBOLS" ]; then
   head -n "$MAX_SYMBOLS" "$TMP/symbols" > "$TMP/symbols.cap"
   mv "$TMP/symbols.cap" "$TMP/symbols"
+  BLAST_TRUNCATED=1
   echo "- **TRUNCATED**: only the first $MAX_SYMBOLS of $SYM_N symbols were"
   echo "  mapped (\`--max-symbols\`). The rest were NOT checked — a known gap,"
   echo "  not a clean result. Raise the limit to map them."
@@ -318,6 +380,7 @@ echo
 
 if [ "$SYM_N" -eq 0 ]; then
   echo "No definition-shaped changes in this diff — the blast radius is the diff itself."
+  BLAST_STATUS="nosymbols"
   exit 0
 fi
 
@@ -332,15 +395,36 @@ i=0
 while read -r sym; do
   [ -n "$sym" ] || continue
   i=$((i + 1))
+  # Prefix-strip and touched-file filter in ONE awk, with every path handed
+  # over through the ENVIRONMENT rather than spliced into a program.
+  #
+  # This was `sed "s|^$REPO/||"`. A repo path holding a sed metacharacter — a
+  # `[`, a `|`, a `\` — aborted the strip for EVERY symbol, so refs fell to 0
+  # and the report affirmatively printed "Contained — no out-of-diff
+  # references" for a symbol with a live stale caller. That is worse than no
+  # map at all: containment presented as evidence. ENVIRON values are literal
+  # text — no regex, no escape processing, nothing left to quote.
   grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$REPO" 2>/dev/null \
-    | sed "s|^$REPO/||" \
-    | awk -F: -v tf="$TMP/touched" 'BEGIN{while((getline l < tf) > 0) t[l]=1} !($1 in t)' \
+    | BR_PREFIX="$REPO/" BR_TOUCHED="$TMP/touched" awk '
+        BEGIN { pre = ENVIRON["BR_PREFIX"]; plen = length(pre)
+                tf  = ENVIRON["BR_TOUCHED"]
+                while ((getline l < tf) > 0) t[l] = 1 }
+        { if (substr($0, 1, plen) == pre) $0 = substr($0, plen + 1)
+          c = index($0, ":"); if (c == 0) next
+          if (substr($0, 1, c - 1) in t) next
+          print }' \
     > "$TMP/h.$i"
   # Sibling repos: every hit is out-of-diff by construction, so no touched-file
   # filter — but label the repo so a site is never mistaken for a local path.
+  # Same treatment: the sibling path AND its label were both spliced into one
+  # sed expression, on the search and the replacement side respectively.
   for extra in ${ALSO+"${ALSO[@]}"}; do
     grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$extra" 2>/dev/null \
-      | sed "s|^$extra/|($(basename "$extra")) |" >> "$TMP/h.$i"
+      | BR_PREFIX="$extra/" BR_LABEL="($(basename "$extra")) " awk '
+          BEGIN { pre = ENVIRON["BR_PREFIX"]; plen = length(pre)
+                  lab = ENVIRON["BR_LABEL"] }
+          { if (substr($0, 1, plen) == pre) $0 = substr($0, plen + 1)
+            print lab $0 }' >> "$TMP/h.$i"
   done
   refs=$(wc -l < "$TMP/h.$i" | tr -d ' ')
   if [ "$refs" -eq 0 ]; then
@@ -354,6 +438,10 @@ while read -r sym; do
 done < "$TMP/symbols"
 
 MAPPED=$(wc -l < "$TMP/index" | tr -d ' ')
+BLAST_STATUS="mapped"
+BLAST_MAPPED="$MAPPED"
+BLAST_CONTAINED=$(wc -l < "$TMP/contained" | tr -d ' ')
+BLAST_GENERIC=$(wc -l < "$TMP/generic" | tr -d ' ')
 if [ "$MAPPED" -gt 0 ]; then
   echo "## Symbols with out-of-diff references"
   echo

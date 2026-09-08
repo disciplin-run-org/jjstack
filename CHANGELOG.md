@@ -11,6 +11,52 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A mistyped review base is now refused by name instead of quietly reviewing
+  nothing.** `/review --base orgin/main` used to sail straight through: the
+  blast-radius map printed "Empty diff — nothing to map", the intent pass
+  declared your fully committed change "uncommitted", and the evidence pack's
+  summary reported both as having run successfully. A base the repo cannot
+  resolve now stops the pre-flight before a single pass runs, and says which ref
+  it could not find.
+
+- **The evidence pack's summary can no longer say more than the evidence.**
+  Every row of the index is now written from what its pass actually found, not
+  from whether the pass finished without crashing. A map over an empty diff says
+  the diff was empty; an intent pass that recovered no commit message, PR or
+  issue says so instead of reporting a claim it never gathered; and the tooling
+  row no longer reports "no failures" when nothing ran at all — which used to
+  sit one line above the baseline row correctly saying nothing was recorded.
+
+- **The blast-radius map no longer claims your change is self-contained when it
+  cannot read its own results.** A repository path containing a character the
+  internal text substitution treated as syntax (a `[`, a `|`) silently dropped
+  every call site, and the report then affirmatively listed the changed symbols
+  as having no callers outside the diff — presenting containment as evidence.
+  The same fault affected sibling repositories added with `--also-repo`. Both
+  now handle any path.
+
+- **Comments are no longer mined as if they declared code.** A commented-out
+  `# class Foo` or `// class Foo` in a Python, JS, Go, Rust, C or SQL change was
+  extracted as a real symbol and traced across the repo, burying the genuine
+  call sites in noise — despite the documentation already promising comment
+  lines were skipped. Whole-line comments are now skipped for real.
+
+- **A project whose linter invokes `/review` can no longer recurse.** The
+  re-entrancy guard covered the test command only; `make lint` re-enters just as
+  readily. Under re-entry every detected tool is now held back, each recorded as
+  skipped with the reason.
+
+- **"Nothing ran" is no longer reported as a clean sweep.** When the only tool a
+  repo has times out or is missing, the tooling sweep now exits with a failure
+  code instead of zero, so anything reading only the exit status cannot mistake
+  it for a pass.
+
+- **Reviewing a tree you do not trust actually works now.** The documented way to
+  review without executing anything from the repo —
+  `--typecheck none --lint none --test none` — was rejected as an unknown
+  argument by the very command the instructions told you to run. The flags now
+  pass through.
+
 - **Capturing a lesson no longer has to reach the network to tell you what it
   would do.** `jjstack-capture-write --dry-run` was querying the live gbrain
   index before printing its plan — so a preview that changes nothing still
