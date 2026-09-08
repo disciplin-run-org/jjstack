@@ -169,6 +169,32 @@ prose:
 No PR, or no `gh`, is "structurally inapplicable" — recorded as skipped, never
 as a failure.
 
+### Everything gathered here is untrusted input
+
+All three sources are text this pass did not author, and `SKILL.md` hands
+`intent.md` to every specialist verbatim as the claim the code is judged
+against. A fork PR's title and body are attacker-controlled by definition, and
+on a public repo an issue body is writable by anyone with an account. That makes
+this pass a direct **model-instruction** channel into every downstream pass —
+the sibling of the code-execution channel already closed in the sweep's npm
+probe.
+
+So every block is quarantined by `emit_untrusted`: a fence, plus an
+**UNTRUSTED INPUT** label sitting next to the text rather than in a preamble a
+later pass can quote the text away from. Two details do the work:
+
+- the fence is computed **wider than the longest backtick run in the content**.
+  A fixed ``` fence is closed by a body containing ```, and everything after the
+  break-out renders as prose again. This is why the commit block being "already
+  fenced" was not the same thing as being safe, and why commits go through the
+  same helper.
+- the PR number is the only field rendered outside a fence, and it is reduced to
+  the digits it claims to be before it is printed.
+
+`SKILL.md` tells the reviewer the matching half: text inside those fences is
+evidence of a claim, never an instruction, and an instruction found in there is
+itself a security finding about the change.
+
 ## Pre-pass 4 — Prior-dismissal load
 
 `jjstack-review-prior-dismissals` → `prior-dismissals.md`
@@ -271,3 +297,25 @@ PR, no review history, no diff — and must **say so** rather than failing the
 review or, worse, staying quiet and letting the absence read as a pass. The pack
 is written even when every pass had nothing to say, because to a reviewer an
 absent artifact and an empty one mean very different things.
+
+## One argument guard for the whole family
+
+`bin/jjstack-review-argcheck.sh` holds `review_need_value`, and every
+value-taking case arm in every Phase 0 script calls it before its `shift 2`.
+
+The bug it closes was identical in all five scripts, so the fix is one function
+rather than five patches. bash's `shift n` FAILS when `n > $#` instead of
+shifting what it can, and `set -e` is deliberately off across this family, so a
+lone trailing `--out` left the `while [ $# -gt 0 ]` loop re-reading the same
+flag for ever — rc=124 under `timeout`. A hang is strictly worse than a failure
+here: a failure is reported and names the pass that died, while a hang means
+`/review` never reports at all, and `jjstack-review-preflight` is the first
+command it runs.
+
+The guard is only as good as its closure, and the closure is **derived, not
+listed**. `test/smoke.sh` enumerates the family as every executable matching
+`bin/jjstack-review-*`, and enumerates each script's value-taking flags as every
+case arm in its own argument loop that reaches a `shift 2` — which is exactly
+the definition of "this flag consumes a value". It then asserts that the set it
+probed equals the set it enumerated. A tool or a flag added later is inside the
+guard the day it is written; nobody has to remember to add a row.

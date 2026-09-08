@@ -66,6 +66,9 @@
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
+# The ONE shared argument guard; see the file for why it is not five patches.
+. "$(dirname "${BASH_SOURCE[0]}")/jjstack-review-argcheck.sh"
+
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
 OUT=""; REPO=""; TIMEOUT=600; DRY=0; SKIP_TESTS=0
@@ -73,13 +76,13 @@ TC_OVERRIDE=""; LINT_OVERRIDE=""; TEST_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)        OUT="${2:-}"; shift 2 ;;
-    --repo)       REPO="${2:-}"; shift 2 ;;
-    --typecheck)  TC_OVERRIDE="${2:-}"; shift 2 ;;
-    --lint)       LINT_OVERRIDE="${2:-}"; shift 2 ;;
-    --test)       TEST_OVERRIDE="${2:-}"; shift 2 ;;
+    --out)        review_need_value "$1" $# || exit 2; OUT="$2"; shift 2 ;;
+    --repo)       review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
+    --typecheck)  review_need_value "$1" $# || exit 2; TC_OVERRIDE="$2"; shift 2 ;;
+    --lint)       review_need_value "$1" $# || exit 2; LINT_OVERRIDE="$2"; shift 2 ;;
+    --test)       review_need_value "$1" $# || exit 2; TEST_OVERRIDE="$2"; shift 2 ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
-    --timeout)    TIMEOUT="${2:-}"; shift 2 ;;
+    --timeout)    review_need_value "$1" $# || exit 2; TIMEOUT="$2"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
     -h|--help)    sed -n '2,63p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;

@@ -11,6 +11,24 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **`/review` no longer hangs before it prints anything.** Every Phase 0 tool
+  — including `jjstack-review-preflight`, the first command `/review` runs —
+  used to spin for ever when a flag was typed without its value
+  (`--out` at the end of a line, `--base` with nothing after it). The run never
+  reported, so there was no way to tell which pass had stalled. A flag with no
+  value is now a named usage error from a single shared guard, and the test that
+  proves it derives both which tools and which flags it probes from the shipped
+  source, so a tool or flag added later is covered the day it is written.
+
+- **PR and issue text in the evidence pack can no longer talk to the reviewer.**
+  `/review` reads the change's stated intent from your commit messages, the PR
+  body and any referenced issue, and hands that text to every specialist as the
+  claim your code is judged against. On a public repo, an issue body is writable
+  by anyone. All three now arrive quarantined inside a fence that widens to
+  survive text containing its own fence, under an explicit UNTRUSTED INPUT
+  label, and `/review` is told to treat an instruction hidden in there as a
+  security finding about the change rather than as something to obey.
+
 - **A mistyped review base is now refused by name instead of quietly reviewing
   nothing.** `/review --base orgin/main` used to sail straight through: the
   blast-radius map printed "Empty diff — nothing to map", the intent pass

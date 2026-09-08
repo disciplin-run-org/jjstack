@@ -134,7 +134,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent, loads prior dismissals, snapshots the test baseline) whose summary never claims more than the artifact under it, then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, and self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | The deepest pre-landing review in the stack. Opens with a deterministic pre-flight evidence pack (runs your real tooling, maps the diff's callers outside itself, reads the change's stated intent — PR and issue text quarantined as untrusted input, not handed to the reviewer as prose — loads prior dismissals, snapshots the test baseline) whose summary never claims more than the artifact under it, then runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, and self-verifies each finding. Slower and pricier on purpose. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 

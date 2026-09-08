@@ -47,6 +47,9 @@
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
+# The ONE shared argument guard; see the file for why it is not five patches.
+. "$(dirname "${BASH_SOURCE[0]}")/jjstack-review-argcheck.sh"
+
 YEL="\033[33m"; CYA="\033[96m"; RST="\033[0m"
 
 REPO=""; BASE=""; DIFF_FILE=""; MAX_REFS=10; GENERIC=40
@@ -55,16 +58,17 @@ ALSO=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)               REPO="${2:-}"; shift 2 ;;
-    --base)               BASE="${2:-}"; shift 2 ;;
-    --diff-file)          DIFF_FILE="${2:-}"; shift 2 ;;
-    --max-refs)           MAX_REFS="${2:-}"; shift 2 ;;
-    --generic-threshold)  GENERIC="${2:-}"; shift 2 ;;
-    --out)                OUT="${2:-}"; shift 2 ;;
+    --repo)               review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
+    --base)               review_need_value "$1" $# || exit 2; BASE="$2"; shift 2 ;;
+    --diff-file)          review_need_value "$1" $# || exit 2; DIFF_FILE="$2"; shift 2 ;;
+    --max-refs)           review_need_value "$1" $# || exit 2; MAX_REFS="$2"; shift 2 ;;
+    --generic-threshold)  review_need_value "$1" $# || exit 2; GENERIC="$2"; shift 2 ;;
+    --out)                review_need_value "$1" $# || exit 2; OUT="$2"; shift 2 ;;
     --dry-run)            DRY_RUN=1; shift ;;
-    --max-symbols)        MAX_SYMBOLS="${2:-}"; shift 2 ;;
+    --max-symbols)        review_need_value "$1" $# || exit 2; MAX_SYMBOLS="$2"; shift 2 ;;
     --also-repo)
-      if [ -d "${2:-}" ]; then ALSO+=("${2%/}")
+      review_need_value "$1" $# || exit 2
+      if [ -d "$2" ]; then ALSO+=("${2%/}")
       else echo -e "${YEL}warn${RST}  --also-repo not a directory, skipped: ${2:-}" >&2; fi
       shift 2 ;;
     -h|--help)
