@@ -19,11 +19,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   of findings were malformed". Real blocking issues disappeared and nothing said
   so. Findings are now written out as they are checked, a bad field is recorded
   and skipped rather than fatal, and a genuine internal failure has its own exit
-  code so a crash can never be read as partial success.
+  code so a crash can never be read as partial success. This now holds for
+  *any* failure, not just the one that was reported: whatever goes wrong while
+  checking a single finding, that finding is written to the malformed file with
+  the reason and the line number, and the rest of the run continues. The
+  malformed file is also rewritten on every run, so it always describes the run
+  that just finished instead of leaving yesterday's records lying around.
 - **A single baseline entry can no longer mute your whole repo.** A suppression
   rule of `{"path": "*"}` matched every finding, so the review reported nothing
   active and approved the change. Rules must now name something real; a rule
-  made only of wildcards is rejected with an explanation.
+  made only of wildcards is rejected with an explanation. Rules may spell the
+  same thing two ways (`id`/`rule_id`, `path`/`file`); the check now reads
+  whichever spelling actually applies, so a wildcard can no longer hide behind a
+  narrow-looking twin.
 - **Extending a review baseline no longer erases the one you had.** Running the
   documented "extend the baseline" command on a repo that already had one
   rebuilt the file from scratch, throwing away every previously accepted finding

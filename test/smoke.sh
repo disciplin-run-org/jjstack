@@ -585,6 +585,15 @@ echo "== 5e. review-normalize (finding struct + confidence) =="
 # is required at EMISSION time precisely because a finding nobody can act on
 # is not worth a line in the report.
 RN="$(mktemp -d)"
+# Round-2 review: `grep confidence badfile` is a tautology — the record echoes
+# the offending line verbatim in `raw`, so every diagnostic name is already in
+# the file. Assertions about WHAT the tool said must read the `reason` field
+# alone; this helper is the only way to do that without matching the echo.
+reasons_of(){ python3 -c 'import json,sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if line:
+        print(json.loads(line)["reason"])' "$1"; }
 GOOD='{"lens":"security","file":"a.py","start_line":"12","severity":"HIGH","confidence":75,"message":"m","quote":"os.system(x)","explanation":"e","remediation":"r"}'
 # Same record, remediation removed — the ONLY difference, so a rejection here
 # can only be the remediation guard firing.
@@ -635,7 +644,12 @@ check "the surrounding valid P0s survive"          "[ \"\$(wc -l < '$RN/nullconf
 check "the P0 BEFORE the bad line is emitted"      "grep -q 'valid p0 one' '$RN/nullconf.out'"
 check "the P0 AFTER the bad line is emitted"       "grep -q 'valid p0 two' '$RN/nullconf.out'"
 check "the malformed finding IS recorded"          "[ -s '$RN/nullconf.bad.jsonl' ]"
-check "the malformed record names the bad field"   "grep -q 'confidence' '$RN/nullconf.bad.jsonl'"
+# Read the REASON, never the whole record: `raw` echoes the input line, so a
+# grep over the file matches the emitter's own word and not the tool's verdict.
+check "the malformed record names the bad field"   \
+  "reasons_of '$RN/nullconf.bad.jsonl' | grep -q 'confidence'"
+check "the reason names the LINE that poisoned it" \
+  "python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/nullconf.bad.jsonl' | grep -qx 2"
 # Positive control — the identical three lines with a real confidence must all
 # pass, or "2 survived" could mean the guard rejects far more than null.
 printf '%s\n%s\n%s\n' "$P0A" "${NULLCONF/\"confidence\":null/\"confidence\":0.5}" "$P0B" \
@@ -655,13 +669,143 @@ for bad in '[]' '{}' 'true' '"high"'; do
     "[ $rc -eq 1 ] && [ ! -s '$RN/conf.out' ] && [ -s '$RN/conf.bad.jsonl' ]"
 done
 
+# PR #16 review ROUND 2 (P1): the round-1 fix was written exactly as wide as its
+# fixture. `float(10**400)` raises OverflowError — an ArithmeticError named by
+# neither guard — so it escaped the per-finding handler, hit the last-resort
+# guard, BROKE the loop, lost the valid P0 on the next line, and never created
+# --invalid-out. Reproduced: rc=3, 1 of 2 P0s emitted, bad file MISSING.
+BIG="$(printf '9%.0s' $(seq 1 400))"
+BIGCONF="{\"lens\":\"security\",\"file\":\"b.py\",\"start_line\":3,\"severity\":\"P0\",\"confidence\":$BIG,\"message\":\"huge conf\",\"quote\":\"q\",\"explanation\":\"e\",\"remediation\":\"r\"}"
+printf '%s\n%s\n%s\n' "$P0A" "$BIGCONF" "$P0B" > "$RN/bigconf.jsonl"
+rm -f "$RN/bigconf.bad.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/bigconf.jsonl" \
+  --invalid-out "$RN/bigconf.bad.jsonl" > "$RN/bigconf.out" 2>/dev/null; rc=$?
+check "a 400-digit confidence is malformed INPUT, not a crash" "[ $rc -eq 1 ]"
+check "both P0s around a huge confidence survive" \
+  "[ \"\$(wc -l < '$RN/bigconf.out')\" -eq 2 ]"
+check "the P0 AFTER a huge confidence is emitted" "grep -q 'valid p0 two' '$RN/bigconf.out'"
+check "the huge confidence IS recorded"          "[ -s '$RN/bigconf.bad.jsonl' ]"
+check "its reason names confidence, not a crash" \
+  "reasons_of '$RN/bigconf.bad.jsonl' | grep -q 'confidence'"
+
+# The CLASS, not the instance. OverflowError is one exception type; the defect
+# is that ANY exception raised while normalizing ONE finding took the whole run
+# with it. Inject a fault type nothing in the tool anticipates (ZeroDivisionError
+# via a patched normalize_finding) on the MIDDLE line only, and require: the
+# other findings survive, the poisoned line is recorded, and the exit code is
+# the internal one (3) rather than the malformed one (1).
+cat > "$RN/onebad.py" <<'PYEOF2'
+import importlib.machinery, importlib.util, json, sys
+
+loader = importlib.machinery.SourceFileLoader("jjnorm", sys.argv[1])
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+real = mod.normalize_finding
+
+
+def selective(obj):
+    if isinstance(obj, dict) and obj.get("file") == "b.py":
+        return 1 / 0          # a class the tool has never heard of
+    return real(obj)
+
+
+mod.normalize_finding = selective
+sys.exit(mod.main(sys.argv[2:]))
+PYEOF2
+printf '%s\n%s\n%s\n' "$P0A" "$NULLCONF" "$P0B" > "$RN/cls.jsonl"
+rm -f "$RN/cls.bad.jsonl"
+python3 "$RN/onebad.py" "$BIN/jjstack-review-normalize" "$RN/cls.jsonl" \
+  --invalid-out "$RN/cls.bad.jsonl" > "$RN/cls.out" 2>/dev/null; rc=$?
+check "an UNANTICIPATED exception exits 3, not 1" "[ $rc -eq 3 ]"
+check "an unanticipated exception loses no other finding" \
+  "[ \"\$(wc -l < '$RN/cls.out')\" -eq 2 ]"
+check "the finding AFTER the poisoned one is emitted" "grep -q 'valid p0 two' '$RN/cls.out'"
+check "--invalid-out is written on the internal path" "[ -s '$RN/cls.bad.jsonl' ]"
+check "the internal failure names its own line"  \
+  "python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/cls.bad.jsonl' | grep -qx 2"
+# Positive control — the identical harness with NO poisoned file must pass all
+# three, or \"2 survived\" could be the shim rejecting b.py for its own reasons.
+printf '%s\n%s\n' "$P0A" "$P0B" > "$RN/cls.ok.jsonl"
+python3 "$RN/onebad.py" "$BIN/jjstack-review-normalize" "$RN/cls.ok.jsonl" \
+  > "$RN/cls.ok.out" 2>/dev/null; rc=$?
+check "positive control: the same shim passes 2 clean findings" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/cls.ok.out')\" -eq 2 ]"
+
+# PR #16 review ROUND 2 (P2): STREAMING had no coverage at all — reverting the
+# emit to the pre-fix buffered shape left the whole suite green. Streaming is
+# one of the three mechanisms the docstring names, so it gets a test that can
+# only pass if it is real: make the run die while reading a LATER line, and
+# require the finding validated BEFORE it to be on stdout already. Buffered,
+# the list is never printed and stdout is empty.
+cat > "$RN/killread.py" <<'PYEOF3'
+import importlib.machinery, importlib.util, json, sys
+
+loader = importlib.machinery.SourceFileLoader("jjnorm", sys.argv[1])
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+real_loads = json.loads
+calls = []
+
+
+def dying_loads(text, *a, **kw):
+    calls.append(text)
+    if len(calls) > 1:                     # the SECOND line kills the run
+        raise RuntimeError("input died mid-run")
+    return real_loads(text, *a, **kw)
+
+
+json.loads = dying_loads
+try:
+    sys.exit(mod.main(sys.argv[2:]))
+finally:
+    json.loads = real_loads
+PYEOF3
+printf '%s\n%s\n' "$P0A" "$P0B" > "$RN/stream.jsonl"
+rm -f "$RN/stream.bad.jsonl"
+python3 "$RN/killread.py" "$BIN/jjstack-review-normalize" "$RN/stream.jsonl" \
+  --invalid-out "$RN/stream.bad.jsonl" > "$RN/stream.out" 2>/dev/null; rc=$?
+check "a finding validated before a fatal error is ALREADY on stdout" \
+  "grep -q 'valid p0 one' '$RN/stream.out'"
+check "a fatal error mid-run still exits 3" "[ $rc -eq 3 ]"
+check "--invalid-out exists even when the run dies" "[ -f '$RN/stream.bad.jsonl' ]"
+# Positive control — the same shim on a ONE-line file never reaches the fault,
+# so it must exit 0 with that line emitted. Without this, "one line survived"
+# could just be the shim mangling the second record.
+python3 "$RN/killread.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" \
+  > "$RN/stream.ok.out" 2>/dev/null; rc=$?
+check "positive control: the same shim passes a 1-line file" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/stream.ok.out')\" -eq 1 ]"
+
+# PR #16 review ROUND 2 (P2): --invalid-out was opened only inside `if invalid:`,
+# so a clean re-run left the PREVIOUS run's malformed records on disk. The skill
+# points a fixed path at this file; a reader who trusts it sees findings that
+# were fixed last run. The file must be truthful after EVERY run.
+printf '%s\n' "$NULLCONF" > "$RN/dirty.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/dirty.jsonl" --invalid-out "$RN/reused.jsonl" \
+  >/dev/null 2>&1
+check "setup: the dirty run recorded its malformed finding" "[ -s '$RN/reused.jsonl' ]"
+"$BIN/jjstack-review-normalize" "$RN/good.jsonl" --invalid-out "$RN/reused.jsonl" \
+  >/dev/null 2>&1; rc=$?
+check "a clean run exits 0 with --invalid-out"     "[ $rc -eq 0 ]"
+check "a clean run TRUNCATES the stale invalid file" "[ ! -s '$RN/reused.jsonl' ]"
+check "the stale record is really gone"            "! grep -q 'null conf' '$RN/reused.jsonl'"
+
 # PR #16 review (P2): the non-blank guard only inspected `str`, so a null quote
 # and an empty-list remediation walked through the schema gate this file exists
 # to enforce — a P1 reaching the report with an uncheckable location.
 printf '%s\n' "${GOOD/\"quote\":\"os.system(x)\"/\"quote\":null}" > "$RN/nullquote.jsonl"
-"$BIN/jjstack-review-normalize" "$RN/nullquote.jsonl" > "$RN/nullquote.out" 2>"$RN/nullquote.err"; rc=$?
+rm -f "$RN/nullquote.bad.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/nullquote.jsonl" --invalid-out "$RN/nullquote.bad.jsonl" \
+  > "$RN/nullquote.out" 2>"$RN/nullquote.err"; rc=$?
 check "a null quote is rejected"        "[ $rc -eq 1 ] && [ ! -s '$RN/nullquote.out' ]"
-check "the null quote is REPORTED"      "grep -q 'quote' '$RN/nullquote.err'"
+# Same de-tautologising as above: the reason must NAME quote. A grep over the
+# whole record passed even when every diagnostic was renamed to gibberish.
+check "the null quote is REPORTED"      \
+  "reasons_of '$RN/nullquote.bad.jsonl' | grep -q '^empty required field(s): quote$'"
 printf '%s\n' "${GOOD/\"remediation\":\"r\"/\"remediation\":[]}" > "$RN/emptyrem.jsonl"
 "$BIN/jjstack-review-normalize" "$RN/emptyrem.jsonl" > "$RN/emptyrem.out" 2>/dev/null; rc=$?
 check "an empty-list remediation is rejected" "[ $rc -eq 1 ] && [ ! -s '$RN/emptyrem.out' ]"
@@ -785,6 +929,54 @@ printf '{"version":2,"jjstack_version":"x","rules":[{"path":"b*","reason":"polic
 check "positive control: a real glob still suppresses" \
   "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/narrow.out')\" -eq 1 ]"
 check "positive control: it suppressed only b.py" "grep -q 'shell injection' '$RB/narrow.out'"
+# PR #16 review ROUND 2 (P1): the round-1 guard checked the five keys
+# INDEPENDENTLY, but `rule_matches` resolves them as ALIAS PAIRS — `id or
+# rule_id`, `path or file`, first truthy wins. So a discriminating value in the
+# LOSING alias made the rule look scoped while `*` was still the pattern
+# actually applied. Reproduced: {"id":"*","rule_id":"security"} → 0 active,
+# 2 suppressed, rc=0 — the whole repo muted at a clean exit.
+# `id` beats `rule_id` and `path` beats `file`, so only those two directions
+# can hide a wildcard; the mirrored pair is asserted below as INERT.
+for pair in 'id:rule_id' 'path:file'; do
+  wild="${pair%%:*}"; loser="${pair##*:}"
+  printf '{"version":2,"jjstack_version":"x","rules":[{"%s":"*","%s":"scoped","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$wild" "$loser" > "$RB/alias.json"
+  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/alias.json" \
+    > "$RB/alias.out" 2>/dev/null; rc=$?
+  check "wildcard $wild beside a scoped $loser exits 2" \
+    "[ $rc -eq 2 ] && [ ! -s '$RB/alias.out' ]"
+  "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" \
+    --baseline "$RB/alias.json" > "$RB/alias.err" 2>&1
+  check "the rejection says the losing $loser never applies" \
+    "grep -q '$loser never applies' '$RB/alias.err'"
+done
+# Positive control — the guard must reject the alias that WINS, not alias pairs
+# as such. With the discriminating value in the winning slot the rule is
+# legitimate, the `*` in the losing slot is inert, and suppression must still
+# be exactly as narrow as the winning pattern says. This is also what pins WHICH
+# alias wins: swap the precedence in either place and these go red.
+printf '{"version":2,"jjstack_version":"x","rules":[{"id":"sec*","rule_id":"*","reason":"policy: security lens is advisory here"}],"fingerprints":[]}\n' \
+  > "$RB/aliasok.json"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok.json" \
+  --active-only > "$RB/aliasok.out" 2>/dev/null; rc=$?
+check "positive control: a scoped winning id makes rule_id:* inert" \
+  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/aliasok.out')\" -eq 1 ]"
+check "positive control: it suppressed only the security lens" \
+  "grep -q 'n+1 query' '$RB/aliasok.out'"
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"b*","file":"*","reason":"policy: b.py is vendored"}],"fingerprints":[]}\n' \
+  > "$RB/aliasok2.json"
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok2.json" \
+  --active-only > "$RB/aliasok2.out" 2>/dev/null; rc=$?
+check "positive control: a scoped winning path makes file:* inert" \
+  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/aliasok2.out')\" -eq 1 ]"
+check "positive control: it suppressed only b.py" \
+  "grep -q 'shell injection' '$RB/aliasok2.out'"
+# The annotation must show the pattern that was APPLIED. Printing every key
+# present made a losing alias read to a human as a scoped rule.
+"$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/aliasok.json" \
+  > "$RB/aliasann.out" 2>/dev/null
+check "the suppression annotation shows only the winning alias" \
+  "grep -q 'sec\*' '$RB/aliasann.out' && ! grep -q 'rule_id' '$RB/aliasann.out'"
 
 # PR #16 review (P1): `generate` built the doc from scratch with `rules: []` and
 # opened "w", so following SKILL.md's documented flow for EXTENDING a baseline
@@ -817,6 +1009,27 @@ printf 'this is not json\n' > "$RB/corrupt.json"
 check "generate refuses to clobber a corrupt baseline" "[ $rc -eq 2 ]"
 check "the corrupt baseline is left untouched" "grep -q 'this is not json' '$RB/corrupt.json'"
 check "no .tmp file is left behind" "[ ! -f '$RB/corrupt.json.tmp' ]"
+# ...but that path returns 2 at LOAD time, before any temp file is created, so
+# the check above is vacuous — deleting the unlink cleanup outright kept the
+# whole suite green. Reach the write branch instead: `--replace` skips the load,
+# a DIRECTORY at the output path lets the .tmp write succeed and only the
+# os.replace fail, which is the single branch the cleanup guards.
+mkdir -p "$RB/adir"
+: > "$RB/adir/keep"
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "x" \
+  -o "$RB/adir" --replace > "$RB/adir.err" 2>&1; rc=$?
+check "a failed rename exits 2"                "[ $rc -eq 2 ]"
+check "the failed write leaves NO .tmp behind" "[ ! -e '$RB/adir.tmp' ]"
+# Positive control — prove the run reached the WRITE branch and not the load
+# bail, i.e. that the .tmp really existed a moment earlier. `cannot write` is
+# printed only after the .tmp open has already succeeded, and the errno text
+# names the .tmp as the rename source. (Literals recovered from
+# bin/jjstack-review-baseline and from the OS, not invented for this test.)
+check "positive control: it failed at the RENAME, not the load" \
+  "grep -q 'cannot write' '$RB/adir.err' && grep -q 'adir.tmp' '$RB/adir.err'"
+check "positive control: the directory it refused to clobber is intact" \
+  "[ -f '$RB/adir/keep' ]"
+rm -rf "$RB/adir" "$RB/adir.err"
 printf '{"version":1,"rules":[],"fingerprints":[]}\n' > "$RB/v1.json"
 "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/v1.json" >/dev/null 2>&1; rc=$?
 check "unsupported baseline version exits 2" "[ $rc -eq 2 ]"

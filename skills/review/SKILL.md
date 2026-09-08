@@ -374,6 +374,11 @@ valid ones are still on stdout), `2` usage error or unreadable input, `3` an
 internal error — stdout holds a PARTIAL set and the run must be repeated, not
 reported. Never treat `3` as `1`.
 
+`findings.malformed.jsonl` is rewritten on **every** run, empty included, so it
+always describes the run that just finished. Each record carries the source
+`line`, the `reason`, and the `raw` input line — read the `reason`, not the
+whole record, when you want to know what the tool objected to.
+
 ### 5c. Verify each finding — enrich-only
 
 For **each** normalized finding (batch as parallel agents when there are many):
