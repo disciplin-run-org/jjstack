@@ -118,7 +118,12 @@ MERGE_FILE=""
 # The query redirects stderr to /dev/null and yields an empty result on timeout,
 # which is indistinguishable from "no near-duplicate found" unless the exit
 # status is captured. So capture it.
-LAYER_B="not-run:unknown"
+# Defensive initializer only: the chain below is exhaustive (every branch
+# assigns), and it deliberately is NOT one of the documented not-run reasons —
+# the suite asserts that the set of reasons the code can emit equals the set
+# this header declares, and a sentinel inside that namespace would be an
+# undocumented fifth state.
+LAYER_B="unset"
 if [ -d "$MEM_DIR" ]; then
     MERGE_FILE=$(grep -lE "^[[:space:]]*pattern_key:[[:space:]]*[\"']?${L_PKEY}[\"']?[[:space:]]*$" "$MEM_DIR"/*.md 2>/dev/null | head -1)
 fi

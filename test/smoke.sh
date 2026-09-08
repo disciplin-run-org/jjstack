@@ -2,10 +2,10 @@
 # smoke.sh — regression smoke tests for the jjstack memory system.
 #
 # Deterministic, fast, and HERMETIC: syntax checks, pure library functions, and
-# --dry-run paths, all run against a throwaway $HOME and throwaway fixture
-# projects. The tests that write do so inside that sandbox and it is removed on
-# exit. Codifies the behaviors verified by hand during the 2026-07 memory
-# rebuild so they don't silently regress.
+# --dry-run paths, all run against a throwaway $HOME, a throwaway PATH and
+# throwaway fixture projects. The tests that write do so inside that sandbox and
+# it is removed on exit. Codifies the behaviors verified by hand during the
+# 2026-07 memory rebuild so they don't silently regress.
 #
 # HERMETIC IS THE POINT, not a nicety. These tools read and write the
 # developer's real memory store, the real gstack learnings, and the real gbrain
@@ -16,11 +16,21 @@
 # identically whether the code works or not. Section 6 is the guard that keeps
 # it that way — read it before adding an assertion here.
 #
+# DERIVE, DON'T ENUMERATE. Every guard in this file that certifies a SET —
+# which PHI gates exist, which dedup states the code can report, which remote
+# tiers refuse, which passes the slug resolver has, which escape hatches the
+# lint knows — reads that set from a declared source of truth (the library, the
+# script's own documented contract, the README) and fails when a member of it
+# has no fixture. That is deliberate: gate 2 below sat unexercised for two
+# review rounds precisely because the suite listed the cases it knew about
+# instead of asking the implementation which cases exist.
+#
 # Usage: test/smoke.sh   (exit 0 = all pass, 1 = a failure)
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SELF="$DIR/test/smoke.sh"
 BIN="$DIR/bin"; HOOKS="$DIR/hooks"
+LIB="$BIN/jjstack-gbrain-phi-lib.sh"
 pass=0; fail=0
 ok()   { printf '  \033[92mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[95mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
@@ -38,10 +48,59 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 # the Layer-B block reading the developer's live store in the very change whose
 # purpose was hermeticity. A per-assertion fixture is only ever as wide as the
 # assertion that prompted it.
-SANDBOX=$(mktemp -d)
+SANDBOX=$(mktemp -d)                 # hermetic-ok: the sandbox root itself
 export HOME="$SANDBOX/home"
 mkdir -p "$HOME"
 trap 'rm -rf "$SANDBOX"' EXIT
+
+# EVERY fixture directory is allocated here, inside the sandbox and under the
+# trap. Ten fixtures used to be allocated straight into $TMPDIR instead, outside
+# the sandbox and with no trap of their own: each held an executable named
+# `gbrain`, so a stray leftover on someone's PATH is a live shadowing hazard,
+# and the file's own header claimed they lived in the sandbox. Section 6 lints
+# for the unsandboxed form, so the next one cannot be added quietly.
+tmp() { mktemp -d "$SANDBOX/${1:-fix}.XXXXXX"; }   # hermetic-ok: the in-sandbox allocator
+dash() { printf '%s' "$1" | sed 's|/|-|g'; }   # cwd → harness native dir key
+
+# ── The sandbox PATH: no ambient gbrain ──────────────────────────────
+# $HOME is not the whole environment. capture-write locates gbrain with
+# `command -v`, so a machine that HAS gbrain took a different branch than one
+# that does not: `not-run:no-gbrain` precedes `not-run:pinned` in the reason
+# chain, so the pinned assertion in section 4 reddened on a clean machine and
+# passed on the developer's — the "different verdict on a different machine"
+# this header forbids, reached through PATH rather than through $HOME.
+#
+# So gbrain is removed from PATH for the WHOLE file and each assertion that
+# needs one puts its own stub there. The BINARY is removed, not the directory:
+# dropping the directory would take jq, git or timeout with it on a machine
+# that installs them side by side. Absence is now the deterministic default,
+# which makes `not-run:no-gbrain` an assertable state instead of an accident.
+sandbox_path() {   # sandbox_path <path> <mirror-root> → that path, minus gbrain
+    local root="$2" out="" d n e
+    local -a dirs
+    IFS=':' read -r -a dirs <<<"$1"
+    for d in "${dirs[@]}"; do
+        [ -n "$d" ] || continue
+        if [ -x "$d/gbrain" ]; then
+            n="$root/${d//\//_}"
+            if [ ! -d "$n" ]; then
+                mkdir -p "$n"
+                for e in "$d"/*; do
+                    [ -e "$e" ] || continue
+                    [ "${e##*/}" = gbrain ] && continue
+                    ln -sfn "$e" "$n/${e##*/}" 2>/dev/null
+                done
+            fi
+            d="$n"
+        fi
+        out="${out:+$out:}$d"
+    done
+    printf '%s' "$out"
+}
+export PATH="$(sandbox_path "$PATH" "$SANDBOX/pathmirror")"
+
+# The one lesson every write path is driven with.
+LESSON='{"type":"feedback","name":"smoke probe","description":"d","body":"b","pattern_key":"smoke-probe","scope":"project","is_rule":false,"confidence":7,"source":"observed"}'
 
 echo "== 1. syntax =="
 for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
@@ -57,51 +116,191 @@ echo "== 2. PHI lib (pure functions) =="
 # fed it the developer's own dashed key and accepted `[ -d "$cwd" ]`, which is
 # true for almost any resolution and false only on a machine without that
 # checkout — an assertion that could neither fail here nor run elsewhere.
-RCROOT=$(mktemp -d); mkdir -p "$RCROOT/probe-proj"
+#
+# The resolver has TWO passes and the fixtures below give each one a case only
+# IT can resolve. A single unambiguous fixture makes the passes interchangeable:
+# whichever one you break, the other still answers, so deleting either passed.
+# The pass count is read from the library so a third pass added later cannot
+# arrive untested.
+passes=$(grep -cE '^[[:space:]]*# Pass [0-9]+ ' "$LIB")
+check "reconstruct_cwd still has exactly the 2 documented passes" "[ \"\$passes\" = 2 ]"
+
+RCROOT=$(tmp rc); mkdir -p "$RCROOT/probe-proj"
 git -C "$RCROOT/probe-proj" init -q >/dev/null 2>&1
-RCKEY=$(printf '%s' "$RCROOT/probe-proj" | sed 's|/|-|g')
-( source "$BIN/jjstack-gbrain-phi-lib.sh"
+RCKEY=$(dash "$RCROOT/probe-proj")
+( source "$LIB"
   [ "$(reconstruct_cwd "$RCKEY")" = "$RCROOT/probe-proj" ]
 ) && ok "reconstruct_cwd resolves a dashed key back to its git root" \
    || bad "reconstruct_cwd resolves a dashed key back to its git root"
+
+# PASS 1 only — the ambiguity the git-preferring pass exists for, built to the
+# shape the library's own comment names: a flat NON-GIT shadow dir
+# (…/disciplin-run-actuatrix) and the real git submodule it masks
+# (…/disciplin-run/actuatrix) share one dashed key. The greedy pass takes the
+# LONGEST prefix and lands on the shadow; only the git pass lands on the repo.
+mkdir -p "$RCROOT/PycharmProjects/disciplin-run-actuatrix"
+mkdir -p "$RCROOT/PycharmProjects/disciplin-run/actuatrix"
+git -C "$RCROOT/PycharmProjects/disciplin-run/actuatrix" init -q >/dev/null 2>&1
+AMBKEY=$(dash "$RCROOT/PycharmProjects/disciplin-run/actuatrix")
+( source "$LIB"
+  [ "$(reconstruct_cwd "$AMBKEY")" = "$RCROOT/PycharmProjects/disciplin-run/actuatrix" ]
+) && ok "a git submodule wins over the flat shadow dir sharing its key (pass 1)" \
+   || bad "a git submodule wins over the flat shadow dir sharing its key (pass 1)"
+
+# PASS 2 only — a plain non-git tree. No split lands on a git root, so the
+# greedy longest-prefix descent is the only thing that can answer. Corrupting
+# it used to be invisible because every fixture was a git repo.
+mkdir -p "$RCROOT/plain/probe-nogit-proj"
+NOGITKEY=$(dash "$RCROOT/plain/probe-nogit-proj")
+( source "$LIB"
+  [ "$(reconstruct_cwd "$NOGITKEY")" = "$RCROOT/plain/probe-nogit-proj" ]
+) && ok "a non-git project still resolves via the greedy fallback (pass 2)" \
+   || bad "a non-git project still resolves via the greedy fallback (pass 2)"
+
 # Control: the resolver must not simply echo its input back dash-for-slash. A
 # key with no directory behind it resolves to something that does NOT exist.
-( source "$BIN/jjstack-gbrain-phi-lib.sh"
+( source "$LIB"
   [ ! -d "$(reconstruct_cwd "-no-such-root-xyzzy-nope")" ]
 ) && ok "reconstruct_cwd does not invent a live path (control)" \
    || bad "reconstruct_cwd does not invent a live path (control)"
 rm -rf "$RCROOT"
 
 # is_slug_opted_out true for a fixture memory dir carrying .no-gbrain.
-TMPROOT=$(mktemp -d)
+TMPROOT=$(tmp phifix)
 mkdir -p "$TMPROOT/-fixture-phi/memory"; : > "$TMPROOT/-fixture-phi/memory/.no-gbrain"
 mkdir -p "$TMPROOT/-fixture-clean/memory"; : > "$TMPROOT/-fixture-clean/memory/x.md"
-( source "$BIN/jjstack-gbrain-phi-lib.sh"; MEMORY_ROOT="$TMPROOT"
+( source "$LIB"; MEMORY_ROOT="$TMPROOT"
   is_slug_opted_out "-fixture-phi" ) && ok "is_slug_opted_out true with .no-gbrain" || bad "is_slug_opted_out true with .no-gbrain"
-( source "$BIN/jjstack-gbrain-phi-lib.sh"; MEMORY_ROOT="$TMPROOT"
+( source "$LIB"; MEMORY_ROOT="$TMPROOT"
   is_slug_opted_out "-fixture-clean" ) && bad "is_slug_opted_out false when clean" || ok "is_slug_opted_out false when clean"
 rm -rf "$TMPROOT"
 
-echo "== 3. bridge PHI refusal (exit 4) =="
-# This used to run only when the developer's own mychart-sync memory store was
-# present and SKIP everywhere else — so the one gate that keeps medical records
-# off a shared index was untested on every machine but one, and tested there by
-# reading those very records. A fixture PHI project asserts the same refusal
-# unconditionally, and reads nobody's data.
+echo "== 3. PHI gates (one isolating fixture per DECLARED gate) =="
+# The single most consequential guard in this repo: it is what keeps medical
+# records out of a shared vector index. It was also, until this section, the
+# least tested — every PHI assertion drove gate 1 via a path marker, and gate 2
+# could be replaced by `return 1` with the whole suite still green.
 #
-# The bridge health-checks gbrain before doing anything (`gbrain doctor --fast`)
-# and a real gbrain is not operational under a sandbox $HOME, so the stub stands
-# in for it — the refusal under test is the PHI gate, not gbrain's health.
-BSTUB=$(mktemp -d); printf '#!/bin/sh\nexit 0\n' > "$BSTUB/gbrain"; chmod +x "$BSTUB/gbrain"
+# The fix is not "add a gate-2 fixture". The gate SET is read from the library
+# the tools all source — the file whose own header calls itself the single
+# source of truth so the gates never fork — and a declared gate with no
+# isolating fixture is a FAILURE, not a skip. A third gate added next month is
+# therefore tested on the day it appears, which is precisely how gate 2 got
+# here: the suite knew about the gates it had been told about.
+PHI_GATES=$(sed -nE 's/^(is_[a-z_]+_opted_out)\(\).*/\1/p' "$LIB")
+PHI_GATE_N=$(printf '%s\n' "$PHI_GATES" | grep -c .)
+# Anti-vacuity: a parse that silently returns nothing would make the loop below
+# assert nothing at all and still report green. The floor can only ever rise.
+check "the declared PHI gate set parses (anti-vacuity floor)" "[ \"\$PHI_GATE_N\" -ge 2 ]"
+
+# Every tool that consults ANY gate must consult EVERY gate — a gate wired into
+# the bridge but forgotten in capture-write is a hole in exactly one tool, and
+# nothing but this would notice. The consumer list is discovered, not listed.
+PHI_CONSUMERS=$(grep -lE 'is_[a-z_]+_opted_out' "$BIN"/jjstack-* | grep -v 'phi-lib')
+for c in $PHI_CONSUMERS; do
+  for g in $PHI_GATES; do
+    check "$(basename "$c") consults PHI gate $g" "grep -q '$g' '$c'"
+  done
+done
+
+# Gate 2 asks gstack-gbrain-repo-policy for the remote's tier, and a throwaway
+# $HOME has no such CLI — which is why the gate short-circuited to "allow" and
+# the section could not observe it. A fixture CLI restores the branch. The tier
+# is encoded in the remote URL itself so the suite can build one fixture per
+# DECLARED tier without a hand-kept map.
+POLICY_DIR="$HOME/.claude/skills/gstack/bin"; mkdir -p "$POLICY_DIR"
+cat > "$POLICY_DIR/gstack-gbrain-repo-policy" <<'POL'
+#!/bin/sh
+case "$1" in
+  normalize) printf '%s\n' "$2" | sed -e 's|^https://||' -e 's|\.git$||' ;;
+  get)       printf '%s\n' "$2" | sed -nE 's|.*/tier-(.+)$|\1|p' ;;
+  *)         exit 2 ;;
+esac
+POL
+chmod +x "$POLICY_DIR/gstack-gbrain-repo-policy"
+
+mkproj_remote() {   # <name> <tier> → a git project on that remote tier, NO marker
+    local p="$SANDBOX/$1"; mkdir -p "$p"
+    git -C "$p" init -q >/dev/null 2>&1
+    git -C "$p" remote add origin "https://example.invalid/fixture/tier-$2.git" 2>/dev/null
+    local m="$HOME/.claude/projects/$(dash "$p")/memory"; mkdir -p "$m"
+    printf -- '---\nname: fixture\n---\n\nbody\n' > "$m/fixture.md"
+    printf '%s' "$p"
+}
+mkproj_marker() {   # <name> <marker-file> → a project with a path marker, NO remote
+    local p="$SANDBOX/$1"; mkdir -p "$p"
+    local m="$HOME/.claude/projects/$(dash "$p")/memory"; mkdir -p "$m"
+    : > "$m/$2"
+    printf -- '---\nname: fixture\n---\n\nbody\n' > "$m/fixture.md"
+    printf '%s' "$p"
+}
+# One ISOLATING fixture per gate: a project THIS gate refuses and every OTHER
+# gate allows. Isolation is what makes the mutation below meaningful — with
+# overlapping fixtures, disabling one gate is masked by the next.
+phi_fixture_is_slug_opted_out()             { mkproj_marker phi-gate-marker .no-gbrain; }
+phi_fixture_is_project_identity_opted_out() { mkproj_remote phi-gate-identity deny; }
+
+phi_flag() { sed -nE 's/^\[dry-run\] PHI opted-out:[[:space:]]*(.+)$/\1/p' <<<"$1" | head -1; }
+mutant_bin() {   # <gate> → a bin/ copy in which ONLY that gate is neutralized
+    local g="$1" m="$SANDBOX/mutbin-$g"
+    rm -rf "$m"; mkdir -p "$m"; cp "$BIN"/jjstack-* "$m"/
+    printf '\n%s() { return 1; }\n' "$g" >> "$m/jjstack-gbrain-phi-lib.sh"
+    printf '%s' "$m"
+}
+# The bridge health-checks gbrain (`gbrain doctor --fast`) before doing
+# anything, and a real gbrain is not operational under a sandbox $HOME, so the
+# stub stands in for it — the refusal under test is the PHI gate, not health.
+BSTUB=$(tmp bstub); printf '#!/bin/sh\nexit 0\n' > "$BSTUB/gbrain"; chmod +x "$BSTUB/gbrain"
+
+for g in $PHI_GATES; do
+  if ! declare -F "phi_fixture_$g" >/dev/null 2>&1; then
+    bad "PHI gate $g has an isolating fixture (a declared gate with no fixture is untested)"
+    continue
+  fi
+  ok "PHI gate $g has an isolating fixture"
+  P=$("phi_fixture_$g")
+  out_g=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$P" --dry-run --lesson "$LESSON" 2>&1)
+  check "PHI gate $g refuses its fixture" "[ \"\$(phi_flag \"\$out_g\")\" = yes ]"
+  # THE mutation, performed by the suite itself: neutralize this gate and this
+  # gate only. If the refusal survives, the fixture was being carried by
+  # another gate and this one is still untested.
+  M=$(mutant_bin "$g")
+  out_m=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$M/jjstack-capture-write" --cwd "$P" --dry-run --lesson "$LESSON" 2>&1)
+  check "disabling PHI gate $g alone drops the refusal (the fixture isolates it)" "[ \"\$(phi_flag \"\$out_m\")\" = no ]"
+  # The gates are shared library code, but each consumer wires them itself.
+  PATH="$BSTUB:$PATH" "$BIN/jjstack-memory-bridge" --slug "$(dash "$P")" --ingest --dry-run >/dev/null 2>&1
+  rc=$?
+  check "the bridge exits 4 for PHI gate $g" "[ \"\$rc\" = 4 ]"
+done
+
+# WHICH remote tiers refuse is declared in the README, not in this file. One
+# fixture per declared tier, built from that list: `read-only` had never been
+# exercised, so dropping it from the library's case arm cost nothing.
+TIERS=$(sed -nE 's/.*policy of (.*)\).*/\1/p' "$DIR/README.md" | head -1 | grep -oE '`[a-z-]+`' | tr -d '`')
+check "the README declares the refusing remote tiers (anti-vacuity floor)" "[ \$(printf '%s\\n' \$TIERS | grep -c .) -ge 2 ]"
+for t in $TIERS; do
+  P=$(mkproj_remote "tierproj-$t" "$t")
+  out_t=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$P" --dry-run --lesson "$LESSON" 2>&1)
+  check "a remote on the documented '$t' tier is refused" "[ \"\$(phi_flag \"\$out_t\")\" = yes ]"
+done
+# Control: an UNDECLARED tier must be allowed, or "refused" is a constant that
+# happens to match and the tier loop above proves nothing.
+P=$(mkproj_remote tierproj-rw read-write)
+out_rw=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$P" --dry-run --lesson "$LESSON" 2>&1)
+check "a read-write remote is NOT refused (control)" "[ \"\$(phi_flag \"\$out_rw\")\" = no ]"
+
+# The original bridge assertion, kept verbatim: this used to run only when the
+# developer's own mychart-sync memory store was present and SKIP everywhere
+# else — so the one gate that keeps medical records off a shared index was
+# untested on every machine but one, and tested there by reading those very
+# records. A fixture PHI project asserts the same refusal unconditionally.
 mkdir -p "$HOME/.claude/projects/-fixture-phi-proj/memory"
 : > "$HOME/.claude/projects/-fixture-phi-proj/memory/.no-gbrain"
 printf -- '---\nname: fixture\n---\n\nbody\n' > "$HOME/.claude/projects/-fixture-phi-proj/memory/fixture.md"
 PATH="$BSTUB:$PATH" "$BIN/jjstack-memory-bridge" --slug -fixture-phi-proj --ingest --dry-run >/dev/null 2>&1
 check "a PHI-marked project's bridge exits 4" "[ \$? -eq 4 ]"
-rm -rf "$BSTUB"
 
 echo "== 4. capture-write dry-run (no writes) =="
-LESSON='{"type":"feedback","name":"smoke probe","description":"d","body":"b","pattern_key":"smoke-probe","scope":"project","is_rule":false,"confidence":7,"source":"observed"}'
 # The dedup state and the chosen action are read by EXACT MATCH, not substring.
 # A pair of `grep -q ran-timeout` + `! grep -q ran-clean` assertions looks like
 # two independent facts but is one: LAYER_B is a single value on a single line,
@@ -113,35 +312,65 @@ dedup_state() { sed -nE 's/^.*gbrain dedup:[[:space:]]+(.+)$/\1/p' <<<"$1" | hea
 dry_action()  { sed -nE 's/^\[dry-run\] action:[[:space:]]+(.+)$/\1/p'  <<<"$1" | head -1; }
 dry_slug()    { sed -nE 's/^\[dry-run\] canonical slug:[[:space:]]*(.+)$/\1/p' <<<"$1" | head -1; }
 
+# The four not-run reasons are a DECLARED contract in capture-write's header.
+# Two of them used to be unasserted, so renaming either in the code left the
+# suite green. Both halves of the guard are derived: the set the code can emit
+# must equal the set the header declares, and every declared reason must appear
+# as an equality assertion in THIS file. A fifth reason cannot arrive untested.
+declared_reasons=$(sed -nE 's/^#.*not-run:\{([a-z,-]+)\}.*/\1/p' "$BIN/jjstack-capture-write" | head -1 | tr ',' ' ')
+d_sorted=$(printf '%s\n' $declared_reasons | sort -u)
+e_sorted=$(grep -oE 'LAYER_B="not-run:[a-z-]+"' "$BIN/jjstack-capture-write" | sed -E 's/.*not-run:([a-z-]+)"/\1/' | sort -u)
+check "the not-run contract parses (anti-vacuity floor)" "[ \$(printf '%s\\n' \$declared_reasons | grep -c .) -ge 4 ]"
+check "the reasons the code emits are exactly the ones it documents" "[ \"\$d_sorted\" = \"\$e_sorted\" ]"
+for r in $declared_reasons; do
+  check "a fixture asserts not-run:$r by equality" "grep -qF \"= 'not-run:$r'\" '$SELF'"
+done
+
 # A fixture project, NOT this repo. Aiming these at the live checkout coupled
 # them to the developer's memory store (Layer A greps it), to the live git
 # remote (PHI gate 2 normalizes it) and to whatever the real gstack resolves the
 # slug to. The dashed key and canonical slug are DERIVED with the script's own
 # transforms so the expectations cannot drift from the implementation.
 FIXP="$SANDBOX/probe-project"; mkdir -p "$FIXP"
-FDASH=$(printf '%s' "$FIXP" | sed 's|/|-|g')
+FDASH=$(dash "$FIXP")
 FSLUG="${FDASH#-}"; FSLUG_LC="${FSLUG,,}"
 FIXMEM="$HOME/.claude/projects/$FDASH/memory"; mkdir -p "$FIXMEM"
 
-out=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
+# No stub and no pin: with gbrain scrubbed from the sandbox PATH this is the
+# `no-gbrain` branch, deterministically, on every machine. It used to be pinned
+# and asserted as `not-run:pinned`, which is the reason the suite gave a
+# different verdict on a machine without gbrain: `no-gbrain` precedes `pinned`.
+out=$("$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 # Herestrings, not `printf | grep`: a pipeline under `pipefail` reports the
 # left-hand status too, so an assertion could fail for reasons unrelated to the
 # match. A herestring has no pipeline and no such ambiguity.
 check "capture-write --dry-run resolves the canonical slug" "[ \"\$(dry_slug \"\$out\")\" = \"\$FSLUG\" ]"
 check "capture-write --dry-run marks output dry-run" "grep -q '\\[dry-run\\]' <<<\"\$out\""
-check "capture-write --dry-run names WHY the layer was skipped" "[ \"\$(dedup_state \"\$out\")\" = 'not-run:pinned' ]"
+check "an absent gbrain reports exactly not-run:no-gbrain" "[ \"\$(dedup_state \"\$out\")\" = 'not-run:no-gbrain' ]"
 
-# Positive control: without the pin Layer B must actually run, or the pin above
+# Positive control: without the pin Layer B must actually run, or the pin below
 # proves nothing and we have quietly stopped testing the real path. Uses a STUB
 # gbrain on PATH rather than the real one — the control stays hermetic, instant,
 # and works on a machine with no gbrain installed.
-STUB=$(mktemp -d)
+STUB=$(tmp stub)
 printf '#!/bin/sh\nexit 0\n' > "$STUB/gbrain"; chmod +x "$STUB/gbrain"
 out_live=$(PATH="$STUB:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "gbrain layer runs when not pinned (control)" "[ \"\$(dedup_state \"\$out_live\")\" = 'ran-clean' ]"
-# And the pin must beat an available gbrain, not merely an absent one.
+# And the pin must beat an available gbrain, not merely an absent one — which
+# is the only way `not-run:pinned` can be reached at all.
 out_pin=$(PATH="$STUB:$PATH" JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "pin overrides an available gbrain" "[ \"\$(dedup_state \"\$out_pin\")\" = 'not-run:pinned' ]"
+
+# not-run:layer-a-hit — the AFFIRMATIVE half of this observability: the state
+# that reports dedup SUCCEEDING on the exact-key layer. Its own project, so the
+# Layer-B fixtures below keep missing Layer A. Asserted as behaviour (which file
+# it merges into) and not only as a label.
+LAP="$SANDBOX/layer-a-project"; mkdir -p "$LAP"
+LAMEM="$HOME/.claude/projects/$(dash "$LAP")/memory"; mkdir -p "$LAMEM"
+printf -- '---\nname: prior\npattern_key: smoke-probe\n---\n\nprior body\n' > "$LAMEM/feedback_prior.md"
+out_la=$("$BIN/jjstack-capture-write" --cwd "$LAP" --dry-run --lesson "$LESSON" 2>&1)
+check "an exact pattern_key match reports not-run:layer-a-hit" "[ \"\$(dedup_state \"\$out_la\")\" = 'not-run:layer-a-hit' ]"
+check "…and merges into the file that matched (behaviour, not label)" "[ \"\$(dry_action \"\$out_la\")\" = \"MERGE into \$LAMEM/feedback_prior.md\" ]"
 
 # ── "ran-clean" has TWO halves, and only one of them was ever tested ──
 # Per the code's own comment, ran-clean means the query completed AND ITS ANSWER
@@ -161,21 +390,41 @@ printf '{"key":"smoke-probe","files":["%s"]}\n' "$TARGET" > "$HOME/.gstack/proje
 mkstub() { # mkstub <dir> <line-to-print>
   { printf '#!/bin/sh\n'; printf "printf '%%s\\\\n' '%s'\n" "$2"; } > "$1/gbrain"; chmod +x "$1/gbrain"
 }
-HIT=$(mktemp -d); mkstub "$HIT" "[0.91] $FSLUG_LC/smoke-probe -- a near duplicate"
+HIT=$(tmp hit); mkstub "$HIT" "[0.91] $FSLUG_LC/smoke-probe -- a near duplicate"
 out_hit=$(PATH="$HIT:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "a scored gbrain hit is parsed and MERGED into the resolved file" "[ \"\$(dry_action \"\$out_hit\")\" = \"MERGE into \$TARGET\" ]"
 check "the answered query still reports ran-clean" "[ \"\$(dedup_state \"\$out_hit\")\" = 'ran-clean' ]"
 # Control on the THRESHOLD: below 0.85 is not a duplicate. Without this, raising
 # the threshold to 99 — semantic dedup disabled outright — changes nothing.
-LOW=$(mktemp -d); mkstub "$LOW" "[0.42] $FSLUG_LC/smoke-probe -- a weak match"
+LOW=$(tmp low); mkstub "$LOW" "[0.42] $FSLUG_LC/smoke-probe -- a weak match"
 out_low=$(PATH="$LOW:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "a below-threshold hit does NOT merge (control)" "[ \"\$(dry_action \"\$out_low\")\" = 'CREATE new memory' ]"
 # Control on the PROJECT SCOPE: Layer B considers this project's pages only. A
 # high-scoring page under someone else's slug must not merge into this one.
-FOREIGN=$(mktemp -d); mkstub "$FOREIGN" "[0.99] some-other-project/smoke-probe -- not ours"
+FOREIGN=$(tmp foreign); mkstub "$FOREIGN" "[0.99] some-other-project/smoke-probe -- not ours"
 out_foreign=$(PATH="$FOREIGN:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "a hit under another project's slug does NOT merge (control)" "[ \"\$(dry_action \"\$out_foreign\")\" = 'CREATE new memory' ]"
-rm -rf "$HIT" "$LOW" "$FOREIGN"
+
+# ── The threshold itself, pinned from BOTH sides ─────────────────────
+# 0.42 and 0.91 BRACKET the boundary; they do not pin it. Tightening the
+# constant was caught, but RELAXING it was not: `s>=0.6` — every loosely related
+# lesson fused into one — left the suite fully green across a 0.25-wide band,
+# and so did flipping `>=` to `>`. That half governs DESTRUCTIVE merges.
+#
+# The threshold is a DECLARED contract in README.md. The fixtures are derived
+# from that declaration, so the oracle is the documented behaviour rather than
+# the constant under test: changing the code alone moves a fixture across the
+# boundary AND breaks the drift check below.
+THRESH=$(sed -nE 's/.*merge threshold `([0-9.]+)`.*/\1/p' "$DIR/README.md" | head -1)
+check "README declares the merge threshold" "[ -n \"\$THRESH\" ]"
+check "capture-write implements the threshold the README declares" "grep -qF \"s>=\$THRESH\" '$BIN/jjstack-capture-write'"
+BELOW=$(awk -v t="$THRESH" 'BEGIN{printf "%.2f", t-0.01}')
+AT=$(tmp at); mkstub "$AT" "[$THRESH] $FSLUG_LC/smoke-probe -- exactly at the boundary"
+out_at=$(PATH="$AT:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
+check "a hit exactly AT the declared threshold merges" "[ \"\$(dry_action \"\$out_at\")\" = \"MERGE into \$TARGET\" ]"
+BEL=$(tmp bel); mkstub "$BEL" "[$BELOW] $FSLUG_LC/smoke-probe -- one hundredth below"
+out_bel=$(PATH="$BEL:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
+check "a hit one hundredth BELOW the declared threshold does not merge" "[ \"\$(dry_action \"\$out_bel\")\" = 'CREATE new memory' ]"
 
 # A HUNG gbrain must not report as a clean run. This is the failure the whole
 # observability exists to expose: timeout kills the query, stderr is discarded,
@@ -183,7 +432,7 @@ rm -rf "$HIT" "$LOW" "$FOREIGN"
 # unless the state says so. Stub sleeps past the deadline.
 # The deadline is configurable so this costs 1s, not 8 — a test that makes the
 # suite slow is a test people stop running.
-HANG=$(mktemp -d)
+HANG=$(tmp hang)
 printf '#!/bin/sh\nsleep 30\n' > "$HANG/gbrain"; chmod +x "$HANG/gbrain"
 out_hang=$(PATH="$HANG:$PATH" JJSTACK_CAPTURE_GBRAIN_TIMEOUT=1 "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "a timed-out gbrain query reports exactly ran-timeout" "[ \"\$(dedup_state \"\$out_hang\")\" = 'ran-timeout' ]"
@@ -193,7 +442,7 @@ check "a timed-out gbrain query reports exactly ran-timeout" "[ \"\$(dedup_state
 # vanished binary (127) all produce the same empty stdout on the same
 # stderr-discarded path — so believing any of them is the identical bug, and the
 # fix that disbelieved only 124 left the rest reporting ran-clean.
-ERR=$(mktemp -d)
+ERR=$(tmp err)
 printf '#!/bin/sh\nexit 1\n' > "$ERR/gbrain"; chmod +x "$ERR/gbrain"
 out_err=$(PATH="$ERR:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "a failing gbrain query reports exactly ran-error:1" "[ \"\$(dedup_state \"\$out_err\")\" = 'ran-error:1' ]"
@@ -203,12 +452,14 @@ printf '#!/bin/sh\nexit 3\n' > "$ERR/gbrain"
 out_err3=$(PATH="$ERR:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
 check "the failing query's exit code is carried through (control)" "[ \"\$(dedup_state \"\$out_err3\")\" = 'ran-error:3' ]"
 # Positive control on the WHOLE branch: ran-error must be a DISCRIMINATION, not
-# a blanket refusal. This has to be a FRESH run of the clean stub — re-grepping
-# the output captured before the error stubs existed re-asserts an earlier line
-# and observes nothing about the branch it claims to control.
-out_clean2=$(PATH="$STUB:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
-check "a clean query re-run after the failures still reports ran-clean (control)" "[ \"\$(dedup_state \"\$out_clean2\")\" = 'ran-clean' ]"
-rm -rf "$HANG" "$STUB" "$ERR"
+# a blanket refusal — and the recovery has to be observed on the SAME PATH entry
+# the failures came from. Pointing this at the clean stub instead re-ran an
+# earlier assertion byte for byte: same binary, same stub, same lesson, so every
+# mutation that reddened one reddened the other and it observed nothing of its
+# own. Here the binary that just failed twice starts succeeding.
+printf '#!/bin/sh\nexit 0\n' > "$ERR/gbrain"
+out_clean2=$(PATH="$ERR:$PATH" "$BIN/jjstack-capture-write" --cwd "$FIXP" --dry-run --lesson "$LESSON" 2>&1)
+check "the same gbrain reports ran-clean once it stops failing (control)" "[ \"\$(dedup_state \"\$out_clean2\")\" = 'ran-clean' ]"
 
 # The section is named "no writes" but only ever checked stdout. Assert the
 # actual claim: a --dry-run leaves the memory dir untouched.
@@ -226,7 +477,7 @@ rm -rf "$HANG" "$STUB" "$ERR"
 # PHI gate stops the run at the native .md, so nothing reaches gstack, gbrain or
 # the user's stores. Hermetic, and it exercises the real path.
 WP="$SANDBOX/write-project"; mkdir -p "$WP"
-WDASH=$(printf '%s' "$WP" | sed 's|/|-|g')
+WDASH=$(dash "$WP")
 WMEM="$HOME/.claude/projects/$WDASH/memory"
 mkdir -p "$WMEM"; : > "$WMEM/.no-gbrain"
 before=$(ls -1 "$WMEM" 2>/dev/null | wc -l)
@@ -256,7 +507,7 @@ echo "== 5b. capture-review-refs (allowlist + exclusions) =="
 # interpretable after a gstack upgrade rebuilds the global clone. The value is
 # entirely in the allowlist: capture the durable docs, never the build
 # artifacts. Fixture carries both so the exclusions are actually exercised.
-CRR="$(mktemp -d)"
+CRR="$(tmp crr)"
 mkdir -p "$CRR/src/specialists" "$CRR/src/sections"
 : > "$CRR/src/checklist.md"; : > "$CRR/src/design-checklist.md"
 : > "$CRR/src/greptile-triage.md"; : > "$CRR/src/TODOS-format.md"
@@ -296,35 +547,75 @@ echo "== 6. hermeticity guard (this file lints itself) =="
 # developer's real memory store. The sandbox above makes the DEFAULT hermetic;
 # this lint makes the remaining escape hatches LOUD.
 #
-# Three ways an assertion reaches back out of the sandbox, all of them one grep
-# away:
-#   a --cwd aimed at $DIR   points a memory tool at the live checkout: its git
-#                           remote, its real slug resolution, and the memory
-#                           dir keyed to this repo
-#   /home/<user>            a hardcoded developer path
-#   -home-<user>            the dashed form of one, which is how the native
-#                           memory dirs and the PHI slugs are keyed
-# A line may opt out with the marker the lint's own filter names; the count of
-# opted-out lines is pinned below, so a new exemption cannot slip in silently.
-hermetic_lint() {   # hermetic_lint <file> → one line per escape hatch
-  grep -nE -e '--cwd[[:space:]]+"[$]DIR"' -e '/home/[a-z]' -e '-home-[a-z]' "$1" \
-    | grep -v 'hermetic-ok'
+# The rules are DATA, and each one carries its own specimen, so a rule cannot be
+# added without a control that proves it fires. Every specimen is RECOVERED FROM
+# GIT — a specimen you invent proves only that a regex matches the string you
+# wrote to match it. Fields: name | extended-regex | specimen.
+HERMETIC_RULES=(
+  'live --cwd|--cwd[[:space:]]+"[$]DIR"|out=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)'   # hermetic-ok: specimen, 74e87e7:test/smoke.sh:60
+  'absolute home path|/home/[a-z]|    "/home/jesper/PycharmProjects/jesper-jurcenoks-ai-personalizations/"'                                              # hermetic-ok: specimen, 4fba8d8:bin/jjstack-plan:34
+  'dashed home key|-home-[a-z]|  cwd=$(reconstruct_cwd "-home-jesper-PycharmProjects-jjstack")'                                                          # hermetic-ok: specimen, 12713f5:test/smoke.sh:31
+  'tmpdir outside the sandbox|mktemp[[:space:]]+-d|STUB=$(mktemp -d)'                                                                                    # hermetic-ok: specimen, 9c0eee4:test/smoke.sh:138
+)
+hermetic_lint_raw() {   # every line matching ANY rule, exemptions included
+  local f="$1" r rname rpat rspec; local -a args=()
+  for r in "${HERMETIC_RULES[@]}"; do
+    IFS='|' read -r rname rpat rspec <<<"$r"
+    args+=(-e "$rpat")
+  done
+  grep -nE "${args[@]}" "$f"
 }
+hermetic_lint() { hermetic_lint_raw "$1" | grep -v 'hermetic-ok'; }
+
+raw=$(hermetic_lint_raw "$SELF" | grep -c .)
 viol=$(hermetic_lint "$SELF")
 [ -n "$viol" ] && printf '     %s\n' "$viol"
 check "no assertion reaches outside the sandbox" "[ -z \"\$viol\" ]"
 
-# POSITIVE CONTROL. A lint that has never flagged anything is indistinguishable
-# from a lint whose pattern is wrong, and the assertion above passes either way.
-# The specimen is not invented: it is byte-for-byte the line this PR removed,
-# recovered from git at 74e87e7:test/smoke.sh:60 — the Layer-B invocation that
-# ran against the live repo while the suite reported 40/40.
-CTL='out=$(JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)'  # hermetic-ok: git-recovered specimen, fed to the lint on purpose
-CTLF="$SANDBOX/lint-specimen.sh"; printf '%s\n' "$CTL" > "$CTLF"
-check "the lint flags the exact line this PR removed (control)" "[ \"\$(hermetic_lint '$CTLF' | wc -l)\" = 1 ]"
-# And the exemption marker must stay rare enough to read at a glance.
-exempt=$(grep -c 'hermetic-ok' "$SELF")
-check "the lint has exactly 3 opted-out lines (adding one reddens this)" "[ \"\$exempt\" = 3 ]"
+# The exemption pin used to count occurrences of the marker string, two of which
+# were the lint's own machinery — it read 3 where the file had ONE real
+# exemption, and hoisting the filter into a variable reddened it without
+# changing any exemption. Count what the marker actually SUPPRESSES, and derive
+# the expected number: one specimen per rule, plus the two allocators (the
+# sandbox root, which cannot allocate itself inside itself, and the in-sandbox
+# allocator every other fixture goes through).
+exempt=$(( raw - $(printf '%s' "$viol" | grep -c .) ))
+check "every exempted line is a rule specimen or one of the two allocators" \
+      "[ \"\$exempt\" = \$(( ${#HERMETIC_RULES[@]} + 2 )) ]"
+
+# POSITIVE CONTROL, once per rule. A lint that has never flagged anything is
+# indistinguishable from a lint whose pattern is wrong, and the assertion above
+# passes either way. Each specimen must be caught, and caught by ITS OWN rule —
+# otherwise a rule can be deleted while a neighbour keeps the control green.
+CTLF="$SANDBOX/lint-specimen.sh"
+for r in "${HERMETIC_RULES[@]}"; do
+  IFS='|' read -r rname rpat rspec <<<"$r"
+  if [ -z "$rspec" ]; then bad "lint rule '$rname' carries a specimen"; continue; fi
+  printf '%s\n' "$rspec" > "$CTLF"
+  n=$(hermetic_lint_raw "$CTLF" | grep -c .)
+  check "lint rule '$rname' flags its git-recovered specimen (control)" "[ \"\$n\" = 1 ]"
+  others=0
+  for r2 in "${HERMETIC_RULES[@]}"; do
+    [ "$r2" = "$r" ] && continue
+    IFS='|' read -r o_name o_pat o_spec <<<"$r2"
+    grep -qE -e "$o_pat" "$CTLF" && others=$((others+1))
+  done
+  check "rule '$rname' is the only rule its specimen trips (each rule earns its place)" "[ \"\$others\" = 0 ]"
+done
+
+# The PATH half of the sandbox. `command -v gbrain` is how the tools find one,
+# and it reached straight past the sandbox $HOME into the developer's real PATH.
+check "the sandbox PATH exposes no ambient gbrain" "! command -v gbrain >/dev/null 2>&1"
+# On a machine with no gbrain at all the check above passes whether the scrub
+# works or not, so drive the scrub with a SYNTHETIC entry: machine-independent,
+# and it reddens the moment the scrub stops removing anything — or starts
+# removing too much.
+FAKE=$(tmp fakebin)
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/gbrain";    chmod +x "$FAKE/gbrain"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/notgbrain"; chmod +x "$FAKE/notgbrain"
+SP=$(sandbox_path "$FAKE:/usr/bin" "$SANDBOX/ctlmirror")
+check "the scrub removes gbrain from a dir that has one (control)" "[ -z \"\$( PATH=\"\$SP\"; command -v gbrain )\" ]"
+check "the scrub keeps that dir's other binaries (control)" "[ -n \"\$( PATH=\"\$SP\"; command -v notgbrain )\" ]"
 
 # Runtime half of the guard: the sandbox must still be in force at the end. A
 # section that reassigns $HOME and forgets to restore it would leave every later

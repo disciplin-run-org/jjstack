@@ -223,7 +223,10 @@ from the finished session (see [Memory](#memory)). It enqueues and detaches
 in milliseconds so it never blocks exit; a background worker extracts lessons
 and writes them PHI-gated and deduplicated. Disable with `JJSTACK_NO_CAPTURE=1`.
 Deduplication runs in two layers: an exact `pattern_key` match, then a semantic
-near-duplicate lookup against gbrain. `JJSTACK_CAPTURE_NO_GBRAIN=1` pins the
+near-duplicate lookup against gbrain. The semantic layer merges the new lesson
+into the page it matched only at or above the merge threshold `0.85`; anything
+scoring below that becomes a new memory instead. That number is the contract:
+relaxing it fuses unrelated lessons, tightening it stops deduplicating. `JJSTACK_CAPTURE_NO_GBRAIN=1` pins the
 semantic layer off — for offline or air-gapped use, or when you need a fast,
 repeatable answer. Exact-key dedup still runs, so dedup is reduced, not skipped.
 That gbrain lookup runs under a deadline, default 8 seconds;
@@ -286,11 +289,15 @@ files only and never reach the shared index. This is enforced in one shared
 library that every memory tool uses.
 
 Regression coverage lives in `test/smoke.sh`. It is hermetic: every assertion
-runs against a throwaway home directory and throwaway fixture projects, so it
-never reads or writes your real memory store, learnings or gbrain index, and
-it gives the same verdict on any machine. The suite lints itself for that
+runs against a throwaway home directory, a throwaway PATH with no ambient
+gbrain, and throwaway fixture projects, so it never reads or writes your real
+memory store, learnings or gbrain index, and it gives the same verdict on any
+machine — with gbrain installed or without. The suite lints itself for that
 property, so a test that reaches back out to your real environment fails
-loudly instead of passing quietly.
+loudly instead of passing quietly. It also reads the sets it guards — which
+PHI gates exist, which remote tiers refuse, which dedup states the code can
+report — from the implementation and the lines above, and fails when one of
+them has no fixture, so a gate added later cannot arrive untested.
 
 ---
 
