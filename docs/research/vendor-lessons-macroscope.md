@@ -1,7 +1,7 @@
 # Vendor lessons — Macroscope (AI code review)
 
 What jjstack `/review` took from [Macroscope](https://macroscope.com), what it
-refused, and why. Companion to `references/code-review-best-practices.md`, kept
+refused, and why. Companion to `code-review-best-practices.md`, kept
 separate so vendor research stays auditable as vendor research: a claim's source
 matters as much as its content, and a marketing claim folded into the operating
 manual becomes indistinguishable from a sourced practice six months later.
@@ -233,7 +233,7 @@ believing any Macroscope benchmark.
 - **Detection-mode tiers (Budget / Balanced / Precise / Ultra).** Rejected: a cost
   dial that buys latency by giving up recall. jjstack `/review` is permanently the
   deepest setting — that is its entire reason to exist, and a project wanting
-  cheap has gstack `/review`. Depth is already tunable via `ADVERSARIAL_PASSES`.
+  cheap has gstack `/review`. Depth is already tunable via `--deep`.
 - **Minimum-severity filtering, `.macroscope/ignore.md` exclusions, size-based
   file skipping.** Rejected: control noise by dropping whole dimensions, files
   and severity bands before anything is examined — precisely the trade this skill

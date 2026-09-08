@@ -1,7 +1,7 @@
 # Vendor lessons — Greptile
 
 What the jjstack `/review` wrapper takes from Greptile's AI code reviewer, what
-it refuses, and why. Companion to `references/code-review-best-practices.md`,
+it refuses, and why. Companion to `code-review-best-practices.md`,
 which stays the general operating manual; this file is scoped to one vendor so
 the borrowing is auditable and the marketing is separated from the mechanics.
 

@@ -89,8 +89,8 @@ have on a developer machine.
 
 | Enhancement | gstack | jjstack |
 |-------------|--------|---------|
-| Review quality target | 8/10 | **10/10** (configurable) |
-| Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
+| Review quality target | 8/10 | **10/10** (configurable) — `/cso`, `/qa`, the `plan-*-review` family |
+| Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes (same skills; `/review` is budgeted instead) |
 | `/review` inputs | The diff | The diff **plus** your repo's real typechecker/linter/test results, the callers outside the diff, and the change's stated intent |
 | `/review` noise control | Suppress low-confidence findings | Quoted line + concrete failure scenario + 0–100 confidence, and a budget: 60 min, 4 passes, 10 findings |
 | `/review` on re-run | Reports everything again | Verifies only prior P0/P1; returns `STOP` if the finding count did not fall |
@@ -185,7 +185,6 @@ loads. Read them directly or let skills load them for you.
 | `product-management.md` | 4P:90 framework, OKR Quantity/Quality/Efficiency, JTBD, RICE, scope control toolbox, agentic PM |
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
-| `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
 | `review-preflight.md` | What `/review`'s deterministic pre-flight establishes before any model judges, and which of its statuses are gaps rather than passes |
 | `pr-comment-voice.md` | How a review sounds when it is posted to a PR: conclusion first, one line per finding, never a credential |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
@@ -330,7 +329,6 @@ Global defaults in `jjstack.config.yaml`:
 review:
   min_score: 10           # quality target (gstack default: 8)
   max_iterations: 3       # additional passes after gstack's loop
-  adversarial_passes: 2   # review depth (gstack default: 1)
 
 output:
   location: repo          # "repo" or "home"

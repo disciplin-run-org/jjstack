@@ -37,6 +37,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   review the tests a fix added, and opens with the line delta since last round.
   If the finding count did not fall, the verdict is `STOP` — the review is
   making work rather than finishing it, and it says so instead of continuing.
+- **The PR-comment credential rule is a shape, not a vendor list — and it is
+  entropy-gated.** A value must carry both a digit and an uppercase letter and
+  must not end in a source or document extension, so a real token is caught
+  while `Credentials: docs/research/vendor-lessons-aikido.md` and a Kubernetes
+  secret *name* are not. The per-vendor rows stay beside it, because a token
+  quoted bare inside a finding has no `name = value` shape for the shape rule
+  to see. Azure connection strings, GCP `private_key`, bare JWTs and Ruby
+  hashrockets are covered; `HIGH`/`MEDIUM`/`LOW` are no longer counted as
+  severities, because they are ordinary English and a one-line approve saying
+  "risk is low" was being refused.
+- **`--help` no longer drifts.** Every review script printed its header through
+  a hand-kept line range, and four of five had already drifted — one printed
+  shell source as help, another cut its own contract mid-sentence. They now
+  share one renderer that reads to the end of the header block.
 - **`/review` no longer edits your code.** gstack's auto-fix step is reported
   instead of applied. A reviewer that edits the tree has to review its own
   edits, and that loop does not terminate.
@@ -67,10 +81,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   a comment carrying a credential outright and never echoes what it caught, so
   the natural output of a good security finding cannot publish the key it just
   found to a public thread.
-- **`references/code-review-best-practices.md`** — the sourced manual behind
-  `/review`: how Anthropic's and gstack's reviewers are actually tuned, twelve
-  ranked practices for high-recall/low-noise AI review, the dimension checklist,
-  and the anti-patterns that make a reviewer untrustworthy.
+- **`docs/research/`** — the sourced research behind the review rebuild: how
+  Anthropic's and gstack's reviewers are tuned, what three review vendors claim
+  and what survived checking, and why the recall-max stance was abandoned.
+  Reference material for the next person to change the skill; nothing loads it
+  at runtime.
 - **`references/review-preflight.md`** — what the deterministic pre-flight
   establishes before any model judges anything, and how to read the three
   statuses that are gaps rather than passes.

@@ -45,3 +45,14 @@ review_need_value() {   # review_need_value FLAG REMAINING_ARGC
   fi
   return 0
 }
+
+# show_help — print the file's own header block as help.
+#
+# Every script in this family hand-kept a `sed -n 'A,Bp'` range, and four of
+# five had already drifted: one printed `set -uo pipefail` as help text,
+# another cut its re-entrancy contract mid-sentence. The header is delimited by
+# the shebang and the first non-comment line, so read THAT rather than a number
+# somebody has to remember to update.
+show_help() {   # show_help FILE
+  sed -e '1d' "$1" | sed -n '/^[^#]/q;p' | sed 's/^# \{0,1\}//'
+}

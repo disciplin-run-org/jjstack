@@ -4,7 +4,6 @@ version: 1
 review:
   min_score: 10              # gstack default: 8
   max_iterations: 3          # how many times to loop for higher score
-  adversarial_passes: 2      # gstack default: 1
 
 # Output location
 output:

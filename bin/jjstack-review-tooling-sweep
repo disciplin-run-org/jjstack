@@ -84,7 +84,7 @@ while [ $# -gt 0 ]; do
     --skip-tests) SKIP_TESTS=1; shift ;;
     --timeout)    review_need_value "$1" $# || exit 2; TIMEOUT="$2"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
-    -h|--help)    sed -n '2,63p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    show_help "$0"; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -184,9 +184,15 @@ detect_test() {
   return 1
 }
 
-TC="${TC_OVERRIDE:-$(detect_typecheck || true)}"
-LINT="${LINT_OVERRIDE:-$(detect_lint || true)}"
-TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
+# Detection runs even when an override says `none`. "The operator declined to
+# run it" and "this repo has no such tool" are the two facts this script exists
+# to keep apart, and you cannot report the first without knowing the second.
+TC_FOUND="$(detect_typecheck || true)"
+LINT_FOUND="$(detect_lint || true)"
+TEST_FOUND="$(detect_test || true)"
+TC="${TC_OVERRIDE:-$TC_FOUND}"
+LINT="${LINT_OVERRIDE:-$LINT_FOUND}"
+TEST="${TEST_OVERRIDE:-$TEST_FOUND}"
 
 # Remember what was DETECTED before any guard clears it, so "nothing here to
 # run" and "something here we chose not to run" stay distinguishable
@@ -198,10 +204,20 @@ TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
 # with a skip reason, so the artifacts say "skipped (--test none)" and never
 # "no test runner detected" about a repo that has one.
 declare -A DETCMD SKIPWHY
-DETCMD[typecheck]="$TC"; DETCMD[lint]="$LINT"; DETCMD[test]="$TEST"
+DETCMD[typecheck]="$TC_FOUND"; DETCMD[lint]="$LINT_FOUND"; DETCMD[test]="$TEST_FOUND"
 for _s in typecheck lint test; do
-  if [ "${DETCMD[$_s]}" = "none" ]; then
-    DETCMD[$_s]="(disabled by operator)"; SKIPWHY[$_s]="--$_s none"
+  case "$_s" in
+    typecheck) [ -n "$TC_OVERRIDE" ]   && [ "$TC_OVERRIDE" != none ]   && DETCMD[$_s]="$TC_OVERRIDE" ;;
+    lint)      [ -n "$LINT_OVERRIDE" ] && [ "$LINT_OVERRIDE" != none ] && DETCMD[$_s]="$LINT_OVERRIDE" ;;
+    test)      [ -n "$TEST_OVERRIDE" ] && [ "$TEST_OVERRIDE" != none ] && DETCMD[$_s]="$TEST_OVERRIDE" ;;
+  esac
+  if [ "$_s" = typecheck ] && [ "$TC_OVERRIDE" = none ] ||
+     [ "$_s" = lint ]      && [ "$LINT_OVERRIDE" = none ] ||
+     [ "$_s" = test ]      && [ "$TEST_OVERRIDE" = none ]; then
+    # Record the REASON, keep the detected command. Overwriting DETCMD with a
+    # sentinel made test-baseline.md read "Detected `(disabled by operator)`",
+    # naming a runner that does not exist and hiding the one that does.
+    SKIPWHY[$_s]="--$_s none"
   fi
 done
 [ "$TC" = "none" ]   && TC=""
@@ -248,13 +264,15 @@ label() { # human name for a command, incl. the internal shell-sweep token
 
 if [ "$DRY" -eq 1 ]; then
   echo "[dry-run] repo:      $REPO"
-  echo "[dry-run] typecheck: $(label "$TC")"
-  echo "[dry-run] lint:      $(label "$LINT")"
-  if [ "$SKIP_TESTS" -eq 1 ]; then
-    echo "[dry-run] test:      $(label "$TEST") (--skip-tests)"
-  else
-    echo "[dry-run] test:      $(label "$TEST")"
-  fi
+  # Label from DETCMD/SKIPWHY, the same pair the real path answers from. $TC,
+  # $LINT and $TEST have already been cleared by the `none` overrides and the
+  # re-entrancy guard, so labelling them previewed a repo with an executable
+  # test/smoke.sh as "<none detected>" - "there is nothing to run" printed over
+  # "we chose not to run it", the one distinction this script exists to keep.
+  for _s in typecheck lint test; do
+    printf '[dry-run] %-10s %s%s\n' "$_s:" "$(label "${DETCMD[$_s]}")" \
+           "${SKIPWHY[$_s]:+ (${SKIPWHY[$_s]})}"
+  done
   [ -n "$REENTRY_NOTE" ] && echo "[dry-run] $REENTRY_NOTE"
   echo "[dry-run] would write: $OUT/{tooling-results.md,exclusions.md,test-baseline.md}"
   exit 0

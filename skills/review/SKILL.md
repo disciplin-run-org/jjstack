@@ -66,8 +66,11 @@ Store `OUTPUT_DIR` (default `{repo}/jjstack`) and the DNA paths. `mkdir -p`
 the output dir. Note the start time — the 60-minute clock runs from here.
 
 Then decide **first review or re-review**: if `{OUTPUT_DIR}/review-*.md`
-exists for this branch, read the newest one now and skip to the re-review
-rules in Phase 4 before doing anything else.
+exists for this branch, read the newest one now, before anything else. A
+re-review still runs Phases 0–3 in full — a second commit can introduce a
+fresh P0, and a pass that only re-checks the old findings would return
+APPROVE over it. What the previous report changes is Phase 4's *filter*, not
+which phases run.
 
 ---
 
@@ -241,7 +244,15 @@ cat ~/.claude/skills/jjstack/references/pr-comment-voice.md
 Resolve the PR once, into a file — the **base** repo, not a fork:
 
 ```bash
-gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err; echo "gh exit: $?"; cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
+gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+```
+
+Read the outcome in a second call — one command per Bash call, per CLAUDE.md;
+a compound command fires the permission prompt and an unattended run stalls on
+it rather than posting:
+
+```bash
+cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
 
 The PR URL names the base repo — the one the number belongs to — even on a
