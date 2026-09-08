@@ -1523,8 +1523,58 @@ rm -rf "$probe_bin"
 # caller; the skill must name the binary exactly once, in that pre-flight.
 n_blast_calls=$(grep -c 'jjstack-review-blast-radius' "$SK" 2>/dev/null)
 check "the review skill invokes blast-radius exactly once" "[ \"\$n_blast_calls\" = 1 ]"
-check "that one invocation is the Phase 0 pre-flight" \
-  "grep -q 'jjstack-review-preflight' '$SK' && ! grep -q 'jjstack-review-blast-radius >' '$SK'"
+# "That one invocation is the Phase 0 pre-flight" used to be spelled as
+# `grep -q jjstack-review-preflight && ! grep -q 'jjstack-review-blast-radius >'`
+# — the presence of a name anywhere in the file, and the absence of one
+# redirection spelling. It passed on a skill whose only blast-radius mention is
+# in Module G.1, a thousand lines past Phase 0, and it kept passing when a
+# SECOND pre-flight run — which re-runs every pre-pass, blast radius included —
+# was ordered at the start of Phase 4. Round 3 did exactly that and the suite
+# stayed green.
+#
+# Both halves are now derived from a source of truth instead of typed:
+#   WHAT Phase 0 computes  — the tools `bin/jjstack-review-preflight` itself
+#                            runs, read out of that script. A pre-pass added
+#                            to it tomorrow is covered on the day it is added.
+#   WHERE a command sits   — the `## ` heading that governs its line, read out
+#                            of the skill. Not "is the string present", but
+#                            "which phase orders it".
+PRE_TOOLS=$(grep -oE 'jjstack-review-[a-z-]+' "$BIN/jjstack-review-preflight" \
+            | sort -u | grep -vx jjstack-review-preflight)
+pre_tool_n=$(printf '%s\n' $PRE_TOOLS | grep -c .)
+check "the Phase 0 pre-pass set was recovered from the pre-flight script, not listed here" \
+  "[ \"\$pre_tool_n\" -ge 4 ] && printf '%s\n' \$PRE_TOOLS | grep -qx jjstack-review-blast-radius"
+# An INVOCATION is a command that RUNS the binary by path — the shape every
+# runnable line in this skill has. A mention inside prose is not one, which is
+# the distinction the old spelling could not make.
+skill_invocations() { grep -nE "^[[:space:]]*[^[:space:]]*bin/$1([[:space:]]|\$)" "$SK"; }
+# The `## ` heading that governs a line.
+skill_section() { awk -v n="$1" 'NR > n { exit } /^## / { h = $0 } END { print h }' "$SK"; }
+pf_lines=$(skill_invocations jjstack-review-preflight | cut -d: -f1)
+pf_n=$(printf '%s\n' $pf_lines | grep -c .)
+check "the review skill invokes the pre-flight exactly once" "[ \"\$pf_n\" = 1 ]"
+pf_sec=$(skill_section "$(printf '%s\n' $pf_lines | head -1)")
+case "$pf_sec" in "## Phase 0:"*) pf_in0=1 ;; *) pf_in0=0 ;; esac
+check "that one invocation is the Phase 0 pre-flight — the phase it sits in, not merely its presence${pf_in0:+}" \
+  "[ \"\$pf_in0\" = 1 ]"
+[ "$pf_in0" = 1 ] || printf '    pre-flight is ordered under: %s\n' "$pf_sec" >&2
+# And nothing may order a pre-pass a SECOND time, under any phase: the wrapper
+# already ran it. This is the duplicate-scan regression stated as a property of
+# every pre-pass rather than of the one that regressed.
+pf_extra=0
+for t in $PRE_TOOLS; do
+  n=$(skill_invocations "$t" | wc -l | tr -d ' ')
+  [ "$n" = 0 ] || { pf_extra=$((pf_extra+1)); printf '    %s is invoked %s time(s) outside the pre-flight\n' "$t" "$n" >&2; }
+done
+check "no phase re-runs a scan the Phase 0 pre-flight already ran" "[ \"\$pf_extra\" = 0 ]"
+# POSITIVE CONTROLS, both seeded from the shipped file. A matcher that finds
+# nothing would report "0 invocations" for every pre-pass and pass; a section
+# reader that always answered Phase 0 would too.
+check "the invocation matcher finds the shipped pre-flight command (control)" \
+  "skill_invocations jjstack-review-preflight | grep -q 'bin/jjstack-review-preflight'"
+p4_line=$(grep -n '^## Phase 4: ' "$SK" | head -1 | cut -d: -f1)
+check "the section reader answers with the phase a later line really sits in (control)" \
+  "skill_section \"\$((p4_line + 2))\" | grep -q '^## Phase 4: '"
 # Positive control — seeded from the REAL invocation line in the skill, and
 # counted with the same pattern the guard uses. Inventing a probe line and
 # hardcoding a second copy of the pattern proves only that a regex matches a
