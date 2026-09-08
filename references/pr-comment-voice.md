@@ -12,6 +12,24 @@ Derived from the Jesper Jurcenoks Voice DNA, Executive register. The full DNA
 this repo; point `dna.voice` in `jjstack.config.yaml` at it to layer the whole
 thing on top. Nothing here depends on that file existing.
 
+## The rule that outranks the voice: never publish a credential
+
+A PR comment is public and permanent. Editing it does not remove the old body
+from the API's edit history, and deleting it does not un-send the notification
+email.
+
+The security lens is what surfaces a leaked key, and the finding shape below is
+what renders it inline, so the natural output of a good review is a comment
+quoting the secret it just found. Cite `file:line` and name what KIND of
+credential it is:
+
+> **P0** `conf.py:12` an AWS access key id is committed.
+
+Never the value itself. The evidence belongs in the committed report, which is
+where every other repro already lives. `jjstack-pr-comment-lint` refuses this
+one closed - it exits 4, it cannot be silenced, and it will not print the thing
+it caught.
+
 ## The one principle
 
 **The comment is a doorbell, not the delivery.** Verdict, the blocking findings,
@@ -43,6 +61,13 @@ Guardrail: the condition under which this verdict holds.
 
 One line per finding. `file:line` is not decoration - it is what makes the
 finding actionable without a second round trip.
+
+The counts are not decoration either, and they are checked. `N blocking, M
+total` must be there, `M` cannot be smaller than `N`, and when `M` exceeds the
+findings shown the comment has to say `M-N more` and link the rest. That
+arithmetic is what proves a short comment is a moved finding rather than a
+dropped one. The linked report has to exist on disk before the comment goes out:
+a link to nothing reads exactly like no link at all.
 
 ## A clean approve is one line
 

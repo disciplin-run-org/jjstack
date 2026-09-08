@@ -97,7 +97,8 @@ have on a developer machine.
 | `/review` accountability | Dropped findings vanish | **Triage ledger**: every finding keeps a disposition + reason code, deduped with a corroboration count and a blast-radius label. Nothing is dropped silently |
 | `/review` after the review | Ends at the findings list | **Five post-passes**: what's *missing* from the diff, a review of the auto-applied fixes, a red test proving each finding, a re-run of typecheck/lint/tests on the post-fix tree, and persisted accept/reject calibration that ranks without rescoring |
 | `/review` verdict | Prose summary | Three-valued `APPROVE` / `CAUTION` / `REJECT` + per-finding review judgment + guardrails + degraded-mode disclosure |
-| `/review` delivery | Report written to disk | **Posts to the PR** in jj's voice — verdict, blocking findings, link. 12 lines / 900 chars / 3 findings, enforced by a linter, not by asking |
+| `/review` delivery | Report written to disk | **Posts to the PR** in jj's voice — verdict, blocking findings, link. 12 lines / 900 chars / 3 findings, a declared `N blocking, M total`, and a report link that must exist — enforced by a linter, not by asking |
+| `/review` posting safety | Comment posted as composed | **Refuses to publish a credential.** AWS/GitHub/OpenAI/Slack/Stripe/Google keys, JWTs, private-key blocks and passwords in connection strings block the post outright: the finding keeps its evidence in the report, the comment cites `file:line` |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
