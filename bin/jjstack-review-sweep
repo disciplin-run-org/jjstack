@@ -115,7 +115,14 @@ else
   if [ -f "$ROOT/package.json" ] && have npm; then
     scripts=""
     if have node; then
-      scripts="$(node -p "Object.keys((require('$ROOT/package.json').scripts)||{}).join(' ')" 2>/dev/null)"
+      # The path travels in argv and is read as DATA. Splicing $ROOT into a JS
+      # string literal made this the one detection path that evaluated a path as
+      # code: a directory name containing a quote ended the literal, and the
+      # error was swallowed below, silently dropping every npm check from the
+      # plan. The python3 fallback below always did this correctly.
+      scripts="$(node -e 'const fs = require("fs");
+        const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        process.stdout.write(Object.keys(j.scripts || {}).join(" "));' "$ROOT/package.json" 2>/dev/null)"
     elif have python3; then
       scripts="$(python3 -c "import json,sys;print(' '.join(json.load(open(sys.argv[1])).get('scripts',{})))" "$ROOT/package.json" 2>/dev/null)"
     fi

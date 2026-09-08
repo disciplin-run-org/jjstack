@@ -11,6 +11,31 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **The auto-fix review pass no longer reports your own scratch files back at
+  you.** Post-pass 2 takes a marker before the review is allowed to change
+  anything, so it can tell the reviewer's edits from work you already had open.
+  The marker covered files git was already tracking, but not brand-new files you
+  had not committed yet — so a note you wrote before the review still turned up
+  in the report as something the reviewer had created, under a header saying the
+  marker had been taken first. The marker now records untracked files too, and
+  lists them in three honest groups: created by the review, already there and
+  changed since, already there and now deleted. Files you had and nobody touched
+  no longer appear at all, and a run where the review changed nothing now says
+  so instead of listing your work in progress.
+- **The calibration report is actually ranked.** `jjstack-review-calibration
+  report` prints your accepted/rejected patterns with a rank, and the rows are
+  meant to be ordered by it. They were not: the plus sign in `+20` defeated the
+  sort, so every positive rank tied and the ranked view came out in effectively
+  arbitrary order. Rows are now ordered by rank, ties broken by pattern name, so
+  two runs over an unchanged ledger print the same thing.
+- **The post-fix sweep no longer skips your npm checks when the project lives in
+  a folder with an apostrophe in its name.** Reading `package.json` treated the
+  folder's path as part of a program rather than as text. A path like
+  `/home/you/it's a repo` broke that program, the error was hidden, and every
+  `npm run lint` / `npm run test` check quietly vanished from the plan — the
+  sweep then reported on what was left without mentioning what it had dropped.
+  The path is now passed as data, and a folder name can no longer influence what
+  the sweep runs.
 - **A `/review` run can no longer lose every finding it made.** One field the
   model got wrong — a `confidence` of `null` instead of a number — used to crash
   the step that checks findings before they reach the report. The crash happened
