@@ -766,17 +766,33 @@ to delete, and no arithmetic threshold appears here:
 | confirmed, in the main report | `report` | `-` |
 | tagged `llm-unconfirmed` (§5b) | `unconfirmed` | `unverified` |
 | demoted by calibration (§5.10) | `demoted` | `prior-decision` |
-| retired by the committed baseline (§5d) | `suppress` | the baseline's own stated reason |
+| retired by the committed baseline (§5d) | `suppress` | `baseline` |
 | real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` |
 | never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` |
 
-Then render the ledger. This is deterministic — dedup, corroboration counting,
-path-exposure classification, vocabulary validation and the tally are the
-script's job, not the model's:
+`reason` is a **code from the closed vocabulary**, never free text. A
+baseline-suppressed finding takes the literal token `baseline`; the human
+sentence that justified the suppression already lives in the committed
+`.jjstack-review-baseline.json` and stays there. Pasting it into this column
+makes the validator exit 4 on a ledger that says exactly what it was told to
+say, and the loop has no way out.
+
+Then render the ledger. This is deterministic — dedup, merge, corroboration
+counting, path-exposure classification, vocabulary validation, reconciliation
+and the tally are the script's job, not the model's:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-review-triage {OUTPUT_DIR}/review-findings.tsv --out {OUTPUT_DIR}/review-triage-ledger.md
+~/.claude/skills/jjstack/bin/jjstack-review-triage {OUTPUT_DIR}/review-findings.tsv \
+  --reconcile {OUTPUT_DIR}/findings.adjudicated.jsonl \
+  --out {OUTPUT_DIR}/review-triage-ledger.md
 ```
+
+Pass `--reconcile` whenever 5d ran: it counts findings per `file:start_line` on
+both sides and refuses to render if the ledger is short, which is what turns
+"write the **complete** merged set" from an instruction into a checked fact.
+Without it the rendered header says so rather than certifying what nobody
+verified — drop the flag only when the repo has no baseline and 5d produced no
+adjudicated file.
 
 The script enforces three invariants that prose cannot:
 
@@ -795,10 +811,23 @@ The script enforces three invariants that prose cannot:
 3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
    reason; it may not be made to disappear.
 
-It exits **4** and renders nothing if any of those is violated: fix the ledger
-and rerun rather than working around it. It exits 3 if the ledger file is
-missing. It also emits yellow `ADVISORY` lines for findings reported against
-vendored or generated paths — code nobody here authored, and usually noise.
+All three run on the **merged** record, not the raw row, because merging is what
+changes a finding's severity and disposition. Rows that share a fingerprint
+collapse into one finding carrying the **highest severity** of its members —
+along with that member's claim and confidence — and their **weakest**, most
+visible **disposition**, ranked `report` < `unconfirmed` < `demoted` < `defer` <
+`out-of-scope` < `suppress`. A suppressed nit therefore cannot absorb a reported
+P0 that happens to share its location and opening phrase; suppression by
+absorption is still suppression, and a per-row check cannot see it. Every merge
+that raised a severity or weakened a disposition is listed in the ledger's own
+**Merges** section, so the collapse stays as auditable as everything else.
+
+It exits **4** and renders nothing if any of those is violated, or if
+`--reconcile` finds a finding with no row: fix the ledger and rerun rather than
+working around it. It exits 3 if the ledger or the adjudicated file is missing.
+It also emits yellow `ADVISORY` lines for findings reported against vendored or
+generated paths — code nobody here authored, and usually noise — and for an
+empty, unreconciled ledger, which certifies nothing.
 
 Two things it gives you for free that the model should not be doing by hand:
 **dedup with a corroboration count** (the same defect found by three lenses is
@@ -807,6 +836,9 @@ rank the main report by severity, then corroboration, then confidence), and
 **exposure class** (`prod` / `test` / `fixture` / `vendor` / `generated` /
 `docs`), a deterministic blast-radius annotation. Exposure *annotates*; it never
 decides whether a finding is shown.
+
+Pipes in a claim are escaped for you — a finding quoting `a || b` used to render
+a 9-cell row against a 7-cell header, and the renderer dropped the overflow.
 
 Commit `review-triage-ledger.md` alongside the findings report — it is the
 record of what this review chose not to tell you, and why.

@@ -107,12 +107,12 @@ model-made suppressions specifically. Deliberately out of scope for this PR.
   Scanner platforms cannot make a finding vanish — it moves to an ignored/snoozed
   state carrying a reason, and it stays inspectable. `/review`'s Phase 5 used to
   delete its `< 40` band outright, which makes a reviewer that looked and
-  dismissed indistinguishable from one that never looked. Phase 5.7 now files
+  dismissed indistinguishable from one that never looked. Phase 5.11 now files
   every finding with a `disposition` + `reason` from a closed vocabulary, and the
   script exits 4 rather than render a ledger with an unexplained drop.
 - **Reachability deprioritises; it never deletes.** Adopted as a *hard rule*,
   which is stronger than Aikido's own behaviour (see the rejected list). Encoded
-  as: reason `not-reachable` is legal only with `defer` or `appendix`.
+  as: reason `not-reachable` is legal only with `defer` or `demoted`.
 - **Deduplication across independent detectors.** `/review` runs 8+ independent
   lenses that will happily report the same defect three times. Ours collapses on a
   location+claim fingerprint and keeps a **corroboration count**, because three
@@ -166,7 +166,7 @@ model-made suppressions specifically. Deliberately out of scope for this PR.
   skeptically — scores it **86.67% precision against 27.66% recall, missing 34 of
   47 issues**. Quiet because it reports little. That is the exact trade `/review`
   exists to refuse, so our rule is stricter than any of the three: a model here may
-  demote a finding into the appendix or the suppressed section, never out of the
+  demote a finding into the `demoted` or `suppress` section, never out of the
   ledger.
 - **[REJECTED MECHANIC] A class-level "confidence" label presented as evidence
   about the instance.** Every SAST AutoFix carries a High/Medium/Low confidence
