@@ -576,9 +576,12 @@ row each:
 - **`rule` rows** — human-authored globs over `lens` / `file` / `message`
   (`-` means "unstated", and matches anything), drift-tolerant: they survive
   line shifts and rewording. Reserve them for deliberate, tightly-scoped policy
-  exclusions, because a broad rule can hide newly malicious content. A rule that
-  states only a universal glob (`file` = `*`) is rejected: it is the "matches
-  everything" rule in disguise, and it would mute the whole repo at exit 0.
+  exclusions, because a broad rule can hide newly malicious content. A rule whose
+  every stated field is a blanket is rejected: it is the "matches everything"
+  rule in disguise, and it would mute the whole repo at exit 0. Blanket is
+  decided by the **same guard the ledger uses** (`bin/jjstack-review-scope.sh`),
+  measured against `git ls-files` — so `file` = `*[a-z]*` is refused exactly as
+  `file` = `*` is, rather than validating `ok` and suppressing a P0.
 
 Every entry of either kind carries a mandatory free-text `reason` **and** a
 `code` from the one shared reason-code vocabulary
@@ -1178,18 +1181,32 @@ permanent, self-inflicted blind spot in every future review of this repo.
 
 Scope `--path` to the place the decision was actually about (`src/legacy/*`,
 `docs/*`). Breadth is judged on what the glob **matches**, not on how it is
-spelled: the tool runs the pattern against a corpus of unrelated probe paths and
-rejects it with exit 2 if it reaches across three or more unrelated top-level
-names. `*`, `*/*`, `*[a-z]*`, `[a-z]*`, `*.*` and every other spelling of "the
-whole repo" fail the same test, because the test is on the semantics. Such a
-glob would demote every future finding in that category repo-wide while reading
-like any other line in a diff.
+spelled, and it is measured against **the repository's own files** — `git
+ls-files`, not a list of probe paths anyone typed. A glob is refused (exit 2)
+when it has no character that could pick one path over another, or when it
+matches more than half of the tracked files. `*`, `*/*`, `*[a-z]*`, `[a-z]*`,
+`*.*`, `[!q]*` and every other spelling of "the whole repo" fail the same test,
+because the test is on the semantics. Such a glob would demote every future
+finding in that category repo-wide while reading like any other line in a diff.
+
+That one rule lives in `bin/jjstack-review-scope.sh` and **every rung calls it**
+— the ledger, which may demote, and the baseline, which may suppress. It is one
+implementation rather than one rule written three times, because when it was
+written twice the strongest rung ended up with the weakest guard.
 
 The same test is applied to patterns **read from** the ledger. This file is
 meant to be hand-edited and merged in git, so a blanket row can arrive without
 passing through `--record`; `--match` prints a `warn … too broad` line to stderr
 and ignores that row. The row stays in the file as history — it just never
 suppresses anything. If you see that warning, scope the row or delete it.
+
+`--validate` asks only the half of that rule that does not depend on the
+repository — a pattern with no discriminating character is garbage for ever,
+while a glob that was scoped last year can become broad because the tree moved,
+and invalidating a whole ledger over that would take every legitimate row with
+it. The invariant is one-directional and holds by construction: **anything
+`--record` accepts, every read accepts.** It did not always: `--record --path
+'/'` once printed `recorded` and left every later read of that store failing.
 
 `--note` is stored in the printable alphabet: anything outside it (a newline
 first of all, but equally a tab or a control character) is escaped with the

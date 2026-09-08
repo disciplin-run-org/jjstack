@@ -74,8 +74,23 @@ h_rc7=$( pass=0; fail=0; (exit 7); check "probe" "[ \$? -eq 7 ]" >/dev/null; ech
 check "HARNESS: a deferred \$? reaches the assertion intact" "[ \"$h_rc7\" = 1 ]"
 h_rc0=$( pass=0; fail=0; (exit 0); check "probe" "[ \$? -eq 7 ]" >/dev/null; echo "$pass" )
 check "HARNESS: ...and is read, not assumed" "[ \"$h_rc0\" = 0 ]"
-h_pipe=$( pass=0; fail=0; check "probe" "printf 'a\nb\nc\n' | grep -q a" >/dev/null; echo "$pass" )
+# The pipefail probe must be an UNBOUNDED producer, and the option itself must be
+# asserted. `printf 'a\nb\nc\n' | grep -q a` looks like the right probe and cannot
+# observe the bug at all: three lines fit the pipe buffer, so printf finishes
+# before grep exits, never takes SIGPIPE, and the pipeline returns 0 whether or
+# not the guard is there — deleting `set +o pipefail` from check() left ALL 981
+# assertions green. In isolation that probe reddens 7 times in 400, which is
+# worse than no probe at all: the one contract in this file whose loss is
+# NON-DETERMINISTIC was pinned by the one guard that is itself a race. `yes`
+# never finishes, so grep -q always closes the pipe under it and it always takes
+# the signal; and the shopt probes below read the option directly, so the
+# contract is asserted rather than raced for.
+h_pipe=$( pass=0; fail=0; check "probe" "yes | grep -q y" >/dev/null; echo "$pass" )
 check "HARNESS: a 'cmd | grep -q' assertion reports grep's verdict" "[ \"$h_pipe\" = 1 ]"
+h_opt=$( pass=0; fail=0; check "probe" "! shopt -qo pipefail" >/dev/null; echo "$pass" )
+check "HARNESS: pipefail is actually OFF inside an assertion" "[ \"$h_opt\" = 1 ]"
+shopt -qo pipefail; h_back=$?   # read OUTSIDE check(), where the option must be on again
+check "HARNESS: ...and back ON the moment the assertion returns" "[ $h_back -eq 0 ]"
 
 # ── The sandbox ──────────────────────────────────────────────────────
 # One throwaway $HOME for the WHOLE file, exported before the first assertion.
@@ -2661,6 +2676,15 @@ check "positive control: a scoped glob is still recorded" "[ \$? -eq 0 ]"
 # Every spelling in BLANKETS is one that appears nowhere in the implementation
 # (bracket ranges, a negated bracket, a POSIX class, bare `?` runs, nested
 # `*/*/*`), so a guard that passes this cannot have been written to its fixture.
+#
+# ROUND 3 — this corpus WAS the implementation's own, re-declared here, which
+# made it the guard's fixture rather than its oracle: it could only ever confirm
+# the ten paths the implementation already believed in. The implementation has no
+# corpus of its own any more (it reads `git ls-files` — see §7w), so these eleven
+# paths are now an INDEPENDENT tree the guard has never seen, and the reach they
+# measure is measured end to end through --match. Keep them synthetic and keep
+# them here: the moment this list is derived from the same source the guard is,
+# the circularity is back.
 BREADTH_PROBE=(src/payments.py lib/util.go docs/guide.md tests/test_api.rb
                .github/workflows/ci.yml vendor/thirdparty/lib.c
                deep/nested/tree/Widget.java Makefile README.md go.mod)
@@ -4360,6 +4384,216 @@ row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is co
 check "POSITIVE CONTROL: refuted + stale-api is still legal in the run report" "[ $rc -eq 0 ]"
 check "POSITIVE CONTROL: and it still renders as refuted" "grep -q 'Refuted' '$SX/ref.md'"
 rm -rf "$LX" "$GX" "$VX" "$SX"
+
+echo "== 7w. round-3: breadth is MEASURED against the real repository, on every rung =="
+# Round 2 gave the LEDGER — the rung capped at `demote` — a semantic breadth test
+# and left the BASELINE — the ONLY rung permitted to SUPPRESS — on the spelling
+# test the ledger's own header calls broken. `*[a-z]*` validated `ok` there and
+# suppressed a P0. The weaker rung was hardened and the stronger one was not, and
+# the ladder's whole promise is the other way round.
+#
+# So the fix is not another spelling in another list. There is ONE guard —
+# bin/jjstack-review-scope.sh — and every rung calls it, which makes the ordering
+# property structural: the strongest rung cannot carry a weaker guard than the
+# weakest rung, because there is only one guard.
+#
+# And its corpus is DERIVED: `git ls-files` on the repository the store belongs
+# to. Round 2's corpus was ten invented paths, and the test that measured it
+# re-declared the same ten — the guard was checked against its own fixture, so it
+# could only ever confirm the spellings the fixture happened to contain. The
+# oracle here is the live repository, which no implementation constant can be
+# written to, and the adversarial spellings below are GENERATED from it rather
+# than typed: a file added next week changes the family this section tests.
+WC="$(mktemp -d)"
+SCOPE_SH="$BIN/jjstack-review-scope.sh"
+WC_LED_HDR=$'#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1'
+
+# --- the corpus is derived, and the derivation is checked against its source ---
+git -C "$DIR" ls-files > "$WC/oracle.txt" 2>/dev/null
+check "the oracle corpus is the live repository and is non-trivial" \
+  "[ \"\$(wc -l < '$WC/oracle.txt')\" -ge 50 ]"
+"$SCOPE_SH" --corpus --repo "$DIR" > "$WC/derived.txt" 2>/dev/null
+check "the guard derives its corpus from git ls-files, not from a literal list" \
+  "cmp -s '$WC/oracle.txt' '$WC/derived.txt'"
+
+# --- the adversarial family, GENERATED from the corpus ------------------------
+# Every character that appears in more than half the tracked paths yields a
+# blanket, in each of the spellings a glob can wear. None of these is typed into
+# the implementation or into this file: they are computed, so a spelling nobody
+# has thought of is covered by the same sentence as the ones that were reported.
+python3 - "$WC/oracle.txt" > "$WC/blankets.txt" <<'PY'
+import sys
+
+paths = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+n = len(paths)
+literal = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+freq = {}
+for p in paths:
+    for c in set(p):
+        if c in literal:
+            freq[c] = freq.get(c, 0) + 1
+# A character in more than half the paths makes `*c*` match more than half the
+# repository — a pattern that says nothing, whatever bracket it is written in.
+common = sorted(c for c, k in freq.items() if k * 2 > n)
+firsts = {p[:1] for p in paths}
+rare = sorted(c for c in "qzjxwvQZJXWV" if c not in firsts)
+out = []
+for c in common:
+    out.append("*%s*" % c)          # bare literal
+    out.append("*[%s]*" % c)        # bracket set
+    out.append("*[%s-%s]*" % (c, c))  # bracket RANGE
+for c in rare:
+    out.append("[!%s]*" % c)        # negated bracket: matches every path there is
+    out.append("*[!%s]*" % c)
+if common:
+    out.append("*[[:alpha:]]*")     # POSIX class
+for p in out:
+    print(p)
+PY
+check "the adversarial family is generated from the corpus, not typed" \
+  "[ \"\$(wc -l < '$WC/blankets.txt')\" -ge 12 ]"
+# ...and it must contain spellings that carry a real literal character, or it
+# would only be re-testing the degenerate `*`/`?`/`/` case the old guard caught.
+check "the generated family carries literal characters, not just wildcards" \
+  "grep -qE '^\\*[a-z0-9]\\*\$' '$WC/blankets.txt'"
+
+# --- neither rung ACTS on a generated blanket, and the ladder never inverts ----
+# Measured as a CONSEQUENCE, not as an exit code. A guard is only worth what it
+# stops: the question is whether a blanket can demote a finding or take one out
+# of the active set, and the probe path is a real file in this repository rather
+# than an invented one.
+WC_PROBE="$(head -n 1 "$WC/oracle.txt")"
+wc_led_demotes() {   # 0 when the LEDGER (may DEMOTE) acts on this glob
+  { printf '%s\n' "$WC_LED_HDR"
+    printf '2026-01-01\tacme/repo\tdismissed\tdemote\tprior-decision\t%s\tstyle\tgenerated probe\n' "$1"
+  } > "$WC/l.tsv"
+  "$BIN/jjstack-review-ledger" --match --path "$WC_PROBE" --category style \
+    --ledger "$WC/l.tsv" 2>/dev/null | grep -q '^DEMOTE '
+}
+wc_bl_suppresses() { # 0 when the BASELINE (may SUPPRESS) acts on this glob
+  { printf '%s\n' "$BL_HDR"
+    printf 'rule\tsuppress\tbaseline\t-\t-\t%s\t-\tgenerated probe\n' "$1"
+  } > "$WC/b.tsv"
+  printf '{"lens":"security","file":"%s","severity":"P0","message":"m","quote":"q"}\n' "$WC_PROBE" \
+    > "$WC/f.jsonl"
+  "$BIN/jjstack-review-baseline" apply "$WC/f.jsonl" --baseline "$WC/b.tsv" 2>/dev/null \
+    | grep -q '"suppressed": *{'
+}
+check "the probe path is a real file in this repository" "[ -f '$DIR/$WC_PROBE' ]"
+led_leak=""; bl_leak=""; invert=""
+while IFS= read -r pat; do
+  [ -n "$pat" ] || continue
+  wc_led_demotes    "$pat" && led_leak="$led_leak $pat"
+  wc_bl_suppresses  "$pat" && bl_leak="$bl_leak $pat"
+  # THE LADDER ORDERING, stated as a property rather than hoped for: a glob the
+  # demote-capped rung will not act on can never be one the suppress-capped rung
+  # acts on. Round 2 shipped exactly that inversion — the ledger refused
+  # `*[a-z]*` and the baseline suppressed a P0 through it.
+  if ! wc_led_demotes "$pat" && wc_bl_suppresses "$pat"; then invert="$invert $pat"; fi
+done < "$WC/blankets.txt"
+check "no generated blanket can DEMOTE on the ledger${led_leak:+ — leaked:$led_leak}" \
+  "[ -z \"\$led_leak\" ]"
+check "no generated blanket can SUPPRESS on the baseline${bl_leak:+ — leaked:$bl_leak}" \
+  "[ -z \"\$bl_leak\" ]"
+check "LADDER: the suppress-capped rung never acts on what the demote-capped rung refuses${invert:+ — inverted:$invert}" \
+  "[ -z \"\$invert\" ]"
+# POSITIVE CONTROL — both act-probes must be able to say YES, or the three
+# assertions above are satisfied by two functions that can only ever say no. The
+# spelling is derived from the probe path itself, so it is a real scoped glob.
+WC_SCOPED="${WC_PROBE%/*}/*"
+case "$WC_PROBE" in */*) ;; *) WC_SCOPED="$WC_PROBE" ;; esac
+check "POSITIVE CONTROL: the ledger act-probe really does observe a demotion" \
+  "wc_led_demotes '$WC_SCOPED'"
+check "POSITIVE CONTROL: the baseline act-probe really does observe a suppression" \
+  "wc_bl_suppresses '$WC_SCOPED'"
+
+# --- the guard MEASURES the corpus; it is not a list of spellings -------------
+# THE control that separates a derived guard from an enumeration. One pattern,
+# two corpora, opposite verdicts. `docs/*` is a scoped decision in a repository
+# where docs/ is a corner, and a blanket in one that is nothing but docs — and no
+# list of spellings can tell those apart.
+{ printf 'docs/a.md\ndocs/b.md\ndocs/c.md\ndocs/d.md\ndocs/e.md\ndocs/f.md\ndocs/g.md\ndocs/h.md\ndocs/i.md\n'
+  printf 'src/one.py\n'; } > "$WC/heavy.txt"
+{ printf 'docs/a.md\n'
+  for i in 1 2 3 4 5 6 7 8 9; do printf 'src/f%s.py\n' "$i"; done; } > "$WC/light.txt"
+JJSTACK_REVIEW_CORPUS="$WC/light.txt" "$BIN/jjstack-review-ledger" --record --type dismissed \
+  --path 'docs/*' --category style --note n --ledger "$WC/m1.tsv" >/dev/null 2>&1; rc=$?
+check "MEASURED: 'docs/*' is a decision in a repo where docs/ is a corner" "[ $rc -eq 0 ]"
+JJSTACK_REVIEW_CORPUS="$WC/heavy.txt" "$BIN/jjstack-review-ledger" --record --type dismissed \
+  --path 'docs/*' --category style --note n --ledger "$WC/m2.tsv" >/dev/null 2>&1; rc=$?
+check "MEASURED: the SAME glob is a blanket in a repo that is nothing but docs/" "[ $rc -ne 0 ]"
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\tbaseline\t-\t-\tdocs/*\t-\tsame glob, two repositories\n'; } > "$WC/m.tsv"
+JJSTACK_REVIEW_CORPUS="$WC/light.txt" "$BIN/jjstack-review-baseline" validate --baseline "$WC/m.tsv" \
+  >/dev/null 2>&1; rc=$?
+check "MEASURED: the baseline agrees on the corner case" "[ $rc -eq 0 ]"
+JJSTACK_REVIEW_CORPUS="$WC/heavy.txt" "$BIN/jjstack-review-baseline" validate --baseline "$WC/m.tsv" \
+  >/dev/null 2>&1; rc=$?
+check "MEASURED: and on the blanket case — same file, same rung, different repo" "[ $rc -ne 0 ]"
+
+# --- the write path and the read path ask the SAME question -------------------
+# `--record --path '/'` printed `recorded` and exited 0; every later --match,
+# --list, --validate and --record on that store then exited 4, taking the
+# legitimate rows down with it. Two guards, one question: the write path judged
+# breadth by what a glob MATCHES and the read path by how it is SPELLED, so they
+# disagreed on every pattern built only from `*?/` that matches nothing. There is
+# one predicate now, so the property is checkable over the whole family at once:
+# whatever --record accepts, the store it wrote must still be readable.
+bricked=""
+{ cat "$WC/blankets.txt"; printf '/\n?\n/*\n*\n**\n*/*\nsrc/legacy/*\ndocs/*\n'; } > "$WC/roundtrip.txt"
+while IFS= read -r pat; do
+  [ -n "$pat" ] || continue
+  rm -f "$WC/rt.tsv"
+  if "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" --category style \
+       --note n --ledger "$WC/rt.tsv" >/dev/null 2>&1; then
+    "$BIN/jjstack-review-ledger" --validate --ledger "$WC/rt.tsv" >/dev/null 2>&1 \
+      || bricked="$bricked $pat"
+  fi
+done < "$WC/roundtrip.txt"
+check "no glob is recordable and then unreadable${bricked:+ — bricked:$bricked}" \
+  "[ -z \"\$bricked\" ]"
+# ...and the one the reviewer reproduced, named, so the regression is legible.
+rm -f "$WC/slash.tsv"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/legacy/*' --category style \
+  --note 'a real prior decision' --ledger "$WC/slash.tsv" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '/' --category style \
+  --note 'blanket' --ledger "$WC/slash.tsv" >/dev/null 2>&1; rc=$?
+check "--record refuses '/' rather than writing a row no reader accepts" "[ $rc -ne 0 ]"
+"$BIN/jjstack-review-ledger" --validate --ledger "$WC/slash.tsv" >/dev/null 2>&1
+check "and the legitimate row recorded before it is still readable" "[ \$? -eq 0 ]"
+
+# --- POSITIVE CONTROL: the scoped spellings a reviewer writes still work -------
+# Derived from the repository's OWN top-level names, so this control cannot be a
+# list either. A breadth rule that rejects the patterns people actually write is
+# not a guard, it is an outage.
+awk -F/ 'NF > 1 { print $1 }' "$WC/oracle.txt" | sort -u > "$WC/tops.txt"
+check "the repository has enough top-level names to scope against" \
+  "[ \"\$(wc -l < '$WC/tops.txt')\" -ge 4 ]"
+wc_led_records() {   # 0 when --record accepts this glob
+  rm -f "$WC/rec.tsv"
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path "$1" --category style \
+    --note n --ledger "$WC/rec.tsv" >/dev/null 2>&1
+}
+wc_bl_validates() {  # 0 when the baseline accepts a rule keyed on this glob
+  { printf '%s\n' "$BL_HDR"
+    printf 'rule\tsuppress\tbaseline\t-\t-\t%s\t-\tscoped probe\n' "$1"
+  } > "$WC/sb.tsv"
+  "$BIN/jjstack-review-baseline" validate --baseline "$WC/sb.tsv" >/dev/null 2>&1
+}
+scoped_refused=""
+while IFS= read -r top; do
+  [ -n "$top" ] || continue
+  wc_led_records  "$top/*" || scoped_refused="$scoped_refused ledger:$top/*"
+  wc_bl_validates "$top/*" || scoped_refused="$scoped_refused baseline:$top/*"
+done < "$WC/tops.txt"
+check "POSITIVE CONTROL: every real top-level directory is still scopeable${scoped_refused:+ — refused:$scoped_refused}" \
+  "[ -z \"\$scoped_refused\" ]"
+# ...including a forward-looking path that does not exist in this repo at all: a
+# decision about code that was deleted, or has not landed yet, is still a
+# decision about a place.
+check "POSITIVE CONTROL: a path this repo does not contain is still a decision" \
+  "wc_led_records 'src/legacy/*' && wc_bl_validates 'src/legacy/*'"
+rm -rf "$WC"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

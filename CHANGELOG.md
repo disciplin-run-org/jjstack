@@ -11,6 +11,30 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A "suppress everything" rule can no longer hide a P0.** `/review` remembers
+  what your team decided in three files, and only the narrowest of them — the one
+  keyed on a single specific finding — is allowed to take a finding out of the
+  active set. That file checked how a rule was *spelled* rather than what it
+  *matches*, so `*` was refused while `*[a-z]*`, `[a-z]*`, `*.*` and `[!q]*` —
+  which all mean "every file in the repo" — were accepted, and a P0 disappeared
+  from the report with the run still exiting 0. It was reachable through the
+  documented upgrade path: a legacy store containing one installed cleanly and
+  the tool then told you to delete the original.
+  There is now ONE rule for "does this glob name a place", shared by every store,
+  and it is measured against **your repository's own files** (`git ls-files`)
+  instead of a list of spellings or a list of invented probe paths. A glob is
+  refused when it has no character that could pick one path over another, or when
+  it matches more than half of your tracked files — so the next spelling nobody
+  thought of is refused by the same sentence as the ones that were reported. The
+  same glob can be a decision in one repo and a blanket in another, which is the
+  point: breadth is a fact about your tree, not about the alphabet.
+- **The review ledger can no longer brick itself.** `jjstack-review-ledger
+  --record --path '/'` printed `recorded` and exited 0, and from then on every
+  `--match`, `--list`, `--validate` and `--record` on that file failed — taking
+  every legitimate prior decision in it down too. The write path and the read
+  path were asking two different questions. They ask one now, and the guarantee
+  is structural: anything `--record` accepts, every later read accepts.
+
 - **"I disproved it" now has to show the document.** `/review` can retire a
   finding by checking it against the library's current official docs — the
   usual cure for a reviewer complaining about an API that changed years ago.

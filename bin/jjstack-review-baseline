@@ -105,6 +105,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import subprocess
 import sys
 
 YEL = "\033[33m"
@@ -233,22 +234,73 @@ def read_findings(src):
 RULE_MATCH_KEYS = ("lens", "file", "message")
 
 
-def is_universal_glob(pattern):
-    """True when an fnmatch pattern can only ever match — i.e. it says nothing.
+def store_repo(path):
+    """The repository a store belongs to — whose files decide a glob's breadth.
 
-    `*` is not "present and non-empty means the human named something": a rule
-    keyed on `*` matches every finding in the repo, which is the one thing the
-    non-empty guard exists to prevent. A pattern built only from wildcards
-    (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
-    rejected the same way an absent field is.
-
-    `/` counts as a wildcard here for the same reason: `*/*` matches every
-    nested path there is, so it names no place either. The ledger's version of
-    this guard already stripped `/`; this one did not, which is the same rule
-    written twice and only one of them right.
+    Breadth is a property of a glob AND a repository, not of the glob alone, and
+    the repository that matters is the one the STORE is in, never the cwd: asking
+    the cwd would judge project A's rule against project B's file tree. Empty
+    when it cannot be resolved, which the shared guard handles by falling back to
+    the jjstack checkout it lives in — still a real repository, never a list.
     """
-    p = str(pattern).strip()
-    return p in ("", "-") or set(p) <= {"*", "?", "/"}
+    start = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        out = subprocess.run(
+            ["git", "-C", start, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def scope_judge(patterns, repo):
+    """Ask bin/jjstack-review-scope.sh which of these globs name a place.
+
+    THE SAME CODE THE LEDGER RUNS, not the same rule written twice.
+
+    The guard here used to be a spelling test — `set(p) <= {"*", "?", "/"}` — on
+    the ONE rung that may SUPPRESS, while the ledger, capped at `demote`, had
+    already been given a semantic one. So `*[a-z]*` validated `ok` here and took
+    a P0 out of the active set, and `[a-z]*`, `*.*`, `[!q]*` and
+    `*[[:alpha:]]*` did the same. Adding those to the strip set would move the
+    hole one spelling along; the next spelling nobody thought of still wins.
+    Worse, it inverted the ladder: the strongest verdict ran the weakest guard.
+
+    Both halves of the fix are here. Breadth is MEASURED against the
+    repository's own files rather than spelled — and it is measured by the
+    ledger's own function, in one subprocess for the whole store, so the two
+    rungs cannot drift apart and cannot disagree about what a pattern means.
+    A second matcher in a second language would be a second rule.
+
+    Returns {pattern: (names_a_place, why)}; on any failure to consult the
+    guard, every pattern is reported as a blanket. Breadth that cannot be
+    certified is not certified.
+    """
+    pats = [p for p in dict.fromkeys(patterns) if p]
+    if not pats:
+        return {}
+    cmd = [here("jjstack-review-scope.sh"), "--judge"]
+    if repo:
+        cmd += ["--repo", repo]
+    try:
+        out = subprocess.run(
+            cmd, input="\n".join(pats) + "\n",
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        err(f"the shared scope guard could not be run: {exc}")
+        return {p: (False, "the shared scope guard could not be run") for p in pats}
+    if out.returncode != 0:
+        err(f"the shared scope guard refused to answer: {out.stderr.strip()}")
+        return {p: (False, "the shared scope guard could not be run") for p in pats}
+    verdicts = {}
+    for line in out.stdout.splitlines():
+        cols = line.split("\t")
+        if len(cols) != 5:
+            continue
+        verdicts[cols[4]] = (cols[0] == "place", cols[3])
+    return {p: verdicts.get(p, (False, "the shared scope guard returned no verdict")) for p in pats}
 
 
 def fingerprint(finding):
@@ -349,6 +401,20 @@ def load_store(path):
         )
         return 2
 
+    # ONE breadth measurement for the whole store, before the row loop. The
+    # shared guard reads `git ls-files` once; asking it per row would run git
+    # once per rule for no extra information.
+    prescan = []
+    for raw in lines[1:]:
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        cols = raw.split("\t")
+        if len(cols) == NCOLS and cols[0] == "rule":
+            prescan.extend(
+                c.strip() for c in cols[4:7] if c.strip() and c.strip() != "-"
+            )
+    scoped = scope_judge(prescan, store_repo(path))
+
     rules, fps, seen = [], [], set()
     for n, line in enumerate(lines[1:], 2):
         if not line.strip() or line.lstrip().startswith("#"):
@@ -421,15 +487,21 @@ def load_store(path):
                     "every finding is never what you meant"
                 )
                 return 4
-            # ...and a field that IS stated but says only `*` is the same rule
+            # ...and a field that IS stated but says nothing is the same rule
             # wearing a disguise. Non-empty is not the same question as
-            # discriminating, and only the second one keeps a rule scoped.
-            if all(is_universal_glob(v) for v in named.values()):
+            # discriminating, and only the second one keeps a rule scoped. The
+            # question is asked of the SHARED guard, against the repository's own
+            # files, so `*[a-z]*` is caught by the same sentence as `*`.
+            if all(not scoped.get(v, (False, ""))[0] for v in named.values()):
                 shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
+                why = "; ".join(
+                    sorted({scoped.get(v, (False, "?"))[1] for v in named.values()})
+                )
                 err(
                     f"{path}:{n} states only universal glob(s) ({shown}) — a rule "
                     "that matches every finding is never what you meant"
                 )
+                warn(why)
                 return 4
             rules.append(entry)
 

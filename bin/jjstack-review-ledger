@@ -66,25 +66,34 @@
 #           | test-coverage | performance | api-contract | style | type-safety
 #           | dependency | other
 #   PATTERN is a shell glob matched against the finding's repo-relative path.
-#           It must name a PLACE, and that is guarded twice, because the two
-#           guards catch different things and sit at different points.
+#           It must name a PLACE, and there is exactly ONE definition of that —
+#           bin/jjstack-review-scope.sh, shared with the baseline, the rung that
+#           may SUPPRESS. Not one rule written twice: one implementation, applied
+#           at every entry point that reads or writes this store, so no rung can
+#           carry a weaker guard than another. It did, and `*[a-z]*` validated
+#           `ok` one rung up and took a P0 out of the active set.
 #
-#           On EVERY READ of the store, a pattern built only from `*`, `?` and
-#           `/` is rejected outright: it has no discriminating character, so it
-#           is never a decision about a place in the code, wherever it came
-#           from. `--record` refused one; `validate_store` had no glob check at
-#           all, so the same blanket arriving any other way — a hand edit, or
-#           the migration every existing user is told to run — was certified
-#           `ok` and then demoted every path in its category.
+#           A glob names a place when it carries a character that could pick one
+#           path over another AND matches at most half of the repository's
+#           tracked files. Breadth is MEASURED, against `git ls-files`, never
+#           spelled: stripping `*?/` catches `*` and `*/*` and waves through
+#           `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*`, `*[[:alpha:]]*` and every other
+#           spelling nobody happened to list, and adding those five to the strip
+#           set only moves the hole one spelling along.
 #
-#           At `--record`, and per row at `--match`, breadth is judged on what
-#           the glob actually MATCHES: the pattern is run against a fixed corpus
-#           of unrelated probe paths, and one that reaches across three or more
-#           unrelated top-level names is a blanket. Spelling-based rules do not
-#           survive contact — stripping `*?/` catches `*` and `*/*` and waves
-#           through `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*` and every other spelling
-#           nobody happened to list. A row like that stays in the file as
-#           history; it just never demotes anything.
+#           The rule is asked at every point where this store ACTS: `--record`
+#           refuses to write a glob that names no place (exit 2), and `--match`
+#           refuses to demote from one (the row stays as history). `validate_store`
+#           asks only the repo-independent half — a pattern with no discriminating
+#           character is garbage for ever, while breadth can change under a store
+#           when the tree moves, and invalidating a whole ledger for that would
+#           take every legitimate row with it.
+#
+#           The consequences differ; the question does not, and the invariant is
+#           one-directional and structural: anything `--record` accepts, every
+#           read accepts. That is exactly what the old pair of guards violated —
+#           `--record --path '/'` printed `recorded` and exited 0, and every later
+#           --match, --list, --validate and --record on that store exited 4.
 #
 #   NOTE    is stored in the printable alphabet, and that is defined by what is
 #           ALLOWED, not by a list of characters to strip. A record is one
@@ -142,6 +151,12 @@ HERE="${BASH_SOURCE[0]%/*}"
 # shellcheck source=/dev/null
 . "$HERE/jjstack-review-vocab.sh" || exit 3
 vocab_load || exit 3
+# THE ONE definition of "this glob names a place", shared with the baseline. Not
+# a rule written twice — one implementation, so the rung permitted to SUPPRESS
+# cannot end up with a weaker guard than this one, which is what happened when
+# there were two.
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-scope.sh" || exit 3
 
 TAB=$'\t'
 SCOPE="path-glob"
@@ -174,38 +189,27 @@ show_help() {
 }
 
 # ---------------------------------------------------------------------------
-# Breadth: judged on what a glob MATCHES, never on how it is spelled.
+# Breadth: judged on what a glob MATCHES, against the repository's OWN files.
 #
-# The first guard stripped `*`, `?` and `/` and rejected whatever came out
-# empty. That is a rule shaped exactly like the two spellings its fixture
-# contained: `*[a-z]*`, `[a-z]*`, `*.*` and `[!q]*` all walked through it and
-# all demote effectively every path in the repo. Adding those four to the strip
-# set only moves the hole one spelling further along.
+# This used to carry ten invented probe paths, and the test that measured them
+# re-declared the same ten — so the guard was only ever checked against its own
+# fixture. Both the corpus and the rule now live in jjstack-review-scope.sh,
+# sourced above: the corpus is `git ls-files` on the repo the ledger belongs to,
+# and the rule is shared byte-for-byte with the baseline, which is the rung that
+# may SUPPRESS. Nothing is re-stated here, because a copy is a second rule and it
+# drifts — that drift is precisely how the stronger rung ended up with the weaker
+# guard.
 #
-# So breadth is measured instead. These probes are deliberately unrelated —
-# eight top-level directories that share nothing, plus three root files — and a
-# pattern that reaches across THREE OR MORE of those top-level names is not
-# naming a place, whatever it is written with. `src/legacy/*`, `docs/*`,
-# `tests/**` and `bin/jjstack-review-*` each reach one or none.
-BREADTH_PROBES="src/payments.py lib/util.go docs/guide.md tests/test_api.rb
-.github/workflows/ci.yml vendor/thirdparty/lib.c deep/nested/tree/Widget.java
-Makefile README.md go.mod"
-BREADTH_LIMIT=3
-
-# true when the glob reaches across BREADTH_LIMIT or more unrelated top levels.
-too_broad() {
-  local pat="$1" p top seen=" " n=0
-  for p in $BREADTH_PROBES; do
-    # shellcheck disable=SC2254  # the glob is the point
-    case "$p" in
-      $pat) top="${p%%/*}"
-            case "$seen" in
-              *" $top "*) ;;
-              *) seen="$seen$top "; n=$((n + 1)) ;;
-            esac ;;
-    esac
-  done
-  [ "$n" -ge "$BREADTH_LIMIT" ]
+# The repo whose files the corpus is drawn from. --repo is the caller saying
+# which repo this is; otherwise the LEDGER'S OWN location decides, for the same
+# reason the `repo` column does — asking the cwd would judge project A's glob
+# against project B's file tree.
+scope_repo() {
+  local ctx
+  if [ -n "${REPO:-}" ]; then printf '%s' "$REPO"; return 0; fi
+  ctx="$PWD"
+  [ -n "${LEDGER:-}" ] && ctx="$(dirname "$LEDGER")"
+  git -C "$ctx" rev-parse --show-toplevel 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -276,20 +280,6 @@ in_set() {
   return 1
 }
 
-# ONE definition of "this glob names a place in the repo", because there were
-# two questions and only one of them was ever asked. `--record` refused an
-# unscoped glob; `validate_store` had no glob check at all, so the same blanket
-# arriving any other way — a hand edit, or the migration every existing user is
-# told to run — was certified `ok` and then demoted every path in its category.
-# A pattern built only from `*`, `?` and `/` has no discriminating character: it
-# is never a decision about a place in the code, wherever it came from.
-glob_has_literal() {
-  case "$(printf '%s' "${1:-}" | tr -d '*?/')" in
-    '') return 1 ;;
-  esac
-  return 0
-}
-
 # ONE definition of the verb a row is allowed to carry. `vocab_check` asks only
 # whether an effect is WITHIN this rung's ceiling — and `none` and `rank` both
 # are, being weaker than `demote`. But a row states a decision, and each kind of
@@ -348,13 +338,19 @@ if [ "$MODE" = "record" ]; then
   # of them was checked. `--path '*'` records a dismissal that then demotes
   # every finding in that category, repo-wide and permanently — the demoted
   # section becomes the whole report, and the ledger line reads like any other
-  # in a PR diff. Breadth is decided by too_broad(), on what the glob MATCHES:
-  # a spelling test can only ever reject the spellings someone listed.
-  if too_broad "$PATH_ARG"; then
-    echo -e "${CYA}error${RST} --path '$PATH_ARG' reaches across unrelated parts of the repo" >&2
-    echo -e "${YEL}why${RST}   it matches paths under $BREADTH_LIMIT or more unrelated top-level" >&2
-    echo -e "${YEL}why${RST}   names, so it is a blanket, not a decision about a place in the" >&2
-    echo -e "${YEL}why${RST}   code. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+  # in a PR diff.
+  #
+  # THE SAME PREDICATE THE READ PATH USES. It used to be a different one: the
+  # write path judged breadth by what the glob MATCHES and the read path by how
+  # it is SPELLED, so they disagreed on every pattern built only from `*?/` that
+  # matches nothing. `--record --path '/'` printed `recorded` and exited 0, and
+  # every later --match, --list, --validate and --record on that store exited 4,
+  # taking the legitimate rows down with it. Two guards, one question, is how a
+  # tool bricks its own store.
+  if ! scope_names_a_place "$PATH_ARG" "$(scope_repo)"; then
+    echo -e "${CYA}error${RST} --path '$PATH_ARG' does not name a place in the repo" >&2
+    echo -e "${YEL}why${RST}   $(scope_blanket_why "$PATH_ARG" "$(scope_repo)")." >&2
+    echo -e "${YEL}why${RST}   Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
     exit 2
   fi
   # Only a dismissal acts on a future finding, so only a dismissal carries an
@@ -450,11 +446,27 @@ validate_store() {
     if ! in_set "$f_type" "$VALID_TYPES"; then
       echo -e "${CYA}error${RST} $f:$n unknown type '$f_type'" >&2; return 4
     fi
-    # The scope guard, on the READ path. This is where the upgrade path's `*`
-    # row was certified as a valid decision. Every consumer — --match, --list,
-    # --record's append, and migrate, which validates what it wrote — reaches
-    # the store through here, so the guard is stated once and holds everywhere.
-    if ! glob_has_literal "$f_pat"; then
+    # STORE INTEGRITY, on the READ path. This is where the upgrade path's `*` row
+    # was certified as a valid decision. Every consumer — --match, --list,
+    # --record's append, and migrate, which validates what it wrote — reaches the
+    # store through here.
+    #
+    # It asks the REPO-INDEPENDENT half of the shared rule, and deliberately only
+    # that half. A pattern with no discriminating character is garbage in any
+    # repository and for ever, so a store carrying one is broken and says so. But
+    # breadth is a property of a glob AND a repository: a row that was scoped
+    # when it was written can become a blanket a year later because the tree
+    # moved, and a validator that invalidated the whole store for that would make
+    # a ledger unreadable — every legitimate row with it — over a change nobody
+    # made to the file. That row is skipped at --match instead, with a warning,
+    # and stays in the file as history.
+    #
+    # The two consequences differ; the QUESTION does not, and the invariant that
+    # matters is one-directional and holds by construction: `scope_names_a_place`
+    # implies `scope_has_literal`, so nothing --record accepts can ever be
+    # rejected here. That is the exact property the old pair of guards violated —
+    # `--record --path '/'` wrote a row every later read refused.
+    if ! scope_has_literal "$f_pat"; then
       echo -e "${CYA}error${RST} $f:$n path glob '$f_pat' matches every file in the repo" >&2
       echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
       echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
@@ -555,10 +567,13 @@ case "$MODE" in
       # so a blanket row can arrive without ever passing through --record. One
       # `*` row demoting the whole repo reads, in a PR diff, exactly like a
       # scoped decision. Refuse to act on it and say so — the row stays in the
-      # file as history, it just never suppresses anything.
-      if too_broad "$l_pat"; then
+      # file as history, it just never suppresses anything. This is the point of
+      # ACTION, so it asks the WHOLE shared rule, the same one --record asks and
+      # the same one the baseline asks one rung up. validate_store above asks
+      # only the repo-independent half, on purpose: see the note there.
+      if ! scope_names_a_place "$l_pat" "$(scope_repo)"; then
         echo -e "${YEL}warn${RST}  ignoring ledger row: pattern '$l_pat' is too broad" >&2
-        echo -e "${YEL}warn${RST}  (it reaches across $BREADTH_LIMIT+ unrelated top-level names; scope it or delete it)" >&2
+        echo -e "${YEL}warn${RST}  ($(scope_blanket_why "$l_pat" "$(scope_repo)"); scope it or delete it)" >&2
         continue
       fi
       # The path glob is part of the key, so it must be consulted BEFORE any

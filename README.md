@@ -328,14 +328,27 @@ ledger row spelled `none` still demoted, and a `rejected` calibration row spelle
 `none` still produced a demoted placement. A hand-edited store cannot act on your
 findings in a way its own validator would not certify.
 
-A dismissal must also name a place. A path glob built only from `*`, `?` and `/`
-matches the whole repo, so it is a blanket rather than a decision, and it is
-refused when it is recorded **and** on every row every time the store is read.
-That second half matters because `jjstack-review-memory-migrate` — the one
-command an existing user is told to run — used to convert a legacy `*` row
-straight through. It now hands every converted store to the validator of the
-tool that owns that rung and installs only what passes, so the upgrade path
-cannot introduce a row the tools would refuse to read.
+A dismissal must also name a place, and there is exactly **one** definition of
+that (`bin/jjstack-review-scope.sh`) which every rung calls — not one rule
+written three times, because when it was written more than once the rung allowed
+to *suppress* ended up with the weakest guard. A glob is refused when it carries
+no character that could pick one path over another, and when it matches **more
+than half of your repository's tracked files**. Breadth is measured against `git
+ls-files`, never against how the pattern is spelled: `*`, `*/*`, `*[a-z]*`,
+`[a-z]*`, `*.*`, `[!q]*` and `*[[:alpha:]]*` all mean "the whole repo" and are
+all refused by the same sentence, and so is the next spelling nobody has thought
+of. The same glob can be a decision in one repository and a blanket in another —
+that is the point, because breadth is a fact about your tree.
+
+The rule is asked wherever a store acts: when a decision is recorded, and again
+on every row every time one is read. Recording and reading ask the *same*
+question, so anything `--record` accepts every later read accepts — `--record
+--path '/'` used to print `recorded` and then make the whole ledger unreadable.
+And it covers the upgrade path: `jjstack-review-memory-migrate` — the one command
+an existing user is told to run — used to convert a legacy `*` row straight
+through. It now hands every converted store to the validator of the tool that
+owns that rung and installs only what passes, so the upgrade path cannot
+introduce a row the tools would refuse to read.
 
 They share one directory, one format and one reason-code vocabulary
 (`bin/jjstack-review-vocab.tsv`). TSV because the point of these files is their
