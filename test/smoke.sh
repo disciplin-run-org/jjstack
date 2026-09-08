@@ -13,7 +13,26 @@ BIN="$DIR/bin"; HOOKS="$DIR/hooks"
 pass=0; fail=0
 ok()   { printf '  \033[92mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[95mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
-check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+# An assertion is judged by ITS OWN exit status, never by the exit status of
+# whatever fed it. `set -o pipefail` is right for the tools under test and wrong
+# for the checks: in `printf ... | grep -q PATTERN`, -q exits on the first match
+# and printf takes SIGPIPE, so pipefail turns a MATCH into a failed check —
+# nondeterministically, depending on which side of the pipe wins the race. Two
+# runs of this suite went red on `printf '%s\n' "${ROUTE_CORPUS[@]}" | grep -qx
+# README.md` with README.md plainly in the list, and a third on a --help check.
+# 206 assertions in this file are pipelines, so this is fixed once, here.
+#
+# It cannot hide a real failure: a genuine mismatch fails grep itself, which
+# fails the check with or without pipefail. pipefail only ever ADDED failures.
+# `$?` is saved and re-established first, because `set` resets it and dozens of
+# assertions are written as `[ $? -eq 2 ]` against the preceding command.
+check(){
+  local rc=$?
+  set +o pipefail
+  ( exit "$rc" )
+  if eval "$2"; then ok "$1"; else bad "$1"; fi
+  set -o pipefail
+}
 
 echo "== 1. syntax =="
 for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
@@ -894,28 +913,61 @@ rm -rf "$probe_bin"
 #  2. It grepped SKILL.md alone, while the surviving routings lived in
 #     references/ and CHANGELOG.md.
 #
-# So: the corpus is now every file that can carry a routing instruction, the
-# test is the bare word (a rephrasing cannot dodge it — this guard is meant to
-# fail closed, and if a section named "appendix" is ever wanted, 5f must define
-# it first), and the positive control below is built from the literal strings
-# this tree really contained, recovered from git, not from anything invented
-# here.
-ROUTE_CORPUS=("$SK" "$DIR/CHANGELOG.md" "$DIR"/references/*.md "$BIN"/jjstack-review-*)
+# So: the corpus is every file that can carry a routing instruction, the test is
+# the bare word (a rephrasing cannot dodge it — this guard is meant to fail
+# closed, and if that section is ever wanted, 5f must define it first), and the
+# positive control below is built from the literal strings this tree really
+# contained, recovered from git, not from anything invented here.
+#
+# ROUND 2: "every file that can carry a routing instruction" was still an
+# ENUMERATED list — SKILL.md, the changelog, references/ and the review tools —
+# and the comment above it claimed the general thing. README.md, TUTORIAL.md,
+# hooks/, bin/jjstack-capture-* and 49 other skills/*/SKILL.md were all outside
+# it, several of them review-adjacent, so a real shipped routing pasted into any
+# of them left the guard green. An allow-list that has to be edited whenever a
+# file is added is a guard that decays by default. The corpus is now DERIVED:
+# every text file git tracks, minus this test tree, which holds the probes.
+route_corpus() {   # $1 = repo root -> every shipped text file, NUL-free list
+  git -C "$1" ls-files -z -- . ':!:test/*' 2>/dev/null | tr '\0' '\n'
+}
+mapfile -t ROUTE_CORPUS < <(route_corpus "$DIR")
+# One newline-joined copy, queried with a here-string rather than a pipe. Over a
+# 147-file corpus `printf ... | grep -q` is a coin flip: -q exits on the first
+# match, printf takes SIGPIPE, and `set -o pipefail` reports the whole check as
+# failed. Two runs of this suite went red on a file that was plainly in the list.
+ROUTE_CORPUS_TXT="$(printf '%s\n' "${ROUTE_CORPUS[@]}")"
 # An unexpanded glob or a moved file is how a widened corpus silently narrows
 # again: grep cannot read the path, says nothing, and reports a clean tree.
 route_missing=0
-for f in "${ROUTE_CORPUS[@]}"; do [ -f "$f" ] || route_missing=$((route_missing + 1)); done
+for f in "${ROUTE_CORPUS[@]}"; do [ -f "$DIR/$f" ] || route_missing=$((route_missing + 1)); done
 check "positive control: every file in the routing corpus exists" "[ $route_missing -eq 0 ]"
 check "positive control: the corpus reaches past SKILL.md into references/" \
-  "[ \"\$(printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -c '/references/')\" -ge 3 ]"
+  "[ \"\$(grep -c '^references/' <<< \"\$ROUTE_CORPUS_TXT\")\" -ge 3 ]"
 check "positive control: the corpus includes the changelog" \
-  "printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -q '/CHANGELOG\.md\$'"
+  "grep -qx 'CHANGELOG\.md' <<< \"\$ROUTE_CORPUS_TXT\""
 check "positive control: the corpus includes the ledger tool" \
-  "printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -q '/jjstack-review-ledger\$'"
+  "grep -qx 'bin/jjstack-review-ledger' <<< \"\$ROUTE_CORPUS_TXT\""
+# The four files round 2 named as blind spots, plus the long tail of sibling
+# skills. Naming them is not the guard — the derivation is — but if the
+# derivation ever narrows back to an allow-list these go red first.
+for f in README.md TUTORIAL.md hooks/shared-memory.sh bin/jjstack-capture-review-refs; do
+  check "positive control: the corpus reaches $f" \
+    "grep -qx '$f' <<< \"\$ROUTE_CORPUS_TXT\""
+done
+check "positive control: the corpus reaches every sibling skill, not just review" \
+  "[ \"\$(grep -c '^skills/.*/SKILL\.md$' <<< \"\$ROUTE_CORPUS_TXT\")\" -ge 40 ]"
+check "positive control: the corpus is derived, not enumerated (100+ files)" \
+  "[ \"\${#ROUTE_CORPUS[@]}\" -ge 100 ]"
 
 # No -c: over several files `grep -c` prints one count PER FILE, so piping that
 # to `wc -l` would count files and report a constant. Count matching lines.
-n_appendix=$(grep -inE 'appendix' "${ROUTE_CORPUS[@]}" 2>/dev/null | wc -l | tr -d ' ')
+# -I so a binary blob in the derived corpus cannot turn a count into a
+# "Binary file matches" line, and xargs so a repo-sized corpus cannot blow ARG_MAX.
+route_hits() {     # $1 = repo root -> matching LINES across the whole corpus
+  route_corpus "$1" | grep -v '^$' \
+    | ( cd "$1" && xargs -d '\n' -r grep -inIE 'appendix' 2>/dev/null ) | wc -l | tr -d ' '
+}
+n_appendix=$(route_hits "$DIR")
 check "no finding is routed to a section 5f does not define" "[ \"\$n_appendix\" = 0 ]"
 check "the Demoted section it routes to instead exists" \
   "grep -q '^### Demoted (prior decision)' '$SK'"
@@ -950,7 +1002,28 @@ cp "$probe_sec" "$probe_corpus/a.md"; : > "$probe_corpus/b.md"; : > "$probe_corp
 check "the guard's own multi-file count finds all 6, not one-per-file" \
   "[ \"\$(grep -inE 'appendix' '$probe_corpus'/*.md 2>/dev/null | wc -l | tr -d ' ')\" = 6 ]"
 rm -rf "$probe_corpus"
+
+# THE STRONGEST CONTROL — round 2's actual reproduction. Pasting a real shipped
+# routing literal into README.md left the guard green, because README.md was
+# outside the enumerated corpus. This runs the guard's OWN derivation and its
+# OWN count over a throwaway repo shaped like this one, with the same literal in
+# each file the old corpus could not see. Narrow the derivation back to a list
+# and this goes red before anything ships.
+route_probe="$(mktemp -d)"
+mkdir -p "$route_probe"/{hooks,bin,skills/other,test}
+git -C "$route_probe" init -q 2>/dev/null
+for f in README.md TUTORIAL.md hooks/shared-memory.sh bin/jjstack-capture-review-refs \
+         skills/other/SKILL.md test/smoke.sh; do
+  head -1 "$probe_sec" > "$route_probe/$f"
+done
+git -C "$route_probe" add -A >/dev/null 2>&1
+check "the guard sees a shipped routing in every file the old corpus missed" \
+  "[ \"\$(route_hits '$route_probe')\" = 5 ]"
+check "the guard still skips the test tree that holds its own probes" \
+  "[ \"\$(route_corpus '$route_probe' | grep -c '^test/')\" = 0 ]"
+rm -rf "$route_probe"
 rm -f "$probe_sec"
+
 echo "== 7a. review-sweep (post-fix deterministic checks) =="
 # /review's post-pass 4 re-runs the project's typechecker/linter/tests AFTER the
 # fixes land, to catch a fix that broke the build. The two states that must never
@@ -1418,6 +1491,115 @@ check "'*/*' is unscoped too"             "[ \$? -eq 2 ]"
   --ledger "$LDG" >/dev/null 2>&1
 check "positive control: a scoped glob is still recorded" "[ \$? -eq 0 ]"
 
+# Rule 5b — THE CLASS, not three more spellings. The first guard stripped the
+# characters `*?/` and rejected whatever came out empty: a rule shaped exactly
+# like the two spellings its fixture happened to contain. `*[a-z]*`, `[a-z]*`
+# and `*.*` all sailed through it and all demote effectively every path in the
+# repo. Adding those three to the strip set would reproduce the same mistake one
+# row further along, because the next spelling nobody thought of still wins.
+#
+# So the invariant is stated over COMPILED SEMANTICS instead of over syntax: a
+# pattern is too broad when it reaches across unrelated parts of the repo. The
+# probe corpus below is deliberately disjoint — eight unrelated top-level
+# directories plus three root files — and the property asserted is end to end:
+#
+#   for ANY spelling, either --record refuses it, or the row it wrote does not
+#   demote findings under three or more unrelated top-level names.
+#
+# Every spelling in BLANKETS is one that appears nowhere in the implementation
+# (bracket ranges, a negated bracket, a POSIX class, bare `?` runs, nested
+# `*/*/*`), so a guard that passes this cannot have been written to its fixture.
+BREADTH_PROBE=(src/payments.py lib/util.go docs/guide.md tests/test_api.rb
+               .github/workflows/ci.yml vendor/thirdparty/lib.c
+               deep/nested/tree/Widget.java Makefile README.md go.mod)
+breadth_tops() {    # distinct top-level names the single row in $1 demotes
+  local p out=""
+  for p in "${BREADTH_PROBE[@]}"; do
+    if grep -q '^DEMOTE ' <<< "$("$BIN/jjstack-review-ledger" --match --path "$p" \
+         --category style --ledger "$1" 2>/dev/null)"; then
+      out="$out${p%%/*}
+"
+    fi
+  done
+  printf '%s' "$out" | sort -u | grep -c . | tr -d ' '
+}
+BLANKETS=('*[a-z]*' '[a-z]*' '*.*' '?*?' '**' '[!q]*' '*[[:alpha:]]*' '??*' '*/*/*' '?*')
+blanket_leaks=0; blanket_detail=""
+for pat in "${BLANKETS[@]}"; do
+  BR="$(mktemp -d)/ledger.md"
+  if "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" --category style \
+       --note 'blanket' --ledger "$BR" >/dev/null 2>&1; then
+    reach=$(breadth_tops "$BR")
+    if [ "${reach:-0}" -ge 3 ]; then
+      blanket_leaks=$((blanket_leaks + 1))
+      blanket_detail="$blanket_detail $pat"
+    fi
+  fi
+  rm -rf "$(dirname "$BR")"
+done
+check "no path glob may demote across 3+ unrelated top-level names${blanket_detail:+ — leaked:$blanket_detail}" \
+  "[ $blanket_leaks -eq 0 ]"
+# The other half of the property: every one of those spellings must be REFUSED
+# at --record, not merely narrow by luck. "Either refused or narrow" is what the
+# guard promises; this pins which arm actually fires.
+blanket_accepted=""
+for pat in "${BLANKETS[@]}"; do
+  BR="$(mktemp -d)/ledger.md"
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" --category style \
+    --ledger "$BR" >/dev/null 2>&1 && blanket_accepted="$blanket_accepted $pat"
+  rm -rf "$(dirname "$BR")"
+done
+check "every blanket spelling is refused at --record${blanket_accepted:+ — accepted:$blanket_accepted}" \
+  "[ -z \"\$blanket_accepted\" ]"
+# POSITIVE CONTROL — the reach probe must actually COUNT, not saturate at one or
+# return a constant. A pattern that lands in exactly two unrelated top-level
+# names must score 2: below the threshold, so the guard lets it through and the
+# measurement is observable end to end. ('[dl]*/[gu]*' hits lib/util.go and
+# docs/guide.md and nothing else in the probe corpus.)
+BRC="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '[dl]*/[gu]*' --category style \
+  --note 'two tops' --ledger "$BRC" >/dev/null 2>&1
+check "positive control: the reach probe scores a two-directory glob as 2" \
+  "[ \"\$(breadth_tops '$BRC')\" -eq 2 ]"
+# POSITIVE CONTROL — a genuinely scoped row must score narrow, or the threshold
+# would be rejecting everything.
+BRN="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'docs/*' --category style \
+  --note 'scoped' --ledger "$BRN" >/dev/null 2>&1
+check "positive control: a scoped 'docs/*' row reaches exactly one top-level name" \
+  "[ \"\$(breadth_tops '$BRN')\" -eq 1 ]"
+# And the scoped spellings a reviewer actually writes must still be accepted — a
+# breadth rule that rejects 'src/legacy/*' is a rule nobody can use.
+scoped_rejects=0
+for pat in 'src/legacy/*' 'docs/*' 'tests/**' 'bin/jjstack-review-*' 'src/*/generated/*'; do
+  BS="$(mktemp -d)/ledger.md"
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" --category style \
+    --ledger "$BS" >/dev/null 2>&1 || scoped_rejects=$((scoped_rejects + 1))
+  rm -rf "$(dirname "$BS")"
+done
+check "positive control: every scoped glob a reviewer would write is accepted" \
+  "[ $scoped_rejects -eq 0 ]"
+
+# Rule 5c — the ledger is designed to be hand-edited in git, so --record is only
+# half the door. --match read the pattern straight out of the file, so one
+# merged or hand-typed '*' row demoted repo-wide with no check at all.
+LDH="$(mktemp -d)/ledger.md"
+printf '2026-01-01 | acme/x | dismissed | * | style | hand written\n' > "$LDH"
+out=$("$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category style \
+  --ledger "$LDH" 2>&1)
+check "a hand-edited blanket row does NOT demote" \
+  "! grep -q '^DEMOTE ' <<< \"\$out\""
+check "a hand-edited blanket row says why it was ignored" \
+  "grep -qi 'too broad' <<< \"\$out\""
+# POSITIVE CONTROL — the same hand-written row shape, scoped, must still demote,
+# or "does not demote" would only mean hand-written rows are never read at all.
+printf '2026-01-01 | acme/x | dismissed | src/* | style | hand written scoped\n' > "$LDH"
+hedge=$("$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category style \
+  --ledger "$LDH" 2>/dev/null)
+check "positive control: a hand-edited SCOPED row still demotes" \
+  "grep -q '^DEMOTE ' <<< \"\$hedge\""
+rm -rf "$(dirname "$LDH")" "$(dirname "$BRC")" "$(dirname "$BRN")"
+
 # Rule 6: the note is quoted by the skill as the demotion reason, so it must
 # survive the round trip whole. The reader took field 6 of a '|'-separated line,
 # which truncated any note containing a pipe at the first one — silently
@@ -1434,6 +1616,114 @@ check "a note containing '|' survives the round trip" \
 check "positive control: the recorded line really contains the pipe" \
   "grep -q 'safe today | revisit' '$LDP'"
 check "positive control: that record really demoted" "grep -q '^DEMOTE ' '$LDP.out'"
+
+# Rule 6b — the pipe fix was, again, exactly as wide as its fixture. The reader
+# was taught to rejoin fields 6..NF so a '|' survives; a NEWLINE in the same
+# note was untouched, and it is the worse half of the class. `--record` printf's
+# $NOTE into a single-line record, so a two-line note becomes two physical
+# lines: --match keeps only lines with the date shape, so the continuation is
+# dropped in silence — and if the continuation happens to LOOK like a record,
+# the note has forged a whole ledger row.
+#
+# The rule is therefore stated by what is ALLOWED, not by a list of characters
+# to strip: a note is stored in the printable alphabet, and anything outside it
+# is escaped into that alphabet reversibly. A control character nobody has
+# thought of is covered by the same sentence as the one that was reported.
+LDN="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --note 'safe today
+BUT revisit when we drop py38' --ledger "$LDN" >/dev/null 2>&1
+check "a note containing a newline writes exactly ONE ledger row" \
+  "[ \"\$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \\|' '$LDN')\" = 1 ]"
+check "the ledger file itself gains no orphan continuation line" \
+  "! grep -q '^BUT revisit' '$LDN'"
+"$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
+  --ledger "$LDN" > "$LDN.out" 2>/dev/null
+check "a note containing a newline survives the round trip whole" \
+  "grep -q 'BUT revisit when we drop py38' '$LDN.out'"
+check "the demotion is still reported on a single line" \
+  "[ \"\$(grep -c '^DEMOTE ' '$LDN.out')\" = 1 ] && [ \"\$(wc -l < '$LDN.out')\" = 1 ]"
+# And the escape is REVERSIBLE, not merely visible: decoding the stored note
+# with printf %b must give back the original bytes, newline included.
+note_back=$(sed -n 's/^DEMOTE.*dismissed previously: //p' "$LDN.out")
+check "the stored note decodes back to the exact original text" \
+  "[ \"\$(printf '%b' \"\$note_back\")\" = \$'safe today\nBUT revisit when we drop py38' ]"
+
+# THE CLASS — a blacklist is how '|' got covered and newline did not, so the
+# assertion is over the whole non-printable range, not over three more
+# characters. Every control character below must leave one well-formed row and
+# must not forge a second one. \033 and \013 appear nowhere in the fix.
+ctl_bad=0
+for esc in '\n' '\r' '\t' '\013' '\014' '\033' '\007'; do
+  LDC="$(mktemp -d)/ledger.md"
+  n=$(printf "head${esc}2099-01-01 | forged/repo | dismissed | src/* | security | injected")
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+    --note "$n" --ledger "$LDC" >/dev/null 2>&1
+  rows=$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LDC")
+  [ "$rows" = 1 ] || ctl_bad=$((ctl_bad + 1))
+  # the forged row must not be reachable as a security dismissal either
+  grep -q 'forged\|injected' \
+    <<< "$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category security \
+           --ledger "$LDC" 2>/dev/null)" && ctl_bad=$((ctl_bad + 1))
+  rm -rf "$(dirname "$LDC")"
+done
+check "no control character in a note can forge a ledger row" "[ $ctl_bad -eq 0 ]"
+# POSITIVE CONTROL — the forgery probe must be able to SEE a forged row, or
+# "no forgery" would only mean the probe never looks. This row is written
+# straight into the file, which is exactly what the unescaped note produced.
+LDF="$(mktemp -d)/ledger.md"
+printf '2026-01-01 | acme/x | dismissed | docs/* | style | head\n' > "$LDF"
+printf '2099-01-01 | forged/repo | dismissed | src/* | security | injected\n' >> "$LDF"
+# (command substitution, not a pipe: --match exits 1 on a PROTECTED-only hit and
+# `set -o pipefail` would read that as the whole check failing.)
+fout=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category security \
+  --ledger "$LDF" 2>/dev/null)
+check "positive control: the probe sees a genuinely forged row" \
+  "grep -q 'injected' <<< \"\$fout\""
+# POSITIVE CONTROL — an ordinary printable note must pass through byte for byte,
+# or "escaped" could just mean "mangled". Pipes, quotes, backslashes and
+# non-ASCII all stay exactly as typed.
+LDA="$(mktemp -d)/ledger.md"
+plain='keep as-is: 100% "quoted", back\slash, em—dash, pipe | and all'
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --note "$plain" --ledger "$LDA" >/dev/null 2>&1
+back=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
+  --ledger "$LDA" 2>/dev/null | sed -n 's/^DEMOTE.*dismissed previously: //p')
+check "positive control: a printable note round-trips byte for byte" \
+  "[ \"\$(printf '%b' \"\$back\")\" = \"\$plain\" ]"
+rm -rf "$(dirname "$LDN")" "$(dirname "$LDF")" "$(dirname "$LDA")"
+
+# Rule 6c — the repo slug is the field that lets a ledger survive being copied
+# or merged between repos, so it has to describe the LEDGER's repo. slug() ran
+# git in the cwd: recording into project A's ledger from a shell sitting in
+# project B stamped every row with B, and the one field that exists to make a
+# copied ledger readable became the field that lies about it.
+SLA="$(mktemp -d)/repo-a"; SLB="$(mktemp -d)/repo-b"
+mkdir -p "$SLA" "$SLB"
+git -C "$SLA" init -q 2>/dev/null
+git -C "$SLA" remote add origin https://github.com/acme/project-a.git 2>/dev/null
+git -C "$SLB" init -q 2>/dev/null
+git -C "$SLB" remote add origin https://github.com/acme/project-b.git 2>/dev/null
+( cd "$SLB" && "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' \
+    --category style --note 'x' --ledger "$SLA/jjstack/review-ledger.md" ) >/dev/null 2>&1
+check "a row is stamped with the LEDGER's repo, not the cwd's" \
+  "grep -q 'acme/project-a' '$SLA/jjstack/review-ledger.md'"
+check "the cwd's repo does not leak into the stamp" \
+  "! grep -q 'acme/project-b' '$SLA/jjstack/review-ledger.md'"
+# POSITIVE CONTROL — the two remotes really are different, and the slug really
+# is derived from a remote, or both checks above would hold trivially.
+check "positive control: the two probe repos have different origins" \
+  "[ \"\$(git -C '$SLA' remote get-url origin)\" != \"\$(git -C '$SLB' remote get-url origin)\" ]"
+( cd "$SLB" && "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' \
+    --category style --note 'y' --ledger "$SLB/jjstack/review-ledger.md" ) >/dev/null 2>&1
+check "positive control: recording into B's own ledger still stamps B" \
+  "grep -q 'acme/project-b' '$SLB/jjstack/review-ledger.md'"
+# An explicit --repo still wins: it is the caller saying which repo this is.
+( cd "$SLB" && "$BIN/jjstack-review-ledger" --record --type dismissed --path 'lib/*' \
+    --category style --note 'z' --repo "$SLA" --ledger "$SLB/jjstack/explicit.md" ) >/dev/null 2>&1
+check "an explicit --repo still overrides the ledger's location" \
+  "grep -q 'acme/project-a' '$SLB/jjstack/explicit.md'"
+rm -rf "$(dirname "$SLA")" "$(dirname "$SLB")"
 
 # Rule 7: "no ledger" and "no prior decision applies" are different statements.
 # --match exited 1 in silence for a missing file, so a mistyped --ledger path
@@ -1536,7 +1826,7 @@ for vflag in --repo --base --diff-file --since --limit; do
 done
 rm -rf "$RH" "$NOGIT" "$SH"
 
-echo "== 7e. value-less flags must be a usage error, never a hang =="
+echo "== 7h. value-less flags must be a usage error, never a hang =="
 # Reproduced before the fix: every one of these returned 124 under `timeout 5`.
 # `shift 2` is a silent no-op when only one argument remains, and `set -e` is
 # deliberately off in these scripts, so the arg loop spun on the same argv
@@ -1567,12 +1857,13 @@ timeout 30 "$BIN/jjstack-review-sweep" --repo "$SWV" --cmd "true" >/dev/null 2>&
 check "a flag WITH a value still works (exit 0)" "[ $rc -eq 0 ]"
 rm -rf "$SWV"
 
-echo "== 7f. --help is derived from the header, not a hand-kept line range =="
+echo "== 7i. --help is derived from the header, not a hand-kept line range =="
 # A `sed -n 'A,Bp'` range drifts the moment a line is added: calibration's help
 # stopped mid-sentence and dropped the Usage and Exit sections that usage() sends
 # the reader to find, while its two siblings leaked `set -uo pipefail` and the
 # raw colour definitions into their own help output.
-for tool in jjstack-review-sweep jjstack-review-autofix-diff jjstack-review-calibration; do
+for tool in jjstack-review-sweep jjstack-review-autofix-diff jjstack-review-calibration \
+            jjstack-review-ledger; do
   hout=$("$BIN/$tool" --help 2>&1)
   check "$tool --help leaks no shell source" \
     "! printf '%s' \"\$hout\" | grep -qE 'set -uo pipefail|\\\\033\\['"
@@ -1587,7 +1878,7 @@ probe_help=$(printf 'Usage:\nset -uo pipefail\n')
 check "help leak guard actually catches leaked source" \
   "printf '%s' \"\$probe_help\" | grep -qE 'set -uo pipefail'"
 
-echo "== 7g. review-sweep PARTIAL: a check set with no test runner is not clean =="
+echo "== 7j. review-sweep PARTIAL: a check set with no test runner is not clean =="
 # Detection only adds a tool that is installed, so a Python project with ruff but
 # no pytest ran the linter alone and printed SWEEP CLEAN at exit 0 — while the
 # pass's headline promise (catching the fix that turned a passing test red) went
@@ -1613,7 +1904,7 @@ check "same plan plus a test runner exits 0"       "[ $rc -eq 0 ]"
 check "with a test runner it says SWEEP CLEAN"     "printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
 rm -rf "$SHIM" "$PSW"
 
-echo "== 7h. the docs must not teach the deleted rescoring/deletion model =="
+echo "== 7k. the docs must not teach the deleted rescoring/deletion model =="
 # The single guard that existed (a grep for 'delta=' on one command's stdout)
 # could not see PROSE, which is exactly how four written copies of the deleted
 # model survived a fix that corrected the tool. This guard reads the documents.
@@ -1649,7 +1940,7 @@ check "prose guard actually catches the deleted model" \
   "grep -qF -- 'decay out' '$probe_doc'"
 rm -f "$probe_doc"
 
-echo "== 7i. --mark is actually invoked, not just implemented =="
+echo "== 7l. --mark is actually invoked, not just implemented =="
 # The marker is the ONLY thing separating the reviewer's auto-fixes from the
 # user's own uncommitted work. Before this fix `--mark` appeared nowhere but the
 # script and this test file, so post-pass 2 always fell back to HEAD and diffed
@@ -1671,7 +1962,7 @@ printf 'cat ~/.claude/skills/gstack/review/SKILL.md\njjstack-review-autofix-diff
 check "ordering guard actually catches a late marker" \
   "[ \$(grep -n 'jjstack-review-autofix-diff --mark' '$probe_ord' | head -1 | cut -d: -f1) -gt \$(grep -n 'cat ~/.claude/skills/gstack/review/SKILL.md' '$probe_ord' | head -1 | cut -d: -f1) ]"
 rm -f "$probe_ord"
-echo "== 7j. review skill/reference internal consistency =="
+echo "== 7m. review skill/reference internal consistency =="
 # The triage invariants are stated in three places. When they disagree, the
 # reference wins by accident: Phase 5.11 cat-s it BEFORE stating any rule, so a
 # wrong disposition name there is the first thing the model reads. `appendix`
@@ -1700,6 +1991,48 @@ for tok in unverified prior-decision baseline pre-existing not-reachable accepte
   check "skill reason \`$tok\` exists in the script vocabulary" \
         "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
 done
+
+echo "== 8. the runner's own assertion semantics =="
+# check() suspends pipefail for the duration of an assertion. That is only safe
+# if two things still hold, so both are asserted here rather than assumed.
+#
+# 1. A pipeline assertion that genuinely does not match must still FAIL. If it
+#    did not, suspending pipefail would have turned 206 pipeline assertions in
+#    this file into unconditional passes.
+runner_pass=0; runner_fail=0
+runner_probe() { if eval "$1"; then runner_pass=$((runner_pass+1)); else runner_fail=$((runner_fail+1)); fi; }
+set +o pipefail
+runner_probe "printf 'alpha\n' | grep -q 'alpha'"
+runner_probe "printf 'alpha\n' | grep -q 'omega'"
+set -o pipefail
+check "with pipefail off a matching pipeline assertion still passes" "[ $runner_pass -eq 1 ]"
+check "with pipefail off a NON-matching pipeline assertion still fails" "[ $runner_fail -eq 1 ]"
+# 2. `$?` must survive into the assertion. `set` resets it, and dozens of checks
+#    in this file are written as `[ $? -eq 2 ]` against the preceding command —
+#    silently reading 0 instead would turn every exit-code check green.
+( exit 7 )
+check "\$? reaches the assertion intact across check()'s own set" "[ \$? -eq 7 ]"
+# POSITIVE CONTROL — and it must not be pinned to some constant either.
+( exit 3 )
+check "positive control: a different exit code reaches it too" "[ \$? -eq 3 ]"
+
+echo "== 9. this file's own section labels =="
+# Three round-1 sections were appended with labels 7e/7f/7g that already belonged
+# to three later sections in the same file. Nothing broke, but a 400+ check run
+# whose section headings repeat cannot be navigated: "7f failed" names two
+# places. The guard is over the whole label space, not over the three that
+# collided, so the next appended section is caught the same way.
+dup_labels=$(grep -oE '^echo "== [0-9]+[a-z]*\.' "$0" | sort | uniq -d)
+check "no two sections share a label${dup_labels:+ — duplicated: $(printf '%s' "$dup_labels" | tr '\n' ' ')}" \
+  "[ -z \"\$dup_labels\" ]"
+# POSITIVE CONTROL — the detector must be able to SEE a duplicate, or "none
+# found" would only mean the expression matches nothing at all.
+check "positive control: the label detector finds a planted duplicate" \
+  "[ \"\$(printf 'echo \"== 7f. a =\"\necho \"== 7f. b =\"\necho \"== 7z. c =\"\n' | grep -oE '^echo \"== [0-9]+[a-z]*\\.' | sort | uniq -d | wc -l | tr -d ' ')\" = 1 ]"
+# POSITIVE CONTROL — and it must really be reading this file's labels, not an
+# empty set: this run has more than a dozen of them.
+check "positive control: the detector reads this file's real labels" \
+  "[ \"\$(grep -cE '^echo \"== [0-9]+[a-z]*\\.' '$0')\" -ge 15 ]"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0

@@ -962,6 +962,10 @@ ledger of what past reviews decided:
 - **Exit 1 with a `no ledger at …` warning on stderr** — this is *not* the same
   statement. Nothing was consulted, usually a mistyped `--ledger`/`--repo`.
   Report every finding normally and do **not** describe the ledger as checked.
+- **A `warn … too broad` line on stderr** — a row in the ledger matches across
+  unrelated parts of the repo, so it was ignored rather than acted on. Report the
+  finding normally, and say in the report that a blanket row is sitting in the
+  ledger and should be scoped or deleted.
 
 Record outcomes only for findings the user actually adjudicates in this session:
 
@@ -974,9 +978,30 @@ Never record a dismissal the user did not make. An invented dismissal is a
 permanent, self-inflicted blind spot in every future review of this repo.
 
 Scope `--path` to the place the decision was actually about (`src/legacy/*`,
-`docs/*`). A glob with no literal character in it (`*`, `*/*`) matches the whole
-repo and is rejected with exit 2: it would demote every future finding in that
-category repo-wide while reading like any other line in a diff.
+`docs/*`). Breadth is judged on what the glob **matches**, not on how it is
+spelled: the tool runs the pattern against a corpus of unrelated probe paths and
+rejects it with exit 2 if it reaches across three or more unrelated top-level
+names. `*`, `*/*`, `*[a-z]*`, `[a-z]*`, `*.*` and every other spelling of "the
+whole repo" fail the same test, because the test is on the semantics. Such a
+glob would demote every future finding in that category repo-wide while reading
+like any other line in a diff.
+
+The same test is applied to patterns **read from** the ledger. This file is
+meant to be hand-edited and merged in git, so a blanket row can arrive without
+passing through `--record`; `--match` prints a `warn … too broad` line to stderr
+and ignores that row. The row stays in the file as history — it just never
+suppresses anything. If you see that warning, scope the row or delete it.
+
+`--note` is stored in the printable alphabet: anything outside it (a newline
+first of all, but equally a tab or a control character) is escaped with the
+standard `printf %b` sequences, so the note is always exactly one field on
+exactly one line and always decodes back to what you typed. A multi-line note is
+therefore safe to pass and comes back whole.
+
+The `<repo>` column names the repo the **ledger** belongs to, resolved from the
+ledger's own location — not from wherever your shell happens to be — so a ledger
+copied or merged between repos still says what it is about. Pass `--repo` to
+override it explicitly.
 
 The ledger lives at `{repo_root}/jjstack/review-ledger.md` — in git, so a
 suppression is reviewable in a PR and retiring one is a visible diff. Commit it
