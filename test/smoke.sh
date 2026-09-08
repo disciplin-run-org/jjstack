@@ -894,8 +894,31 @@ check "the non-executing path detects no tooling to run" \
       "grep -q '^TOOLS_DETECTED=0' '$PF/notrust/tooling-status.env'"
 check "and leaves all three categories IN SCOPE" \
       "[ \$(grep -c '^## IN SCOPE' '$PF/notrust/exclusions.md') -eq 3 ]"
-check "and the index says NOTHING was checked" \
-      "grep -qE '^\| 1 .*NOTHING was checked' '$PF/notrust/EVIDENCE-PACK.md'"
+# This assertion is CORRECTED, not removed. It used to require the literal
+# "NOTHING was checked" here — the phrase the index reserves for "this repo has
+# no tooling at all" — on a fixture that visibly HAS `test/smoke.sh`. It was
+# asserting the defect. What the row must actually say is that the operator
+# disabled the tools, and what it must NOT say is anything about what this
+# repository contains. Both halves are kept.
+check "the index reports the disable as a REQUEST, not a property of the repo" \
+      "grep -qE '^\| 1 .*DISABLED by request' '$PF/notrust/EVIDENCE-PACK.md'"
+check "the index does not claim this repo has no tooling" \
+      "! grep -qE '^\| 1 .*no typechecker, linter or test runner detected' '$PF/notrust/EVIDENCE-PACK.md'"
+check "row 5 does not claim no test runner was detected either" \
+      "! grep -qE '^\| 5 .*no test runner detected' '$PF/notrust/EVIDENCE-PACK.md'"
+check "row 5 still names the missing baseline as a gap" \
+      "grep -qE '^\| 5 .*NO baseline exists' '$PF/notrust/EVIDENCE-PACK.md'"
+check "the baseline artifact agrees it was a request, not an absence" \
+      "grep -q 'Disabled by request' '$PF/notrust/test-baseline.md'"
+# POSITIVE CONTROL — the fixture really does contain a runner, so "we were never
+# asked" is the true statement and "there is none" is the false one.
+check "the --test none fixture really HAS a test runner (control)" \
+      "[ -x '$FX/test/smoke.sh' ]"
+# POSITIVE CONTROL — on a repo that genuinely has nothing, the index still says
+# NOTHING was checked, so the assertion above is about the flag and not about
+# the phrase having been deleted.
+check "a genuinely tool-less repo still says NOTHING was checked (control)" \
+      "grep -qE '^\| 1 .*NOTHING was checked' '$BARE/pack/EVIDENCE-PACK.md'"
 # Positive control, recovered from the shipped doc rather than invented.
 check "SKILL.md really documents this exact flag set (control)" \
       "grep -qF -- '--typecheck none --lint none --test none' '$DIR/skills/review/SKILL.md'"

@@ -36,11 +36,55 @@
 
 # shellcheck shell=bash
 
-_ARGCHK_CYA="\033[96m"; _ARGCHK_RST="\033[0m"
+_ARGCHK_CYA="\033[96m"; _ARGCHK_YEL="\033[33m"; _ARGCHK_RST="\033[0m"
 
 review_need_value() {   # review_need_value FLAG REMAINING_ARGC
   if [ "${2:-0}" -lt 2 ]; then
     echo -e "${_ARGCHK_CYA}error${_ARGCHK_RST} $1 requires a value" >&2
+    return 1
+  fi
+  return 0
+}
+
+# --- the shared --base contract ----------------------------------------------
+# Three tools take `--base`, and all three used to accept a ref that resolves
+# but shares NO ancestry with HEAD. `git merge-base` fails, the fallback pinned
+# the base to the ref itself, and the report then printed
+#
+#   diff scope: working tree vs the merge base of `<ref>` and HEAD
+#
+# — a scope that does not exist — beside a `diff source:` command that does not
+# reproduce it. SKILL.md's Phase 4 pass tells the reviewer to QUOTE that line as
+# the map's stated limits, so the false claim propagates into the report
+# verbatim. jjstack-review-intent widened the same way: `git log <ref>..HEAD`
+# with no common ancestor returns the whole branch.
+#
+# `--base ""` is the same failure one step earlier: it was silently accepted and
+# every pass then fell back to its OWN auto-detected base, so one review ran
+# three passes over three different scopes without saying so.
+#
+# All of it is one contract, checked in one place, BEFORE any artifact is
+# written: a base must be non-empty, must resolve, and must share history with
+# HEAD. Anything else is a named usage error (exit 2), never a silently
+# substituted scope.
+review_base_check() {   # review_base_check REPO BASE  -> 0 ok, 1 refused
+  local repo="${1:-.}" base="$2"
+  if [ -z "$base" ]; then
+    echo -e "${_ARGCHK_CYA}error${_ARGCHK_RST} --base was given an empty value" >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}  drop the flag to auto-detect a base, or name a ref" >&2
+    return 1
+  fi
+  if ! git -C "$repo" rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+    echo -e "${_ARGCHK_CYA}error${_ARGCHK_RST} --base '$base' does not resolve to a commit in $repo" >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}  check the spelling and that the ref is fetched:" >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}    git -C '$repo' rev-parse --verify '$base'" >&2
+    return 1
+  fi
+  if ! git -C "$repo" merge-base "$base" HEAD >/dev/null 2>&1; then
+    echo -e "${_ARGCHK_CYA}error${_ARGCHK_RST} --base '$base' shares no history with HEAD in $repo" >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}  there is no merge base, so there is no 'changes since' to review." >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}  reviewing against it would silently widen the scope to the whole" >&2
+    echo -e "${_ARGCHK_YEL}hint${_ARGCHK_RST}  tree. Fetch the real base, or pass --diff-file with the diff you mean." >&2
     return 1
   fi
   return 0

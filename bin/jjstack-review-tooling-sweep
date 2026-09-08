@@ -20,7 +20,7 @@
 #      A baseline exists ONLY when the runner reached a verdict; detected-but-
 #      unrunnable and not-detected are gaps, and say so.
 #   4. tooling-status.env — the same facts, per tool, machine-readable
-#      (none|skipped|pass|fail|error). jjstack-review-preflight renders its
+#      (none|disabled|skipped|pass|fail|error). jjstack-review-preflight renders its
 #      index from THIS, never from this script's aggregate exit code: one rc
 #      cannot describe three tools, and trying made the index print
 #      "baseline recorded (green)" over an artifact saying no baseline existed.
@@ -43,7 +43,9 @@
 # Options:
 #   --out DIR          where to write the artifacts (required)
 #   --repo DIR         repo to sweep (default: git toplevel of cwd)
-#   --typecheck CMD    override typecheck command ("none" disables)
+#   --typecheck CMD    override typecheck command ("none" disables it BY REQUEST —
+#                      recorded as the operator decision it is, never as an
+#                      absence of tooling in the repo)
 #   --lint CMD         override lint command ("none" disables)
 #   --test CMD         override test command ("none" disables)
 #   --skip-tests       detect but do not run the test suite
@@ -187,9 +189,22 @@ detect_test() {
 TC="${TC_OVERRIDE:-$(detect_typecheck || true)}"
 LINT="${LINT_OVERRIDE:-$(detect_lint || true)}"
 TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
-[ "$TC" = "none" ]   && TC=""
-[ "$LINT" = "none" ] && LINT=""
-[ "$TEST" = "none" ] && TEST=""
+
+# "none" is an OPERATOR DECISION, and it is recorded as one.
+#
+# These three lines used to clear the command and stop there, so `kind_of` fell
+# through to `none` and the whole chain — the results table, the baseline
+# artifact, index rows 1 and 5 — reported "no test runner detected" about a
+# repository that visibly contains `test/smoke.sh`. SKILL.md documents
+# `--typecheck none --lint none --test none` as THE way to review a tree you do
+# not trust, so the documented happy path was the one that produced the false
+# statement. It is the same class the --skip-tests fix closed one round
+# earlier: "we chose not to run it" and "there is nothing to run" are two
+# different facts and neither may be printed as the other.
+declare -A DISABLED
+[ "$TC" = "none" ]   && { TC="";   DISABLED[typecheck]=1; }
+[ "$LINT" = "none" ] && { LINT=""; DISABLED[lint]=1; }
+[ "$TEST" = "none" ] && { TEST=""; DISABLED[test]=1; }
 
 # Remember what was DETECTED before any guard clears it, so "nothing here to
 # run" and "something here we chose not to run" stay distinguishable
@@ -284,9 +299,12 @@ classify() { # classify <slug> <rc>
   esac
 }
 
-kind_of() { # kind_of <slug> -> none|skipped|pass|fail|error
+kind_of() { # kind_of <slug> -> none|disabled|skipped|pass|fail|error
   local slug="$1"
   if [ -n "${KIND[$slug]:-}" ]; then printf '%s\n' "${KIND[$slug]}"; return 0; fi
+  # An operator flag outranks detection: the question "what does this repo
+  # have" was never asked, so no answer to it may be published.
+  if [ -n "${DISABLED[$slug]:-}" ]; then echo disabled; return 0; fi
   # `skipped` requires BOTH a detected tool and a recorded reason for not
   # running it. Either alone is `none` — there was nothing there to skip.
   if [ -n "${DETCMD[$slug]}" ] && [ -n "${SKIPWHY[$slug]:-}" ]; then echo skipped; return 0; fi
@@ -359,8 +377,9 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   # so the human table and the machine facts cannot disagree.
   for slug in typecheck lint test; do
     case "$(kind_of "$slug")" in
-      none)    echo "| $slug | — | none detected (structurally inapplicable) |" ;;
-      skipped) echo "| $slug | \`$(label "${DETCMD[$slug]}")\` | skipped (${SKIPWHY[$slug]}) |" ;;
+      none)     echo "| $slug | — | none detected (structurally inapplicable) |" ;;
+      disabled) echo "| $slug | — | disabled by request (\`--$slug none\`) — NOT a statement about this repo |" ;;
+      skipped)  echo "| $slug | \`$(label "${DETCMD[$slug]}")\` | skipped (${SKIPWHY[$slug]}) |" ;;
       *)       echo "| $slug | \`${CMDS[$slug]}\` | ${STATUS[$slug]} |" ;;
     esac
   done
@@ -531,6 +550,11 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
       echo "Detected \`$TEST_DETECTED\` but skipped (${SKIPWHY[test]}). **NO"
       echo "baseline exists**, so no later pass may claim the change \"broke"
       echo "nothing\" — that claim is unsupported here."
+    elif [ "$(kind_of test)" = "disabled" ]; then
+      echo "Disabled by request (\`--test none\`). This repository was never"
+      echo "asked what test runner it has, so nothing here says it has none."
+      echo "**NO baseline exists**, so no later pass may claim the change"
+      echo "\"broke nothing\" — that claim is unsupported here."
     else
       echo "No test runner detected. NO baseline exists, so no later pass may"
       echo "claim the change \"broke nothing\" — that claim is unsupported here."
@@ -544,9 +568,10 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
 # (green)" came to be printed above an artifact reading "runner: none / NO
 # baseline exists". The index must never claim more than its artifacts
 # support, so it reads per-tool facts from here instead of guessing from an rc.
-skippedn=0
+skippedn=0; disabledn=0
 for _s in typecheck lint test; do
-  [ "$(kind_of "$_s")" = "skipped" ] && skippedn=$((skippedn + 1))
+  [ "$(kind_of "$_s")" = "skipped" ]  && skippedn=$((skippedn + 1))
+  [ "$(kind_of "$_s")" = "disabled" ] && disabledn=$((disabledn + 1))
 done
 {
   echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
@@ -554,6 +579,7 @@ done
   echo "LINT_STATUS=$(kind_of lint)"
   echo "TEST_STATUS=$(kind_of test)"
   echo "TOOLS_DETECTED=$DETECTED"
+  echo "TOOLS_DISABLED=$disabledn"
   echo "TOOLS_PASSED=$passed"
   echo "TOOLS_SKIPPED=$skippedn"
   echo "TOOLS_FAILED=$failures"

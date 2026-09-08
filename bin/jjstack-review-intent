@@ -30,13 +30,13 @@ set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
-OUT=""; REPO=""; BASE=""; DRY=0
+OUT=""; REPO=""; BASE=""; BASE_GIVEN=0; DRY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)     review_need_value "$1" $# || exit 2; OUT="$2"; shift 2 ;;
     --repo)    review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
-    --base)    review_need_value "$1" $# || exit 2; BASE="$2"; shift 2 ;;
+    --base)    review_need_value "$1" $# || exit 2; BASE="$2"; BASE_GIVEN=1; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
@@ -57,13 +57,12 @@ fi
 # uncommitted — treat the working tree itself as the only statement of intent"
 # about a fully committed change. That is not a gap in the evidence, it is the
 # evidence stating the opposite of the truth.
-if [ -n "$BASE" ]; then
-  if ! git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
-    echo -e "${CYA}error${RST} --base '$BASE' does not resolve to a commit in $REPO" >&2
-    echo -e "${YEL}hint${RST}  check the spelling and that the ref is fetched:" >&2
-    echo -e "${YEL}hint${RST}    git -C '$REPO' rev-parse --verify '$BASE'" >&2
-    exit 2
-  fi
+if [ -n "$BASE_GIVEN" ] && [ "$BASE_GIVEN" != "0" ]; then
+  review_base_check "$REPO" "$BASE" || exit 2
+  # An explicit base that DOES share history is still reduced to the merge base,
+  # so `git log BASE..HEAD` cannot reach back past the fork point.
+  MB="$(git -C "$REPO" merge-base "$BASE" HEAD 2>/dev/null)"
+  [ -n "$MB" ] && BASE="$MB"
 fi
 
 if [ -z "$BASE" ]; then
@@ -232,7 +231,17 @@ PY
   echo "   one and then grade the code against your own invention."
 } > "$OUT/intent.md"
 
-NCOMMITS=$(grep -c '^---$' "$TMP/commits" 2>/dev/null); NCOMMITS="${NCOMMITS:-0}"
+# git itself counts the commits. This was `grep -c '^---$'` over the rendered
+# log, which counts the SEPARATOR this script prints after each commit body —
+# indistinguishable from a `---` horizontal rule inside a commit message. One
+# commit whose body contains two rules published INTENT_COMMITS=3, and the
+# evidence-pack index prints that number as fact. Ask the thing that knows.
+if [ -n "$BASE" ]; then
+  NCOMMITS=$(git -C "$REPO" rev-list --count "$BASE..HEAD" 2>/dev/null)
+else
+  NCOMMITS=$(git -C "$REPO" rev-list --count -n 20 HEAD 2>/dev/null)
+fi
+NCOMMITS="${NCOMMITS:-0}"
 NISSUES=$(wc -l < "$TMP/issues" | tr -d ' ')
 
 # Machine-readable, for the same reason rows 1 and 5 of the evidence-pack index

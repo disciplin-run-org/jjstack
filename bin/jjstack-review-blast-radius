@@ -19,7 +19,8 @@
 # Usage:
 #   jjstack-review-blast-radius [--repo DIR] [--base REF] [--diff-file FILE|-]
 #                               [--max-refs N] [--generic-threshold N]
-#                               [--out DIR] [--max-symbols N] [--dry-run]
+#                               [--out DIR] [--max-symbols N] [--symbol-timeout N]
+#                               [--dry-run]
 #
 #   --repo               repo root (default: git rev-parse --show-toplevel)
 #   --base               diff base ref (default: first of origin/main,
@@ -30,6 +31,11 @@
 #   --out DIR            write DIR/blast-radius.md instead of stdout
 #   --max-symbols        stop after N extracted symbols (default 200); the
 #                        report says so when it truncates
+#   --symbol-timeout     seconds each symbol's recursive grep may take
+#                        (default 20; 0 disables the bound). Progress goes to
+#                        stderr so a slow run is never mistaken for a hang, and
+#                        a symbol that runs out of time is reported as a KNOWN
+#                        GAP rather than silently counted as contained.
 #   --dry-run            with --out, print what would be written and exit
 #   --max-refs           reference sites listed per symbol (default 10)
 #   --generic-threshold  above this many hits a symbol is called too generic to
@@ -52,27 +58,29 @@ set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; RST="\033[0m"
 
-REPO=""; BASE=""; DIFF_FILE=""; MAX_REFS=10; GENERIC=40
+REPO=""; BASE=""; BASE_GIVEN=0; DIFF_FILE=""; MAX_REFS=10; GENERIC=40
+SYMBOL_TIMEOUT=20
 OUT=""; DRY_RUN=0; MAX_SYMBOLS=200
 ALSO=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)               review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
-    --base)               review_need_value "$1" $# || exit 2; BASE="$2"; shift 2 ;;
+    --base)               review_need_value "$1" $# || exit 2; BASE="$2"; BASE_GIVEN=1; shift 2 ;;
     --diff-file)          review_need_value "$1" $# || exit 2; DIFF_FILE="$2"; shift 2 ;;
     --max-refs)           review_need_value "$1" $# || exit 2; MAX_REFS="$2"; shift 2 ;;
     --generic-threshold)  review_need_value "$1" $# || exit 2; GENERIC="$2"; shift 2 ;;
     --out)                review_need_value "$1" $# || exit 2; OUT="$2"; shift 2 ;;
     --dry-run)            DRY_RUN=1; shift ;;
     --max-symbols)        review_need_value "$1" $# || exit 2; MAX_SYMBOLS="$2"; shift 2 ;;
+    --symbol-timeout)     review_need_value "$1" $# || exit 2; SYMBOL_TIMEOUT="$2"; shift 2 ;;
     --also-repo)
       review_need_value "$1" $# || exit 2
       if [ -d "$2" ]; then ALSO+=("${2%/}")
       else echo -e "${YEL}warn${RST}  --also-repo not a directory, skipped: ${2:-}" >&2; fi
       shift 2 ;;
     -h|--help)
-      sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
@@ -82,6 +90,7 @@ done
 case "$MAX_REFS" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --max-refs must be a number" >&2; exit 2 ;; esac
 case "$GENERIC"  in ''|*[!0-9]*) echo -e "${CYA}error${RST} --generic-threshold must be a number" >&2; exit 2 ;; esac
 case "$MAX_SYMBOLS" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --max-symbols must be a number" >&2; exit 2 ;; esac
+case "$SYMBOL_TIMEOUT" in ''|*[!0-9]*) echo -e "${CYA}error${RST} --symbol-timeout must be a number" >&2; exit 2 ;; esac
 
 [ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
@@ -96,36 +105,40 @@ REPO="${REPO%/}"
 # fail with its stderr discarded and its rc ignored, and the report render
 # "Empty diff — nothing to map" at exit 0: a green pre-flight row over a map
 # that was never built. An unresolvable ref is a usage error, and it is named.
-if [ -n "$BASE" ] && [ -z "$DIFF_FILE" ]; then
-  if ! git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
-    echo -e "${CYA}error${RST} --base '$BASE' does not resolve to a commit in $REPO" >&2
-    echo -e "${YEL}hint${RST}  check the spelling and that the ref is fetched:" >&2
-    echo -e "${YEL}hint${RST}    git -C '$REPO' rev-parse --verify '$BASE'" >&2
-    exit 2
-  fi
+if [ "$BASE_GIVEN" = "1" ] && [ -z "$DIFF_FILE" ]; then
+  review_base_check "$REPO" "$BASE" || exit 2
 fi
 
 # --out adapter. Phase 0's jjstack-review-preflight calls this with `--out DIR`
 # and then reads DIR/blast-radius.md; stdout is the default so the tool stays
 # usable by hand. --dry-run must not create the directory: the pre-flight pack
 # advertises a dry run as writing nothing, and a stray empty dir is a write.
+#
+# The report is built in a TEMP file and only moved into place at the end.
+# Redirecting straight at the destination guarded exactly one failure — an
+# unresolvable explicit ref, checked above it — and left every other early exit
+# (no base ref at all, a missing --diff-file, a failing `git diff`) writing a
+# ZERO-BYTE blast-radius.md that the index then rendered as a legitimate skip.
+# An artifact is now either the real report or a document that says COULD NOT
+# RUN and why. It is never empty, because an empty artifact reads like a result.
 if [ -n "$OUT" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     echo -e "${YEL}dry-run${RST} would write $OUT/blast-radius.md" >&2
     exit 0
   fi
   mkdir -p "$OUT" || { echo -e "${CYA}error${RST} cannot create $OUT" >&2; exit 3; }
-  exec > "$OUT/blast-radius.md"
 fi
 
 TMP="$(mktemp -d)"
+[ -n "$OUT" ] && exec > "$TMP/report.md"
 
 # The pre-flight index used to render row 2 from this script's exit code alone,
 # so "ran — map built" appeared over an empty map. It now reads these facts, on
 # the same principle rows 1 and 5 already follow: no row may claim more than the
 # artifact beneath it. Written on every exit path, from the EXIT trap.
 BLAST_STATUS="error"; BLAST_SYMBOLS=0; BLAST_MAPPED=0
-BLAST_CONTAINED=0; BLAST_GENERIC=0; BLAST_TRUNCATED=0
+BLAST_CONTAINED=0; BLAST_GENERIC=0; BLAST_TRUNCATED=0; BLAST_TIMEDOUT=0
+BLAST_ERROR="the pass exited before it reached a verdict"
 write_blast_status() {
   [ -n "$OUT" ] && [ -d "$OUT" ] || return 0
   {
@@ -136,9 +149,45 @@ write_blast_status() {
     echo "BLAST_CONTAINED=$BLAST_CONTAINED"
     echo "BLAST_GENERIC=$BLAST_GENERIC"
     echo "BLAST_TRUNCATED=$BLAST_TRUNCATED"
+    echo "BLAST_TIMEDOUT=$BLAST_TIMEDOUT"
+    [ "$BLAST_STATUS" = "error" ] && echo "BLAST_ERROR=$BLAST_ERROR"
   } > "$OUT/blast-status.env"
 }
-trap 'write_blast_status; rm -rf "$TMP"' EXIT
+# Record the reason BEFORE exiting, so the status file and the artifact say the
+# same thing and the index has a fact to render instead of an exit code.
+blast_fail() {   # blast_fail REASON [RC]
+  BLAST_STATUS="error"; BLAST_ERROR="$1"
+  echo -e "${CYA}error${RST} $1" >&2
+  exit "${2:-3}"
+}
+finish_blast() {
+  if [ -n "$OUT" ] && [ -d "$OUT" ]; then
+    if [ "$BLAST_STATUS" != "error" ] && [ -s "$TMP/report.md" ]; then
+      cat "$TMP/report.md" > "$OUT/blast-radius.md"
+    else
+      {
+        echo "# Cross-file blast radius — **COULD NOT RUN**"
+        echo
+        echo "This pass produced no map. Reason:"
+        echo
+        echo "> $BLAST_ERROR"
+        echo
+        echo "This is a **KNOWN GAP**, not a clean result and not a legitimate"
+        echo "skip. No later pass may read the absence of a map here as evidence"
+        echo "that the change is contained — nothing was looked at."
+        if [ -s "$TMP/report.md" ]; then
+          echo
+          echo "## Partial output before the failure"
+          echo
+          cat "$TMP/report.md"
+        fi
+      } > "$OUT/blast-radius.md"
+    fi
+    write_blast_status
+  fi
+  rm -rf "$TMP"
+}
+trap finish_blast EXIT
 DIFF="$TMP/diff"
 SOURCE=""
 SCOPE=""
@@ -149,8 +198,7 @@ if [ -n "$DIFF_FILE" ]; then
   elif [ -f "$DIFF_FILE" ]; then
     cp "$DIFF_FILE" "$DIFF"; SOURCE="$DIFF_FILE"
   else
-    echo -e "${YEL}warn${RST}  diff file not found: $DIFF_FILE" >&2
-    exit 3
+    blast_fail "diff file not found: $DIFF_FILE"
   fi
   SCOPE="whatever the supplied diff covers — this script did not choose it"
 else
@@ -160,8 +208,7 @@ else
     done
   fi
   if [ -z "$BASE" ]; then
-    echo -e "${YEL}warn${RST}  no base ref found; pass --base or --diff-file" >&2
-    exit 3
+    blast_fail "no base ref found (looked for origin/main, origin/master, main, master); pass --base or --diff-file"
   fi
   # Two-dot, from the merge base, against the WORKING TREE.
   #
@@ -174,14 +221,22 @@ else
   # diff scopes in one evidence pack without saying so. Reviewing
   # staged-but-uncommitted work is the ordinary pre-landing moment; it is the
   # case that must work, not the exception.
+  # `[ -n "$MB" ] || MB="$BASE"` used to sit here. A base that resolves but
+  # shares NO ancestry with HEAD makes merge-base fail, the fallback pinned the
+  # base to the ref itself, and the report then printed "diff scope: working
+  # tree vs the merge base of <ref> and HEAD" — a scope that does not exist —
+  # beside a `diff source:` command that does not reproduce it. An explicit
+  # --base is refused up front by review_base_check; an AUTO-DETECTED one
+  # reaches here, and it gets the same answer rather than a quiet substitution.
   MB="$(git -C "$REPO" merge-base "$BASE" HEAD 2>/dev/null)"
-  [ -n "$MB" ] || MB="$BASE"
+  if [ -z "$MB" ]; then
+    blast_fail "the auto-detected base '$BASE' shares no history with HEAD in $REPO — there is no merge base, so there is no 'changes since' to map"
+  fi
   # rc was discarded here, so a failed diff and a genuinely empty one were the
   # same thing to every caller. They are not: one is a gap, the other a fact.
   if ! git -C "$REPO" diff "$MB" > "$DIFF" 2>"$TMP/differr"; then
-    echo -e "${CYA}error${RST} git diff against '$MB' failed in $REPO" >&2
     sed 's/^/  /' "$TMP/differr" >&2
-    exit 3
+    blast_fail "git diff against '$MB' failed in $REPO"
   fi
   SOURCE="git diff \$(git merge-base $BASE HEAD)"
   SCOPE="working tree vs the merge base of \`$BASE\` and HEAD — committed AND uncommitted changes to tracked files. Untracked files are invisible to \`git diff\`, so a brand-new file's symbols are not mapped."
@@ -394,11 +449,31 @@ EXCL=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=vendor
       --exclude-dir=.next --exclude-dir=coverage --exclude-dir=.mypy_cache
       --exclude=*.diff --exclude=*.patch --exclude=*.lock --exclude=*.min.js)
 
+# One full recursive grep per symbol, up to --max-symbols of them, is the
+# slowest thing this pass does — and stdout is redirected into the artifact, so
+# without either of the two lines below a long run is indistinguishable from the
+# value-less-flag hang: no output, no progress, no end.
+#
+#   progress goes to STDERR, which is not the artifact, so the operator can see
+#           which symbol is being mapped and that the run is alive
+#   timeout  bounds each symbol, so one pathological pattern over a huge tree
+#           cannot stall the whole review. A symbol that runs out of time is
+#           counted and reported as a GAP, never as "contained".
+HAVE_TIMEOUT=0; command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
+sym_grep() {   # sym_grep SYMBOL ROOT -> grep output; rc 124 on timeout
+  if [ "$HAVE_TIMEOUT" = "1" ] && [ "$SYMBOL_TIMEOUT" -gt 0 ]; then
+    timeout "$SYMBOL_TIMEOUT" grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$1" "$2" 2>/dev/null
+  else
+    grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$1" "$2" 2>/dev/null
+  fi
+}
+TOTAL_SYM=$(wc -l < "$TMP/symbols" | tr -d ' ')
 i=0
-: > "$TMP/index"; : > "$TMP/generic"; : > "$TMP/contained"
+: > "$TMP/index"; : > "$TMP/generic"; : > "$TMP/contained"; : > "$TMP/timedout"
 while read -r sym; do
   [ -n "$sym" ] || continue
   i=$((i + 1))
+  printf 'blast-radius: mapping symbol %d/%d  %-40.40s\r' "$i" "$TOTAL_SYM" "$sym" >&2
   # Prefix-strip and touched-file filter in ONE awk, with every path handed
   # over through the ENVIRONMENT rather than spliced into a program.
   #
@@ -408,8 +483,15 @@ while read -r sym; do
   # references" for a symbol with a live stale caller. That is worse than no
   # map at all: containment presented as evidence. ENVIRON values are literal
   # text — no regex, no escape processing, nothing left to quote.
-  grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$REPO" 2>/dev/null \
-    | BR_PREFIX="$REPO/" BR_TOUCHED="$TMP/touched" awk '
+  sym_grep "$sym" "$REPO" > "$TMP/raw.$i"; grc=$?
+  if [ "$grc" -eq 124 ]; then
+    printf '%s\n' "$sym" >> "$TMP/timedout"
+    BLAST_TIMEDOUT=$((BLAST_TIMEDOUT + 1))
+    echo -e "${YEL}warn${RST}  symbol '$sym' timed out after ${SYMBOL_TIMEOUT}s — NOT mapped" >&2
+    continue
+  fi
+  < "$TMP/raw.$i" \
+      BR_PREFIX="$REPO/" BR_TOUCHED="$TMP/touched" awk '
         BEGIN { pre = ENVIRON["BR_PREFIX"]; plen = length(pre)
                 tf  = ENVIRON["BR_TOUCHED"]
                 while ((getline l < tf) > 0) t[l] = 1 }
@@ -423,7 +505,7 @@ while read -r sym; do
   # Same treatment: the sibling path AND its label were both spliced into one
   # sed expression, on the search and the replacement side respectively.
   for extra in ${ALSO+"${ALSO[@]}"}; do
-    grep -rnwIF "${EXCL[@]}" --binary-files=without-match -e "$sym" "$extra" 2>/dev/null \
+    sym_grep "$sym" "$extra" \
       | BR_PREFIX="$extra/" BR_LABEL="($(basename "$extra")) " awk '
           BEGIN { pre = ENVIRON["BR_PREFIX"]; plen = length(pre)
                   lab = ENVIRON["BR_LABEL"] }
@@ -441,6 +523,7 @@ while read -r sym; do
   fi
 done < "$TMP/symbols"
 
+printf '%-70s\r' '' >&2
 MAPPED=$(wc -l < "$TMP/index" | tr -d ' ')
 BLAST_STATUS="mapped"
 BLAST_MAPPED="$MAPPED"
@@ -457,6 +540,17 @@ if [ "$MAPPED" -gt 0 ]; then
     fi
     echo
   done
+fi
+
+if [ -s "$TMP/timedout" ]; then
+  echo "## **TIMED OUT** — not mapped ($BLAST_TIMEDOUT)"
+  echo
+  echo "Each of these ran past \`--symbol-timeout\` (${SYMBOL_TIMEOUT}s) and was"
+  echo "abandoned. They are a **KNOWN GAP**: their call sites were never looked"
+  echo "at, so their absence from the map above is not evidence of containment."
+  echo
+  awk '{ printf "%s`%s`", (NR > 1 ? ", " : "- "), $0 } END { print "" }' "$TMP/timedout"
+  echo
 fi
 
 if [ -s "$TMP/generic" ]; then
