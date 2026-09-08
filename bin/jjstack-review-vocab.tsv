@@ -42,4 +42,4 @@ reason	duplicate	suppress	the same defect is already accounted for elsewhere
 reason	not-reachable	demote	unreachable today is reachable after the next refactor — deprioritise, never delete
 reason	accepted-risk	suppress	a human accepted the risk on the record
 reason	baseline	suppress	retired by the committed baseline with its own stated reason
-reason	stale-api	suppress	disproved against current official documentation (Phase 4.5b) — bound exclusively to the `refuted` disposition, which is the only "this finding is WRONG" outcome
+reason	stale-api	none	disproved against current official documentation (Phase 4.5b) — bound exclusively to the `refuted` disposition, which is the only "this finding is WRONG" outcome. Ceiling `none` because it is EARNED BY EVIDENCE IN ONE RUN and is not a thing a memory store may hold: with a `suppress` ceiling the binding was enforced only by run-report's Invariant 4, and `baseline generate --code stale-api` retired a P0 with no doc URL and nothing having consulted any documentation.

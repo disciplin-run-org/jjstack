@@ -69,6 +69,9 @@
 #           It must contain at least one literal character: a glob made only of
 #           `*`, `?` and `/` matches the whole repo and is rejected, because a
 #           dismissal is a decision about a place in the code, not a blanket.
+#           Checked when a record is written AND on every row every time the
+#           store is read — the write-only version let the migration tool, which
+#           every existing user is told to run, launder a legacy blanket through.
 #
 # Protected categories (security, correctness, concurrency, error-handling,
 # resource-leak, test-coverage) are recorded but NEVER demote — --match prints
@@ -170,6 +173,33 @@ in_set() {
   return 1
 }
 
+# ONE definition of "this glob names a place in the repo", because there were
+# two questions and only one of them was ever asked. `--record` refused an
+# unscoped glob; `validate_store` had no glob check at all, so the same blanket
+# arriving any other way — a hand edit, or the migration every existing user is
+# told to run — was certified `ok` and then demoted every path in its category.
+# A pattern built only from `*`, `?` and `/` has no discriminating character: it
+# is never a decision about a place in the code, wherever it came from.
+glob_has_literal() {
+  case "$(printf '%s' "${1:-}" | tr -d '*?/')" in
+    '') return 1 ;;
+  esac
+  return 0
+}
+
+# ONE definition of the verb a row is allowed to carry. `vocab_check` asks only
+# whether an effect is WITHIN this rung's ceiling — and `none` and `rank` both
+# are, being weaker than `demote`. But a row states a decision, and each kind of
+# row has exactly one decision it can state: a `dismissed` row DEMOTES, and a
+# `fixed`/`confirmed` row is history and changes nothing. A `dismissed` row
+# spelled `none` validated clean and then printed the self-contradictory
+# `DEMOTE effect=none`; a `fixed` row spelled `demote` is a suppression wearing
+# history's clothes. Neither is a downgrade to be tolerated — a verdict that is
+# not this rung's belongs on another rung, so both are store errors.
+expected_effect() {
+  if [ "$1" = "dismissed" ]; then printf 'demote\n'; else printf 'none\n'; fi
+}
+
 # A row is eight tab-separated fields on one line, and free text arrives from a
 # human at the command line. Left unsanitized, a --note carrying a newline plus
 # tabs does not corrupt its own row — it FORGES AN ENTIRE ADDITIONAL ONE, which
@@ -216,20 +246,18 @@ if [ "$MODE" = "record" ]; then
   # in a PR diff. A glob with no literal character in it (`*`, `**`, `*/*`,
   # `/*`) matches every path there is, so it is never a decision about a place
   # in the repo; it is a blanket. Name a real prefix instead.
-  case "$(printf '%s' "$PATH_ARG" | tr -d '*?/')" in
-    '')
-      echo -e "${CYA}error${RST} --path '$PATH_ARG' matches every file in the repo" >&2
-      echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
-      echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
-      exit 2 ;;
-  esac
+  if ! glob_has_literal "$PATH_ARG"; then
+    echo -e "${CYA}error${RST} --path '$PATH_ARG' matches every file in the repo" >&2
+    echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
+    echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+    exit 2
+  fi
   # Only a dismissal acts on a future finding, so only a dismissal carries an
   # effect and a reason code. History rows have effect `none`.
+  EFFECT="$(expected_effect "$TYPE")"
   if [ "$TYPE" = "dismissed" ]; then
-    EFFECT="demote"
     if [ "$CODE" = "-" ]; then CODE="prior-decision"; fi
   else
-    EFFECT="none"
     CODE="-"
   fi
   if [ "$CODE" != "-" ] && ! vocab_is_reason "$CODE"; then
@@ -282,7 +310,7 @@ slug() {
 # stronger effect than this scope allows is the exact failure the ladder exists
 # to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
 validate_store() {
-  local f="$1" line n=0 hdr_scope f_type f_effect f_code
+  local f="$1" line n=0 hdr_scope f_type f_effect f_code f_pat f_want
   [ -f "$f" ] || return 0
   hdr_scope="$(head -n 1 "$f" | awk -F'\t' '$1 == "#jjstack-review-store" { for (i = 2; i <= NF; i++) if ($i ~ /^scope=/) { sub(/^scope=/, "", $i); print $i } }')"
   if [ -z "$hdr_scope" ]; then
@@ -306,12 +334,33 @@ validate_store() {
     f_type="$(printf '%s' "$line" | cut -f3)"
     f_effect="$(printf '%s' "$line" | cut -f4)"
     f_code="$(printf '%s' "$line" | cut -f5)"
+    f_pat="$(printf '%s' "$line" | cut -f6)"
     if ! in_set "$f_type" "$VALID_TYPES"; then
       echo -e "${CYA}error${RST} $f:$n unknown type '$f_type'" >&2; return 4
+    fi
+    # The scope guard, on the READ path. This is where the upgrade path's `*`
+    # row was certified as a valid decision. Every consumer — --match, --list,
+    # --record's append, and migrate, which validates what it wrote — reaches
+    # the store through here, so the guard is stated once and holds everywhere.
+    if ! glob_has_literal "$f_pat"; then
+      echo -e "${CYA}error${RST} $f:$n path glob '$f_pat' matches every file in the repo" >&2
+      echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
+      echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+      return 4
     fi
     if ! vocab_check "$SCOPE" "$f_code" "$f_effect" 2>/dev/null; then
       echo -e "${CYA}error${RST} $f:$n effect '$f_effect' with code '$f_code' violates the ladder:" >&2
       vocab_check "$SCOPE" "$f_code" "$f_effect"
+      return 4
+    fi
+    # The ceiling is only half the ladder — the same half the baseline already
+    # closed one rung down. `vocab_check` above asked whether the effect is
+    # within this scope's maximum; this asks whether it is this ROW's verb.
+    f_want="$(expected_effect "$f_type")"
+    if [ "$f_effect" != "$f_want" ]; then
+      echo -e "${CYA}error${RST} $f:$n effect '$f_effect' is not '$f_want' — this row violates the ladder: a '$f_type' row has exactly one verb" >&2
+      echo -e "${YEL}why${RST}   a weaker verdict belongs on a wider rung: 'rank' is calibration's," >&2
+      echo -e "${YEL}why${RST}   'none' is history. A stronger one belongs on the baseline." >&2
       return 4
     fi
     if [ "$f_type" = "dismissed" ] && [ "$f_code" = "-" ]; then

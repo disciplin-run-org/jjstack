@@ -882,6 +882,14 @@ is exclusive in both directions — `refuted` takes only `stale-api`, and
 `stale-api` only `refuted` — so it cannot become a general delete hatch, nor be
 smuggled onto `suppress` to dodge Invariant 3.
 
+`stale-api` is also the one reason code no memory store may hold. Its ceiling in
+`bin/jjstack-review-vocab.tsv` is `none`, so `baseline generate --code
+stale-api`, `ledger --record --code stale-api` and `calibration record --code
+stale-api` all exit 4. A refutation is evidence gathered against current docs in
+ONE run; remembering it would suppress a future finding with no doc URL and
+nothing having consulted any documentation. Record the refutation in that run's
+report, not in the repo's memory.
+
 Then render the report. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation
 and the tally are the script's job, not the model's:

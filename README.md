@@ -312,11 +312,23 @@ They are three files on purpose. The narrower the key, the stronger the verdict
 it is allowed to emit — so a broad "we usually ignore this pattern" can rank a
 finding down but can never silence a specific P0. Only the baseline suppresses,
 and only with a written human reason on every entry. The rule is enforced by the
-tools, not by convention, on both paths — when a record is written and again
-every time one is read. A calibration row claiming a suppression is rejected with
-a non-zero exit, and so is a row whose verdict is not the one its rung exists to
-emit, so a hand-edited store cannot act on your findings in a way its own
-validator would not certify.
+tools, not by convention, on **all three rungs** and on both paths — when a
+record is written and again every time one is read. A calibration row claiming a
+suppression is rejected with a non-zero exit, and so is a row whose verdict is
+not the one its rung exists to emit: each rung has exactly one verb, and a
+weaker spelling is a store error rather than a downgrade, because a `dismissed`
+ledger row spelled `none` still demoted, and a `rejected` calibration row spelled
+`none` still produced a demoted placement. A hand-edited store cannot act on your
+findings in a way its own validator would not certify.
+
+A dismissal must also name a place. A path glob built only from `*`, `?` and `/`
+matches the whole repo, so it is a blanket rather than a decision, and it is
+refused when it is recorded **and** on every row every time the store is read.
+That second half matters because `jjstack-review-memory-migrate` — the one
+command an existing user is told to run — used to convert a legacy `*` row
+straight through. It now hands every converted store to the validator of the
+tool that owns that rung and installs only what passes, so the upgrade path
+cannot introduce a row the tools would refuse to read.
 
 They share one directory, one format and one reason-code vocabulary
 (`bin/jjstack-review-vocab.tsv`). TSV because the point of these files is their

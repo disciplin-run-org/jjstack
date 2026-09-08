@@ -28,11 +28,29 @@
 # The legacy files are left in place; delete them in the same commit once you
 # have read the new ones.
 #
+# MIGRATION IS NOT AN EXEMPTION FROM THE LADDER — it is where the ladder matters
+# most. This is the ONE command every existing user is told to run, and it prints
+# "delete the legacy ones" the moment it finishes, so anything it launders is
+# laundered with the tool's own blessing and the original evidence thrown away. A
+# legacy ledger row keyed on `*` used to migrate straight through: the new store
+# validated `ok`, and `--match` then demoted every path in its category. The
+# `--record` guard that would have refused that glob was never on this path.
+#
+# So each converted store is written to a temporary file and handed to the
+# VALIDATOR OF THE TOOL THAT OWNS THAT RUNG, and only what passes is installed.
+# That is deliberately not a copy of the stores' rules restated here — a copy is
+# a second vocabulary, and it drifts. It inherits every rule the three stores
+# have today and every rule they gain later. A conversion that fails is left
+# beside its destination as `<store>.rejected` so you can read exactly what would
+# have been written, and the "delete the legacy ones" line is NOT printed.
+#
 # Usage:
 #   jjstack-review-memory-migrate [--repo DIR] [--dry-run] [--force]
 #
 # Exit: 0 migrated (or dry-run ok, or nothing to do), 2 usage error,
-#       3 repo root unresolvable, 4 a destination already exists (pass --force).
+#       3 repo root unresolvable, 4 a destination already exists (pass --force),
+#       5 a conversion does not satisfy the validator of the rung that owns it,
+#         so nothing was installed for it.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -45,6 +63,15 @@ HERE="${BASH_SOURCE[0]%/*}"
 # shellcheck source=/dev/null
 . "$HERE/jjstack-review-vocab.sh" || exit 3
 
+# Help is DERIVED from the leading comment block, never a hand-maintained
+# `sed -n 'A,Bp'` range — a range silently truncates the moment a line is added,
+# which is exactly what happened to this one's siblings.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
 REPO=""
 DRY=0
 FORCE=0
@@ -54,7 +81,7 @@ while [ $# -gt 0 ]; do
     --repo)    review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --force)   FORCE=1; shift ;;
-    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) show_help; exit 0 ;;
     *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -83,54 +110,103 @@ guard_dest() {
 }
 
 migrated=0
+rejected=0
+WORK="$(mktemp -d)" || exit 3
+trap 'rm -rf "$WORK"' EXIT
+
+# THE ONE GUARD, applied to all three rungs. A conversion is validated by the
+# tool that OWNS its rung before it is installed, so this command can never write
+# a store the rest of the family would refuse to read — and can never be the
+# second, sanctioned way for a row the stores reject to come into existence.
+# Deliberately not a restatement of the stores' rules: a copy is a second
+# vocabulary, and it drifts. This inherits whatever the validators enforce.
+# Runs under --dry-run too: a dry run that says "ok" before a real run refuses is
+# worse than no dry run at all.
+install_validated() {   # install_validated TMP DEST LABEL VALIDATOR...
+  local tmp="$1" dest="$2" label="$3"; shift 3
+  local verr="$tmp.err"
+  if "$@" >/dev/null 2> "$verr"; then
+    if [ "$DRY" -eq 0 ]; then
+      mv "$tmp" "$dest" || return 3
+    fi
+    migrated=$((migrated + 1))
+    say "$label"
+    return 0
+  fi
+  echo -e "${CYA}error${RST} $label did not survive the conversion, so nothing was installed:" >&2
+  # The validator names the scratch file it was handed. Rewrite that path to the
+  # one the reader can actually open, or the most useful line of the message —
+  # "ledger.tsv:3 path glob '*' matches every file" — points at a temp directory
+  # that no longer exists by the time anyone reads it.
+  if [ "$DRY" -eq 0 ]; then
+    mv "$tmp" "$dest.rejected" 2>/dev/null
+    sed -e "s|$tmp|$dest.rejected|g" -e 's/^/  /' "$verr" >&2
+    echo -e "${YEL}fix${RST}   read the rejected conversion at $dest.rejected," >&2
+  else
+    sed -e "s|$tmp|(the conversion, not written under --dry-run)|g" -e 's/^/  /' "$verr" >&2
+  fi
+  echo -e "${YEL}fix${RST}   correct the legacy row it came from, then rerun the migration." >&2
+  echo -e "${YEL}why${RST}   a store the tools will not read is not a migration, and the" >&2
+  echo -e "${YEL}why${RST}   legacy file is the only remaining copy of that decision." >&2
+  rejected=$((rejected + 1))
+  return 5
+}
+
 [ "$DRY" -eq 0 ] && { mkdir -p "$DEST" || exit 3; }
 
 # --- calibration: TSV -> TSV, gaining the store header and effect/code columns.
 if [ -f "$LEG_CAL" ]; then
   OUT="$DEST/calibration.tsv"
   guard_dest "$OUT" || exit 4
-  if [ "$DRY" -eq 0 ]; then
-    {
-      printf '#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1\n'
-      printf '#ts\tkey\tverdict\teffect\tcode\tlens\tfile\tnote\n'
-      awk -F'\t' 'BEGIN { OFS = "\t" }
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        NF >= 3 {
-          # old: ts key verdict lens file note
-          # A rejection is a decision, so it gains a reason code. `prior-decision`
-          # is the honest default: all we know is that someone once said no.
-          code = ($3 == "rejected") ? "prior-decision" : "-"
-          print $1, $2, $3, "rank", code, ($4 == "" ? "-" : $4), ($5 == "" ? "-" : $5), ($6 == "" ? "-" : $6)
-        }' "$LEG_CAL"
-    } > "$OUT" || exit 3
-  fi
-  say "calibration.tsv  <- jjstack/review-calibration.tsv"
-  migrated=$((migrated + 1))
+  TMP="$WORK/calibration.tsv"
+  {
+    printf '#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1\n'
+    printf '#ts\tkey\tverdict\teffect\tcode\tlens\tfile\tnote\n'
+    awk -F'\t' 'BEGIN { OFS = "\t" }
+      /^[[:space:]]*$/ { next }
+      /^#/             { next }
+      NF >= 3 {
+        # old: ts key verdict lens file note
+        # A rejection is a decision, so it gains a reason code. `prior-decision`
+        # is the honest default: all we know is that someone once said no.
+        code = ($3 == "rejected") ? "prior-decision" : "-"
+        print $1, $2, $3, "rank", code, ($4 == "" ? "-" : $4), ($5 == "" ? "-" : $5), ($6 == "" ? "-" : $6)
+      }' "$LEG_CAL"
+  } > "$TMP" || exit 3
+  install_validated "$TMP" "$OUT" "calibration.tsv  <- jjstack/review-calibration.tsv" \
+    "$HERE/jjstack-review-calibration" validate --store "$TMP"
 fi
 
 # --- ledger: Markdown pipe-rows -> TSV.
 if [ -f "$LEG_LED" ]; then
   OUT="$DEST/ledger.tsv"
   guard_dest "$OUT" || exit 4
-  if [ "$DRY" -eq 0 ]; then
-    {
-      printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1\n'
-      printf '#ts\trepo\ttype\teffect\tcode\tpath-glob\tcategory\tnote\n'
-      awk -F' *\\| *' 'BEGIN { OFS = "\t" }
-        $0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ { next }
-        {
-          # old: date | repo | type | pattern | category | note
-          # Only a dismissal acts on a future finding, so only a dismissal
-          # carries an effect and a code. History rows are effect `none`.
-          eff  = ($3 == "dismissed") ? "demote" : "none"
-          code = ($3 == "dismissed") ? "prior-decision" : "-"
-          print $1, $2, $3, eff, code, $4, $5, ($6 == "" ? "(no note)" : $6)
-        }' "$LEG_LED"
-    } > "$OUT" || exit 3
-  fi
-  say "ledger.tsv       <- jjstack/review-ledger.md"
-  migrated=$((migrated + 1))
+  TMP="$WORK/ledger.tsv"
+  {
+    printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1\n'
+    printf '#ts\trepo\ttype\teffect\tcode\tpath-glob\tcategory\tnote\n'
+    awk -F' *\\| *' 'BEGIN { OFS = "\t" }
+      $0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ { next }
+      {
+        # old: date | repo | type | pattern | category | note
+        # Only a dismissal acts on a future finding, so only a dismissal
+        # carries an effect and a code. History rows are effect `none`.
+        eff  = ($3 == "dismissed") ? "demote" : "none"
+        code = ($3 == "dismissed") ? "prior-decision" : "-"
+        # EVERYTHING FROM FIELD 6 ON IS THE NOTE. The note is free text a human
+        # typed, and `|` is ordinary in English prose, so splitting on every pipe
+        # truncated it at the first one: `vendored code | see ADR-7 for why`
+        # migrated as `vendored code`, rc=0, no warning — and the reader was then
+        # told to delete the only remaining copy of the reason.
+        note = ""
+        for (i = 6; i <= NF; i++) note = (note == "" ? $i : note " | " $i)
+        gsub(/^[ \t]+|[ \t]+$/, "", note)
+        if (note == "") note = "(no note)"
+        print $1, $2, $3, eff, code, $4, $5, note
+      }' "$LEG_LED"
+  } > "$TMP" || exit 3
+  install_validated "$TMP" "$OUT" "ledger.tsv       <- jjstack/review-ledger.md" \
+    "$HERE/jjstack-review-ledger" --validate --ledger "$TMP"
 fi
 
 # --- baseline: JSON -> TSV. Both mechanisms survive: content-hash fingerprints
@@ -138,11 +214,11 @@ fi
 if [ -f "$LEG_BAS" ]; then
   OUT="$DEST/baseline.tsv"
   guard_dest "$OUT" || exit 4
+  TMP="$WORK/baseline.tsv"
   # The legacy JSON records which jjstack wrote it; that value must survive the
   # move, or the drift guard that makes stale fingerprints inert stops firing.
   HERE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("jjstack_version","unknown"))' "$LEG_BAS" 2>/dev/null)"
-  if [ "$DRY" -eq 0 ]; then
-    python3 - "$LEG_BAS" "$OUT" "$HERE_VERSION" <<'PY' || exit 3
+  python3 - "$LEG_BAS" "$TMP" "$HERE_VERSION" <<'PY' || exit 3
 import json, sys
 
 src, dst, ver = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -194,14 +270,23 @@ with open(dst, "w", encoding="utf-8") as fh:
     for row in rows:
         fh.write("\t".join(row) + "\n")
 PY
-  fi
-  say "baseline.tsv     <- .jjstack-review-baseline.json"
-  migrated=$((migrated + 1))
+  install_validated "$TMP" "$OUT" "baseline.tsv     <- .jjstack-review-baseline.json" \
+    "$HERE/jjstack-review-baseline" validate --baseline "$TMP"
 fi
 
-if [ "$migrated" -eq 0 ]; then
+if [ "$migrated" -eq 0 ] && [ "$rejected" -eq 0 ]; then
   echo -e "${GRN}nothing to migrate${RST} no legacy review store under $REPO"
   exit 0
+fi
+
+if [ "$rejected" -gt 0 ]; then
+  echo -e "${YEL}incomplete${RST} $migrated store(s) migrated, $rejected refused → $DEST" >&2
+  # Deliberately NOT the "delete the legacy ones" line. The legacy file is the
+  # only remaining copy of a decision this command could not carry across, and
+  # telling someone to delete it is how the laundering becomes permanent.
+  echo -e "${YEL}next${RST}  fix the legacy rows named above and rerun; keep the legacy files" >&2
+  echo -e "${YEL}next${RST}  until every store migrates cleanly." >&2
+  exit 5
 fi
 
 echo -e "${GRN}migrated${RST} $migrated store(s) → $DEST"

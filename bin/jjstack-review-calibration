@@ -59,7 +59,9 @@
 #   #jjstack-review-store<TAB>scope=pattern-class<TAB>max-effect=rank<TAB>v=1
 #   ts  key  verdict  effect  code  lens  file  note
 #     verdict  accepted | rejected
-#     effect   always `rank` here — the scope cap; anything stronger is rejected
+#     effect   always `rank` here — EXACTLY, not "at most". Anything stronger is
+#              rejected by the scope cap, and anything weaker is rejected too: a
+#              verdict that is not this rung's belongs on another rung
 #     code     `-` for `accepted`; a reason code from the shared vocabulary for
 #              `rejected` (a rejection is a decision, and a decision is explained)
 #
@@ -216,6 +218,21 @@ validate_store() {
     if ! vocab_check "$SCOPE" "$f_code" "$f_effect" 2>/dev/null; then
       echo -e "${CYA}error${RST} $f:$n effect '$f_effect' with code '$f_code' violates the ladder:" >&2
       vocab_check "$SCOPE" "$f_code" "$f_effect"
+      return 4
+    fi
+    # The ceiling is only half the ladder, and this rung had the same hole the
+    # baseline closed one rung down — hidden better, because `suggest` hardcodes
+    # `effect=rank` into its output. `vocab_check` asks whether the effect is
+    # WITHIN what a pattern-class row may emit, and `none` is. But this store has
+    # exactly one verb: it RANKS. A `rejected` row spelled `none` validated `ok`
+    # and then produced `placement=demoted effect=rank`, a demotion computed from
+    # a row that claims to change nothing, with the mismatch invisible to
+    # anything parsing the line. A weaker verdict is not a downgrade to tolerate;
+    # it belongs on no rung at all, so it is a store error.
+    if [ "$f_effect" != "$EFFECT" ]; then
+      echo -e "${CYA}error${RST} $f:$n effect '$f_effect' is not '$EFFECT' — this row violates the ladder: a scope=$SCOPE row has exactly one verb" >&2
+      echo -e "${YEL}why${RST}   'demote' is the ledger's verb and 'suppress' the baseline's;" >&2
+      echo -e "${YEL}why${RST}   'none' records nothing, so it can never produce a placement." >&2
       return 4
     fi
     if [ "$f_verdict" = "rejected" ] && [ "$f_code" = "-" ]; then

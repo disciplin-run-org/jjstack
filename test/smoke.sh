@@ -13,7 +13,53 @@ BIN="$DIR/bin"; HOOKS="$DIR/hooks"
 pass=0; fail=0
 ok()   { printf '  \033[92mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[95mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
-check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+# `pipefail` is OFF for the duration of an assertion, deliberately. Around
+# forty assertions here have the shape `printf ... | grep -q X` or `head -1 f |
+# grep -q X`, and under `set -o pipefail` a `grep -q` that exits on its FIRST
+# match can close the pipe under the writer, leaving the pipeline carrying
+# printf's SIGPIPE status instead of grep's verdict. The check then fails at
+# random, under load, in a suite whose entire job is to be believed. §7k found
+# exactly this and rewrote its own block to read a file instead — one instance
+# of a class that was left open in every other block. The fix belongs in the one
+# helper they all pass through: in a `foo | grep -q X` assertion the verdict IS
+# grep's status, which is what pipefail is overriding. Anything that needs a
+# command's own exit code captures `rc=$?` outside the check, as this file
+# already does everywhere it matters.
+#
+# The `_rc` dance is not decoration. Dozens of assertions here are spelled
+# `check "..." "[ \$? -eq 4 ]"` — a DEFERRED `$?` that is meant to read the
+# status of the command the caller ran just before. `set` is itself a command,
+# so touching pipefail on the way in would reset `$?` to 0 and turn every one of
+# those into a silent pass. Capture it first, restore it, then evaluate.
+check(){
+  local _rc=$?
+  set +o pipefail
+  ( exit "$_rc" )
+  if eval "$2"; then set -o pipefail; ok "$1"; else set -o pipefail; bad "$1"; fi
+}
+
+echo "== 0. the harness tests itself =="
+# `check` is the ONE function every assertion in this file passes through, so a
+# bug in it does not fail a test — it turns tests into silent passes, which is
+# the worst outcome a suite can have. It has just been changed (pipefail is now
+# off for the duration of an assertion), and the first version of that change
+# clobbered the DEFERRED `$?` that dozens of assertions below rely on: the
+# spelling `check "..." "[ $? -eq 4 ]"` reads the status of the command the
+# caller ran a line earlier, and any command run inside `check` before the eval
+# resets it to 0. That turned 33 real assertions green while asserting nothing.
+# So both of the helper's contracts are asserted here, before anything else runs.
+# Each probe runs in a subshell with its own counters, so the deliberate failure
+# never reaches the suite's own tally or its output.
+h_false=$( pass=0; fail=0; check "probe" "false" >/dev/null; echo "$fail" )
+check "HARNESS: a false assertion really fails" "[ \"$h_false\" = 1 ]"
+h_true=$( pass=0; fail=0; check "probe" "true" >/dev/null; echo "$pass" )
+check "HARNESS: ...and a true one really passes" "[ \"$h_true\" = 1 ]"
+h_rc7=$( pass=0; fail=0; (exit 7); check "probe" "[ \$? -eq 7 ]" >/dev/null; echo "$pass" )
+check "HARNESS: a deferred \$? reaches the assertion intact" "[ \"$h_rc7\" = 1 ]"
+h_rc0=$( pass=0; fail=0; (exit 0); check "probe" "[ \$? -eq 7 ]" >/dev/null; echo "$pass" )
+check "HARNESS: ...and is read, not assumed" "[ \"$h_rc0\" = 0 ]"
+h_pipe=$( pass=0; fail=0; check "probe" "printf 'a\nb\nc\n' | grep -q a" >/dev/null; echo "$pass" )
+check "HARNESS: a 'cmd | grep -q' assertion reports grep's verdict" "[ \"$h_pipe\" = 1 ]"
 
 echo "== 1. syntax =="
 for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
@@ -1755,9 +1801,18 @@ check "tabs in --path cannot corrupt the row" \
   "awk -F'\t' '/^[0-9][0-9][0-9][0-9]-/{ if (NF != 8) bad = 1 } END{ exit bad + 0 }' '$LI'"
 # POSITIVE CONTROL — a DELIBERATELY recorded WIDE glob does demote across the
 # tree it names, so "not demoted" above is about the forgery being blocked, not
-# a broken matcher. It cannot be a bare `*`: Rule 5 above rejects an unscoped
-# glob at --record, which is the point — the only way a `*` row can reach this
-# store is by forgery, which is exactly what the guard under test prevents.
+# a broken matcher. It cannot be a bare `*`, because `--record` rejects an
+# unscoped glob.
+#
+# This comment used to go on to claim that forgery was therefore "the only way a
+# `*` row can reach this store". That was false, and the review that caught it
+# was right: `jjstack-review-memory-migrate` converted a legacy `| * |` row
+# straight through, `--validate` then said `ok`, and `--match` demoted every path
+# in the category. Migration was a second, sanctioned way in, on the one command
+# every existing user is told to run. A write-path guard is never the only way in
+# while any other tool can write the store — the guard is now on the READ path
+# too, in validate_store, which is where every consumer including migrate meets
+# it. §7s asserts that, on every entry point.
 LW="$(dirname "$LD")/wide.tsv"
 "$BIN/jjstack-review-ledger" --record --type dismissed --path 't*' --category style \
   --code prior-decision --note 'deliberate repo-wide' --ledger "$LW" >/dev/null 2>&1
@@ -2065,10 +2120,10 @@ cat > "$DEP/node_modules/evil/package.json" <<'EOF'
 { "dependencies": { "should-not-appear": "9.9.9" } }
 EOF
 
-# Assertions read a FILE, never `printf ... | grep -q`: under `set -o pipefail`
-# a `grep -q` that exits on its first match can leave the pipeline carrying
-# printf's SIGPIPE status, which makes the check fail at random. Same reason the
-# 5d block below writes its output to a file.
+# Assertions read a FILE rather than piping into `grep -q`. That is now belt and
+# braces — `check` turns pipefail off around every assertion for the same reason
+# (see the helper at the top) — but reading a file is still the clearer shape,
+# and it is what the 5d block below does too.
 DEPOUT="$(mktemp)"
 "$BIN/jjstack-review-dep-inventory" "$DEP" --tsv > "$DEPOUT" 2>/dev/null
 check "dep-inventory parses npm version"   "grep -q '^npm	react	\\^18.2.0' '$DEPOUT'"
@@ -2251,11 +2306,50 @@ check "the ledger hit's effect is exactly demote"       "grep -q 'effect=demote'
 check "the calibration hit's effect is only rank"       "grep -q 'effect=rank' <<<\"\$cal_out\""
 check "neither mechanism ever emits suppress"           "! grep -q 'suppress' <<<\"\$led_out\$cal_out\""
 
+# THE ROWS FED TO THE REPORT ARE DERIVED FROM WHAT THE TWO MECHANISMS PRINTED.
+# This section used to hand-write the `demoted` row it then measured, so its five
+# headline assertions read a literal and could not go red for ANY change to
+# either demotion mechanism — the section was measuring its own fixture. It now
+# translates each mechanism's OWN printed verb into a disposition, one row per
+# mechanism that says it demotes. Same location, same claim, so the report must
+# merge them into ONE finding, which is precisely the claim under test.
+disp_for() {   # disp_for EFFECT — the report disposition that verb earns
+  case "$1" in
+    suppress)    printf 'suppress\tbaseline\n' ;;
+    demote|rank) printf 'demoted\tprior-decision\n' ;;
+    *)           printf 'report\t-\n' ;;
+  esac
+}
+effect_of() { sed -n 's/.*effect=\([a-z]*\).*/\1/p' <<<"$1" | head -1; }
+DD_CLAIM='trailing whitespace on a long line'
+DD_TSV="$DD/findings.tsv"
+: > "$DD_TSV"
+if grep -q '^DEMOTE ' <<<"$led_out"; then
+  printf 'P2\t55\tsrc/a.py:7\tstyle\t%s\t%s\n' \
+    "$(disp_for "$(effect_of "$led_out")")" "$DD_CLAIM" >> "$DD_TSV"
+fi
+if grep -q 'placement=demoted' <<<"$cal_out"; then
+  printf 'P2\t55\tsrc/a.py:7\tstyle\t%s\t%s\n' \
+    "$(disp_for "$(effect_of "$cal_out")")" "$DD_CLAIM" >> "$DD_TSV"
+fi
+check "both mechanisms contributed a row, neither typed by hand" \
+  "[ \"\$(wc -l < '$DD_TSV')\" -eq 2 ]"
+check "the ledger's derived row demotes rather than suppresses" \
+  "awk -F'\t' 'NR==1{ exit !(\$5 == \"demoted\") }' '$DD_TSV'"
+check "no row derived from a memory store claims a suppression" \
+  "! awk -F'\t' '\$5 == \"suppress\" { f = 1 } END { exit !f }' '$DD_TSV'"
+# POSITIVE CONTROL — the derivation is not a constant. Fed a `suppress` verb it
+# really does produce a suppressing row, and fed `none` it produces no demotion
+# at all, so the two assertions above are facts about what the stores printed
+# rather than about a translation that can only ever say one thing.
+check "POSITIVE CONTROL: the derivation maps 'suppress' to a suppressing row" \
+  "[ \"\$(disp_for suppress)\" = \"\$(printf 'suppress\tbaseline')\" ]"
+check "POSITIVE CONTROL: and 'none' to no demotion at all" \
+  "[ \"\$(disp_for none)\" = \"\$(printf 'report\t-')\" ]"
+
 # The finding, carrying BOTH demotions, is rendered once — in the Demoted
 # section, active, with its own severity and confidence intact. Not in the
 # suppressed section, not twice, not gone.
-DD_TSV="$DD/findings.tsv"
-printf 'P2\t55\tsrc/a.py:7\tstyle\tdemoted\tprior-decision\ttrailing whitespace on a long line\n' > "$DD_TSV"
 "$BIN/jjstack-review-run-report" "$DD_TSV" --out "$DD/report.md" > "$DD/report.out" 2>/dev/null
 check "a doubly-demoted finding is still rendered"  "grep -q 'trailing whitespace on a long line' '$DD/report.md'"
 check "it is demoted exactly ONCE"                  "[ \"\$(grep -c 'trailing whitespace on a long line' '$DD/report.md')\" -eq 1 ]"
@@ -2389,6 +2483,249 @@ timeout 5 "$BIN/jjstack-review-calibration" record --store "$PB/c.tsv" --key k -
   </dev/null >/dev/null 2>&1
 check "POSITIVE CONTROL: valued calibration flags parse and record (exit 0)" "[ \$? -eq 0 ]"
 rm -rf "$PB"
+
+echo "== 7s. THE LADDER ON EVERY RUNG, AND THE SCOPE GUARD AT EVERY ENTRY POINT =="
+# Round 1 closed both of these on the baseline, because the fixture covered the
+# baseline. Neither rule is a property of one script. EVERY rung has exactly one
+# verb, and NO rung may hold a pattern that names no place in the repo — so both
+# are asserted here on all three stores and at every entry point that reads or
+# writes one: record, validate, list, match, suggest, report, generate, and the
+# migration an existing user is told to run.
+LX="$(mktemp -d)"
+LX_HDR=$'#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1'
+CX_HDR=$'#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1'
+
+# --- one verb per rung: the LEDGER -------------------------------------------
+# `vocab_check` only ever asked whether an effect is WITHIN the ceiling, and
+# `none` and `rank` both are. So a `dismissed` row spelled `none` validated `ok`
+# and `--match` then printed the self-contradictory `DEMOTE effect=none` — a
+# demotion announced by a row that claims to change nothing. Same class as the
+# baseline's read-path hole, one rung up.
+for weak in none rank; do
+  { printf '%s\n' "$LX_HDR"
+    printf '2026-01-01\tacme/repo\tdismissed\t%s\tprior-decision\tsrc/*\tstyle\thistory only, changes nothing\n' "$weak"; } > "$LX/w.tsv"
+  for m in validate list; do
+    "$BIN/jjstack-review-ledger" "--$m" --ledger "$LX/w.tsv" >/dev/null 2> "$LX/w.err"; rc=$?
+    check "ledger --$m rejects a dismissed row spelled '$weak' (exit 4)" \
+      "[ $rc -eq 4 ] && grep -q 'violates the ladder' '$LX/w.err'"
+  done
+  "$BIN/jjstack-review-ledger" --match --path src/pay.py --category style \
+    --ledger "$LX/w.tsv" > "$LX/w.out" 2>/dev/null; rc=$?
+  check "ledger --match rejects a dismissed row spelled '$weak' (exit 4)" "[ $rc -eq 4 ]"
+  check "and never prints 'DEMOTE effect=$weak'" "! grep -q 'DEMOTE effect=$weak' '$LX/w.out'"
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/other/*' --category style \
+    --code prior-decision --note n --ledger "$LX/w.tsv" >/dev/null 2>&1; rc=$?
+  check "ledger --record will not append to a store spelled '$weak' (exit 4)" "[ $rc -eq 4 ]"
+done
+# The mirror image: a HISTORY row may not carry a verdict either. `fixed` and
+# `confirmed` are the record of what happened, not an instruction about what to
+# do next, so a `demote` on one is a suppression wearing history's clothes.
+for hist in fixed confirmed; do
+  { printf '%s\n' "$LX_HDR"
+    printf '2026-01-01\tacme/repo\t%s\tdemote\t-\tsrc/*\tstyle\tfixed in 12\n' "$hist"; } > "$LX/h.tsv"
+  "$BIN/jjstack-review-ledger" --validate --ledger "$LX/h.tsv" >/dev/null 2>&1; rc=$?
+  check "a '$hist' row carrying effect demote is rejected (exit 4)" "[ $rc -eq 4 ]"
+done
+# POSITIVE CONTROL — the byte-identical store spelled correctly still validates
+# and still demotes, so "exit 4" above is about the effect column and not about a
+# store shape the tool can no longer read at all.
+{ printf '%s\n' "$LX_HDR"
+  printf '2026-01-01\tacme/repo\tdismissed\tdemote\tprior-decision\tsrc/*\tstyle\thistory only, changes nothing\n'; } > "$LX/ok.tsv"
+"$BIN/jjstack-review-ledger" --validate --ledger "$LX/ok.tsv" >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: the same row spelled 'demote' validates" "[ $rc -eq 0 ]"
+"$BIN/jjstack-review-ledger" --match --path src/pay.py --category style \
+  --ledger "$LX/ok.tsv" > "$LX/ok.out" 2>/dev/null; rc=$?
+check "POSITIVE CONTROL: and it does demote" "[ $rc -eq 0 ]"
+check "POSITIVE CONTROL: printing effect=demote" "grep -q 'DEMOTE effect=demote' '$LX/ok.out'"
+
+# --- one verb per rung: CALIBRATION ------------------------------------------
+# The widest rung had the same hole and hid it better: `suggest` hardcodes
+# `effect=rank` into its output, so a row spelled `none` produced
+# `placement=demoted effect=rank` and nothing parsing that line could see the
+# mismatch. Exit 4 alone is not proof here — a missing store and "no prior data"
+# also exit 4 — so every assertion names the ladder error too.
+{ printf '%s\n' "$CX_HDR"
+  printf '2026-01-01\ttrailing-whitespace\trejected\tnone\tprior-decision\t-\t-\thistory only\n'; } > "$LX/c.tsv"
+for m in validate report; do
+  "$BIN/jjstack-review-calibration" "$m" --store "$LX/c.tsv" >/dev/null 2> "$LX/c.err"; rc=$?
+  check "calibration $m rejects a rejected row spelled 'none' (exit 4)" \
+    "[ $rc -eq 4 ] && grep -q 'violates the ladder' '$LX/c.err'"
+done
+"$BIN/jjstack-review-calibration" suggest --store "$LX/c.tsv" --key trailing-whitespace \
+  > "$LX/c.out" 2> "$LX/c.err"; rc=$?
+check "calibration suggest rejects a rejected row spelled 'none' (exit 4)" \
+  "[ $rc -eq 4 ] && grep -q 'violates the ladder' '$LX/c.err'"
+check "and never reports placement=demoted from it" "! grep -q 'placement=demoted' '$LX/c.out'"
+"$BIN/jjstack-review-calibration" record --store "$LX/c.tsv" --key k --verdict accepted \
+  >/dev/null 2> "$LX/c.err"; rc=$?
+check "calibration record will not append to a store spelled 'none' (exit 4)" \
+  "[ $rc -eq 4 ] && grep -q 'violates the ladder' '$LX/c.err'"
+# POSITIVE CONTROL — the byte-identical store spelled `rank` still suggests.
+{ printf '%s\n' "$CX_HDR"
+  printf '2026-01-01\ttrailing-whitespace\trejected\trank\tprior-decision\t-\t-\thistory only\n'; } > "$LX/cok.tsv"
+"$BIN/jjstack-review-calibration" suggest --store "$LX/cok.tsv" --key trailing-whitespace \
+  > "$LX/cok.out" 2>/dev/null; rc=$?
+check "POSITIVE CONTROL: the same row spelled 'rank' suggests (exit 0)" "[ $rc -eq 0 ]"
+check "POSITIVE CONTROL: and it does demote placement" "grep -q 'placement=demoted effect=rank' '$LX/cok.out'"
+
+# --- the scope guard, at every entry point -----------------------------------
+# PR #20 put the unscoped-glob check on `--record` and nowhere else, so
+# `validate` certified a `*` row as ok and `--match` demoted every path in the
+# category. A pattern built only from `*`, `?` and `/` carries no discriminating
+# character: it is a blanket wherever it is written and however it got there.
+for g in '*' '**' '*/*' '?' '/*'; do
+  { printf '%s\n' "$LX_HDR"
+    printf '2026-01-01\tacme/repo\tdismissed\tdemote\tprior-decision\t%s\tstyle\twaved off everything\n' "$g"; } > "$LX/g.tsv"
+  "$BIN/jjstack-review-ledger" --validate --ledger "$LX/g.tsv" >/dev/null 2> "$LX/g.err"; rc=$?
+  check "ledger --validate rejects the blanket glob '$g' (exit 4)" \
+    "[ $rc -eq 4 ] && grep -q 'matches every file' '$LX/g.err'"
+  "$BIN/jjstack-review-ledger" --match --path src/payments.py --category style \
+    --ledger "$LX/g.tsv" > "$LX/g.out" 2>/dev/null; rc=$?
+  check "ledger --match will not demote from '$g' (exit 4)" "[ $rc -eq 4 ]"
+  check "and prints no DEMOTE line for '$g'" "! grep -q DEMOTE '$LX/g.out'"
+  "$BIN/jjstack-review-ledger" --list --ledger "$LX/g.tsv" > "$LX/g.list" 2>/dev/null; rc=$?
+  check "ledger --list will not print '$g' as if it were a decision (exit 4)" "[ $rc -eq 4 ]"
+  check "and lists nothing from it" "[ ! -s '$LX/g.list' ]"
+done
+# The baseline's own version of the guard stripped `*` and `?` but not `/`, so
+# `*/*` — which matches every nested path there is — walked past it. Same class,
+# same file, one rung down.
+for g in '*/*' '**' '*?'; do
+  { printf '%s\n' "$BL_HDR"
+    printf 'rule\tsuppress\tbaseline\t-\t-\t%s\t-\tdead code path\n' "$g"; } > "$LX/b.tsv"
+  "$BIN/jjstack-review-baseline" validate --baseline "$LX/b.tsv" >/dev/null 2>&1; rc=$?
+  check "baseline rejects the blanket file glob '$g' (exit 4)" "[ $rc -eq 4 ]"
+done
+# POSITIVE CONTROL — a WIDE but real glob is still a decision about a place, and
+# it still validates on both rungs. `src/*` above already demoted; `per*` here is
+# the shipped spelling from the baseline's own ceiling fixture.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\tbaseline\t-\tper*\t-\t-\tdead code\n'; } > "$LX/bok.tsv"
+"$BIN/jjstack-review-baseline" validate --baseline "$LX/bok.tsv" >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: a wide glob that names something still validates" "[ $rc -eq 0 ]"
+
+# --- the upgrade path may not launder what the stores refuse ------------------
+# `jjstack-review-memory-migrate` is the one command every existing user is told
+# to run, and it printed "delete the legacy ones" the moment it finished. A
+# legacy row carrying a blanket glob migrated straight through, validated ok, and
+# demoted the repo — a second, sanctioned way for a `*` row to exist. Migration
+# is not an exemption from the ladder; it is where the ladder matters most. So
+# migrate now runs each converted store through the validator of the tool that
+# OWNS it, and installs only what passes.
+MX="$(mktemp -d)"; mkdir -p "$MX/jjstack"
+printf '2026-01-01 | acme/repo | dismissed | * | style | waved off everything\n' > "$MX/jjstack/review-ledger.md"
+"$BIN/jjstack-review-memory-migrate" --repo "$MX" > "$MX/out" 2> "$MX/err"; rc=$?
+check "migrate refuses a legacy blanket glob (non-zero)" "[ $rc -ne 0 ]"
+check "and installs no store its own validator would reject" \
+  "[ ! -f '$MX/jjstack/review-memory/ledger.tsv' ]"
+check "and quotes the validator's reason" "grep -q 'matches every file' '$MX/err'"
+check "and does NOT then tell you to delete the legacy file" "! grep -q 'delete the legacy' '$MX/out'"
+check "and leaves the rejected conversion to be read" \
+  "[ -f '$MX/jjstack/review-memory/ledger.tsv.rejected' ]"
+# The same net, one rung down: a legacy JSON rule the baseline would reject.
+MX3="$(mktemp -d)"
+printf '{"jjstack_version":"1.0.0","rules":[{"path":"*","message":"","reason":"waved off"}],"fingerprints":[]}\n' > "$MX3/.jjstack-review-baseline.json"
+"$BIN/jjstack-review-memory-migrate" --repo "$MX3" >/dev/null 2> "$MX3/err"; rc=$?
+check "migrate refuses a legacy JSON rule the baseline would reject (non-zero)" "[ $rc -ne 0 ]"
+check "and installs no baseline" "[ ! -f '$MX3/jjstack/review-memory/baseline.tsv' ]"
+# A legacy Markdown note is free text a human typed, and `|` is ordinary in
+# English prose. Splitting on every pipe truncated the note at the first one and
+# then told the reader to delete the original — the reason for a live suppression
+# silently discarded on the upgrade path.
+MX2="$(mktemp -d)"; mkdir -p "$MX2/jjstack"
+printf '2026-01-02 | org/repo | dismissed | src/vendor/* | style | vendored code | see ADR-7 for why\n' > "$MX2/jjstack/review-ledger.md"
+"$BIN/jjstack-review-memory-migrate" --repo "$MX2" >/dev/null 2>&1; rc=$?
+check "a clean legacy ledger still migrates (exit 0)" "[ $rc -eq 0 ]"
+check "a legacy note containing a pipe survives migration whole" \
+  "grep -q 'see ADR-7 for why' '$MX2/jjstack/review-memory/ledger.tsv'"
+check "and stays inside the note column, not a ninth field" \
+  "awk -F'\t' '/^2026-/{ exit !(NF == 8 && \$8 ~ /vendored code/ && \$8 ~ /ADR-7/) }' '$MX2/jjstack/review-memory/ledger.tsv'"
+"$BIN/jjstack-review-ledger" --validate --ledger "$MX2/jjstack/review-memory/ledger.tsv" >/dev/null 2>&1
+check "POSITIVE CONTROL: and what migrate installed validates" "[ \$? -eq 0 ]"
+rm -rf "$MX" "$MX2" "$MX3"
+
+# --- `generate` is an entry point too ----------------------------------------
+# The legacy-JSON guard lives in load_store's NOT-EXISTS branch, which is exactly
+# the branch `generate` skips: with no new store yet and a legacy JSON beside it,
+# generate wrote a fresh baseline and silently abandoned every human-written rule
+# in the file it never read.
+GX="$(mktemp -d)"
+printf '{"jjstack_version":"0.9.0","rules":[{"path":"src/legacy/*","reason":"agreed exception"}],"fingerprints":[]}\n' > "$GX/.jjstack-review-baseline.json"
+printf '{"lens":"sec","file":"src/a.py","message":"boom","severity":"P0"}\n' > "$GX/f.jsonl"
+( cd "$GX" && "$BIN/jjstack-review-baseline" generate f.jsonl --reason r \
+    -o jjstack/review-memory/baseline.tsv ) >/dev/null 2> "$GX/err"; rc=$?
+check "generate stops on an un-migrated legacy JSON baseline (exit 3)" "[ $rc -eq 3 ]"
+check "and names the migrate command" "grep -q 'jjstack-review-memory-migrate' '$GX/err'"
+check "and writes nothing beside the store it never read" \
+  "[ ! -f '$GX/jjstack/review-memory/baseline.tsv' ]"
+# POSITIVE CONTROL — with the legacy file gone the same command writes a store,
+# so "exit 3" measures the guard and not a broken generate.
+rm -f "$GX/.jjstack-review-baseline.json"
+( cd "$GX" && "$BIN/jjstack-review-baseline" generate f.jsonl --reason r \
+    -o jjstack/review-memory/baseline.tsv ) >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: without the legacy file the same command writes one" \
+  "[ $rc -eq 0 ] && [ -f '$GX/jjstack/review-memory/baseline.tsv' ]"
+
+# `--replace` skipped load_store, and load_store is where the cross-rung check
+# lives — so the very flag the refusal message recommends ("pass --replace to
+# start fresh") converted a ledger into an empty baseline. Another rung's file is
+# never ours to start fresh in, with or without the flag.
+VX="$(mktemp -d)"
+{ printf '%s\n' "$LX_HDR"
+  printf '2026-01-01\tacme/repo\tdismissed\tdemote\tprior-decision\tsrc/legacy/*\tstyle\tagreed\n'; } > "$VX/ledger.tsv"
+cp "$VX/ledger.tsv" "$VX/before.tsv"
+printf '{"lens":"sec","file":"src/a.py","message":"boom","severity":"P0"}\n' > "$VX/f.jsonl"
+"$BIN/jjstack-review-baseline" generate "$VX/f.jsonl" --reason r -o "$VX/ledger.tsv" --replace \
+  >/dev/null 2> "$VX/err"; rc=$?
+check "generate --replace still refuses another rung's store (exit 4)" "[ $rc -eq 4 ]"
+check "and the ledger is byte-identical afterwards" "cmp -s '$VX/ledger.tsv' '$VX/before.tsv'"
+check "and the refusal does not recommend --replace as the way out" \
+  "! grep -q 'pass --replace' '$VX/err'"
+# POSITIVE CONTROL — `--replace` still does the job it exists for: a store of OUR
+# OWN rung that will not load is exactly the case it is documented for.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\tbaseline\t-\t-\t-\t-\t-\n'; } > "$VX/own.tsv"
+"$BIN/jjstack-review-baseline" validate --baseline "$VX/own.tsv" >/dev/null 2>&1
+check "POSITIVE CONTROL: the own-rung store really is broken" "[ \$? -ne 0 ]"
+"$BIN/jjstack-review-baseline" generate "$VX/f.jsonl" --reason r -o "$VX/own.tsv" --replace \
+  >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: --replace still starts fresh on our own broken store" "[ $rc -eq 0 ]"
+
+# --- `stale-api` is earned at review time, never remembered -------------------
+# The merge-added code declares a `suppress` ceiling, so its exclusive binding to
+# `refuted` was enforced only by run-report's Invariant 4. In the three memory
+# stores it was an ordinary full-strength suppression code: `generate --code
+# stale-api` retired a P0 with no doc URL and nothing having consulted any
+# documentation. A stale-API refutation is external evidence produced by §4.5b of
+# a particular run; it is not something a store may hold, so its ceiling is now
+# `none` and every store rejects it by the same arithmetic as every other code.
+SX="$(mktemp -d)"
+printf '{"lens":"sec","file":"src/x.py","message":"P0 sql injection","severity":"P0"}\n' > "$SX/p0.jsonl"
+"$BIN/jjstack-review-baseline" generate "$SX/p0.jsonl" --reason "docs say otherwise" \
+  --code stale-api -o "$SX/b.tsv" >/dev/null 2>&1; rc=$?
+check "the baseline refuses to suppress with stale-api (exit 4)" "[ $rc -eq 4 ]"
+check "and writes no store" "[ ! -f '$SX/b.tsv' ]"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --code stale-api --note n --ledger "$SX/l.tsv" >/dev/null 2>&1; rc=$?
+check "the ledger refuses to demote with stale-api (exit 4)" "[ $rc -eq 4 ]"
+check "and writes no store" "[ ! -f '$SX/l.tsv' ]"
+"$BIN/jjstack-review-calibration" record --store "$SX/c.tsv" --key k --verdict rejected \
+  --code stale-api >/dev/null 2>&1; rc=$?
+check "calibration refuses to rank with stale-api (exit 4)" "[ $rc -eq 4 ]"
+check "and writes no store" "[ ! -f '$SX/c.tsv' ]"
+# A hand-edited store may not smuggle it in either — the read path is the other
+# half of every one of these guards.
+{ printf '%s\n' "$LX_HDR"
+  printf '2026-01-01\tacme/repo\tdismissed\tdemote\tstale-api\tsrc/*\tstyle\tdocs say otherwise\n'; } > "$SX/hand.tsv"
+"$BIN/jjstack-review-ledger" --validate --ledger "$SX/hand.tsv" >/dev/null 2>&1; rc=$?
+check "a hand-written stale-api ledger row is rejected on read (exit 4)" "[ $rc -eq 4 ]"
+# POSITIVE CONTROL — the run report, where the code IS earned and IS paired with
+# `refuted`, still takes it. Recovered verbatim from the shipped §7d fixture.
+row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is correct per current docs (https://example/docs)' > "$SX/ref.tsv"
+"$BIN/jjstack-review-run-report" "$SX/ref.tsv" --out "$SX/ref.md" >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: refuted + stale-api is still legal in the run report" "[ $rc -eq 0 ]"
+check "POSITIVE CONTROL: and it still renders as refuted" "grep -q 'Refuted' '$SX/ref.md'"
+rm -rf "$LX" "$GX" "$VX" "$SX"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
