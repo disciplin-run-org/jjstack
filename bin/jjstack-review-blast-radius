@@ -19,11 +19,18 @@
 # Usage:
 #   jjstack-review-blast-radius [--repo DIR] [--base REF] [--diff-file FILE|-]
 #                               [--max-refs N] [--generic-threshold N]
+#                               [--out DIR] [--max-symbols N] [--dry-run]
 #
 #   --repo               repo root (default: git rev-parse --show-toplevel)
 #   --base               diff base ref (default: first of origin/main,
-#                        origin/master, main, master that exists)
+#                        origin/master, main, master that exists). The diff is
+#                        taken from the merge base to the WORKING TREE, so
+#                        uncommitted and staged edits are mapped too.
 #   --diff-file          read a unified diff from FILE instead of git ("-" = stdin)
+#   --out DIR            write DIR/blast-radius.md instead of stdout
+#   --max-symbols        stop after N extracted symbols (default 200); the
+#                        report says so when it truncates
+#   --dry-run            with --out, print what would be written and exit
 #   --max-refs           reference sites listed per symbol (default 10)
 #   --generic-threshold  above this many hits a symbol is called too generic to
 #                        map and its sites are not listed (default 40)
@@ -61,7 +68,7 @@ while [ $# -gt 0 ]; do
       else echo -e "${YEL}warn${RST}  --also-repo not a directory, skipped: ${2:-}" >&2; fi
       shift 2 ;;
     -h|--help)
-      sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
@@ -96,6 +103,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 DIFF="$TMP/diff"
 SOURCE=""
+SCOPE=""
 
 if [ -n "$DIFF_FILE" ]; then
   if [ "$DIFF_FILE" = "-" ]; then
@@ -106,6 +114,7 @@ if [ -n "$DIFF_FILE" ]; then
     echo -e "${YEL}warn${RST}  diff file not found: $DIFF_FILE" >&2
     exit 3
   fi
+  SCOPE="whatever the supplied diff covers — this script did not choose it"
 else
   if [ -z "$BASE" ]; then
     for c in origin/main origin/master main master; do
@@ -116,9 +125,22 @@ else
     echo -e "${YEL}warn${RST}  no base ref found; pass --base or --diff-file" >&2
     exit 3
   fi
-  git -C "$REPO" diff "$BASE...HEAD" > "$DIFF" 2>/dev/null \
-    || git -C "$REPO" diff "$BASE" > "$DIFF" 2>/dev/null
-  SOURCE="git diff $BASE"
+  # Two-dot, from the merge base, against the WORKING TREE.
+  #
+  # This used to be `git diff "$BASE...HEAD"` with a `|| git diff "$BASE"`
+  # fallback, and the fallback was dead code: a three-dot diff that matches
+  # nothing still exits 0. So the map saw COMMITTED work only, and the
+  # flagship scenario as an uncommitted edit — symbol renamed, out-of-diff
+  # caller left stale — printed "Empty diff — nothing to map". Pre-pass 1
+  # sweeps the working tree, so a committed-only map also put two different
+  # diff scopes in one evidence pack without saying so. Reviewing
+  # staged-but-uncommitted work is the ordinary pre-landing moment; it is the
+  # case that must work, not the exception.
+  MB="$(git -C "$REPO" merge-base "$BASE" HEAD 2>/dev/null)"
+  [ -n "$MB" ] || MB="$BASE"
+  git -C "$REPO" diff "$MB" > "$DIFF" 2>/dev/null
+  SOURCE="git diff \$(git merge-base $BASE HEAD)"
+  SCOPE="working tree vs the merge base of \`$BASE\` and HEAD — committed AND uncommitted changes to tracked files. Untracked files are invisible to \`git diff\`, so a brand-new file's symbols are not mapped."
 fi
 
 echo "# Cross-file blast radius"
@@ -129,7 +151,12 @@ echo "ripple surface a diff-only review structurally cannot see."
 echo
 
 if [ ! -s "$DIFF" ]; then
-  echo "Empty diff — nothing to map."
+  echo "- diff source: \`$SOURCE\`"
+  echo "- diff scope: $SCOPE"
+  echo
+  echo "Empty diff — nothing to map. Read that as \"this scope contains no"
+  echo "change\", not as \"the change is contained\": anything outside the scope"
+  echo "named above was never looked at."
   exit 0
 fi
 
@@ -275,8 +302,18 @@ SYM_N=$(wc -l < "$TMP/symbols" | tr -d ' ')
 
 echo "- repo: \`$REPO\`"
 echo "- diff source: \`$SOURCE\`"
+echo "- diff scope: $SCOPE"
 echo "- changed files: $TOUCHED_N"
 echo "- definition symbols extracted: $SYM_N"
+# --max-symbols was parsed and validated but never applied, so the loop below
+# was unbounded and the flag was a promise the code did not keep.
+if [ "$SYM_N" -gt "$MAX_SYMBOLS" ]; then
+  head -n "$MAX_SYMBOLS" "$TMP/symbols" > "$TMP/symbols.cap"
+  mv "$TMP/symbols.cap" "$TMP/symbols"
+  echo "- **TRUNCATED**: only the first $MAX_SYMBOLS of $SYM_N symbols were"
+  echo "  mapped (\`--max-symbols\`). The rest were NOT checked — a known gap,"
+  echo "  not a clean result. Raise the limit to map them."
+fi
 echo
 
 if [ "$SYM_N" -eq 0 ]; then

@@ -6,7 +6,7 @@
 # that cannot execute anything, and wrong for a local pre-merge review that
 # can just RUN them. This script runs them.
 #
-# It produces two artifacts, and both matter:
+# It produces four artifacts, and all of them matter:
 #   1. tooling-results.md — the real, deterministic failures. Free findings,
 #      with zero hallucination risk and zero token cost.
 #   2. exclusions.md — the "already covered by tooling, do NOT report" list
@@ -17,6 +17,19 @@
 #      review goes quiet about the thing nobody checked.
 #   3. test-baseline.md — which tests pass RIGHT NOW (pre-pass 5), so a later
 #      pass can prove the diff, and gstack's auto-applied fixes, broke nothing.
+#      A baseline exists ONLY when the runner reached a verdict; detected-but-
+#      unrunnable and not-detected are gaps, and say so.
+#   4. tooling-status.env — the same facts, per tool, machine-readable
+#      (none|skipped|pass|fail|error). jjstack-review-preflight renders its
+#      index from THIS, never from this script's aggregate exit code: one rc
+#      cannot describe three tools, and trying made the index print
+#      "baseline recorded (green)" over an artifact saying no baseline existed.
+#
+# A non-zero exit is not automatically a finding. "the linter found 3 issues"
+# and "the linter is not installed" are different facts: exit codes 124-127 and
+# 128+signal mean the tool never judged the code, so they are recorded as
+# ERROR / a KNOWN GAP and the category stays IN SCOPE, never folded into the
+# report as a deterministic finding.
 #
 # This is the "Algorithm First, Inference Last" rule applied to code review:
 # never spend LLM tokens on what a compiler catches for free.
@@ -35,10 +48,13 @@
 #   --test CMD         override test command ("none" disables)
 #   --skip-tests       detect but do not run the test suite
 #   --timeout SECS     per-tool timeout (default 600)
-#   --dry-run          print what would run; execute nothing, write nothing
+#   --dry-run          print what would run; run NO project tooling and write
+#                      nothing. Detection still reads package.json and the
+#                      Makefile — read-only probes that execute no repo code.
 #
-# Exit: 0 every detected tool passed (or none detected), 1 at least one tool
-#       reported failures, 2 usage error, 3 environment error (no repo).
+# Exit: 0 at least one detected tool ran and none reported failures, 1 at least
+#       one tool reported failures, 2 usage error, 3 environment error (no repo)
+#       or nothing detected at all — "nothing to check" is not a pass.
 #
 # Re-entrancy: exports JJSTACK_REVIEW_PREFLIGHT=1 while running. If that is
 # already set on entry the test suite is NOT run — a project whose test command
@@ -62,12 +78,21 @@ while [ $# -gt 0 ]; do
     --skip-tests) SKIP_TESTS=1; shift ;;
     --timeout)    TIMEOUT="${2:-}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
-    -h|--help)    sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,63p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 [ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--repo DIR] [--dry-run]" >&2; exit 2; }
+
+# `declare -A` is bash 4+. Without `set -e` it fails SILENTLY on bash 3.2 (still
+# the default /bin/bash on macOS) and degrades to an indexed array, where every
+# string subscript collapses to index 0 — all three tools would share one
+# status. Refuse loudly instead of reporting a scrambled sweep.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo -e "${CYA}error${RST} bash 4+ required (associative arrays); found ${BASH_VERSION:-unknown}" >&2
+  exit 3
+fi
 
 if [ -z "$REPO" ]; then
   REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -79,6 +104,14 @@ fi
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# `--kill-after` stops a tool that ignores SIGTERM from leaving forked workers
+# behind. busybox/toybox `timeout` does not have the flag, and passing it there
+# would turn every tool into a spurious "could not run", so probe once.
+TIMEOUT_KILL=()
+if has timeout && timeout --kill-after=1s 1 true >/dev/null 2>&1; then
+  TIMEOUT_KILL=(--kill-after=30s)
+fi
+
 # --- detection -------------------------------------------------------------
 # Each detector echoes a shell command string, or nothing. First match wins.
 # Deliberately conservative: a command we are not confident about is worse than
@@ -87,7 +120,13 @@ has() { command -v "$1" >/dev/null 2>&1; }
 npm_script() {   # npm_script <name> -> "npm run <name>" when package.json has it
   [ -f "$REPO/package.json" ] || return 1
   has node || return 1
-  node -e "const p=require('$REPO/package.json');process.exit(p.scripts&&p.scripts['$1']?0:1)" 2>/dev/null || return 1
+  # The path and the script name are passed as ARGV, never spliced into the JS
+  # source. Interpolating them let a directory named  x');<js>;b=('  execute
+  # attacker JS during plain detection, and made a plain apostrophe in a
+  # legitimate directory name a silent, total npm-script detection failure.
+  # require() of a .json file parses data — it runs no code from the repo.
+  node -e 'const p=require(require("path").resolve(process.argv[1]));process.exit(p.scripts&&p.scripts[process.argv[2]]?0:1)' \
+       "$REPO/package.json" "$1" 2>/dev/null || return 1
   echo "npm run --silent $1"
 }
 
@@ -146,6 +185,14 @@ TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
 [ "$LINT" = "none" ] && LINT=""
 [ "$TEST" = "none" ] && TEST=""
 
+# Count what was DETECTED before any guard clears it, so "nothing here to run"
+# and "something here we chose not to run" stay distinguishable downstream.
+DETECTED=0
+[ -n "$TC" ]   && DETECTED=$((DETECTED + 1))
+[ -n "$LINT" ] && DETECTED=$((DETECTED + 1))
+[ -n "$TEST" ] && DETECTED=$((DETECTED + 1))
+TEST_DETECTED="$TEST"
+
 # Re-entrancy guard: never let a project's own test command re-enter the review.
 REENTRY_NOTE=""
 if [ -n "${JJSTACK_REVIEW_PREFLIGHT:-}" ] && [ -n "$TEST" ]; then
@@ -180,8 +227,41 @@ mkdir -p "$OUT/tooling-logs" || exit 3
 export JJSTACK_REVIEW_PREFLIGHT=1
 
 # --- execution -------------------------------------------------------------
-failures=0
-declare -A STATUS CMDS
+failures=0; errors=0; passed=0
+declare -A STATUS CMDS KIND
+
+# A non-zero exit is NOT automatically a finding. "the linter found 3 issues"
+# and "the linter is not installed" are different facts, and only the first
+# belongs under a heading that tells the reviewer to report it. 124-127 and the
+# 128+signal codes all mean the tool never got to judge the code at all, so
+# they are recorded as a KNOWN GAP and leave the category IN SCOPE.
+classify() { # classify <slug> <rc>
+  local slug="$1" rc="$2"
+  case "$rc" in
+    0)   STATUS["$slug"]="pass";                                KIND["$slug"]="pass" ;;
+    124) STATUS["$slug"]="ERROR(timed out after ${TIMEOUT}s)";  KIND["$slug"]="error" ;;
+    125) STATUS["$slug"]="ERROR(timeout wrapper failed)";       KIND["$slug"]="error" ;;
+    126) STATUS["$slug"]="ERROR(command not executable)";       KIND["$slug"]="error" ;;
+    127) STATUS["$slug"]="ERROR(command not found)";            KIND["$slug"]="error" ;;
+    137) STATUS["$slug"]="ERROR(killed after timeout)";         KIND["$slug"]="error" ;;
+    *)   STATUS["$slug"]="FAIL(rc=$rc)";                        KIND["$slug"]="fail" ;;
+  esac
+  case "${KIND[$slug]}" in
+    pass)  passed=$((passed + 1)) ;;
+    fail)  failures=$((failures + 1)) ;;
+    error) errors=$((errors + 1)) ;;
+  esac
+}
+
+kind_of() { # kind_of <slug> -> none|skipped|pass|fail|error
+  local slug="$1"
+  if [ -n "${KIND[$slug]:-}" ]; then printf '%s\n' "${KIND[$slug]}"; return 0; fi
+  if [ "$slug" = "test" ]; then
+    if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 1 ]; then echo skipped; return 0; fi
+    if [ -n "$REENTRY_NOTE" ]; then echo skipped; return 0; fi
+  fi
+  echo none
+}
 
 # A file is shell iff it says so — extension or shebang. Guessing by directory
 # would run `bash -n` over python and report a fake parse error.
@@ -208,15 +288,22 @@ run_tool() { # run_tool <slug> <command>
     done < "$list"
     rm -f "$list"
   else
+    # A failed `cd` would otherwise surface as rc=1, indistinguishable from
+    # "the tool found something". Check it separately so it stays a gap.
+    if ! ( cd "$REPO" ) 2>/dev/null; then
+      STATUS["$slug"]="ERROR(cannot enter repo dir)"; KIND["$slug"]="error"
+      errors=$((errors + 1))
+      echo "cannot cd into $REPO" > "$log"
+      return 0
+    fi
     if has timeout; then
-      ( cd "$REPO" && timeout "$TIMEOUT" bash -c "$cmd" ) > "$log" 2>&1
+      ( cd "$REPO" && timeout ${TIMEOUT_KILL+"${TIMEOUT_KILL[@]}"} "$TIMEOUT" bash -c "$cmd" ) > "$log" 2>&1
     else
       ( cd "$REPO" && bash -c "$cmd" ) > "$log" 2>&1
     fi
     rc=$?
   fi
-  if [ "$rc" -eq 0 ]; then STATUS["$slug"]="pass"
-  else STATUS["$slug"]="FAIL(rc=$rc)"; failures=$((failures + 1)); fi
+  classify "$slug" "$rc"
   return 0
 }
 
@@ -249,8 +336,8 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   done
   echo
   for slug in typecheck lint test; do
-    case "${STATUS[$slug]:-}" in
-      FAIL*)
+    case "${KIND[$slug]:-}" in
+      fail)
         echo "## $slug FAILED — real findings, report these"
         echo
         echo '```'
@@ -261,11 +348,43 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
         echo ;;
     esac
   done
+  # Separate heading, deliberately: the reviewer is told to fold the section
+  # above straight into the report as fact, skipping confidence scoring. A tool
+  # that never ran produced no facts, so it must never land there.
+  for slug in typecheck lint test; do
+    case "${KIND[$slug]:-}" in
+      error)
+        echo "## $slug COULD NOT RUN — a KNOWN GAP, NOT a finding"
+        echo
+        echo "\`${CMDS[$slug]}\` → ${STATUS[$slug]}. The tool never judged the"
+        echo "code, so nothing here is a deterministic finding and none of it"
+        echo "may be reported as one. Carry it into the report as a gap: the"
+        echo "$slug category was NOT checked and stays IN SCOPE."
+        echo
+        echo '```'
+        tail -n 20 "$OUT/tooling-logs/$slug.log" 2>/dev/null
+        echo '```'
+        echo
+        echo "Full log: \`tooling-logs/$slug.log\`"
+        echo ;;
+    esac
+  done
   if [ "$failures" -eq 0 ]; then
     echo "## No deterministic failures"
     echo
-    echo "Every detected tool passed. That does NOT mean the diff is clean — it"
-    echo "means the remaining defects are the ones only a reviewer can find."
+    if [ "$passed" -eq 0 ]; then
+      echo "Nothing ran to completion, so nothing was proven. This is an ABSENCE"
+      echo "of evidence, not evidence of health — do not read it as a pass."
+    else
+      echo "$passed detected tool(s) ran and passed. That does NOT mean the diff"
+      echo "is clean — it means the remaining defects are the ones only a"
+      echo "reviewer can find."
+    fi
+    if [ "$errors" -gt 0 ]; then
+      echo
+      echo "$errors tool(s) COULD NOT RUN (see above); those categories went"
+      echo "unchecked entirely."
+    fi
   fi
 } > "$OUT/tooling-results.md"
 
@@ -282,7 +401,7 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   echo "or it failed. The AI passes must review them normally. Never assume CI"
   echo "covers what this sweep could not run."
   echo
-  if [ "${STATUS[typecheck]:-}" = "pass" ]; then
+  if [ "${KIND[typecheck]:-}" = "pass" ]; then
     echo "## COVERED — do NOT report (typechecker: \`${CMDS[typecheck]}\`)"
     echo
     echo "- type errors, wrong argument types, wrong arity"
@@ -294,7 +413,7 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
     echo "- type errors, wrong arity, signature mismatches: review these normally"
   fi
   echo
-  if [ "${STATUS[lint]:-}" = "pass" ]; then
+  if [ "${KIND[lint]:-}" = "pass" ]; then
     echo "## COVERED — do NOT report (linter: \`${CMDS[lint]}\`)"
     echo
     if [ "$LINT" = "__shell_parse_sweep__" ]; then
@@ -316,7 +435,7 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
     echo "  style nits, but do not assume a linter caught anything"
   fi
   echo
-  if [ "${STATUS[test]:-}" = "pass" ]; then
+  if [ "${KIND[test]:-}" = "pass" ]; then
     echo "## COVERED — do NOT report (test suite: \`${CMDS[test]}\`)"
     echo
     echo "- \"this might be broken\" claims about behavior the suite exercises;"
@@ -343,7 +462,11 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   echo "auto-applies — broke nothing. Without a baseline, \"tests pass\" cannot"
   echo "be distinguished from \"tests passed before too, and still miss this\"."
   echo
-  if [ -n "${STATUS[test]:-}" ]; then
+  # A baseline exists ONLY when the runner reached a verdict. "detected but
+  # could not execute" is a gap, and rendering it like a red baseline would let
+  # a later pass compare against a comparison that was never made.
+  echo "- baseline: $(kind_of test)"
+  if [ "${KIND[test]:-}" = "pass" ] || [ "${KIND[test]:-}" = "fail" ]; then
     echo "- runner:  \`${CMDS[test]}\`"
     echo "- result:  ${STATUS[test]}"
     echo "- captured: $(date -u +%FT%TZ)"
@@ -355,18 +478,34 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
     tail -n 40 "$OUT/tooling-logs/test.log" 2>/dev/null
     echo '```'
     echo
-    if [ "${STATUS[test]}" != "pass" ]; then
+    if [ "${KIND[test]}" != "pass" ]; then
       echo "**The baseline is RED.** Failures present before the review are"
       echo "pre-existing, not diff-introduced — do not attribute them to the"
       echo "change, and do not let them mask a new failure."
     fi
+  elif [ "${KIND[test]:-}" = "error" ]; then
+    echo "- runner: \`${CMDS[test]}\` — ${STATUS[test]}"
+    echo
+    echo "The test runner was detected but COULD NOT RUN. **NO baseline"
+    echo "exists**, so no later pass may claim the change \"broke nothing\" —"
+    echo "that claim is unsupported here. This is a KNOWN GAP, not a red"
+    echo "baseline and certainly not a green one."
+    echo
+    echo '```'
+    tail -n 20 "$OUT/tooling-logs/test.log" 2>/dev/null
+    echo '```'
   else
     echo "- runner: none"
     echo
-    if [ "$SKIP_TESTS" -eq 1 ]; then
-      echo "Skipped by \`--skip-tests\`."
+    if [ -n "$TEST_DETECTED" ] && [ "$SKIP_TESTS" -eq 1 ]; then
+      echo "Detected \`$TEST_DETECTED\` but skipped by \`--skip-tests\`. **NO"
+      echo "baseline exists**, so no later pass may claim the change \"broke"
+      echo "nothing\" — that claim is unsupported here."
     elif [ -n "$REENTRY_NOTE" ]; then
       echo "$REENTRY_NOTE"
+      echo
+      echo "**NO baseline exists**, so no later pass may claim the change"
+      echo "\"broke nothing\" — that claim is unsupported here."
     else
       echo "No test runner detected. NO baseline exists, so no later pass may"
       echo "claim the change \"broke nothing\" — that claim is unsupported here."
@@ -374,6 +513,31 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   fi
 } > "$OUT/test-baseline.md"
 
-echo -e "${GRN}sweep${RST} → $OUT (typecheck: ${STATUS[typecheck]:-none}, lint: ${STATUS[lint]:-none}, test: ${STATUS[test]:-none})"
+# --- artifact 4: machine-readable status ----------------------------------
+# The evidence-pack index used to derive every one of its rows from this
+# script's single aggregate exit code — which is how "baseline recorded
+# (green)" came to be printed above an artifact reading "runner: none / NO
+# baseline exists". The index must never claim more than its artifacts
+# support, so it reads per-tool facts from here instead of guessing from an rc.
+{
+  echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
+  echo "TYPECHECK_STATUS=$(kind_of typecheck)"
+  echo "LINT_STATUS=$(kind_of lint)"
+  echo "TEST_STATUS=$(kind_of test)"
+  echo "TOOLS_DETECTED=$DETECTED"
+  echo "TOOLS_PASSED=$passed"
+  echo "TOOLS_FAILED=$failures"
+  echo "TOOLS_ERRORED=$errors"
+} > "$OUT/tooling-status.env"
+
+echo -e "${GRN}sweep${RST} → $OUT (typecheck: $(kind_of typecheck), lint: $(kind_of lint), test: $(kind_of test))"
+[ "$errors" -gt 0 ] && echo -e "${YEL}warn${RST}  $errors tool(s) COULD NOT RUN — a known gap, not a finding" >&2
 [ "$failures" -gt 0 ] && { echo -e "${YEL}warn${RST}  $failures tool(s) reported failures — see tooling-results.md" >&2; exit 1; }
+# Nothing detected is not a pass. Exit 3 so a caller that only reads the exit
+# code cannot mistake "there was nothing to check" for "everything checked out";
+# the artifacts and tooling-status.env carry the detail either way.
+if [ "$DETECTED" -eq 0 ]; then
+  echo -e "${YEL}warn${RST}  no typechecker, linter or test runner detected — NOTHING was checked" >&2
+  exit 3
+fi
 exit 0

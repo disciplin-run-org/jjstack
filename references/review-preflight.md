@@ -51,6 +51,13 @@ repos), then produces two things:
 - **An exclusion list** — the explicit "already covered by tooling, do NOT
   report" instruction handed to every AI pass.
 
+**A tool that could not run produced no facts.** A missing binary, a timeout, a
+broken invocation — the tool never judged the code, so `tooling-results.md`
+files it under *COULD NOT RUN — a KNOWN GAP, NOT a finding*, in its own section,
+away from the failures you are told to fold in unscored. Never report anything
+from that section as a finding, and never let it excuse a category: the category
+stays IN SCOPE, because nothing checked it.
+
 **The load-bearing rule of the exclusion list:** a category is marked COVERED
 only when the tool covering it actually **ran and passed**. Everything else is
 marked IN SCOPE. Excluding type errors because "a typechecker would catch them"
@@ -76,8 +83,19 @@ defect lives in a file the diff never touches, so a diff-only reviewer is not
 
 So the map extracts every public symbol the diff adds, removes or changes
 (functions, types, classes, structs, enums, interfaces, exported names,
-SCREAMING_CASE constants and enum members, across languages) and uses
-`git grep` to find each one's references **outside** the changed files.
+SCREAMING_CASE constants and enum members, across languages) and uses a
+recursive filesystem `grep` — not `git grep`, so it sees untracked and
+git-ignored files too, minus a fixed exclusion list (`.git`, `node_modules`,
+`vendor`, build and cache dirs, lockfiles, minified bundles) — to find each
+one's references **outside** the changed files.
+
+The diff it reads runs from the **merge base to the working tree**, so staged
+and unstaged edits are mapped, not only committed ones. That matters twice: it
+is the ordinary pre-landing moment, and pre-pass 1 sweeps the working tree, so
+this keeps the whole evidence pack on one scope. Untracked files are invisible
+to `git diff`, so a brand-new file's own definitions are not extracted (its
+references still are). The report states its scope in a `diff scope:` line —
+quote that line rather than implying the map covered more.
 
 Extraction is regex-based and deliberately over-collects: a spurious symbol
 costs one empty grep, a missed one costs a bug. Two filters keep that from
@@ -91,8 +109,10 @@ handling of every enum member? A call site that no longer holds is a P0 that
 appears in no hunk.
 
 Stated limits (say them in the report rather than implying coverage): it sees
-tracked files in this repo only — not sibling repos, dynamic dispatch,
-reflection, string-keyed lookup, or serialized data.
+files under this repo root only (unless `--also-repo` is passed) — not sibling
+repos, dynamic dispatch, reflection, string-keyed lookup, or serialized data.
+Above `--max-symbols` (default 200) it maps only the first N and says
+`**TRUNCATED**`; that is a gap, not a clean result.
 
 ## Pre-pass 3 — Intent extraction
 
@@ -155,6 +175,32 @@ present before the review are pre-existing, must not be attributed to the change
 and must not mask a new failure. No runner at all means no baseline, and then no
 pass may claim the change broke nothing — that claim is simply unsupported.
 
+A baseline exists in exactly two states: **green** and **red**. Everything else
+— no runner detected, `--skip-tests`, the re-entrancy guard, a runner that could
+not execute — is **no baseline at all**, and `test-baseline.md` says so in a
+`baseline:` line (`none` / `skipped` / `error`). Read that line before trusting
+any later "nothing broke".
+
+---
+
+## The index may not claim more than its artifacts support
+
+`EVIDENCE-PACK.md` is the first thing the review reads, so a summary that
+overstates its artifacts poisons everything downstream. Rows 1 and 5 are
+therefore rendered from the sweep's per-tool `tooling-status.env`
+(`none|skipped|pass|fail|error` for each of typecheck, lint, test), never from
+its aggregate exit code — one exit code cannot describe three tools, and
+deriving both rows from it printed "baseline recorded (green)" directly above an
+artifact reading "runner: none / NO baseline exists", and repainted a green
+suite RED whenever the typechecker happened to fail.
+
+Three index statuses are **known gaps, never passes**. Carry each into the
+report as one:
+
+- *COULD NOT RUN* — the tool exists but never judged the code.
+- *NO baseline exists* — nothing was recorded; "broke nothing" is unsupported.
+- *NOTHING was checked* — no tooling was detected at all.
+
 ---
 
 ## How the rest of the review consumes the pack
@@ -165,8 +211,9 @@ pass may claim the change broke nothing — that claim is simply unsupported.
 | `exclusions.md` | Phase 2 + Phase 4 | do-not-report list; IN SCOPE categories are still fair game |
 | `blast-radius.md` | Phase 2 + Phase 4 | the out-of-diff call sites each pass must check |
 | `prior-dismissals.md` | Phase 2 + Phase 4 | fingerprints not to regenerate |
-| `tooling-results.md` | Phase 5 / the report | facts, merged in without a confidence score |
+| `tooling-results.md` | Phase 5 / the report | facts, merged in without a confidence score — except the COULD NOT RUN sections, which are gaps |
 | `test-baseline.md` | Phase 5 / the report | the before-state that makes "nothing broke" a comparison |
+| `tooling-status.env` | `EVIDENCE-PACK.md` | per-tool status, so the index never overstates the artifacts |
 
 ## Degradation contract
 

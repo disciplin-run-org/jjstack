@@ -471,6 +471,172 @@ check "pack index lists all five pre-passes" \
       "[ \$(grep -c '^| [1-5] |' '$PF/pack/EVIDENCE-PACK.md') -eq 5 ]"
 "$BIN/jjstack-review-preflight" --out "$PF/pack2" --repo "$FX" --dry-run >/dev/null 2>&1
 check "preflight --dry-run writes nothing" "[ ! -d '$PF/pack2' ]"
+
+# --- the index must never claim more than its artifacts support -------------
+# Every row status used to be derived from the sweep's single aggregate exit
+# code. One rc cannot describe three tools: a repo with no tooling got
+# "ran — all detected tools passed" and "baseline recorded (green)" above a
+# test-baseline.md reading "runner: none / NO baseline exists". The COVERED /
+# IN SCOPE mechanism was right all along; the summary over it was lying.
+#
+# Positive control first: on a fixture that DOES have a green runner the index
+# says so. Without this, every "must not say green" assertion below would also
+# pass against a script that never emits the word.
+check "index says green when a runner really did pass (control)" \
+      "grep -q '^| 5 .*baseline recorded (green)' '$PF/pack/EVIDENCE-PACK.md'"
+check "that green row is backed by the artifact (control)" \
+      "grep -q 'result:  pass' '$PF/pack/test-baseline.md'"
+
+BARE="$PF/bare"; mkdir -p "$BARE"
+git -C "$BARE" init -q -b main 2>/dev/null
+git -C "$BARE" config user.email t@t; git -C "$BARE" config user.name T
+printf 'hello\n' > "$BARE/notes.txt"
+git -C "$BARE" add -A >/dev/null 2>&1; git -C "$BARE" commit -qm seed >/dev/null 2>&1
+printf 'hello world\n' > "$BARE/notes.txt"
+git -C "$BARE" add -A >/dev/null 2>&1; git -C "$BARE" commit -qm edit >/dev/null 2>&1
+"$BIN/jjstack-review-preflight" --out "$BARE/pack" --repo "$BARE" --base HEAD~1 >/dev/null 2>&1
+check "a repo with no tooling still gets a pack" "[ -f '$BARE/pack/EVIDENCE-PACK.md' ]"
+check "index NEVER reports a green baseline that was never recorded" \
+      "! grep -q 'baseline recorded (green)' '$BARE/pack/EVIDENCE-PACK.md'"
+check "index row 5 names the missing baseline as a gap" \
+      "grep -q '^| 5 .*NO baseline exists' '$BARE/pack/EVIDENCE-PACK.md'"
+check "index row 1 does not claim tools passed when none ran" \
+      "! grep -q '^| 1 .*all detected tools passed' '$BARE/pack/EVIDENCE-PACK.md'"
+check "index row 1 says nothing was checked" \
+      "grep -q '^| 1 .*NOTHING was checked' '$BARE/pack/EVIDENCE-PACK.md'"
+# The invariant itself, asserted as a comparison rather than a string match:
+# row 5 may only read "green" when the artifact it points at recorded a pass.
+check "index row 5 agrees with test-baseline.md" \
+      "grep -q 'result:  pass' '$BARE/pack/test-baseline.md' || ! grep -q '^| 5 .*(green)' '$BARE/pack/EVIDENCE-PACK.md'"
+check "the load-bearing exclusions are still correct on a bare repo (control)" \
+      "[ \$(grep -c '^## IN SCOPE' '$BARE/pack/exclusions.md') -eq 3 ] && ! grep -q '^## COVERED' '$BARE/pack/exclusions.md'"
+
+# --skip-tests produced the identical false green: the suite was never run, yet
+# the index reported a recorded baseline.
+"$BIN/jjstack-review-preflight" --out "$PF/pack3" --repo "$FX" --base HEAD~1 --skip-tests >/dev/null 2>&1
+check "--skip-tests never reports a recorded green baseline" \
+      "! grep -q 'baseline recorded (green)' '$PF/pack3/EVIDENCE-PACK.md'"
+check "--skip-tests row 5 says NO baseline exists" \
+      "grep -q '^| 5 .*NO baseline exists' '$PF/pack3/EVIDENCE-PACK.md'"
+check "--skip-tests baseline artifact agrees" \
+      "! grep -q 'result:  pass' '$PF/pack3/test-baseline.md'"
+# Positive control — the fixture genuinely HAS a runner, so this is the flag
+# suppressing it, not an absent suite.
+check "the --skip-tests fixture really has a runner (control)" \
+      "grep -q 'test/smoke.sh' '$PF/pack3/tooling-results.md'"
+
+# The rc=1 arm was wrong in the other direction: a typecheck or lint failure
+# rendered a GREEN test suite as "baseline recorded (RED: pre-existing
+# failures)". A broken shell script fails the parse sweep with no external
+# dependency, so this stays hermetic.
+RED="$PF/red"; mkdir -p "$RED/test"
+git -C "$RED" init -q -b main 2>/dev/null
+git -C "$RED" config user.email t@t; git -C "$RED" config user.name T
+printf '#!/usr/bin/env bash\necho fixture-ok\nexit 0\n' > "$RED/test/smoke.sh"
+chmod +x "$RED/test/smoke.sh"
+printf '#!/usr/bin/env bash\nif [ ; then\n' > "$RED/broken.sh"
+git -C "$RED" add -A >/dev/null 2>&1; git -C "$RED" commit -qm seed >/dev/null 2>&1
+"$BIN/jjstack-review-preflight" --out "$RED/pack" --repo "$RED" --base HEAD >/dev/null 2>&1
+check "a lint failure does NOT repaint a green baseline red" \
+      "! grep -q '^| 5 .*RED' '$RED/pack/EVIDENCE-PACK.md'"
+check "the green baseline survives another tool's failure" \
+      "grep -q '^| 5 .*baseline recorded (green)' '$RED/pack/EVIDENCE-PACK.md'"
+# Positive control — a tool really did fail in that same run, or row 5 was
+# never under pressure and the two assertions above prove nothing.
+check "a tool really did fail in that run (control)" \
+      "grep -q '^| 1 .*deterministic failures found' '$RED/pack/EVIDENCE-PACK.md'"
+check "and the test suite really did pass in it (control)" \
+      "grep -q 'result:  pass' '$RED/pack/test-baseline.md'"
+
+# --- could not run is a KNOWN GAP, never a finding --------------------------
+# run_tool collapsed every non-zero rc into FAIL(rc=N) under a heading reading
+# "real findings, report these" — which SKILL.md tells the reviewer to fold
+# into the report as fact, skipping confidence scoring. A missing binary is not
+# a finding about the code.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/gap1" --repo "$FX" \
+   --typecheck none --lint none --test 'jjstack-no-such-binary-xyz' >/dev/null 2>&1
+check "a missing binary is not reported as a real finding" \
+      "! grep -q 'test FAILED — real findings' '$PF/gap1/tooling-results.md'"
+check "a missing binary is reported as a KNOWN GAP" \
+      "grep -q 'test COULD NOT RUN' '$PF/gap1/tooling-results.md'"
+check "a tool that could not run excludes NOTHING" \
+      "! grep -q '^## COVERED.*test suite' '$PF/gap1/exclusions.md'"
+check "a tool that could not run leaves no baseline" \
+      "grep -q 'NO baseline' '$PF/gap1/test-baseline.md'"
+# A timeout is the same class: the tool was killed, it did not judge the code.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/gap2" --repo "$FX" \
+   --typecheck none --lint none --test 'sleep 30' --timeout 1 >/dev/null 2>&1
+check "a timed-out tool is a KNOWN GAP, not a finding" \
+      "grep -q 'test COULD NOT RUN' '$PF/gap2/tooling-results.md' && ! grep -q 'real findings' '$PF/gap2/tooling-results.md'"
+# Positive control — the "real findings" heading must still fire for a tool
+# that DID run and DID fail, or the guard above is just suppressing everything.
+check "a genuine tool failure is still a real finding (control)" \
+      "grep -q 'test FAILED — real findings' '$PF/sw2/tooling-results.md'"
+
+# --- the npm-script probe must not execute repo-controlled JS ---------------
+# "$REPO" was interpolated raw into a `node -e` JS string literal, so a path
+# component containing  ');  closed the literal and appended attacker JS —
+# during plain detection, and even under --dry-run, which promises to run
+# nothing. A lone apostrophe in a legitimate directory name silently disabled
+# npm-script detection entirely.
+INJ="$PF/inj"; mkdir -p "$INJ"
+printf 'module.exports={};\n' > "$INJ/evil.js"
+EVIL="$INJ/evil');require('fs').writeFileSync(process.env.PWNED,'x');b=('"
+mkdir -p "$EVIL"
+printf '{"scripts":{"test":"true"}}\n' > "$EVIL/package.json"
+# Positive control FIRST: run the OLD interpolation by hand and prove the
+# payload is live. Without this, "no marker file" would also pass against a
+# payload that never worked.
+PWNED="$INJ/pwned" node -e "const p=require('$EVIL/package.json');process.exit(0)" >/dev/null 2>&1
+check "the injection payload is genuinely live (control)" "[ -f '$INJ/pwned' ]"
+rm -f "$INJ/pwned"
+PWNED="$INJ/pwned" "$BIN/jjstack-review-tooling-sweep" \
+   --out "$INJ/out" --repo "$EVIL" --dry-run > "$INJ/dry.out" 2>&1
+check "the probe executes no JS from the repo path" "[ ! -f '$INJ/pwned' ]"
+check "detection still reads the real script list from a hostile path" \
+      "grep -q 'test:      npm run --silent test' '$INJ/dry.out'"
+check "and does not invent scripts the package.json never declared" \
+      "grep -q 'typecheck: <none detected>' '$INJ/dry.out'"
+APO="$INJ/jesper's repo"; mkdir -p "$APO"
+printf '{"scripts":{"typecheck":"true","lint":"true","test":"true"}}\n' > "$APO/package.json"
+"$BIN/jjstack-review-tooling-sweep" --out "$INJ/o2" --repo "$APO" --dry-run > "$INJ/apo.out" 2>&1
+check "an apostrophe in a path does not disable npm-script detection" \
+      "grep -q 'typecheck: npm run --silent typecheck' '$INJ/apo.out'"
+# Positive control — the same package.json in a plain path, so the assertion
+# above is about the apostrophe and not about node being absent.
+mkdir -p "$INJ/plain"; cp "$APO/package.json" "$INJ/plain/package.json"
+"$BIN/jjstack-review-tooling-sweep" --out "$INJ/o3" --repo "$INJ/plain" --dry-run > "$INJ/plain.out" 2>&1
+check "the same package.json detects in a plain path (control)" \
+      "grep -q 'typecheck: npm run --silent typecheck' '$INJ/plain.out'"
+
+# --- the blast-radius map must see uncommitted work -------------------------
+# `git diff BASE...HEAD` sees committed work only, and a three-dot diff with an
+# empty result still exits 0 — so the `|| git diff "$BASE"` fallback beside it
+# was dead code. The flagship scenario as an UNCOMMITTED edit mapped as
+# "Empty diff — nothing to map" while the stale caller sat there.
+UNC="$PF/unc"; mkdir -p "$UNC/lib"
+git -C "$UNC" init -q -b main 2>/dev/null
+git -C "$UNC" config user.email t@t; git -C "$UNC" config user.name T
+printf '#!/usr/bin/env bash\ncompute_total() { echo 1; }\n' > "$UNC/lib/core.sh"
+printf '#!/usr/bin/env bash\n. lib/core.sh\ncompute_total\n' > "$UNC/consumer.sh"
+git -C "$UNC" add -A >/dev/null 2>&1; git -C "$UNC" commit -qm seed >/dev/null 2>&1
+printf '#!/usr/bin/env bash\ncompute_grand_total() { echo 1; }\n' > "$UNC/lib/core.sh"
+git -C "$UNC" add -A >/dev/null 2>&1
+"$BIN/jjstack-review-blast-radius" --out "$UNC/br" --repo "$UNC" --base main >/dev/null 2>&1
+check "blast-radius maps a staged-but-uncommitted rename" \
+      "grep -q 'compute_total' '$UNC/br/blast-radius.md'"
+check "and names its stale out-of-diff caller" \
+      "grep -q 'consumer.sh' '$UNC/br/blast-radius.md'"
+check "an uncommitted change is not reported as an empty diff" \
+      "! grep -q 'Empty diff' '$UNC/br/blast-radius.md'"
+check "the report states which diff scope it used" \
+      "grep -q 'diff scope:' '$UNC/br/blast-radius.md'"
+# Positive control — the work really is uncommitted, so the three-dot diff the
+# old code used is genuinely empty and this is not a committed-diff test in
+# disguise.
+check "the change really is uncommitted (control)" \
+      "[ -z \"\$(git -C '$UNC' diff main...HEAD)\" ] && [ -n \"\$(git -C '$UNC' diff main)\" ]"
+
 rm -rf "$PF"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
