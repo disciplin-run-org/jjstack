@@ -11,6 +11,29 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A `/review` run can no longer lose every finding it made.** One field the
+  model got wrong — a `confidence` of `null` instead of a number — used to crash
+  the step that checks findings before they reach the report. The crash happened
+  before anything was written out, so the run ended with an empty report, no
+  record of the bad finding, and an exit code indistinguishable from "a couple
+  of findings were malformed". Real blocking issues disappeared and nothing said
+  so. Findings are now written out as they are checked, a bad field is recorded
+  and skipped rather than fatal, and a genuine internal failure has its own exit
+  code so a crash can never be read as partial success.
+- **A single baseline entry can no longer mute your whole repo.** A suppression
+  rule of `{"path": "*"}` matched every finding, so the review reported nothing
+  active and approved the change. Rules must now name something real; a rule
+  made only of wildcards is rejected with an explanation.
+- **Extending a review baseline no longer erases the one you had.** Running the
+  documented "extend the baseline" command on a repo that already had one
+  rebuilt the file from scratch, throwing away every previously accepted finding
+  and the reasons a human wrote next to them. It now merges; `--replace` is the
+  explicit way to start over, and a corrupt existing baseline stops the run
+  instead of being overwritten.
+- **Feeding a file to a review pass now fails loudly instead of silently
+  passing it nothing.** If the file could not be read, the line-numbering step
+  reported success on empty output — and a pass handed an empty file reports
+  zero problems, which looks exactly like clean code.
 - **A mistyped review base is now refused by name instead of quietly reviewing
   nothing.** `/review --base orgin/main` used to sail straight through: the
   blast-radius map printed "Empty diff — nothing to map", the intent pass

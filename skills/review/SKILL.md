@@ -374,6 +374,11 @@ same thing) and severity, and coerces `start_line`. Exit 1 means some findings
 were malformed — they are written to `findings.malformed.jsonl`, never dropped
 on the floor. **Fix the emitting pass and re-emit; do not delete the finding.**
 
+Read the exit code, do not assume it: `0` all valid, `1` some malformed (the
+valid ones are still on stdout), `2` usage error or unreadable input, `3` an
+internal error — stdout holds a PARTIAL set and the run must be repeated, not
+reported. Never treat `3` as `1`.
+
 ### 5c. Verify each finding — enrich-only
 
 For **each** normalized finding (batch as parallel agents when there are many):
@@ -443,6 +448,11 @@ unprompted to make a report look shorter:
   -o "$(git rev-parse --show-toplevel)/.jjstack-review-baseline.json"
 ```
 
+`generate` **extends** the file it points at: existing rules and already
+accepted fingerprints are merged forward, so running it on a repo that already
+has a baseline never destroys the reasons a human typed. `--replace` is the
+explicit way to start over.
+
 Two mechanisms, deliberately aging differently:
 
 - **`fingerprints`** — machine-generated content hashes, brittle on purpose:
@@ -451,7 +461,9 @@ Two mechanisms, deliberately aging differently:
 - **`rules`** — human-authored globs over `id` (lens) / `path` / `message`,
   drift-tolerant: they survive line shifts and rewording. Reserve them for
   deliberate, tightly-scoped policy exclusions, because a broad rule can hide
-  newly malicious content.
+  newly malicious content. A rule that states only a universal glob
+  (`{"path": "*"}`) is rejected: it is the "matches everything" rule in
+  disguise, and it would mute the whole repo at exit 0.
 
 Every entry of either kind carries a mandatory `reason`; the script refuses a
 baseline without one, and refuses a rule that names no matching field (a rule
