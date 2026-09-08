@@ -111,6 +111,14 @@ Wrapper skills keep gstack's command names — `/plan-ceo-review`,
 `/plan-eng-review`, `/qa`, `/review`, `/ship`, etc. — and add the
 enhancements transparently.
 
+> **Tip — tighter PR review comments.** `/review` enforces its own comment
+> budget with a linter, so the posted comment stays short whatever your settings.
+> The prose *around* it — what Claude says back to you in the terminal while the
+> review runs — follows Claude Code's output style. Run `/config` and set
+> **Output style: Concise** if you want that half terse too. jjstack does not
+> change this for you: it is a global Claude Code setting affecting every
+> session, not just skill runs, so it stays your call.
+
 ---
 
 ## Skills
