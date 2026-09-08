@@ -330,9 +330,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   the memory is a plain file in git: a suppression is reviewable in a PR, and
   retiring one is a visible diff instead of a setting nobody can audit.
   A dismissal has to name a *place* — `src/legacy/*`, not `*` — so one line can
-  never quietly go repo-wide; a note is quoted back to you whole, pipes and all;
-  and if the ledger file is missing or misspelt, `/review` tells you it did not
-  read one instead of reporting a confident "nothing was previously decided".
+  never quietly go repo-wide. That is enforced on what the pattern *matches*,
+  not on how it is written: `*`, `*/*`, `*[a-z]*`, `[a-z]*` and `*.*` are all
+  the same blanket and are all refused, and the same test is applied to rows
+  read back out of the file, so a blanket line that arrives by hand-edit or by
+  merge is ignored with a warning rather than quietly demoting your whole repo.
+  A note is quoted back to you whole — pipes, line breaks and all; it can never
+  spill onto a second line or forge a ledger row of its own. The repo column
+  names the repo the *ledger* belongs to, so a ledger copied between projects
+  still says what it is about. And if the ledger file is missing or misspelt,
+  `/review` tells you it did not read one instead of reporting a confident
+  "nothing was previously decided".
 - **`/review` says when it could not actually look.** On a shallow clone — what
   CI gives you by default — there is no history to search, so the revert-history
   pass now reports the window as truncated and tells you to treat the git-history

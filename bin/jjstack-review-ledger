@@ -32,9 +32,24 @@
 #           | test-coverage | performance | api-contract | style | type-safety
 #           | dependency | other
 #   PATTERN is a shell glob matched against the finding's repo-relative path.
-#           It must contain at least one literal character: a glob made only of
-#           `*`, `?` and `/` matches the whole repo and is rejected, because a
-#           dismissal is a decision about a place in the code, not a blanket.
+#           It must name a PLACE. Breadth is judged on what the glob actually
+#           matches, not on how it is spelled: the pattern is run against a
+#           fixed corpus of unrelated probe paths, and a pattern that reaches
+#           across three or more unrelated top-level names is rejected as a
+#           blanket. Spelling-based rules do not survive contact — stripping
+#           `*?/` and rejecting the empty remainder catches `*` and `*/*` and
+#           waves through `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*` and every other
+#           spelling nobody happened to list. The same test is applied to
+#           patterns READ from the ledger, because the ledger is meant to be
+#           hand-edited in git and a merged blanket row is the same blanket.
+#
+#   NOTE    is stored in the printable alphabet, and that is defined by what is
+#           ALLOWED, not by a list of characters to strip. A record is one
+#           physical line, so any character outside the printable set (a
+#           newline first of all, but equally a CR, a tab, an ESC) is escaped
+#           into that alphabet using the standard `printf %b` sequences, which
+#           makes the encoding reversible: the note round-trips byte for byte
+#           and can never forge a field boundary or a second ledger row.
 #
 # Protected categories (security, correctness, concurrency, error-handling,
 # resource-leak, test-coverage) are recorded but NEVER demote — --match prints
@@ -44,6 +59,10 @@
 # A --match against a ledger that does not exist warns and exits 1. That is not
 # the same statement as "no prior decision applies", and it is never reported as
 # if it were.
+#
+# The `<repo>` column names the repo the LEDGER belongs to, which is what makes
+# a ledger readable after it is copied or merged between repos. With --ledger and
+# no --repo it is resolved from the ledger's own location, never from the cwd.
 #
 # Default ledger: <repo-root>/jjstack/review-ledger.md
 #
@@ -70,6 +89,84 @@ VALID_CATS="correctness security concurrency error-handling resource-leak test-c
 PROTECTED_CATS="security correctness concurrency error-handling resource-leak test-coverage"
 
 MODE=""; TYPE=""; PATH_ARG=""; CATEGORY=""; NOTE=""; LEDGER=""; REPO=""
+
+# The header IS the help. A hand-kept `sed -n 'A,Bp'` range drifts the instant a
+# line is added above it — it truncated three sibling tools mid-sentence and
+# leaked `set -uo pipefail` into their output — so read comment lines until the
+# first non-comment line instead.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
+# ---------------------------------------------------------------------------
+# Breadth: judged on what a glob MATCHES, never on how it is spelled.
+#
+# The first guard stripped `*`, `?` and `/` and rejected whatever came out
+# empty. That is a rule shaped exactly like the two spellings its fixture
+# contained: `*[a-z]*`, `[a-z]*`, `*.*` and `[!q]*` all walked through it and
+# all demote effectively every path in the repo. Adding those four to the strip
+# set only moves the hole one spelling further along.
+#
+# So breadth is measured instead. These probes are deliberately unrelated —
+# eight top-level directories that share nothing, plus three root files — and a
+# pattern that reaches across THREE OR MORE of those top-level names is not
+# naming a place, whatever it is written with. `src/legacy/*`, `docs/*`,
+# `tests/**` and `bin/jjstack-review-*` each reach one or none.
+BREADTH_PROBES="src/payments.py lib/util.go docs/guide.md tests/test_api.rb
+.github/workflows/ci.yml vendor/thirdparty/lib.c deep/nested/tree/Widget.java
+Makefile README.md go.mod"
+BREADTH_LIMIT=3
+
+# true when the glob reaches across BREADTH_LIMIT or more unrelated top levels.
+too_broad() {
+  local pat="$1" p top seen=" " n=0
+  for p in $BREADTH_PROBES; do
+    # shellcheck disable=SC2254  # the glob is the point
+    case "$p" in
+      $pat) top="${p%%/*}"
+            case "$seen" in
+              *" $top "*) ;;
+              *) seen="$seen$top "; n=$((n + 1)) ;;
+            esac ;;
+    esac
+  done
+  [ "$n" -ge "$BREADTH_LIMIT" ]
+}
+
+# ---------------------------------------------------------------------------
+# The note's alphabet, defined by what is ALLOWED.
+#
+# A record is ONE physical line. The round-1 fix taught the reader to rejoin
+# fields 6..NF so a `|` in a note survives — a blacklist of one character, and
+# a newline went straight through it: the note became a second physical line,
+# --match dropped it for not having the date shape, and if that line happened to
+# look like a record the note had forged a whole ledger row (verified: a note
+# could plant a `security` dismissal against `src/*`).
+#
+# The rule is therefore positive. A note is stored in the PRINTABLE alphabet;
+# every character outside it is escaped into that alphabet using the standard
+# `printf %b` sequences, so the mapping is reversible and a control character
+# nobody has thought of is covered by the same sentence as the one that was
+# reported. Backslash is escaped first, which is what makes decoding exact.
+encode_note() {
+  local s="$1" out="" c i n=${#1} code
+  for (( i = 0; i < n; i++ )); do
+    c="${s:i:1}"
+    if [ "$c" = '\' ]; then out="$out\\\\"; continue; fi
+    if [[ $c == [[:print:]] ]]; then out="$out$c"; continue; fi   # ALLOWED
+    case "$c" in
+      $'\n') out="$out\\n" ;;
+      $'\r') out="$out\\r" ;;
+      $'\t') out="$out\\t" ;;
+      *) printf -v code '%d' "'$c" 2>/dev/null || code=0
+         code=$(( code & 255 ))
+         out="$out$(printf '\\0%03o' "$code")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
 
 set_mode() {
   if [ -n "$MODE" ]; then
@@ -99,9 +196,7 @@ while [ $# -gt 0 ]; do
     --note)     need_val "$@"; NOTE="$2";     shift 2 ;;
     --ledger)   need_val "$@"; LEDGER="$2";   shift 2 ;;
     --repo)     need_val "$@"; REPO="$2";     shift 2 ;;
-    -h|--help)
-      sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
+    -h|--help) show_help; exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
@@ -137,16 +232,15 @@ if [ "$MODE" = "record" ]; then
   # of them was checked. `--path '*'` records a dismissal that then demotes
   # every finding in that category, repo-wide and permanently — the demoted
   # section becomes the whole report, and the ledger line reads like any other
-  # in a PR diff. A glob with no literal character in it (`*`, `**`, `*/*`,
-  # `/*`) matches every path there is, so it is never a decision about a place
-  # in the repo; it is a blanket. Name a real prefix instead.
-  case "$(printf '%s' "$PATH_ARG" | tr -d '*?/')" in
-    '')
-      echo -e "${CYA}error${RST} --path '$PATH_ARG' matches every file in the repo" >&2
-      echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
-      echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
-      exit 2 ;;
-  esac
+  # in a PR diff. Breadth is decided by too_broad(), on what the glob MATCHES:
+  # a spelling test can only ever reject the spellings someone listed.
+  if too_broad "$PATH_ARG"; then
+    echo -e "${CYA}error${RST} --path '$PATH_ARG' reaches across unrelated parts of the repo" >&2
+    echo -e "${YEL}why${RST}   it matches paths under $BREADTH_LIMIT or more unrelated top-level" >&2
+    echo -e "${YEL}why${RST}   names, so it is a blanket, not a decision about a place in the" >&2
+    echo -e "${YEL}why${RST}   code. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+    exit 2
+  fi
 fi
 
 if [ -z "$LEDGER" ]; then
@@ -159,16 +253,23 @@ if [ -z "$LEDGER" ]; then
 fi
 
 # Repo slug for the record, so a ledger stays readable if it is ever merged or
-# copied between repos.
+# copied between repos. That is the whole point of the column, which is why it
+# must describe the LEDGER's repo. It used to run git in the CWD: recording into
+# project A's ledger from a shell sitting in project B stamped every row with B,
+# and the one field that exists to survive a copy became the field that lies
+# about it. An explicit --repo still wins — that is the caller saying which repo
+# this is — but otherwise the ledger's own location decides.
 slug() {
-  local url
-  url="$(git -C "${REPO:-.}" remote get-url origin 2>/dev/null)"
+  local ctx url top
+  ctx="${REPO:-$(dirname "$LEDGER")}"
+  url="$(git -C "$ctx" remote get-url origin 2>/dev/null)"
   if [ -n "$url" ]; then
     url="${url%.git}"; url="${url##*:}"
     printf '%s\n' "$url" | awk -F/ '{ if (NF >= 2) print $(NF-1) "/" $NF; else print $NF }'
-  else
-    basename "${REPO:-$(dirname "$LEDGER")}"
+    return
   fi
+  top="$(git -C "$ctx" rev-parse --show-toplevel 2>/dev/null)"
+  basename "${top:-$ctx}"
 }
 
 case "$MODE" in
@@ -193,7 +294,8 @@ case "$MODE" in
       } > "$LEDGER"
     fi
     printf '%s | %s | %s | %s | %s | %s\n' \
-      "$(date +%F)" "$(slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" "${NOTE:-(no note)}" >> "$LEDGER"
+      "$(date +%F)" "$(slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" \
+      "$(encode_note "${NOTE:-(no note)}")" >> "$LEDGER"
     echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] → $LEDGER"
     if [ "$TYPE" = "dismissed" ] && in_set "$CATEGORY" "$PROTECTED_CATS"; then
       echo -e "${YEL}note${RST}  '$CATEGORY' is a protected category — this record is kept as" >&2
@@ -240,6 +342,17 @@ case "$MODE" in
         | awk -F' *\\| *' '{ n=$6; for (i=7; i<=NF; i++) n = n " | " $i; print n }')
       [ "$l_type" = "dismissed" ] || continue
       [ "$l_cat" = "$CATEGORY" ]  || continue
+      # The breadth rule lives on BOTH sides of the file. --record is only half
+      # the door: this ledger is designed to be hand-edited and merged in git,
+      # so a blanket row can arrive without ever passing through --record. One
+      # `*` row demoting the whole repo reads, in a PR diff, exactly like a
+      # scoped decision. Refuse to act on it and say so — the row stays in the
+      # file as history, it just never suppresses anything.
+      if too_broad "$l_pat"; then
+        echo -e "${YEL}warn${RST}  ignoring ledger row: pattern '$l_pat' is too broad" >&2
+        echo -e "${YEL}warn${RST}  (it reaches across $BREADTH_LIMIT+ unrelated top-level names; scope it or delete it)" >&2
+        continue
+      fi
       # The path glob is part of the key, so it must be consulted BEFORE any
       # announcement is made about this record. It used to be tested only after
       # the PROTECTED branch had already printed and `continue`d, so a
