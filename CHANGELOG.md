@@ -58,7 +58,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   jjstack/code-review/skill.md` — as the opening of a one-line verdict, or as
   the last line of a findings comment so the verdict still comes first. And
   when everything is resolved, or nothing was found, the comment is exactly
-  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved`
+  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md`
   and nothing else: no posture, no coverage claim, no summary of what you
   changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
   the one a model reaches for almost never, and disclosure is the byline's

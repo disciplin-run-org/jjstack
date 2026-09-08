@@ -257,14 +257,32 @@ if [ "$VERDICT" = "approve" ]; then
   # `lgtm` verbatim: it is the human idiom, and a model left to itself writes
   # "Looks good to me!" or "LGTM ✅" instead. Disclosure is the attribution
   # line's job; the prose does not also have to sound like a machine.
-  want_resolved="$ATTRIB: all issues resolved - lgtm - approved"
+  # A resolved verdict carries its report; a clean one has nothing to carry.
+  # Without the path, a PR that closed eleven findings over three rounds renders
+  # identically to one that was clean on sight - and this is the lint that says
+  # "brevity moves evidence, it never deletes it" twenty lines further down. The
+  # approve path was the one place where brevity deleted it, on the very comment
+  # telling the reader not to worry.
+  want_resolved_re="^$ATTRIB: all issues resolved - lgtm - approved - [A-Za-z0-9_./-]+\.md$"
   want_clean="$ATTRIB: no findings - lgtm - approved"
   # The WHOLE body, not its first line: appending prose after the canonical
   # line would otherwise pass this check and be caught only by the length
   # budget, which names the wrong problem.
   body_all=$(sed -e '/^[[:space:]]*$/d' "$SRC")
-  if [ "$body_all" != "$want_resolved" ] && [ "$body_all" != "$want_clean" ]; then
-    fail "not-canonical" "a resolved verdict is one line, verbatim: \"$want_resolved\" (or \"no findings\" on a first clean review). Nothing else - the evidence is in the committed report."
+  if ! grep -qE "$want_resolved_re" <<<"$body_all" && [ "$body_all" != "$want_clean" ]; then
+    fail "not-canonical" "a resolved verdict is one line: \"$ATTRIB: all issues resolved - lgtm - approved - <report>.md\" (or \"$want_clean\" when nothing was ever found). Nothing else."
+  elif grep -qE "$want_resolved_re" <<<"$body_all"; then
+    # The path is not decoration: it must exist, for the same reason the
+    # no-report rule stats a link. A pointer to nothing is no pointer.
+    rr=$(sed -E "s/.* - ([A-Za-z0-9_.\/-]+\.md)$/\1/" <<<"$body_all")
+    sd=$(cd "$(dirname "$SRC")" && pwd)
+    rt=$(git -C "$sd" rev-parse --show-toplevel 2>/dev/null || true)
+    fnd=0
+    for c in "${rt:+$rt/$rr}" "$sd/$rr" "$sd/../$rr" "$sd/$(basename "$rr")"; do
+      [ -n "$c" ] && [ -f "$c" ] && { fnd=1; break; }
+    done
+    [ "$fnd" -eq 1 ] || \
+      fail "no-report" "the resolved line names \`$rr\` and no such file exists. Commit the report first, then approve."
   fi
 fi
 

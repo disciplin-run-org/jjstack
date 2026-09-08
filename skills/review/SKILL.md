@@ -311,7 +311,7 @@ wrote. The lint refuses a comment that omits it.
 one line and nothing else:**
 
 ```text
-Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md
 ```
 
 (`no findings` in place of `all issues resolved` on a first clean review.) No

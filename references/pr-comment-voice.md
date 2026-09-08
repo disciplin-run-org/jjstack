@@ -54,11 +54,17 @@ When every finding is fixed, or there were none to begin with, the comment is
 exactly this and nothing else:
 
 ```
-Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md
 ```
 
-For a first review that found nothing, `no findings` replaces
-`all issues resolved`. No posture line, no coverage claim, no list of what was
+For a first review that found nothing, the line is
+`…: no findings - lgtm - approved` — no path, because nothing was found and
+there is nothing to point at. A **resolved** review carries the report, and the
+lint checks the file exists: "all issues resolved" asserts that findings existed
+and were fixed, and without the pointer a PR that closed eleven findings over
+three rounds renders identically to one that was clean on sight. This is the
+one place brevity was deleting evidence rather than moving it, on the very
+comment telling the reader not to worry. No posture line, no coverage claim, no list of what was
 checked, no summary of what the author changed. The author of a clean PR wants
 the verdict. Everything else is already in the committed report, and a reader
 who wants it will open that.

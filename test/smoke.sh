@@ -773,8 +773,16 @@ check "…and 2 is not the success code the post chain would continue past" \
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
 ATT='Claude jjstack/skills/review/SKILL.md'
-body att_ok "$ATT: all issues resolved - lgtm - approved\n"
+body att_ok "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n"
 check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
+# A resolved verdict asserts findings existed and were fixed, so it carries the
+# report. Without it the approve path is the one place brevity DELETES evidence.
+body att_nolink "$ATT: all issues resolved - lgtm - approved\n"
+check "a resolved line with no report path is refused" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_nolink.md')\""
+body att_ghost "$ATT: all issues resolved - lgtm - approved - review-9999-99-99.md\n"
+check "…and one naming a report that does not exist" \
+      "grep -q no-report <<<\"\$(why '$PCL/att_ghost.md')\""
 body att_clean "$ATT: no findings - lgtm - approved\n"
 check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
 body att_none '**APPROVE** - no findings. `review-2026-01-01.md`\n'
