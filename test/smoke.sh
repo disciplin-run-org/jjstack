@@ -949,6 +949,22 @@ printf '**CAUTION**\n\n**P0** a:1 leaks a handle\n' > "$PCL/nolink.md"
 out=$("$BIN/jjstack-pr-comment-lint" "$PCL/nolink.md" 2>&1)
 check "a comment with no link to the report is rejected" "grep -q 'no-link' <<<\"\$out\""
 
+# The budget scales with the verdict. A clean APPROVE has one line of
+# information in it; giving it the same 12-line ceiling as a REJECT carrying two
+# blocking findings invites an evidence dump nobody asked for. Observed in the
+# wild: a real clean review spent ~25 lines proving it had nothing to say.
+printf '**APPROVE** - no findings. `jjstack/review-2026-09-07.md`\n' > "$PCL/approve.md"
+"$BIN/jjstack-pr-comment-lint" "$PCL/approve.md" >/dev/null 2>&1
+check "a one-line clean approve passes" "[ \$? -eq 0 ]"
+printf '**APPROVE** - no findings.\nPosture: 0 active, 0 suppressed.\nCoverage: all lenses ran.\nChecked ignore patterns against reality.\nChecked the index for tracked files.\n`jjstack/review-2026-09-07.md`\n' > "$PCL/approve-verbose.md"
+out=$("$BIN/jjstack-pr-comment-lint" "$PCL/approve-verbose.md" 2>&1)
+check "an approve that dumps its evidence is rejected" "grep -q 'clean approve' <<<\"\$out\""
+# POSITIVE CONTROL — the same length must be LEGAL when there are findings, or
+# this is just a tighter global budget rather than a verdict-aware one.
+printf '**CAUTION** - 1 blocking.\n**P0** a.py:1 leaks a handle on the error path.\nRepro: revoke the token, run sync, exit 0.\nHave you considered asserting the exit code?\nGuardrail: holds while the path stays sync.\n`jjstack/review-2026-09-07.md`\n' > "$PCL/caution6.md"
+"$BIN/jjstack-pr-comment-lint" "$PCL/caution6.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same length passes when there are findings" "[ \$? -eq 0 ]"
+
 # REGRESSION (external review, round 1): both caps were trivially evadable and
 # the original tests passed anyway - they only exercised the shapes the code
 # already handled. These two fixtures are the reviewer's actual bypasses.

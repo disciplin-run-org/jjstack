@@ -44,6 +44,29 @@ Guardrail: the condition under which this verdict holds.
 One line per finding. `file:line` is not decoration - it is what makes the
 finding actionable without a second round trip.
 
+## A clean approve is one line
+
+When nothing was found, say that and stop:
+
+```
+**APPROVE** - no findings. `jjstack/review-YYYY-MM-DD.md`
+```
+
+The budget for an approve is 3 lines, not 12, and the linter enforces it
+separately. The reason is the failure it prevents: a real clean review once
+spent about 25 lines - posture counts, coverage claims, five evidence bullets -
+proving it had nothing to say. Every one of those lines was true and none of
+them was wanted.
+
+The author of a clean PR wants the verdict. The evidence for *why* it is clean
+is already in the committed report, for the one reader in twenty who goes
+looking. Listing it in the comment is the reviewer showing their work to someone
+who did not ask.
+
+Do not pad an approve to look thorough. "No findings" from a review that ran
+every lens is a strong statement on its own, and manufacturing a nit to justify
+the run is worse than saying nothing.
+
 ## Mechanics
 
 - **Colon for setup: payoff.** The single most recognisable fingerprint.

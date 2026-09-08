@@ -55,11 +55,32 @@ fail() { viol=$((viol + 1)); say "  ${YEL}$1${RST}  $2"; }
 n_lines=$(wc -l < "$SRC" | tr -d ' ')
 n_chars=$(wc -c < "$SRC" | tr -d ' ')
 
-# --- size budget: the whole reason this script exists ---
-[ "$n_lines" -gt "$MAX_LINES" ] && \
-  fail "too-long" "$n_lines lines (budget $MAX_LINES). Cut findings, do not cut evidence: link instead."
+# --- the budget scales with the verdict, because the information does ---
+# One budget for every verdict was wrong. Twelve lines is right for a REJECT
+# carrying two blocking findings. For an APPROVE with nothing to report it is
+# four times too generous, and a model fills whatever ceiling it is given: a
+# real clean review spent ~25 lines - posture, coverage, five evidence bullets -
+# proving it had nothing to say. On a clean PR the author wants the verdict, not
+# the audit trail that produced it. The evidence is already in the report.
+#
+# Detected, not declared, so no caller has to remember to pass a flag.
+n_find_early=$(grep -coE '(^|[-*+>|[:space:]]|^[0-9]+\.)[[:space:]]*(\*\*)?P[0-3]\b' "$SRC" 2>/dev/null || true)
+VERDICT="findings"
+if [ "${n_find_early:-0}" -eq 0 ] && grep -qE '\b(APPROVE|LGTM)\b' "$SRC"; then
+  VERDICT="approve"
+  MAX_LINES=3
+  MAX_CHARS=250
+fi
+
+[ "$n_lines" -gt "$MAX_LINES" ] && {
+  if [ "$VERDICT" = "approve" ]; then
+    fail "too-long" "$n_lines lines for a clean approve (budget $MAX_LINES). Nothing was found: say so and link the report. The evidence for why it is clean belongs in the report, not the comment."
+  else
+    fail "too-long" "$n_lines lines (budget $MAX_LINES). Cut findings, do not cut evidence: link instead."
+  fi
+}
 [ "$n_chars" -gt "$MAX_CHARS" ] && \
-  fail "too-long" "$n_chars chars (budget $MAX_CHARS)."
+  fail "too-long" "$n_chars chars (budget $MAX_CHARS, verdict=$VERDICT)."
 
 # --- finding count: the real cause of a wall of text ---
 # Length is the symptom. The cause is pasting every finding into the comment.
