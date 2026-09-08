@@ -2995,10 +2995,10 @@ runtime_vocab "$BIN/jjstack-review-triage" DISP   > "$VOC/script.disp"
 runtime_vocab "$BIN/jjstack-review-triage" REASON > "$VOC/script.rsn"
 # An extraction that silently yields nothing turns every loop below into zero
 # assertions, which is the failure mode these guards had in the first place.
-check "skill disposition table yields 6 dispositions" "[ \$(wc -l < '$VOC/skill.disp') -eq 6 ]"
-check "skill reason table yields 10 reason codes"     "[ \$(wc -l < '$VOC/skill.rsn') -eq 10 ]"
-check "script runtime disposition vocabulary has 6"   "[ \$(wc -l < '$VOC/script.disp') -eq 6 ]"
-check "script runtime reason vocabulary has 11"       "[ \$(wc -l < '$VOC/script.rsn') -eq 11 ]"
+check "skill disposition table yields 7 dispositions" "[ \$(wc -l < '$VOC/skill.disp') -eq 7 ]"
+check "skill reason table yields 11 reason codes"     "[ \$(wc -l < '$VOC/skill.rsn') -eq 11 ]"
+check "script runtime disposition vocabulary has 7"   "[ \$(wc -l < '$VOC/script.disp') -eq 7 ]"
+check "script runtime reason vocabulary has 12"       "[ \$(wc -l < '$VOC/script.rsn') -eq 12 ]"
 # skill → script: the model is never told to write a token the validator rejects.
 while read -r tok; do
   check "skill disposition \`$tok\` is in the script's RUNTIME vocabulary" \
