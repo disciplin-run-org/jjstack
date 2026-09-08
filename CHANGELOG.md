@@ -11,6 +11,41 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **The triage ledger's completeness check now matches findings, not row
+  counts.** It used to count how many rows sat at each `file:line`, so any
+  second row at that line satisfied the obligation to account for a second
+  finding there. Two P0s adjudicated at one line — an auth bypass and a double
+  free — were "fully accounted for" by the auth-bypass report plus an unrelated
+  whitespace nit, and the double free appeared nowhere on a page headed "a
+  checked fact, not a promise". Each finding is now matched to a distinct row
+  with the same location AND the same claim. Rewording a finding in the ledger
+  still matches; replacing it does not.
+- **A repo that has baselined a P0 can write a triage ledger again.** The skill
+  told you to record a baseline-retired finding as `suppress`, the ledger
+  refuses to let a P0 or P1 be suppressed, and the baseline tool has no severity
+  gate — so on exactly those repos the loop had no legal move: exit 4, nothing
+  rendered, and a remedy that named no alternative. A baseline-retired P0/P1 is
+  now `defer` with the same `baseline` reason: still off the active set, still
+  on the page, still carrying the record of who muted it. Every cell of the
+  mapping table is now fed to the real validator by the test suite, at every
+  severity.
+- **`exposure` is computed from the file path again.** The classifier was being
+  handed `path:line`, which killed every rule anchored on the end of a filename:
+  `README.md` came out `prod`, and so did `app.min.js`, `api_pb2.py` and
+  `svc.pb.go`. The whole documentation arm and three of the four
+  generated-code arms never fired, and the "reported against code nobody here
+  authored" advisory keys off this label.
+- **The merge is checked in more places, and each check can be shown to work.**
+  Six fields the ledger renders — the location, the exposure label, the lens
+  list, the corroboration count, the disposition tally and the duplicate count —
+  were maintained by the merge and never verified against the record of what
+  entered it. They are now recomputed from that record, the lens roll-up has a
+  coverage check of its own, and the suite derives one fault injection per check
+  from the script itself, so a check that cannot fail reddens the build instead
+  of shipping quietly.
+- **A reconciliation that cannot run says which way it failed.** "The
+  adjudicated file could not be read" and "the tool crashed" used to print the
+  same sentence, so the two were indistinguishable to anyone reading the output.
 - **The auto-fix review pass no longer reports your own scratch files back at
   you.** Post-pass 2 takes a marker before the review is allowed to change
   anything, so it can tell the reviewer's edits from work you already had open.

@@ -1833,9 +1833,19 @@ check "the merge records the disposition change"   "grep -q 'suppress → report
 "$BIN/jjstack-review-triage" "$TRI/vendmerge.tsv" --out "$TRI/vendmerge.md" > /dev/null 2> "$TRI/vendmerge.err"
 check "POSITIVE CONTROL: merged-up vendor report warns after the merge" \
       "grep -q 'vendor/lib/x.js:5 (vendor) is reported' '$TRI/vendmerge.err'"
-# Defence in depth: an all-suppressed group whose merged severity is P0 must
-# never render. The per-row check already rejects this input, and the merged
-# check rejects it again — invariant 3 must hold on both sides of the collapse.
+# An all-suppressed group whose merged severity is P0 must never render.
+#
+# The comment that used to sit here said "the merged check rejects it again —
+# invariant 3 must hold on both sides of the collapse". There is no merged-side
+# invariant 3: the script says three lines below its END block that it was dead
+# code and removed it. Deleting the PER-ROW check reddens both assertions here
+# and deleting any merged check leaves them green, so the test named a
+# mechanism it never reached — the fixture is rejected upstream of the thing the
+# comment credited. What actually makes a merged copy unreachable is asserted
+# rather than narrated, in §7k: `suppress` is the strongest disprank, so a
+# merged `suppress` implies every member said `suppress`, and a P0/P1 member
+# was already rejected on the way in. §7k also runs that implication over
+# generated groups, which a comment cannot do.
 {
   row P3 20 src/e.py:7 style    suppress baseline 'the parser accepts a header value without any bound'
   row P0 91 src/e.py:7 security suppress baseline 'the parser accepts a header value without checking the signature'
@@ -1844,6 +1854,13 @@ check "POSITIVE CONTROL: merged-up vendor report warns after the merge" \
 rc=$?
 check "an all-suppressed merge reaching P0 is rejected" "[ $rc -eq 4 ]"
 check "merged P0 rejection renders nothing"             "[ ! -f '$TRI/absorb2.md' ]"
+# Name the mechanism that actually rejected it, so this can never again pass
+# while crediting a check it did not reach: a PER-ROW failure, keyed on a source
+# line number, and no merged diagnostic at all.
+check "the rejection is the per-row invariant, keyed on a line" \
+      "grep -qE '^  line [0-9]+: P0 may not be suppressed' '$TRI/absorb2.err'"
+check "no merged-record check is credited with this rejection" \
+      "! grep -q '  merged ' '$TRI/absorb2.err'"
 # A group that agrees changes nothing, so it must NOT be listed as a merge —
 # otherwise the Merges section is noise and nobody reads the real entries.
 check "an agreeing dedup is not reported as a merge" "grep -q 'merges-raised=0' '$TRI/good.out'"
@@ -1886,6 +1903,12 @@ check "identical claims at one line are still not a merge" "grep -q 'merges-rais
 # `suppress` implies every member was already rejected per-row). Deleting the
 # whole block left the suite green. They now verify the COLLAPSE against an
 # independent member ledger, so the control feeds them a BROKEN COLLAPSE.
+#
+# ONE injection is not enough on its own: under this one all the checks fire at
+# once, so asserting a single string leaves the rest masked — five of six were
+# individually deletable while this control stayed green. §7k derives one
+# injection PER CHECK from the guard list in the script and asserts that each
+# fires alone. This control keeps the git-recovered whole-defect case.
 # The injected fault is not invented: it is the literal pre-fix dedup body
 # recovered from git (d128644^ lines 192-200), which kept the first-seen row
 # and discarded the rest — the exact defect this PR exists to fix.
@@ -2282,10 +2305,23 @@ runtime_vocab "$BIN/jjstack-review-triage" DISP   > "$VOC/script.disp"
 runtime_vocab "$BIN/jjstack-review-triage" REASON > "$VOC/script.rsn"
 # An extraction that silently yields nothing turns every loop below into zero
 # assertions, which is the failure mode these guards had in the first place.
-check "skill disposition table yields 6 dispositions" "[ \$(wc -l < '$VOC/skill.disp') -eq 6 ]"
-check "skill reason table yields 10 reason codes"     "[ \$(wc -l < '$VOC/skill.rsn') -eq 10 ]"
-check "script runtime disposition vocabulary has 6"   "[ \$(wc -l < '$VOC/script.disp') -eq 6 ]"
-check "script runtime reason vocabulary has 11"       "[ \$(wc -l < '$VOC/script.rsn') -eq 11 ]"
+check "the skill disposition table is not empty" "[ -s '$VOC/skill.disp' ]"
+check "the skill reason table is not empty"      "[ -s '$VOC/skill.rsn' ]"
+check "the script disposition vocabulary is not empty" "[ -s '$VOC/script.disp' ]"
+check "the script reason vocabulary is not empty"      "[ -s '$VOC/script.rsn' ]"
+# SET EQUALITY, not pinned counts. The counts used to read `skill 10` against
+# `script 11` — a written-down record of an asymmetry, frozen in place: the
+# extra code was `low-confidence`, a leftover of the deleted rescoring model
+# that the skill documented nowhere, and no assertion could ever surface it
+# because the script-to-skill direction ran for dispositions only. Equality
+# says the two vocabularies ARE the same set, so a new token has to enter
+# through both doors or neither, whichever door it arrives at.
+check "the disposition vocabularies are the SAME set" \
+      "diff -u '$VOC/skill.disp' '$VOC/script.disp' > '$VOC/disp.diff' 2>&1"
+[ -s "$VOC/disp.diff" ] && sed -n '3,12p' "$VOC/disp.diff"
+check "the reason vocabularies are the SAME set" \
+      "diff -u '$VOC/skill.rsn' '$VOC/script.rsn' > '$VOC/rsn.diff' 2>&1"
+[ -s "$VOC/rsn.diff" ] && sed -n '3,12p' "$VOC/rsn.diff"
 # skill → script: the model is never told to write a token the validator rejects.
 while read -r tok; do
   check "skill disposition \`$tok\` is in the script's RUNTIME vocabulary" \
@@ -2301,7 +2337,887 @@ while read -r tok; do
   check "script disposition \`$tok\` is documented in the skill table" \
         "grep -qxF -- '$tok' '$VOC/skill.disp'"
 done < "$VOC/script.disp"
+# ...and the same door on the reason column, which is where `low-confidence`
+# walked in. A reason the validator accepts but the skill never names is a
+# token the model can only produce by accident.
+while read -r tok; do
+  check "script reason \`$tok\` is documented in the skill table" \
+        "grep -qxF -- '$tok' '$VOC/skill.rsn'"
+done < "$VOC/script.rsn"
+# POSITIVE CONTROL — the equality check must be able to fire. The specimen is
+# recovered, not invented: `low-confidence` is the exact token the runtime
+# vocabulary carried at b173e82:bin/jjstack-review-triage:240.
+cp "$VOC/script.rsn" "$VOC/probe.rsn"
+printf 'low-confidence\n' >> "$VOC/probe.rsn"
+check "POSITIVE CONTROL: an undocumented reason code is caught" \
+      "! diff -q '$VOC/skill.rsn' '$VOC/probe.rsn' > /dev/null 2>&1"
 rm -rf "$VOC"
+
+echo "== 7k. the triage guards are DERIVED from a declared source of truth =="
+# Round 3 of /review found one shape three times: a guard exactly as wide as the
+# fixture that prompted it, and twice a test whose oracle was the implementation
+# it was testing. Everything in this section is derived — from markers in the
+# script, from the mapping table in the skill, from the rule list inside
+# pathclass(), from the exit taxonomy in the header comment — so a field, a
+# guard, a rule or a table row added next week is covered without anyone
+# remembering to come back here and add a case.
+TR3="$(mktemp -d)"
+cat > "$TR3/derive.py" <<'DERIVEPY'
+"""Derive the merged-record contract OUT OF jjstack-review-triage.
+
+There is no list of field names here. The regions are marked in the script
+itself (`#>> NAME` / `#<< NAME`), the member ledger is identified by the
+naming rule the script declares (ground truth is `M...` and nothing else is),
+and every guard is found by its own `failmerged(` call.
+
+Emits `KEY<TAB>value` lines for the shell to assert on.
+"""
+import re
+import sys
+
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().split("\n")
+
+
+def regions(name):
+    out, start = [], None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "#>> " + name:
+            start = i + 1
+        elif ln.strip() == "#<< " + name:
+            out.append((start, i))
+            start = None
+    return out
+
+
+def body(name):
+    return "\n".join(ln for a, b in regions(name) for ln in lines[a:b])
+
+
+FPASSIGN = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\[\s*fp\s*\]\s*(?:=[^=]|\+\+)")
+READ = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\[")
+
+
+def names(rx, text):
+    return {m.group(1) for m in rx.finditer(text)}
+
+
+member = names(READ, body("MEMBER LEDGER"))
+perrow = names(FPASSIGN, body("PERROW"))
+render = names(READ, body("RENDER"))
+# What the MERGE itself owns. A field the merge writes has a second author, so
+# it can disagree with the recompute; that is precisely what a cross-check is
+# for, and it is why this set is required to be cross-checked whether or not
+# the render happens to read it today.
+mergeowned = names(FPASSIGN, body("MERGE"))
+
+misnamed = sorted(n for n in member if not n.startswith("M"))
+stray = sorted(n for n in (perrow | render) - member if n.startswith("M"))
+
+rec = regions("RECOMPUTE")
+if len(rec) != 1:
+    print("REGIONS\tbroken")
+    sys.exit(0)
+lo, hi = rec[0]
+
+
+def call_at(i):
+    """The failmerged(...) call starting on line i, as one string."""
+    text = "\n".join(lines[i:hi])
+    text = text[text.index("failmerged("):]
+    depth = 0
+    for k, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[: k + 1]
+    return text
+
+
+guards = []
+for i in range(lo, hi):
+    if "failmerged(" not in lines[i]:
+        continue
+    # Walk up to the start of the statement this guard belongs to: the nearest
+    # line at the top indentation level of the recompute loop body. That line
+    # is where a fault has to be injected for the guard to be able to see it.
+    j = i
+    while j > lo and not re.match(r"^    [A-Za-z]", lines[j]):
+        j -= 1
+    unit = "\n".join(lines[j:i + 1])
+    cond = unit[: unit.index("failmerged(")] if "failmerged(" in unit else unit
+    # The guard's OWN field: the first non-ground-truth array its condition
+    # reads. Ground truth is what it compares against; the other side is the
+    # merged value under test.
+    own = next((m.group(1) for m in READ.finditer(cond) if m.group(1) not in member), None)
+    msg = re.search(r'"((?:[^"\\]|\\.)*)"', call_at(i))
+    lit = msg.group(1) if msg else ""
+    # awk source escapes; the shell greps for what the tool PRINTS.
+    lit = lit.replace(chr(92) + chr(34), chr(34)).replace(chr(92) + chr(92), chr(92))
+    guards.append((own, j, lit))
+
+guarded = {a for a, _, _ in guards if a}
+
+# Fields ASSEMBLED by walking the member ledger. A copy cannot lose a member; a
+# roll-up can, so it needs a coverage check of its own. Derived from the loop
+# header, not from a list of field names.
+rollup = set()
+i = lo
+while i < hi:
+    if re.search(r"for \(m = 1; m <= MN\[fp\]; m\+\+\)", lines[i]):
+        depth, j = 0, i
+        while j < hi:
+            depth += lines[j].count("{") - lines[j].count("}")
+            if depth <= 0 and j > i:
+                break
+            j += 1
+        rollup |= names(FPASSIGN, "\n".join(lines[i:j + 1])) - member
+        i = j
+    i += 1
+
+# Fields taken from ONE member as the representative of the whole group. That
+# is only sound while every member agrees, which is an implication of how
+# fingerprint() is keyed — so the implication is asserted, not assumed, and a
+# representative field without a guard is a silent bet on it.
+representative = {m.group(1) for m in
+                  re.finditer(r"\b([A-Z][A-Z0-9_]*)\s*\[\s*fp\s*\]\s*=\s*M[A-Z0-9_]*\[\s*fp\s*,\s*1\s*\]",
+                              "\n".join(lines[lo:hi]))}
+
+# A diagnostic may quote the rendered value of the field it guards, and of no
+# other: quoting a second merged field prints a pairing the guard has just
+# proven wrong. The first argument is the location every diagnostic names, so
+# it is not part of the message; everything after it is.
+r4 = []
+for i in range(lo, hi):
+    if "failmerged(" not in lines[i]:
+        continue
+    own = [a for a, j, _ in guards if a is not None and j <= i][-1]
+    args = call_at(i)
+    args = args[args.index("(") + 1:]
+    msgpart = args.split(",", 1)[1] if "," in args else ""
+    for n in names(READ, msgpart) - member - {own}:
+        if n in render:
+            r4.append(own + " quotes " + n)
+
+
+def emit(k, v):
+    print(k + "\t" + v)
+
+
+emit("MEMBER", " ".join(sorted(member)))
+emit("PERROW", " ".join(sorted(perrow)))
+emit("RENDER", " ".join(sorted(render)))
+emit("GUARDED", " ".join(sorted(guarded)))
+emit("MISNAMED_MEMBER", " ".join(misnamed))
+emit("STRAY_M", " ".join(stray))
+emit("MERGEOWNED", " ".join(sorted(mergeowned - member)))
+emit("ROLLUP", " ".join(sorted(rollup)))
+emit("REPRESENTATIVE", " ".join(sorted(representative)))
+emit("UNGUARDED", " ".join(sorted(
+    ((perrow & render) | (mergeowned - member) | rollup | representative)
+    - member - guarded)))
+emit("R4VIOL", " ".join(sorted(set(r4))))
+emit("NGUARDS", str(len(guards)))
+for own, j, msg in guards:
+    emit("GUARD", (own or "?") + "\t" + str(j + 1) + "\t" + msg)
+DERIVEPY
+cat > "$TR3/inject.py" <<'INJECTPY'
+import sys
+src, dst, arr, line = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+lines = open(src, encoding="utf-8").read().split("\n")
+lines.insert(line - 1, '    %s[fp] = "@@MUT@@"' % arr)
+open(dst, "w", encoding="utf-8").write("\n".join(lines))
+INJECTPY
+derive3() { python3 "$TR3/derive.py" "$1"; }
+derive3 "$BIN/jjstack-review-triage" > "$TR3/contract.tsv"
+dv() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' "$TR3/contract.tsv"; }
+
+# The derivation must have found something, or every assertion below is an
+# assertion about an empty set — the exact failure mode this section exists for.
+check "the triage script still declares its regions"     "[ \"\$(dv REGIONS)\" != 'broken' ]"
+check "the derivation finds the member ledger"           "[ -n \"\$(dv MEMBER)\" ]"
+check "the derivation finds the render"                  "[ -n \"\$(dv RENDER)\" ]"
+check "the derivation finds merged fields set per row"   "[ -n \"\$(dv PERROW)\" ]"
+check "the derivation finds cross-checks"                "[ \"\$(dv NGUARDS)\" -ge 5 ]"
+# THE CONTRACT, in three arms, each derived rather than listed:
+#   1. what the MERGE owns — a field with a second author can disagree with the
+#      recompute, so it is cross-checked whether or not the render reads it
+#      today. `CLAIM` is the case that proves the point: nothing renders it,
+#      and deleting its cross-check was invisible under the render-only rule.
+#   2. what the render reads AND the per-row body writes — `LOC`, `CLS`,
+#      `LENSES`, `CORROB`, `TALLY` and the duplicate count were all in this arm
+#      and none was checked, so "the collapse is checked, not trusted" covered
+#      five rendered fields and skipped six.
+#   3. what is ASSEMBLED by walking the member ledger — a copy cannot lose a
+#      member, a roll-up can. `TEXT` is the claim roll-up; `LENSES` and
+#      `CORROB` are the lens roll-up, which had no coverage check at all.
+#   4. what is COPIED from one member as the group's representative — sound
+#      only while every member agrees, which is an implication of how
+#      fingerprint() is keyed. `LOC` is the case: the guard on it IS that
+#      implication, written where it can fail rather than in a comment.
+check "the derivation finds what the merge owns"        "[ -n \"\$(dv MERGEOWNED)\" ]"
+check "the derivation finds the member roll-ups"        "[ -n \"\$(dv ROLLUP)\" ]"
+check "the derivation finds the representative fields"  "[ -n \"\$(dv REPRESENTATIVE)\" ]"
+check "every rendered merged field is recomputed or cross-checked" "[ -z \"\$(dv UNGUARDED)\" ]"
+[ -n "$(dv UNGUARDED)" ] && printf '     unguarded: %s\n' "$(dv UNGUARDED)"
+check "the member ledger keeps the M-prefix naming rule"           "[ -z \"\$(dv MISNAMED_MEMBER)\" ]"
+check "nothing but ground truth borrows the M prefix"              "[ -z \"\$(dv STRAY_M)\" ]"
+check "no merged diagnostic quotes a field it is not about"        "[ -z \"\$(dv R4VIOL)\" ]"
+# POSITIVE CONTROLS. Both literals are RECOVERED, not invented: the first is
+# the first-seen line as it stood at b173e82:bin/jjstack-review-triage:343, the
+# second is the reason diagnostic as it stood at the same commit, line 392.
+# Without these the two assertions above are greps over sets that may simply be
+# empty for want of a working derivation.
+python3 - "$BIN/jjstack-review-triage" "$TR3/unguarded" <<'CTLPY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src, encoding="utf-8").read()
+a = s.index("  SEEN[fp] = 1; order[++uniq] = fp\n")
+# `CLS[fp] = cls` is the tail of the first-seen line as it stood at
+# b173e82:bin/jjstack-review-triage:342 — a rendered field the merge owned and
+# nothing recomputed.
+s = s[:a] + "  CLS[fp] = cls\n" + s[a:]
+open(dst, "w", encoding="utf-8").write(s)
+CTLPY
+check "POSITIVE CONTROL: a merge-owned rendered field is caught" \
+      "[ -n \"\$(derive3 '$TR3/unguarded' | awk -F'\\t' '\$1 == \"UNGUARDED\" { print \$2 }')\" ]"
+python3 - "$BIN/jjstack-review-triage" "$TR3/r4viol" <<'CTLPY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src, encoding="utf-8").read()
+a = s.index('      failmerged(LOC[fp], "merge shows reason \\"" RSN[fp] "\\", but line "')
+b = s.index("\n", s.index('with the disposition that won', a))
+s = s[:a] + ('      failmerged(LOC[fp], "merge shows reason \\"" RSN[fp] '
+             '"\\", which does not belong to disposition \\"" DISP_[fp] "\\"")') + s[b:]
+open(dst, "w", encoding="utf-8").write(s)
+CTLPY
+check "POSITIVE CONTROL: a diagnostic quoting another field is caught" \
+      "[ -n \"\$(derive3 '$TR3/r4viol' | awk -F'\\t' '\$1 == \"R4VIOL\" { print \$2 }')\" ]"
+
+# --- every cross-check must be INDIVIDUALLY killable ------------------------
+# Before this, deleting the claim, confidence, disposition, reason or
+# claim-preservation check each left ALL 547 PASS: one fault injection greped
+# for one string, and under that injection all five fired at once, so four were
+# masked by the one that was asserted. The sweep is derived from the guard list
+# above, so a seventh check added tomorrow has to prove it can fire too.
+{
+  row P3 20 src/a.py:10 style    suppress baseline 'the request handler does not validate the incoming field length'
+  row P0 95 src/a.py:10 security report   -        'the request handler does not validate the incoming token allowing auth bypass'
+  row P2 40 src/b.py:7  perf     defer    pre-existing 'the loop reissues the same query for every row'
+} > "$TR3/sweep.tsv"
+"$BIN/jjstack-review-triage" "$TR3/sweep.tsv" --out "$TR3/sweep.md" > /dev/null 2> "$TR3/sweep.err"
+check "the sweep fixture is a VALID ledger on the real script" "[ -f '$TR3/sweep.md' ]"
+# The implication that makes these checks silent: the merge and the recompute
+# agree, so on a working script no merged diagnostic is ever printed. That is a
+# claim that can fail, and it is asserted rather than assumed.
+check "no merged diagnostic fires on a working script"        "! grep -q 'merged ' '$TR3/sweep.err'"
+nswept=0
+while IFS=$'\t' read -r _ arr ln msg; do
+  nswept=$((nswept+1))
+  python3 "$TR3/inject.py" "$BIN/jjstack-review-triage" "$TR3/mut" "$arr" "$ln"
+  chmod +x "$TR3/mut"
+  rm -f "$TR3/mut.md"
+  "$TR3/mut" "$TR3/sweep.tsv" --out "$TR3/mut.md" > /dev/null 2> "$TR3/mut.err"
+  rc=$?
+  own=$(grep -cF -- "$msg" "$TR3/mut.err")
+  tot=$(grep -c '  merged ' "$TR3/mut.err")
+  check "corrupting the merged \`$arr\` is rejected (exit 4)"     "[ $rc -eq 4 ]"
+  check "corrupting the merged \`$arr\` renders nothing"          "[ ! -f '$TR3/mut.md' ]"
+  check "the \`$arr\` cross-check names its own defect"           "[ '$own' -ge 1 ]"
+  check "the \`$arr\` cross-check is the ONLY one that fires"     "[ '$own' = '$tot' ]"
+done < <(awk -F'\t' '$1 == "GUARD" { print }' "$TR3/contract.tsv")
+check "the killability sweep actually ran every cross-check" "[ '$nswept' = \"\$(dv NGUARDS)\" ]"
+
+# --- the merge agrees with an oracle that is not the merge ------------------
+# The cross-checks compare two spellings of the same argmax, so they agree by
+# construction and a fuzz over random ledgers fires none of them. That is not
+# evidence the COLLAPSE IS RIGHT — only that the script agrees with itself. The
+# oracle below is the rule as the skill states it in prose (leading member is
+# highest severity then highest confidence, first wins ties; weakest
+# disposition carries its own reason; every distinct member claim is rendered),
+# reimplemented independently in python and run over random collision groups.
+cat > "$TR3/oracle.py" <<'ORACLEPY'
+"""Independent oracle for the merge, written from Phase 5.11 of the skill.
+
+Not a copy of the awk: the rules are read out of the prose contract —
+  * the leading member is the highest severity, then the highest confidence,
+    first row wins a tie, and its severity, confidence and claim travel
+    together;
+  * the merged disposition is the weakest (most visible) one, and it carries
+    ITS OWN reason;
+  * every materially distinct member claim is on the rendered row.
+If the awk and this disagree, one of them is wrong about the contract, which is
+exactly what a same-argmax cross-check cannot tell you.
+"""
+import random
+import re
+import subprocess
+import sys
+
+TOOL = sys.argv[1]
+WORK = sys.argv[2]
+SEV = ["P0", "P1", "P2", "P3"]
+DISP = ["report", "unconfirmed", "demoted", "defer", "out-of-scope", "suppress"]
+RSN = {
+    "report": "-",
+    "unconfirmed": "unverified",
+    "demoted": "prior-decision",
+    "defer": "pre-existing",
+    "out-of-scope": "style-only",
+    "suppress": "baseline",
+}
+HEAD = "the handler does not validate the incoming"
+
+
+def key(s):
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", s.lower()).split())
+
+
+problems = []
+rnd = random.Random(20260908)
+merged_groups = 0
+for trial in range(24):
+    rows, groups = [], {}
+    for g in range(rnd.randint(2, 12)):
+        loc = "src/f%d.py:%d" % (g, rnd.randint(1, 200))
+        members = []
+        for m in range(rnd.randint(1, 4)):
+            disp = rnd.choice(DISP)
+            sev = rnd.choice(SEV)
+            # invariant 3 is a per-row rule, not a merge rule: keep the
+            # generated ledger legal so the merge is what is under test.
+            if disp == "suppress" and sev in ("P0", "P1"):
+                sev = rnd.choice(["P2", "P3"])
+            members.append({
+                "sev": sev,
+                "conf": rnd.randint(0, 100),
+                "disp": disp,
+                "rsn": RSN[disp],
+                "lens": "lens%d" % rnd.randint(1, 3),
+                "claim": "%s %s %d" % (HEAD, rnd.choice(["token", "size", "name"]), m),
+            })
+        groups[loc] = members
+        for m in members:
+            rows.append("\t".join([m["sev"], str(m["conf"]), loc, m["lens"],
+                                   m["disp"], m["rsn"], m["claim"]]))
+    led = WORK + "/fuzz.tsv"
+    open(led, "w", encoding="utf-8").write("\n".join(rows) + "\n")
+    out = WORK + "/fuzz.md"
+    r = subprocess.run([TOOL, led, "--out", out], capture_output=True, text=True)
+    if r.returncode != 0:
+        problems.append("trial %d: exit %d %s" % (trial, r.returncode, r.stderr.strip()[:200]))
+        continue
+    if "merged " in r.stderr:
+        problems.append("trial %d: a cross-check fired on a working script" % trial)
+    page = open(out, encoding="utf-8").read()
+    for loc, members in groups.items():
+        # Members sharing a location AND the first eight normalised words of
+        # the claim are one group; that is the script's declared fingerprint.
+        buckets = {}
+        for m in members:
+            buckets.setdefault(" ".join(key(m["claim"]).split()[:8]), []).append(m)
+        for _, grp in buckets.items():
+            if len(grp) > 1:
+                merged_groups += 1
+            lead = min(grp, key=lambda m: (SEV.index(m["sev"]), -m["conf"]))
+            weak = min(grp, key=lambda m: DISP.index(m["disp"]))
+            want_cells = "| %s | %d | `%s` |" % (lead["sev"], lead["conf"], loc)
+            if want_cells not in page:
+                problems.append("%s: oracle wants %s, page does not have it"
+                                % (loc, want_cells.strip()))
+            row = [ln for ln in page.split("\n") if "`" + loc + "`" in ln]
+            if not row:
+                problems.append("%s: no rendered row at all" % loc)
+                continue
+            joined = key(" ".join(row))
+            hidden = ("defer", "suppress", "out-of-scope")
+            if weak["disp"] in hidden and key(weak["rsn"]) not in joined:
+                problems.append("%s: weakest disposition reason %s missing"
+                                % (loc, weak["rsn"]))
+            for m in grp:
+                if key(m["claim"]) not in joined:
+                    problems.append("%s: member claim %r left the page"
+                                    % (loc, m["claim"]))
+print("MERGEDGROUPS %d" % merged_groups)
+for p in problems[:20]:
+    print("PROBLEM " + p)
+ORACLEPY
+python3 "$TR3/oracle.py" "$BIN/jjstack-review-triage" "$TR3" > "$TR3/oracle.out" 2>&1
+check "the independent merge oracle agrees on every fuzzed ledger" \
+      "! grep -q '^PROBLEM' '$TR3/oracle.out'"
+[ -s "$TR3/oracle.out" ] && grep '^PROBLEM' "$TR3/oracle.out" | head -5
+# A fuzz that never produced a collision would agree with anything.
+check "the fuzz actually produced merges to check" \
+      "[ \"\$(awk '/^MERGEDGROUPS/ { print \$2 }' '$TR3/oracle.out')\" -gt 20 ]"
+
+# --- the §5.11 mapping table must be EXECUTABLE, at every severity ----------
+# The table prescribed `suppress`/`baseline` for a baseline-retired finding, and
+# jjstack-review-baseline has no severity gate — so a repo that had baselined a
+# P0 was told to write a row invariant 3 rejects, got exit 4, and could not
+# produce a ledger AT ALL. The remedy the skill printed named no legal
+# alternative. Every cell of the table is now fed to the real validator.
+cat > "$TR3/table.py" <<'TABLEPY'
+import re
+import sys
+
+rows = []
+started = False
+for line in open(sys.argv[1], encoding="utf-8"):
+    if line.startswith("| Phase 5 outcome | disposition | reason |"):
+        started = True
+        continue
+    if started:
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if set(cells[0]) <= set("- "):
+            continue
+        outcome, disp, rsn, sev = cells[0], cells[1], cells[2], cells[3]
+        codes = lambda c: re.findall(r"`([^`]+)`", c)
+        d = codes(disp)
+        sevs = codes(sev)
+        span = []
+        if len(sevs) == 2:
+            order = ["P0", "P1", "P2", "P3"]
+            span = order[order.index(sevs[0]):order.index(sevs[1]) + 1]
+        else:
+            span = sevs
+        for r in codes(rsn) or ["-"]:
+            for s in span:
+                rows.append((re.sub(r"[^a-z0-9]+", "-", outcome.lower()).strip("-"),
+                             d[0], r, s))
+for o, d, r, s in rows:
+    print("\t".join([o, d, r, s]))
+TABLEPY
+python3 "$TR3/table.py" "$DIR/skills/review/SKILL.md" > "$TR3/table.tsv"
+check "the §5.11 mapping table parses into rows" "[ \$(wc -l < '$TR3/table.tsv') -ge 12 ]"
+tn=0
+while IFS=$'\t' read -r outcome disp rsn sev; do
+  tn=$((tn+1))
+  row "$sev" 50 "src/t$tn.py:3" lens "$disp" "$rsn" "prescribed by the mapping table" > "$TR3/tbl.tsv"
+  "$BIN/jjstack-review-triage" "$TR3/tbl.tsv" --out "$TR3/tbl.md" > /dev/null 2> "$TR3/tbl.err"
+  rc=$?
+  check "the table row \`$sev $disp/$rsn\` is a ledger the validator accepts" "[ $rc -eq 0 ]"
+done < "$TR3/table.tsv"
+# And no outcome may be legal at only some severities without saying so: the
+# union of every row for one outcome has to cover P0..P3, or a real upstream
+# state has no legal ledger row again.
+python3 - "$TR3/table.tsv" > "$TR3/tablecov.txt" <<'COVPY'
+import collections
+import sys
+seen = collections.defaultdict(set)
+for line in open(sys.argv[1], encoding="utf-8"):
+    o, d, r, s = line.rstrip("\n").split("\t")
+    seen[o].add(s)
+for o, sevs in sorted(seen.items()):
+    if sevs != {"P0", "P1", "P2", "P3"}:
+        print("GAP %s covers only %s" % (o, " ".join(sorted(sevs))))
+COVPY
+check "every §5.11 outcome is mapped at all four severities" "[ ! -s '$TR3/tablecov.txt' ]"
+cat "$TR3/tablecov.txt"
+# END TO END, through the real generate/apply pair: prove the upstream really
+# can hand Phase 5.11 a baseline-retired P0, so the row above is required to
+# exist rather than being a hypothetical.
+printf '{"file":"src/a.py","start_line":10,"severity":"P0","message":"auth bypass","lens":"security","confidence":90,"quote":"if True:","explanation":"e","remediation":"r"}\n' > "$TR3/p0.jsonl"
+"$BIN/jjstack-review-baseline" generate "$TR3/p0.jsonl" --reason 'triaged: accepted risk' -o "$TR3/p0.baseline.json" > /dev/null 2>&1
+"$BIN/jjstack-review-baseline" apply "$TR3/p0.jsonl" --baseline "$TR3/p0.baseline.json" > "$TR3/p0.adj.jsonl" 2>/dev/null
+check "the baseline tool really does retire a P0 (no severity gate)" \
+      "grep -q '\"suppressed\": {' '$TR3/p0.adj.jsonl'"
+row P0 90 src/a.py:10 security defer baseline 'auth bypass' > "$TR3/p0.tsv"
+"$BIN/jjstack-review-triage" "$TR3/p0.tsv" --reconcile "$TR3/p0.adj.jsonl" --out "$TR3/p0.md" > /dev/null 2> "$TR3/p0.err"
+rc=$?
+check "a repo that baselined a P0 can still produce a ledger (exit 0)" "[ $rc -eq 0 ]"
+check "the baselined P0 is deferred, on the page, not suppressed" \
+      "awk '/^## Deferred/,/^## Suppressed/' '$TR3/p0.md' | grep -q 'auth bypass'"
+check "the baselined P0 keeps the \`baseline\` reason on the record" \
+      "grep -q '\`baseline\`' '$TR3/p0.md'"
+# POSITIVE CONTROL — invariant 3 is not being worked around: the row the table
+# USED to prescribe is still rejected, and the error now names the legal move.
+row P0 90 src/a.py:10 security suppress baseline 'auth bypass' > "$TR3/p0bad.tsv"
+"$BIN/jjstack-review-triage" "$TR3/p0bad.tsv" > /dev/null 2> "$TR3/p0bad.err"
+rc=$?
+check "POSITIVE CONTROL: suppressing a P0 is still exit 4"      "[ $rc -eq 4 ]"
+check "the rejection names the legal alternative"               "grep -q 'defer' '$TR3/p0bad.err'"
+check "the rejection names the \`baseline\` reason to keep"     "grep -q 'baseline' '$TR3/p0bad.err'"
+
+# --- pathclass: every rule must be reachable, on the PATH -------------------
+# pathclass() was handed the whole `path:line` column, so every rule anchored on
+# `$` was dead: `README.md:5`, `app.min.js:1` and `api_pb2.py:3` all came out
+# `prod`, which is what the vendor/generated advisory keys off. The corpus below
+# is checked for COVERAGE against the rule list read out of the script, so a
+# rule with no probe reddens instead of quietly never firing.
+cat > "$TR3/pathrules.py" <<'PATHPY'
+"""Classify a path with pathclass()'s own rule list, read out of the script.
+
+The oracle is the RULE TABLE, applied by an independent engine to the path
+alone. The implementation under test is the awk plumbing that decides what
+string the table gets to see — which is where the defect was.
+"""
+import re
+import subprocess
+import sys
+
+script, tool, work = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(script, encoding="utf-8").read()
+fn = src[src.index("function pathclass("):]
+fn = fn[: fn.index("\n}")]
+rules = []
+for m in re.finditer(r'~\s*/(.+?)/\)\s*return\s+"([a-z]+)"', fn):
+    rules.append((m.group(1), m.group(2)))
+if not rules:
+    print("PROBLEM no rules parsed out of pathclass()")
+    sys.exit(0)
+
+
+def alts(rx):
+    """Split a regex on its TOP-LEVEL alternations — one arm per branch."""
+    out, depth, cur = [], 0, ""
+    i = 0
+    while i < len(rx):
+        c = rx[i]
+        if c == "\\":
+            cur += rx[i:i + 2]
+            i += 2
+            continue
+        if c == "[":
+            j = rx.index("]", i + 1)
+            cur += rx[i:j + 1]
+            i = j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        if c == "|" and depth == 0:
+            out.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += c
+        i += 1
+    out.append(cur)
+    return out
+
+
+def py(rx):
+    return rx.replace("\\/", "/")
+
+
+def reference(path):
+    for rx, cls in rules:
+        if re.search(py(rx), path.lower()):
+            return cls
+    return "prod"
+
+
+CORPUS = [
+    "vendor/lib/x.js", "node_modules/a/b.js", "pkg/third_party/z.c",
+    "bower_components/q/a.js", ".venv/lib/x.py", "src/venv/y.py",
+    "lib/site-packages/z.py", "fixture/a.json", "fixtures/b.json",
+    "testdata/c.bin", "__mocks__/d.js", "mocks/e.js",
+    "test/f.py", "tests/g.py", "spec/h.rb", "specs/i.rb", "__tests__/j.ts",
+    "pkg/a_test.go", "pkg/a.test.js", "pkg/a.spec.ts", "pkg/test_foo.py",
+    "dist/x.js", "build/y.js", "out/z.js", "target/w.class", "generated/v.go",
+    "app.min.js", "style.min.css", "api_pb2.py", "svc.pb.go",
+    "src/x.generated.ts", "doc/a.md", "docs/b.md", "README.md", "a.rst",
+    "a.adoc", "notes.txt", "src/main.py",
+]
+
+problems = []
+# COVERAGE: every top-level arm of every rule must be exercised by the corpus.
+for rx, cls in rules:
+    for arm in alts(rx):
+        if not any(re.search(py(arm), p.lower()) for p in CORPUS):
+            problems.append("no probe reaches rule arm %r (-> %s)" % (arm, cls))
+
+rows, expect = [], {}
+for n, p in enumerate(CORPUS):
+    loc = "%s:%d" % (p, n + 1)
+    rows.append("\t".join(["P3", "10", loc, "lens", "report", "-",
+                           "probe %d for the exposure classifier" % n]))
+    expect[loc] = reference(p)
+led = work + "/paths.tsv"
+open(led, "w", encoding="utf-8").write("\n".join(rows) + "\n")
+out = work + "/paths.md"
+r = subprocess.run([tool, led, "--out", out], capture_output=True, text=True)
+if r.returncode != 0:
+    problems.append("triage exited %d: %s" % (r.returncode, r.stderr.strip()[:200]))
+else:
+    page = open(out, encoding="utf-8").read()
+    for line in page.split("\n"):
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not cells[2].startswith("`"):
+            continue
+        loc = cells[2].strip("`")
+        if loc in expect and cells[3] != expect[loc]:
+            problems.append("%s classified %s, the rule list says %s"
+                            % (loc, cells[3], expect[loc]))
+print("RULES %d" % len(rules))
+for p in problems[:20]:
+    print("PROBLEM " + p)
+PATHPY
+python3 "$TR3/pathrules.py" "$BIN/jjstack-review-triage" "$BIN/jjstack-review-triage" "$TR3" > "$TR3/paths.out" 2>&1
+check "pathclass agrees with its own rule list on every probe" \
+      "! grep -q '^PROBLEM' '$TR3/paths.out'"
+grep '^PROBLEM' "$TR3/paths.out" | head -8
+check "the exposure rule list was actually parsed" \
+      "[ \"\$(awk '/^RULES/ { print \$2 }' '$TR3/paths.out')\" -ge 6 ]"
+# POSITIVE CONTROL — hand the rule list the raw `path:line` column again and the
+# comparison must fail, or "agrees with its own rule list" is a check that would
+# pass for a classifier that had never been fixed.
+python3 - "$BIN/jjstack-review-triage" "$TR3/rawpath" <<'CTLPY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src, encoding="utf-8").read()
+a = s.index('  sub(/:[0-9]+(-[0-9]+)?$/, "", lp)\n')
+open(dst, "w", encoding="utf-8").write(s[:a] + s[a + len('  sub(/:[0-9]+(-[0-9]+)?$/, "", lp)\n'):])
+CTLPY
+chmod +x "$TR3/rawpath"
+python3 "$TR3/pathrules.py" "$BIN/jjstack-review-triage" "$TR3/rawpath" "$TR3" > "$TR3/rawpath.out" 2>&1
+check "POSITIVE CONTROL: classifying \`path:line\` is caught" \
+      "grep -q '^PROBLEM' '$TR3/rawpath.out'"
+
+# --- reconciliation matches findings, it does not count rows ---------------
+# Two P0s adjudicated at one line were "accounted for" by one P0 report plus an
+# unrelated P3 whitespace nit: the count matched, nothing tied a row to the
+# finding it was meant to answer for, and the second finding's text appeared
+# nowhere under a header reading "a checked fact, not a promise".
+adj3() { printf '{"lens":"%s","file":"%s","start_line":%s,"severity":"%s","confidence":0.9,"message":"%s","quote":"q","explanation":"e","remediation":"r"}\n' "$1" "$2" "$3" "$4" "$5"; }
+{
+  adj3 security src/a.py 10 P0 'auth bypass'
+  adj3 memory   src/a.py 10 P0 'double free'
+} > "$TR3/two.jsonl"
+{
+  row P0 90 src/a.py:10 security     report       -          'auth bypass'
+  row P3 20 src/a.py:10 style        out-of-scope style-only 'trailing whitespace here'
+} > "$TR3/filler.tsv"
+"$BIN/jjstack-review-triage" "$TR3/filler.tsv" --reconcile "$TR3/two.jsonl" \
+  --out "$TR3/filler.md" > /dev/null 2> "$TR3/filler.err"
+rc=$?
+check "a filler row cannot account for a different finding (exit 4)" "[ $rc -eq 4 ]"
+check "the reconciler names the finding nothing answered for"        "grep -q 'double free' '$TR3/filler.err'"
+check "an unmatched adjudicated finding renders nothing"             "[ ! -f '$TR3/filler.md' ]"
+# The matching is one row per finding, so two findings need two rows even when
+# both claims are right.
+{
+  row P0 90 src/a.py:10 security report - 'auth bypass'
+  row P0 80 src/a.py:10 memory   report - 'double free'
+} > "$TR3/both.tsv"
+"$BIN/jjstack-review-triage" "$TR3/both.tsv" --reconcile "$TR3/two.jsonl" \
+  --out "$TR3/both.md" > /dev/null 2>&1
+rc=$?
+check "two rows answering two findings reconcile (exit 0)" "[ $rc -eq 0 ]"
+# ...and a restatement still counts, or the reconciler would forbid the ledger
+# from wording a finding in its own words — the rule the merge already applies.
+row P0 90 src/a.py:10 security report - 'auth bypass in the admin route' > "$TR3/reword.tsv"
+adj3 security src/a.py 10 P0 'auth bypass' > "$TR3/one.jsonl"
+"$BIN/jjstack-review-triage" "$TR3/reword.tsv" --reconcile "$TR3/one.jsonl" \
+  --out "$TR3/reword.md" > /dev/null 2>&1
+rc=$?
+check "a reworded claim still reconciles (exit 0)" "[ $rc -eq 0 ]"
+# And a population, not one fixture: for every adjudicated finding in a random
+# set, replacing exactly that row's claim with an unrelated one must be caught.
+cat > "$TR3/reconfuzz.py" <<'RECONPY'
+"""Every substituted claim must be caught, whichever finding it was."""
+import json
+import random
+import subprocess
+import sys
+
+tool, work = sys.argv[1], sys.argv[2]
+rnd = random.Random(4242)
+problems = []
+for trial in range(25):
+    n = rnd.randint(2, 6)
+    adj, rows = [], []
+    for i in range(n):
+        loc = "src/x.py"
+        ln = rnd.choice([7, 7, 11])          # collisions on purpose
+        msg = "defect %d %s" % (i, rnd.choice(["alpha", "beta", "gamma"]))
+        adj.append({"lens": "l%d" % i, "file": loc, "start_line": ln,
+                    "severity": "P2", "confidence": 0.8, "message": msg,
+                    "quote": "q", "explanation": "e", "remediation": "r"})
+        rows.append(["P2", "60", "%s:%d" % (loc, ln), "l%d" % i, "report", "-", msg])
+    aj = work + "/rf.jsonl"
+    open(aj, "w", encoding="utf-8").write(
+        "\n".join(json.dumps(a, sort_keys=True) for a in adj) + "\n")
+    led = work + "/rf.tsv"
+    open(led, "w", encoding="utf-8").write(
+        "\n".join("\t".join(r) for r in rows) + "\n")
+    r = subprocess.run([tool, led, "--reconcile", aj, "--out", work + "/rf.md"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        problems.append("faithful ledger %d rejected: %s" % (trial, r.stderr.strip()[:160]))
+        continue
+    victim = rnd.randrange(n)
+    broken = [list(r_) for r_ in rows]
+    broken[victim][6] = "unrelated nit about trailing whitespace"
+    open(led, "w", encoding="utf-8").write(
+        "\n".join("\t".join(r_) for r_ in broken) + "\n")
+    r = subprocess.run([tool, led, "--reconcile", aj, "--out", work + "/rf.md"],
+                       capture_output=True, text=True)
+    if r.returncode != 4:
+        problems.append("trial %d: substituted claim %r accepted (exit %d)"
+                        % (trial, rows[victim][6], r.returncode))
+    elif rows[victim][6] not in r.stderr:
+        problems.append("trial %d: rejection does not name the lost finding" % trial)
+for p in problems[:15]:
+    print("PROBLEM " + p)
+print("TRIALS 25")
+RECONPY
+python3 "$TR3/reconfuzz.py" "$BIN/jjstack-review-triage" "$TR3" > "$TR3/reconfuzz.out" 2>&1
+check "every substituted claim is caught, not just the reported example" \
+      "! grep -q '^PROBLEM' '$TR3/reconfuzz.out'"
+grep '^PROBLEM' "$TR3/reconfuzz.out" | head -5
+
+# --- the reconciler's exit taxonomy is three-way in practice ---------------
+# The header documents three outcomes and the wrapper had two branches, so
+# changing the helper's `sys.exit(2)` to `sys.exit(1)` left the whole suite
+# green. The codes are read out of the header, and each documented one must
+# produce its own message.
+RSHIM="$TR3/shim"; mkdir -p "$RSHIM"
+for t in bash awk gawk mawk date mktemp rm grep cat cp mkdir dirname basename sed tr sort head; do
+  p="$(command -v "$t" 2>/dev/null)"; [ -n "$p" ] && ln -s "$p" "$RSHIM/$t" 2>/dev/null
+done
+row P0 90 src/a.py:10 security report - 'auth bypass' > "$TR3/tax.tsv"
+adj3 security src/a.py 10 P0 'auth bypass' > "$TR3/tax.jsonl"
+taxmsg() {  # taxmsg <exit code> -> the first FAIL line the wrapper prints
+  printf '#!/bin/sh\nexit %s\n' "$1" > "$RSHIM/python3"; chmod +x "$RSHIM/python3"
+  env PATH="$RSHIM" "$BIN/jjstack-review-triage" "$TR3/tax.tsv" \
+      --reconcile "$TR3/tax.jsonl" --out "$TR3/tax.md" 2>&1 >/dev/null \
+    | grep -m1 'FAIL' | sed 's/\x1b\[[0-9;]*m//g'
+}
+: > "$TR3/tax.msgs"
+grep -oE '^ *#   [0-9]+ = ' "$BIN/jjstack-review-triage" | grep -oE '[0-9]+' > "$TR3/tax.codes"
+check "the reconciler documents more than one exit code" "[ \$(wc -l < '$TR3/tax.codes') -ge 2 ]"
+while read -r c; do
+  m="$(taxmsg "$c")"
+  check "documented reconciler exit $c has a message of its own" "[ -n \"\$m\" ]"
+  printf '%s\n' "$m" >> "$TR3/tax.msgs"
+done < "$TR3/tax.codes"
+# The undocumented codes are the "anything else" arm; they must not borrow a
+# documented code's wording.
+for c in 1 7; do printf '%s\n' "$(taxmsg "$c")" >> "$TR3/tax.msgs"; done
+check "every documented reconciler exit reads differently" \
+      "[ \$(sort -u '$TR3/tax.msgs' | wc -l) = \$(wc -l < '$TR3/tax.msgs') ]"
+check "an unexpected helper exit says it crashed"  "printf '%s' \"\$(taxmsg 7)\" | grep -q 'crashed unexpectedly'"
+check "an unreadable adjudicated file says so"     "printf '%s' \"\$(taxmsg 2)\" | grep -q 'could not be read'"
+check "a helper that found problems blames input"  "printf '%s' \"\$(taxmsg 3)\" | grep -q 'does not account'"
+# A SHIM ONLY PROVES THE WRAPPER. It never runs the helper, so it cannot see
+# which code the helper actually raises — changing the helper's `sys.exit(2)`
+# to `sys.exit(1)` left every assertion above green. So each documented code is
+# also driven from a REAL input, and the message the real run prints must be
+# the message the shim proved belongs to that code. The pairing is required to
+# be COMPLETE: a code documented without a real fixture reddens here rather
+# than being tested through the wrapper alone.
+printf 'not utf8: \377\376\n' > "$TR3/binary.jsonl"
+printf '# a ledger of nothing but a comment\n' > "$TR3/nothing.tsv"
+{
+  printf '2\t%s\t%s\n' "$TR3/tax.tsv"    "$TR3/binary.jsonl"
+  printf '3\t%s\t%s\n' "$TR3/nothing.tsv" "$TR3/tax.jsonl"
+} > "$TR3/tax.real"
+realmsg() {  # realmsg <ledger> <adjudicated> -> the first FAIL line, uncoloured
+  "$BIN/jjstack-review-triage" "$1" --reconcile "$2" --out "$TR3/real.md" 2>&1 >/dev/null \
+    | grep -m1 'FAIL' | sed 's/\x1b\[[0-9;]*m//g'
+}
+while read -r c; do
+  led="$(awk -F'\t' -v c="$c" '$1 == c { print $2 }' "$TR3/tax.real")"
+  adj="$(awk -F'\t' -v c="$c" '$1 == c { print $3 }' "$TR3/tax.real")"
+  check "documented reconciler exit $c has a real input that reaches it" \
+        "[ -n \"\$led\" ] && [ -n \"\$adj\" ]"
+  [ -z "$led" ] && continue
+  rm -f "$TR3/real.md"
+  rm -f "$RSHIM/python3"
+  real="$(realmsg "$led" "$adj")"
+  shim="$(taxmsg "$c")"
+  check "the real exit-$c path prints the exit-$c message" "[ \"\$real\" = \"\$shim\" ]"
+  [ "$real" != "$shim" ] && printf '     real: %s\n     shim: %s\n' "$real" "$shim"
+done < "$TR3/tax.codes"
+rm -f "$RSHIM/python3"
+
+# --- the absorb2 case is rejected PER ROW, and that is the whole story ------
+# The comment beside it claimed "the merged check rejects it again — invariant 3
+# must hold on both sides of the collapse". There is no merged-side invariant 3;
+# the file says three lines later that it was dead code. Deleting the per-row
+# check reddens those assertions and deleting any merged check does not, so the
+# test named a mechanism it never reached. The IMPLICATION that makes a merged
+# copy dead is asserted here instead of being asserted in a comment: `suppress`
+# is the strongest disprank, so a merged `suppress` means every member said
+# `suppress`, and any P0/P1 member was already rejected on the way in.
+{
+  row P3 20 src/e.py:7 style    suppress baseline 'the parser accepts a header value without any bound'
+  row P0 91 src/e.py:7 security suppress baseline 'the parser accepts a header value without checking the signature'
+} > "$TR3/imp.tsv"
+"$BIN/jjstack-review-triage" "$TR3/imp.tsv" --out "$TR3/imp.md" > /dev/null 2> "$TR3/imp.err"
+check "the all-suppressed P0 group is rejected by the PER-ROW check" \
+      "grep -q '^  line 2:' '$TR3/imp.err'"
+check "no merged check is credited with the rejection" \
+      "! grep -q 'merged ' '$TR3/imp.err'"
+# The implication itself, over the fuzz corpus: no group ever renders `suppress`
+# while holding a P0/P1 member. If disprank or the per-row gate ever changes so
+# that it can, this fires — which is what a comment cannot do.
+cat > "$TR3/implication.py" <<'IMPPY'
+"""A merged `suppress` implies every member was `suppress`.
+
+That is what makes a merged copy of invariant 3 unreachable. It is derived from
+disprank() — `suppress` is the maximum, so the minimum over a group can only be
+`suppress` when every member is — and asserted over generated groups rather
+than asserted in a comment.
+"""
+import random
+import re
+import subprocess
+import sys
+
+tool, work = sys.argv[1], sys.argv[2]
+src = open(tool, encoding="utf-8").read()
+fn = src[src.index("function disprank("):]
+fn = fn[: fn.index("\n}")]
+ranks = {m.group(1): int(m.group(2))
+         for m in re.finditer(r'd == "([a-z-]+)"\)\s*return (\d+)', fn)}
+default = re.search(r"return (\d+)\s*#", fn)
+DISP = sorted(ranks, key=ranks.get) + ["suppress"]
+problems = []
+if not ranks:
+    problems.append("disprank() did not parse")
+if ranks and max(ranks.values()) >= int(default.group(1)):
+    problems.append("`suppress` is no longer the strongest disprank")
+rnd = random.Random(99)
+for trial in range(20):
+    rows = []
+    for g in range(6):
+        loc = "src/i%d.py:3" % g
+        for m in range(rnd.randint(2, 4)):
+            disp = rnd.choice(DISP)
+            sev = rnd.choice(["P0", "P1", "P2", "P3"])
+            if disp == "suppress" and sev in ("P0", "P1"):
+                sev = "P2"
+            rsn = "-" if disp == "report" else "baseline"
+            rows.append("\t".join([sev, "50", loc, "l%d" % m, disp, rsn,
+                                   "the parser accepts a header value %d" % m]))
+    led = work + "/imp%d.tsv" % trial
+    open(led, "w", encoding="utf-8").write("\n".join(rows) + "\n")
+    out = work + "/imp%d.md" % trial
+    r = subprocess.run([tool, led, "--out", out], capture_output=True, text=True)
+    if r.returncode != 0:
+        problems.append("trial %d rejected: %s" % (trial, r.stderr.strip()[:120]))
+        continue
+    page = open(out, encoding="utf-8").read()
+    sup = page[page.index("## Suppressed by baseline"):]
+    sup = sup[: sup.index("## Out of scope")]
+    for line in sup.split("\n"):
+        if line.startswith("| P0 ") or line.startswith("| P1 "):
+            problems.append("trial %d: a P0/P1 rendered as suppressed" % trial)
+for p in problems[:10]:
+    print("PROBLEM " + p)
+IMPPY
+python3 "$TR3/implication.py" "$BIN/jjstack-review-triage" "$TR3" > "$TR3/imp.out" 2>&1
+check "no merged group can render a suppressed P0/P1 (the dead-check implication)" \
+      "! grep -q '^PROBLEM' '$TR3/imp.out'"
+grep '^PROBLEM' "$TR3/imp.out" | head -5
+rm -rf "$TR3"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

@@ -761,14 +761,20 @@ a reason code from the closed vocabulary. Phase 5 is **enrich-only**, so these
 outcomes are dispositions a finding *arrives with* — none of them is a licence
 to delete, and no arithmetic threshold appears here:
 
-| Phase 5 outcome | disposition | reason |
-|---|---|---|
-| confirmed, in the main report | `report` | `-` |
-| tagged `llm-unconfirmed` (§5b) | `unconfirmed` | `unverified` |
-| demoted by calibration (§5.10) | `demoted` | `prior-decision` |
-| retired by the committed baseline (§5d) | `suppress` | `baseline` |
-| real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` |
-| never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` |
+The last column is not decoration: a row is only legal at the severities it
+names, and **every outcome must be spelled out for all four severities**. The
+script validates severity, so a table that prescribes a row it rejects sends
+the model into a loop with no legal move.
+
+| Phase 5 outcome | disposition | reason | severity |
+|---|---|---|---|
+| confirmed, in the main report | `report` | `-` | `P0`–`P3` |
+| tagged `llm-unconfirmed` (§5b) | `unconfirmed` | `unverified` | `P0`–`P3` |
+| demoted by calibration (§5.10) | `demoted` | `prior-decision` | `P0`–`P3` |
+| retired by the committed baseline (§5d) | `suppress` | `baseline` | `P2`–`P3` |
+| retired by the committed baseline (§5d) | `defer` | `baseline` | `P0`–`P1` |
+| real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` | `P0`–`P3` |
+| never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` | `P0`–`P3` |
 
 `reason` is a **code from the closed vocabulary**, never free text. A
 baseline-suppressed finding takes the literal token `baseline`; the human
@@ -776,6 +782,19 @@ sentence that justified the suppression already lives in the committed
 `.jjstack-review-baseline.json` and stays there. Pasting it into this column
 makes the validator exit 4 on a ledger that says exactly what it was told to
 say, and the loop has no way out.
+
+**Why the baseline outcome has two rows.** `jjstack-review-baseline` has no
+severity gate — its fingerprint is (lens, file, severity, message, quote) and
+nothing stops a human committing a P0 — so §5d demonstrably emits an
+adjudicated P0 carrying `suppressed.by=fingerprint`. Invariant 3 below then
+refuses `suppress` on a P0/P1, so the single row this table used to carry was a
+row the validator rejects: a repo that had baselined a P0 could not produce a
+ledger **at all**, and "every finding is written to a triage ledger" silently
+stopped being true on exactly those repos. The disposition for a baselined
+P0/P1 is therefore `defer` with the same `baseline` reason — still on the page,
+still not in the active set, and still carrying the record of who muted it.
+That is invariant 3 doing its job rather than being worked around: a top
+severity may be deprioritised, never made to disappear.
 
 Then render the ledger. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation
@@ -787,9 +806,17 @@ and the tally are the script's job, not the model's:
   --out {OUTPUT_DIR}/review-triage-ledger.md
 ```
 
-Pass `--reconcile` whenever 5d ran: it counts findings per `file:start_line` on
-both sides and refuses to render if the ledger is short, which is what turns
+Pass `--reconcile` whenever 5d ran: it **matches each adjudicated finding to a
+distinct ledger row by identity** — same `file:start_line` *and* the same claim
+— and refuses to render if any finding is left unmatched, which is what turns
 "write the **complete** merged set" from an instruction into a checked fact.
+Identity, not a count: counting rows per location let any second row at a line
+discharge the obligation to account for a second finding there, so a P0
+`double free` adjudicated beside a P0 `auth bypass` was reconciled away by an
+unrelated whitespace nit and never reached the page. Rewording is still a
+match (the ledger claim and the adjudicated `message` reconcile when either
+normalised form contains the other), so restating a finding in the ledger is
+fine and replacing it is not.
 A `path:N-M` ledger row reconciles on its **start** line. An adjudicated file
 holding no findings earns no stronger header than no flag at all — reconciling
 against nothing checks nothing. Without the flag the rendered header says so
@@ -811,7 +838,9 @@ The script enforces three invariants that prose cannot:
    lower its severity." You have less call-graph evidence than they do, so hold it
    harder — uncertainty always resolves toward keeping the finding.
 3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
-   reason; it may not be made to disappear.
+   reason; it may not be made to disappear. This is what forces the two-row
+   baseline mapping above: the reason code stays `baseline`, the disposition
+   moves from `suppress` to `defer`, and the finding stays legible.
 
 All three run per row on the way in. Rows that share a fingerprint then
 collapse into one finding carrying the **highest severity** of its members —
@@ -842,6 +871,12 @@ merge itself.
 It exits **4** and renders nothing if any of those is violated, or if
 `--reconcile` finds a finding with no row: fix the ledger and rerun rather than
 working around it. It exits 3 if the ledger or the adjudicated file is missing.
+`exposure` is computed from the **path**, with the `:line` suffix stripped
+first. It used to be computed from the whole `path:line` string, which killed
+every rule anchored on the end of a filename: `README.md:5`, `app.min.js:1` and
+`api_pb2.py:3` all classified as `prod`, and the vendor/generated advisory keys
+off this classification.
+
 It also emits yellow `ADVISORY` lines for findings reported against vendored or
 generated paths — code nobody here authored, and usually noise — and for an
 empty, unreconciled ledger, which certifies nothing.

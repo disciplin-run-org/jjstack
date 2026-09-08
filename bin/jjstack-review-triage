@@ -54,9 +54,14 @@
 #                  and `demoted` are SHOWN sections, and no disposition here is
 #                  a score threshold, because a finding is never deleted)
 #     reason       `-` for `report`; otherwise one of:
-#                  unverified prior-decision low-confidence pre-existing
-#                  tool-covered style-only no-repro duplicate not-reachable
-#                  accepted-risk baseline
+#                  unverified prior-decision pre-existing tool-covered
+#                  style-only no-repro duplicate not-reachable accepted-risk
+#                  baseline
+#                  (`low-confidence` used to sit in this list. It was a
+#                  leftover of the deleted rescoring model, was documented
+#                  nowhere, and the skill-to-script guard only ran in one
+#                  direction so nothing noticed. The vocabulary is now checked
+#                  for equality in BOTH directions.)
 #     claim        the finding text (any further columns are rejoined)
 #
 # Usage:
@@ -64,8 +69,18 @@
 #
 #   --reconcile ADJUDICATED turns the page's completeness claim into a checked
 #   fact instead of a sentence. ADJUDICATED is Phase 5d's
-#   `findings.adjudicated.jsonl`; every finding in it must have a ledger row at
-#   the same `file:start_line`, counted per location, or nothing is rendered.
+#   `findings.adjudicated.jsonl`; every finding in it must be matched to a
+#   ledger row by IDENTITY — same `file:start_line` AND the same claim — and
+#   each ledger row may account for at most one adjudicated finding, or nothing
+#   is rendered.
+#   Counting rows per location was not enough and said so out loud: two P0s
+#   adjudicated at `src/a.py:10` were "accounted for" by one P0 report plus an
+#   unrelated P3 whitespace nit at the same line, and the second finding's text
+#   appeared nowhere on a page headed "a checked fact, not a promise". So the
+#   ledger emits the same `claimkey()` the merge uses, and the match is on both
+#   halves. Rewording is still a match: the adjudicated `message` and the
+#   ledger `claim` reconcile when either normalised form contains the other,
+#   the same "restatement, not a new claim" rule the merge applies.
 #   A `path:N-M` ledger row reconciles on its START line. An adjudicated set
 #   holding NO findings checks nothing, so it does not earn the stronger
 #   header — reconciling against nothing is not evidence.
@@ -173,6 +188,17 @@ function cellsafe(s,   n, parts, i, out) {
 # it never decides whether a finding is shown.
 function pathclass(p,   lp) {
   lp = tolower(p)
+  # The location column of the ledger is `path:line` (or `path:N-M`) — the grammar
+  # the row validator enforces — and this function was handed that whole
+  # string. Every rule below that anchors on `$` therefore matched nothing:
+  # `README.md:5`, `app.min.js:1` and `api_pb2.py:3` all classified as `prod`,
+  # so the entire `docs` extension arm and three of the four `generated` arms
+  # were dead code, and the vendor/generated advisory keys off this. Only the
+  # directory rules and the unanchored `\.generated\.` ever fired, and the
+  # fixtures happened to use only directory paths. Strip the location suffix
+  # HERE rather than at the call site, so a future caller cannot reintroduce
+  # the same defect by passing the raw column again.
+  sub(/:[0-9]+(-[0-9]+)?$/, "", lp)
   if (lp ~ /(^|\/)(vendor|node_modules|third_party|bower_components)\//) return "vendor"
   if (lp ~ /(^|\/)(\.venv|venv|site-packages)\//)                        return "vendor"
   if (lp ~ /(^|\/)(fixture|fixtures|testdata|__mocks__|mocks)\//)        return "fixture"
@@ -194,7 +220,9 @@ function fingerprint(loc, claim,   c, w, i, k, n) {
   return loc "|" k
 }
 
+#>> RENDER
 function lenslist(fp,   s) { s = LENSES[fp]; gsub(/\|/, ", ", s); return s }
+#<< RENDER
 
 # Two rows can describe ONE defect in different words ("missing authz check on
 # admin route" / "Missing authz check on admin route!"). Normalised equality is
@@ -207,6 +235,7 @@ function claimkey(s,   c) {
   return c
 }
 
+#>> RENDER
 function section(title, want,   i, fp, n) {
   n = 0
   for (i = 1; i <= uniq; i++) if (DISP_[order[i]] == want) n++
@@ -230,6 +259,7 @@ function section(title, want,   i, fp, n) {
       printf("| %s | %s | `%s` | %s | `%s` | %s | %s |\n", SEV_[fp], CONF[fp], cellsafe(LOC[fp]), CLS[fp], RSN[fp], lenslist(fp), cellsafe(TEXT[fp])) >> render
   }
 }
+#<< RENDER
 
 BEGIN {
   split("P0 P1 P2 P3", a, " ");                    for (i in a) SEV[a[i]] = 1
@@ -237,7 +267,7 @@ BEGIN {
   # deleted, so there is no score-threshold disposition. "unconfirmed" and
   # "demoted" are SHOWN sections; only the committed baseline suppresses.
   split("report unconfirmed demoted defer suppress out-of-scope", a, " "); for (i in a) DISP[a[i]] = 1
-  split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline", a, " ")
+  split("unverified prior-decision pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline", a, " ")
   for (i in a) REASON[a[i]] = 1
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0; nraised = 0
 }
@@ -245,6 +275,7 @@ BEGIN {
 /^[[:space:]]*$/ { next }
 /^[[:space:]]*#/ { next }
 
+#>> PERROW
 {
   rows++
   if (NF < 7) { fail(NR, "expected 7 tab-separated columns, got " NF); next }
@@ -277,13 +308,13 @@ BEGIN {
   }
   # INVARIANT 3 — top severity is never made to disappear.
   if ((sev == "P0" || sev == "P1") && disp == "suppress") {
-    fail(NR, sev " may not be suppressed — defer it with a stated reason instead"); bad = 1
+    fail(NR, sev " may not be suppressed — defer it with the same reason instead" \
+             " (a P0/P1 the committed baseline retired is `defer` + `baseline`)"); bad = 1
   }
 
   if (bad) next
 
-  cls = pathclass(loc)
-  fp  = fingerprint(loc, claim)
+  fp = fingerprint(loc, claim)
 
   # THE MEMBER LEDGER — the independent record of everything that entered a
   # group. It is written BEFORE the collapse and the collapse never touches it,
@@ -291,28 +322,35 @@ BEGIN {
   # than against itself. Recorded inside the merge branch it would vanish along
   # with any bug in the merge, and the check would quietly have nothing left to
   # disagree with.
+  #
+  # NAMING IS LOAD-BEARING: every member-ledger array — and only a member-ledger
+  # array — is named `M...`. That prefix is what tells the structural guard in
+  # the test suite which arrays are GROUND TRUTH and which are merged state
+  # that has to be cross-checked against it.
+  #>> MEMBER LEDGER
   MN[fp]++
-  MSEV[fp, MN[fp]]   = sev;  MCONF[fp, MN[fp]] = conf
-  MDISP[fp, MN[fp]]  = disp; MRSN[fp, MN[fp]]  = rsn
+  MSEV[fp, MN[fp]]   = sev;   MCONF[fp, MN[fp]] = conf
+  MDISP[fp, MN[fp]]  = disp;  MRSN[fp, MN[fp]]  = rsn
   MCLAIM[fp, MN[fp]] = claim; MLINE[fp, MN[fp]] = NR
+  MLENS[fp, MN[fp]]  = lens;  MLOC[fp, MN[fp]]  = loc
+  #<< MEMBER LEDGER
 
-  # Every ACCEPTED row records its location, so --reconcile can count rows per
-  # location against the Phase 5d adjudicated set. Written per row, not per
-  # unique finding: two lenses on one defect are two findings upstream.
-  # The recorded KEY is `file:start_line`, because that is what the adjudicated
-  # set is keyed on. Storing the raw string meant a documented `path:N-M` row
-  # could NEVER reconcile: exit 4 accusing the ledger of dropping a finding
-  # that was sitting right there, with a printed remedy that was wrong.
+  # Every ACCEPTED row records its IDENTITY, so --reconcile can match findings
+  # rather than count rows. Written per row, not per unique finding: two lenses
+  # on one defect are two findings upstream.
+  # The location half is `file:start_line`, because that is what the
+  # adjudicated set is keyed on. Storing the raw string meant a documented
+  # `path:N-M` row could NEVER reconcile: exit 4 accusing the ledger of
+  # dropping a finding that was sitting right there, with a printed remedy that
+  # was wrong.
+  # The claim half is the SAME `claimkey()` the merge uses to decide whether
+  # two rows say the same thing. Without it the reconciler only counted rows at
+  # a location, so any second row at that line — a whitespace nit, anything —
+  # discharged the obligation to account for a second adjudicated finding.
   keyloc = loc; sub(/-[0-9]+$/, "", keyloc)
-  print keyloc >> locfile
+  print keyloc "\t" claimkey(claim) >> locfile
 
   if (fp in SEEN) {
-    dupes++
-    if (!((fp SUBSEP lens) in LSEEN)) {
-      LSEEN[fp SUBSEP lens] = 1
-      LENSES[fp] = LENSES[fp] "|" lens
-      CORROB[fp]++
-    }
     # MERGE, never drop. Keeping the first-seen row and discarding this one is
     # how a suppressed P3 absorbed a reported P0: same location, same opening
     # phrase, and row order decided which survived.
@@ -324,6 +362,7 @@ BEGIN {
     # (highest severity, then highest confidence) and its severity, confidence
     # and claim ALWAYS travel together; every other member claim is carried
     # onto the same row by END rather than discarded.
+    #>> MERGE
     if (sevrank(sev) < sevrank(SEV_[fp]) || \
         (sevrank(sev) == sevrank(SEV_[fp]) && conf + 0 > CONF[fp] + 0)) {
       SEV_[fp] = sev; CLAIM[fp] = claim; CONF[fp] = conf
@@ -331,18 +370,18 @@ BEGIN {
     if (disprank(disp) < disprank(DISP_[fp])) {
       # The weakest disposition wins, and it brings its own reason with it —
       # otherwise invariant 1 would see `report` carrying `baseline`.
-      TALLY[DISP_[fp]]--
       DISP_[fp] = disp; RSN[fp] = rsn
-      TALLY[disp]++
     }
+    #<< MERGE
     next
   }
   SEEN[fp] = 1; order[++uniq] = fp
-  SEV_[fp] = sev; CONF[fp] = conf; LOC[fp] = loc; DISP_[fp] = disp
-  RSN[fp] = rsn; CLAIM[fp] = claim; CLS[fp] = cls
-  LENSES[fp] = lens; LSEEN[fp SUBSEP lens] = 1; CORROB[fp] = 1
-  TALLY[disp]++
+  #>> MERGE
+  SEV_[fp] = sev; CONF[fp] = conf; DISP_[fp] = disp
+  RSN[fp] = rsn; CLAIM[fp] = claim
+  #<< MERGE
 }
+#<< PERROW
 
 END {
   if (errs > 0) exit 4
@@ -358,8 +397,60 @@ END {
   # is faithful — which is the class of bug this script exists for. So the
   # merged record is RECOMPUTED here from the member ledger, along a path the
   # merge never touches, and the two must agree before anything renders.
+  #
+  # There are two legal ways for a field the report renders to reach the page,
+  # and the test suite derives both from this file rather than from a list:
+  #   (a) it is computed HERE, from the member ledger, and nowhere else; or
+  #   (b) it is maintained incrementally by the merge AND cross-checked here.
+  # `LOC`, `CLS`, `LENSES`, `CORROB`, `TALLY` and the duplicate count used to be
+  # neither: the merge maintained them and nothing ever recomputed them, so the
+  # "the collapse is checked" promise covered five rendered fields and skipped
+  # six. They are now case (a).
+  #>> RECOMPUTE
   for (i = 1; i <= uniq; i++) {
     fp = order[i]
+    dupes += MN[fp] - 1
+
+    # LOCATION. Every member of a group shares a location BY CONSTRUCTION:
+    # fingerprint() is keyed on it. That is an implication, not a coincidence,
+    # so it is asserted instead of assumed — the day fingerprint() stops
+    # including the location, this fires rather than the page showing one
+    # one member line number against the finding of every other member.
+    LOC[fp] = MLOC[fp, 1]
+    for (m = 1; m <= MN[fp]; m++) {
+      if (MLOC[fp, m] != LOC[fp])
+        failmerged(LOC[fp], "merge grouped line " MLINE[fp, m] " at " MLOC[fp, m] \
+                            " with rows at another location")
+    }
+    CLS[fp] = pathclass(LOC[fp])
+
+    # LENS ROLL-UP. Distinct lenses in first-seen order; `corrob` is how many
+    # independent passes flagged the defect, so it is a property of the members.
+    LENSES[fp] = ""; CORROB[fp] = 0
+    for (m = 1; m <= MN[fp]; m++) {
+      if ((fp SUBSEP MLENS[fp, m]) in LSEEN) continue
+      LSEEN[fp SUBSEP MLENS[fp, m]] = 1
+      LENSES[fp] = (CORROB[fp] == 0 ? MLENS[fp, m] : LENSES[fp] "|" MLENS[fp, m])
+      CORROB[fp]++
+    }
+    # A roll-up that walks the member ledger can drop a member, so it gets the
+    # same treatment as the claim roll-up below: every lens that entered the
+    # group has to be on the rendered row.
+    for (m = 1; m <= MN[fp]; m++) {
+      if (index("|" LENSES[fp] "|", "|" MLENS[fp, m] "|") == 0)
+        failmerged(LOC[fp], "merge dropped the lens named on line " MLINE[fp, m] ": " MLENS[fp, m])
+    }
+    # `corrob` is what a reader ranks by, so it is counted a second time from
+    # the members, on its own seen-set. Counting the rendered LENS LIST instead
+    # coupled the two checks: corrupting the list made both fire, and a guard
+    # that can only fire alongside another is a guard nobody can attribute.
+    ncorrob = 0
+    for (m = 1; m <= MN[fp]; m++) {
+      if ((fp SUBSEP "c" MLENS[fp, m]) in CSEEN) continue
+      CSEEN[fp SUBSEP "c" MLENS[fp, m]] = 1; ncorrob++
+    }
+    if (CORROB[fp] != ncorrob)
+      failmerged(LOC[fp], "merge counted " CORROB[fp] " corroborating passes where the members hold " ncorrob)
 
     # Ground truth: highest severity, then highest confidence, first wins ties.
     wr = 99; wc = -1; bi = 0
@@ -388,22 +479,26 @@ END {
     if (DISP_[fp] != wdisp)
       failmerged(LOC[fp], "merge lost the weakest disposition: rendered \"" DISP_[fp] \
                           "\", but line " MLINE[fp, di] " holds \"" wdisp "\"")
+    # The rendered value of ONE field only: quoting DISP_[fp] here printed the
+    # merged disposition beside a reason that had already been proven not to
+    # belong to it, so the one diagnostic that fires when the merge is broken
+    # stated a pairing that was itself broken. Ground truth is named by LINE,
+    # exactly as the four checks above it do.
     if (RSN[fp] != wrsn)
-      failmerged(LOC[fp], "merge shows reason \"" RSN[fp] "\", which does not belong to disposition \"" \
-                          DISP_[fp] "\"")
+      failmerged(LOC[fp], "merge shows reason \"" RSN[fp] "\", but line " MLINE[fp, di] \
+                          " holds reason \"" wrsn "\" with the disposition that won")
 
     # THE RENDERED TEXT. Every materially distinct member claim rides along
     # with its OWN severity and confidence. A finding whose text vanishes is a
     # lost finding, whatever the tally says it is.
-    txt = wclaim; nother = 0
+    TEXT[fp] = wclaim; nother = 0
     KSEEN[fp SUBSEP claimkey(wclaim)] = 1
     for (m = 1; m <= MN[fp]; m++) {
       k = claimkey(MCLAIM[fp, m])
       if ((fp SUBSEP k) in KSEEN) continue
       KSEEN[fp SUBSEP k] = 1; nother++
-      txt = txt " · also " MSEV[fp, m] "/" MCONF[fp, m] ": " MCLAIM[fp, m]
+      TEXT[fp] = TEXT[fp] " · also " MSEV[fp, m] "/" MCONF[fp, m] ": " MCLAIM[fp, m]
     }
-    TEXT[fp] = txt
 
     # Belt and braces on the single thing this whole section exists to promise:
     # no member left the group without its claim on the page. A member is
@@ -415,6 +510,8 @@ END {
       if (index(claimkey(TEXT[fp]), claimkey(MCLAIM[fp, m])) > 0) continue
       failmerged(LOC[fp], "merge discarded the claim from line " MLINE[fp, m] ": " MCLAIM[fp, m])
     }
+
+    TALLY[wdisp]++
 
     # A merge is worth auditing when it changed ANY of the three things a
     # reader acts on: severity, disposition, or the finding text. Keying
@@ -428,6 +525,7 @@ END {
     if (DISP_[fp] == "report" && (CLS[fp] == "vendor" || CLS[fp] == "generated"))
       advisories[++nadv] = LOC[fp] " (" CLS[fp] ") is reported but is not authored here — check it is not noise"
   }
+  #<< RECOMPUTE
   if (errs > 0) exit 4
 
   # An adjudicated set with no findings satisfies every count vacuously. Left
@@ -440,6 +538,7 @@ END {
   if (rows == 0 && !verified)
     advisories[++nadv] = "source ledger holds 0 findings and was not reconciled — an empty page certifies nothing; pass --reconcile"
 
+  #>> RENDER
   print "# Review triage ledger"                                              >> render
   print ""                                                                    >> render
   print "- generated: " today                                                 >> render
@@ -504,6 +603,7 @@ END {
         " suppress=" TALLY["suppress"] + 0 " out-of-scope=" TALLY["out-of-scope"] + 0 \
         " unique=" uniq " collapsed=" dupes " merges-raised=" nraised + 0
   for (i = 1; i <= nadv; i++) print "ADVISORY " advisories[i]
+  #<< RENDER
   exit 0
 }
 ' "$SRC" > "$WORK/tally.txt"
@@ -523,8 +623,12 @@ fi
 # "Write the complete merged set" was prose enforced nowhere: a TSV of nothing
 # but comments rendered six `_none_` sections and exited 0, certifying that
 # every finding was on a page listing none. Phase 5d already emits the
-# adjudicated set, so the check is deterministic: count findings per
-# `file:start_line` on both sides and refuse to render if the ledger is short.
+# adjudicated set, so the check is deterministic — but it has to be a check on
+# IDENTITY. Counting rows per `file:start_line` let any second row at a line
+# discharge the obligation to account for a second finding at that line, so a
+# P0 "double free" adjudicated beside a P0 "auth bypass" was reconciled away by
+# an unrelated P3 whitespace nit. Each adjudicated finding is now MATCHED to a
+# distinct ledger row with the same location and the same claim.
 if [ -n "$RECON" ]; then
   # Exit codes are DISTINCT on purpose. The helper used to signal "findings are
   # missing" with a bare exit 1 — the same code an uncaught exception produces —
@@ -538,7 +642,6 @@ if [ -n "$RECON" ]; then
 import collections, json, sys
 
 adj_path, loc_path = sys.argv[1], sys.argv[2]
-want = collections.Counter()
 problems = []
 try:
     with open(adj_path, encoding="utf-8") as fh:
@@ -550,6 +653,34 @@ except OSError as exc:
     print(f"  {adj_path}: could not be read ({exc})", file=sys.stderr)
     sys.exit(2)
 
+
+def claimkey(text):
+    """The SAME normalisation the awk merge uses to decide `same claim`.
+
+    Keep the two spellings in step: the whole point of the identity check is
+    that the reconciler and the merge agree on what one finding is.
+    """
+    out = []
+    for ch in str(text).lower():
+        out.append(ch if ("a" <= ch <= "z" or "0" <= ch <= "9") else " ")
+    return " ".join("".join(out).split())
+
+
+def restates(a, b):
+    """True when two normalised claims are the same finding worded differently.
+
+    Containment either way, on whole words — the same `restatement, not a new
+    claim` rule the merge applies when it checks that no member claim left the
+    group. Byte equality would reject the documented case where a range row
+    says `auth bypass over a range` for an adjudicated `auth bypass`.
+    """
+    if not a or not b:
+        return a == b
+    pa, pb = f" {a} ", f" {b} "
+    return pa in pb or pb in pa
+
+
+want = []
 for n, line in enumerate(adj_lines, 1):
     line = line.strip()
     if not line:
@@ -566,22 +697,39 @@ for n, line in enumerate(adj_lines, 1):
     if not f or ln is None:
         problems.append(f"  {adj_path}:{n}: finding has no file/start_line to reconcile")
         continue
-    want[f"{f}:{ln}"] += 1
+    want.append((f"{f}:{ln}", claimkey(obj.get("message", "")), n))
 
-have = collections.Counter()
+# The ledger side: one entry per ACCEPTED row, `file:start_line \t claimkey`.
+have = collections.defaultdict(list)
 with open(loc_path, encoding="utf-8") as fh:
     for line in fh:
-        line = line.strip()
-        if line:
-            have[line] += 1
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        loc, _, key = line.partition("\t")
+        have[loc].append(key)
 
-for loc, n in sorted(want.items()):
-    got = have.get(loc, 0)
-    if got < n:
-        problems.append(
-            f"  {loc}: adjudicated set has {n} finding(s), ledger has {got} row(s)"
-            " — a finding left the review without a disposition"
-        )
+# A row may account for AT MOST ONE adjudicated finding, so this is a matching,
+# not a lookup: two adjudicated findings at one line need two distinct rows.
+# Exact claims are matched first, so a loose restatement cannot steal the row a
+# verbatim finding needed.
+for exact_pass in (True, False):
+    for item in list(want):
+        loc, key, n = item
+        rows = have.get(loc, [])
+        for idx, row_key in enumerate(rows):
+            hit = (row_key == key) if exact_pass else restates(key, row_key)
+            if hit:
+                rows.pop(idx)
+                want.remove(item)
+                break
+
+for loc, key, n in want:
+    problems.append(
+        f"  {loc}: adjudicated finding {adj_path}:{n} has no ledger row with a"
+        f" matching claim ({key!r}) — a finding left the review without a"
+        " disposition, or was accounted for by an unrelated row at the same line"
+    )
 if problems:
     print("\n".join(problems))
     # 3, not 1: an uncaught exception also exits 1, and the two must not be
@@ -590,12 +738,21 @@ if problems:
 PY
 
   prc=$?
+  # ONE BRANCH PER DOCUMENTED CODE. Folding 2 into "anything else" made the
+  # taxonomy above a two-way split wearing three labels: changing the helper
+  # exit 2 to exit 1 left every assertion green, because both landed in the
+  # same message. An unexpected crash and a file the tool could not read are
+  # different facts about the run and the operator acts on them differently.
   if [ "$prc" -eq 3 ]; then
     echo -e "${CYA}FAIL${RST} ledger does not account for every adjudicated finding — nothing rendered:" >&2
     cat "$WORK/recon.out" >&2
     exit 4
+  elif [ "$prc" -eq 2 ]; then
+    echo -e "${CYA}FAIL${RST} the adjudicated file could not be read — completeness was NOT checked and nothing was rendered:" >&2
+    cat "$WORK/recon.err" >&2
+    exit 4
   elif [ "$prc" -ne 0 ]; then
-    echo -e "${CYA}FAIL${RST} reconciliation could not run (helper exit $prc) — completeness was NOT checked and nothing was rendered:" >&2
+    echo -e "${CYA}FAIL${RST} reconciliation crashed unexpectedly (helper exit $prc) — completeness was NOT checked and nothing was rendered:" >&2
     cat "$WORK/recon.err" >&2
     exit 4
   fi
