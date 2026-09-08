@@ -1809,7 +1809,15 @@ check "merged group is not suppressed (exit 0)"    "[ $rc -eq 0 ]"
 check "merge keeps the HIGHEST severity"           "grep -q '| P0 | 95 |' '$TRI/absorb.md'"
 check "merge keeps the WEAKEST disposition"        "grep -q 'report=1 unconfirmed=0 demoted=0 defer=0 suppress=0' '$TRI/absorb.out'"
 check "absorbed P0 lands in the reported section"  "grep -q 'allowing auth bypass' '$TRI/absorb.md'"
-check "suppressed section no longer holds the P0"  "! grep -q 'field length' '$TRI/absorb.md'"
+# The claim of the ABSORBED row is not deleted either — it rides along on the
+# merged row (see the equal-severity regression below). What must be empty is
+# the SUPPRESSED SECTION, so that is what this checks; the old spelling greped
+# the whole file, which is an assertion about the wrong thing and blocks the
+# only correct fix for a losing claim.
+check "suppressed section is empty after the merge" \
+      "awk '/^## Suppressed by baseline/,/^## Out of scope/' '$TRI/absorb.md' | grep -q '_none_'"
+check "the absorbed P3 claim rides along instead of vanishing" \
+      "grep -q 'also P3/20: .*field length' '$TRI/absorb.md'"
 check "the merge itself is audited on the page"    "grep -q 'P3 → P0' '$TRI/absorb.md'"
 check "the merge records the disposition change"   "grep -q 'suppress → report' '$TRI/absorb.md'"
 # POSITIVE CONTROL 4 — proof that the post-dedup pass genuinely runs on the
@@ -1839,6 +1847,67 @@ check "merged P0 rejection renders nothing"             "[ ! -f '$TRI/absorb2.md
 # A group that agrees changes nothing, so it must NOT be listed as a merge —
 # otherwise the Merges section is noise and nobody reads the real entries.
 check "an agreeing dedup is not reported as a merge" "grep -q 'merges-raised=0' '$TRI/good.out'"
+
+# --- REGRESSION: an EQUAL-severity merge discarded the losing claim ---------
+# The merge preserved severity and disposition but not the CLAIM. Two DISTINCT
+# P0s at one line sharing an opening phrase collapsed to one row: the higher
+# confidence was copied onto the OTHER row's sentence, and the losing finding's
+# text appeared ZERO times in the report. `RAISED` was set only when severity
+# or disposition changed, so an equal/equal merge was invisible in the Merges
+# section too, and the tally said report=1 for two reported findings.
+# A finding whose text vanishes is a lost finding, whatever the tally says.
+{
+  row P0 60 src/a.py:10 security report - 'the request handler does not validate the incoming token allowing auth bypass'
+  row P0 95 src/a.py:10 memory   report - 'the request handler does not validate the incoming size so double free'
+} > "$TRI/eqsev.tsv"
+"$BIN/jjstack-review-triage" "$TRI/eqsev.tsv" --out "$TRI/eqsev.md" > "$TRI/eqsev.out" 2>&1
+rc=$?
+check "two distinct P0s at one line exit 0"        "[ $rc -eq 0 ]"
+check "the winning claim survives an equal merge"  "grep -q 'double free' '$TRI/eqsev.md'"
+check "the LOSING claim survives an equal merge"   "grep -q 'auth bypass' '$TRI/eqsev.md'"
+# Confidence must be read off the same row as the sentence beside it.
+check "confidence belongs to the claim it sits next to" \
+      "grep -qE '^\\| P0 \\| 95 \\|.*double free' '$TRI/eqsev.md'"
+check "the losing claim keeps its OWN severity and confidence" \
+      "grep -q 'also P0/60: .*auth bypass' '$TRI/eqsev.md'"
+# An equal/equal merge that drops a claim IS a merge, so it is auditable.
+check "an equal-severity claim merge is counted as a merge" \
+      "grep -q 'merges-raised=1' '$TRI/eqsev.out'"
+check "an equal-severity claim merge is listed in the Merges section" \
+      "awk '/^## Merges/,0' '$TRI/eqsev.md' | grep -q 'double free'"
+check "the Merges section shows both claims"       \
+      "awk '/^## Merges/,0' '$TRI/eqsev.md' | grep -q 'auth bypass'"
+# A merge that changes nothing still must not be announced as one.
+check "identical claims at one line are still not a merge" "grep -q 'merges-raised=0' '$TRI/good.out'"
+
+# POSITIVE CONTROL 8 — the merged-record checks were unreachable: every one of
+# them was implied by the per-row check that ran first (RSN is only ever
+# assigned with DISP_ from the SAME row, and DISP_ is the minimum disprank, so
+# `suppress` implies every member was already rejected per-row). Deleting the
+# whole block left the suite green. They now verify the COLLAPSE against an
+# independent member ledger, so the control feeds them a BROKEN COLLAPSE.
+# The injected fault is not invented: it is the literal pre-fix dedup body
+# recovered from git (d128644^ lines 192-200), which kept the first-seen row
+# and discarded the rest — the exact defect this PR exists to fix.
+MUT="$TRI/triage-with-prefix-dedup"
+python3 - "$BIN/jjstack-review-triage" "$MUT" <<'MUTPY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src, encoding="utf-8").read()
+a = s.index("    # MERGE, never drop.")
+b = s.index("    next\n", a) + len("    next\n")
+# git show d128644^:bin/jjstack-review-triage -- the dedup branch was exactly
+# the lens bookkeeping followed by a bare `next`.
+open(dst, "w", encoding="utf-8").write(s[:a] + "    next\n" + s[b:])
+MUTPY
+chmod +x "$MUT"
+check "the fault injection actually changed the script" "! cmp -s '$MUT' '$BIN/jjstack-review-triage'"
+"$MUT" "$TRI/absorb.tsv" --out "$TRI/mut.md" > /dev/null 2> "$TRI/mut.err"
+rc=$?
+check "POSITIVE CONTROL: a broken collapse is rejected (exit 4)" "[ $rc -eq 4 ]"
+check "the merged-record check names what the collapse lost" \
+      "grep -q 'merge lost the highest severity' '$TRI/mut.err'"
+check "a broken collapse renders nothing"                       "[ ! -f '$TRI/mut.md' ]"
 
 # --- REGRESSION: an unescaped `|` in a claim shifted the markdown table -----
 # `lenslist()` already stripped `|` from the lens column, so the hazard was
@@ -1893,6 +1962,48 @@ check "reconciled ledger names its adjudicated source" "grep -q 'reconciled agai
 "$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/nope.jsonl" > /dev/null 2>&1
 rc=$?
 check "missing --reconcile file exits 3" "[ $rc -eq 3 ]"
+
+# --- REGRESSION: a documented `path:N-M` location could never reconcile -----
+# The header documents `path:line (or range N-M)`, the ledger stored the raw
+# string, and the reconciler keys on `file:start_line`. So a range row exited 4
+# accusing the ledger of dropping a finding that was sitting right there, and
+# the printed remedy ("fix the ledger") was wrong.
+row P0 90 src/a.py:10-14 security report - 'auth bypass over a range' > "$TRI/range.tsv"
+adj security src/a.py 10 P0 'auth bypass' > "$TRI/range.jsonl"
+"$BIN/jjstack-review-triage" "$TRI/range.tsv" --reconcile "$TRI/range.jsonl" \
+  --out "$TRI/range.md" > /dev/null 2> "$TRI/range.err"
+rc=$?
+check "a path:N-M row reconciles against file:start_line (exit 0)" "[ $rc -eq 0 ]"
+check "the range row still renders its own full location" "grep -q 'src/a.py:10-14' '$TRI/range.md'"
+
+# --- REGRESSION: an EMPTY adjudicated set reconciled vacuously --------------
+# Reconciling against nothing satisfied every count, printed "a checked fact,
+# not a promise", AND suppressed the "certifies nothing" advisory — so the
+# reconciled page made a STRONGER claim than the unreconciled one on strictly
+# less evidence. Evidence of absence is not a check.
+: > "$TRI/emptyadj.jsonl"
+"$BIN/jjstack-review-triage" "$TRI/empty.tsv" --reconcile "$TRI/emptyadj.jsonl" \
+  --out "$TRI/vac.md" > /dev/null 2> "$TRI/vac.err"
+rc=$?
+check "an empty adjudicated set still exits 0"                  "[ $rc -eq 0 ]"
+check "reconciling against nothing claims no checked fact"      "! grep -q 'checked fact' '$TRI/vac.md'"
+check "reconciling against nothing says so on the page"         "grep -q 'was NOT verified' '$TRI/vac.md'"
+check "reconciling against nothing still certifies nothing"     "grep -q 'certifies nothing' '$TRI/vac.err'"
+
+# --- REGRESSION: a crash in the reconciler read as a missing finding --------
+# A non-UTF-8 byte made python exit 1 with an empty stdout, which is the same
+# signal as "problems found" — so the tool printed "ledger does not account for
+# every adjudicated finding" above an EMPTY problem list. A tool that cannot
+# run must say it could not run, never blame the input it never read.
+printf 'not utf8: \377\376\n' > "$TRI/binary.jsonl"
+"$BIN/jjstack-review-triage" "$TRI/full.tsv" --reconcile "$TRI/binary.jsonl" \
+  --out "$TRI/crash.md" > /dev/null 2> "$TRI/crash.err"
+rc=$?
+check "an unreadable adjudicated file fails loudly (exit 4)"    "[ $rc -eq 4 ]"
+check "a crash is not reported as a dropped finding"            "! grep -q 'left the review without a disposition' '$TRI/crash.err'"
+check "a crash names the real problem"                          "grep -q 'not valid UTF-8' '$TRI/crash.err'"
+check "a failed reconciliation never prints an empty problem list" "[ -s '$TRI/crash.err' ]"
+check "a crashed reconciliation renders nothing"                "[ ! -f '$TRI/crash.md' ]"
 
 # --- REGRESSION: --help truncated at a hardcoded line number ----------------
 # `sed -n '2,43p'` cut the block before the Exit line, so the documented exit
@@ -2142,14 +2253,55 @@ check "skill spells out that reason is a closed vocabulary" \
       "grep -q 'never free text' '$SKR'"
 # Every disposition and reason the skill's mapping table names must exist in
 # the script's vocabulary — the class of defect, not just the two instances.
-for tok in report unconfirmed demoted defer suppress out-of-scope; do
-  check "skill disposition \`$tok\` exists in the script" \
-        "grep -q 'split(\"report unconfirmed demoted defer suppress out-of-scope\"' '$BIN/jjstack-review-triage'"
-done
-for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate; do
-  check "skill reason \`$tok\` exists in the script vocabulary" \
-        "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
-done
+#
+# Both sides are now READ OUT of their file. The previous spelling looped over
+# a hardcoded token list and ran one fixed grep that never used `$tok`, so it
+# could not tell the two files apart: a bogus `archived` disposition added to
+# the skill table kept the suite green, and the reason loop greped the WHOLE
+# script — matching the `--help` comment block — so deleting six codes from
+# the runtime `split(...)` kept it green too. A guard that does not read the
+# thing it guards is decoration.
+skill_vocab() {  # $1=file  $2=column index (3=disposition, 4=reason)
+  sed -n '/^| Phase 5 outcome | disposition | reason |/,/^$/p' "$1" \
+    | awk -F'|' -v c="$2" 'NR > 2 && NF > c { print $c }' \
+    | grep -o '`[^`]*`' | tr -d '`' | grep -v '^-$' | sort -u
+}
+# RUNTIME vocabulary only: the split() string on (or immediately above) the
+# line that populates the lookup table. The header comment block, where the
+# old grep was matching, is not code and cannot be what the validator uses.
+runtime_vocab() {  # $1=script  $2=awk array name (DISP|REASON)
+  awk -v want="$2" '
+    match($0, /split\("[^"]*"/) { last = substr($0, RSTART + 7, RLENGTH - 8) }
+    $0 ~ ("for \\(i in a\\) " want "\\[a\\[i\\]\\] = 1") { print last }
+  ' "$1" | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+VOC="$(mktemp -d)"
+skill_vocab   "$SKR" 3                        > "$VOC/skill.disp"
+skill_vocab   "$SKR" 4                        > "$VOC/skill.rsn"
+runtime_vocab "$BIN/jjstack-review-triage" DISP   > "$VOC/script.disp"
+runtime_vocab "$BIN/jjstack-review-triage" REASON > "$VOC/script.rsn"
+# An extraction that silently yields nothing turns every loop below into zero
+# assertions, which is the failure mode these guards had in the first place.
+check "skill disposition table yields 6 dispositions" "[ \$(wc -l < '$VOC/skill.disp') -eq 6 ]"
+check "skill reason table yields 10 reason codes"     "[ \$(wc -l < '$VOC/skill.rsn') -eq 10 ]"
+check "script runtime disposition vocabulary has 6"   "[ \$(wc -l < '$VOC/script.disp') -eq 6 ]"
+check "script runtime reason vocabulary has 11"       "[ \$(wc -l < '$VOC/script.rsn') -eq 11 ]"
+# skill → script: the model is never told to write a token the validator rejects.
+while read -r tok; do
+  check "skill disposition \`$tok\` is in the script's RUNTIME vocabulary" \
+        "grep -qxF -- '$tok' '$VOC/script.disp'"
+done < "$VOC/skill.disp"
+while read -r tok; do
+  check "skill reason \`$tok\` is in the script's RUNTIME vocabulary" \
+        "grep -qxF -- '$tok' '$VOC/script.rsn'"
+done < "$VOC/skill.rsn"
+# script → skill: the validator never accepts a disposition the skill does not
+# document, so an invented one cannot enter through either door.
+while read -r tok; do
+  check "script disposition \`$tok\` is documented in the skill table" \
+        "grep -qxF -- '$tok' '$VOC/skill.disp'"
+done < "$VOC/script.disp"
+rm -rf "$VOC"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

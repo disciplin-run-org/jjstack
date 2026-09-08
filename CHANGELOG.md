@@ -297,6 +297,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   which is now a ranking signal — and labels each finding's blast radius
   (production code vs test, fixture, vendored or generated), so a warning about
   a test fixture is visibly a warning about a test fixture.
+  Collapsing duplicates never costs you a finding: when two genuinely different
+  problems land on the same line, both sentences stay on the page — each with
+  its own severity and confidence — and the collapse is listed in the ledger's
+  Merges section. Previously the second one silently disappeared while the
+  count still said one finding.
 - **`references/vendor-lessons-aikido.md`** — what a commercial security-scanning
   vendor's AI triage actually does, what we took from it, and (with sources) the
   claims we rejected as marketing.
