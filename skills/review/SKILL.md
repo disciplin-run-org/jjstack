@@ -443,6 +443,16 @@ them counting as active.
 Skip it when the repo has no baseline file yet — a missing baseline is normal,
 not an error to work around.
 
+Read this exit code too, and read it BEFORE you use the file it wrote: `0` no
+active findings remain, `1` at least one **active** finding remains — the normal
+outcome of any review that found something, not a failure — and `2` a usage
+error or a missing / malformed / unsupported baseline. On `2` **nothing is
+written to stdout**, so `findings.adjudicated.jsonl` is a 0-byte file: rendering
+5f from it prints `APPROVE — 0 active findings` over a diff that may have held a
+P0. On `2`, fix the baseline (or skip 5d entirely) and re-run; never treat the
+empty file as the answer. `generate` uses the same codes, with `2` covering a
+missing `--reason` and a refusal to clobber a baseline that did not load.
+
 Creating or extending a baseline is a **human decision that mutes future
 reviews**, so do it only when the user explicitly asks. Never generate one
 unprompted to make a report look shorter:
@@ -466,9 +476,14 @@ Two mechanisms, deliberately aging differently:
 - **`rules`** — human-authored globs over `id` (lens) / `path` / `message`,
   drift-tolerant: they survive line shifts and rewording. Reserve them for
   deliberate, tightly-scoped policy exclusions, because a broad rule can hide
-  newly malicious content. A rule that states only a universal glob
-  (`{"path": "*"}`) is rejected: it is the "matches everything" rule in
-  disguise, and it would mute the whole repo at exit 0.
+  newly malicious content. A rule that states only an over-broad glob is
+  rejected, and breadth is **measured, not spelled**: the pattern is compiled
+  and run over the repository's own tracked files (`git ls-files`), and a rule
+  reaching 90% or more of them is refused with the count it measured.
+  `{"path": "*"}` fails that, and so do `[!@]*` and `[a-z]*` — the same "matches
+  everything" rule in a bracket disguise, which would mute the whole repo at
+  exit 0. Pass `--corpus FILE` (or set `JJSTACK_REVIEW_CORPUS`) when the tool
+  runs outside the checkout it is judging.
 
 Every entry of either kind carries a mandatory `reason`; the script refuses a
 baseline without one, and refuses a rule that names no matching field (a rule

@@ -1172,6 +1172,294 @@ python3 "$RN/killread.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" \
 check "positive control: the same shim passes a 1-line file" \
   "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/stream.ok.out')\" -eq 1 ]"
 
+# PR #16 review ROUND 3 (P1): the round-2 catch-all was widened by exception
+# TYPE but not by POSITION. `json.loads` one block above kept its
+# JSONDecodeError-only guard, so a deeply nested array — perfectly legal JSON
+# text, a RecursionError to the parser — escaped the per-finding handler,
+# reached the last-resort guard, BROKE the loop and wrote no invalid record at
+# all. Reproduced on the pre-fix tree: rc=3, 1 of 2 P0s on stdout, a 0-byte
+# --invalid-out, and stderr saying "at the run" because no line was recorded.
+python3 - "$RN/nested.jsonl" "$P0A" "$P0B" <<'PYEOF4'
+import sys
+out, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(out, "w", encoding="utf-8") as fh:
+    fh.write(a + "\n" + "[" * 20000 + "]" * 20000 + "\n" + b + "\n")
+PYEOF4
+rm -f "$RN/nested.bad.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/nested.jsonl" \
+  --invalid-out "$RN/nested.bad.jsonl" > "$RN/nested.out" 2>"$RN/nested.err"; rc=$?
+check "a PARSER fault keeps the findings around it" \
+  "[ \"\$(wc -l < '$RN/nested.out')\" -eq 2 ]"
+check "the finding AFTER a parser fault is emitted" "grep -q 'valid p0 two' '$RN/nested.out'"
+check "a parser fault still writes --invalid-out"   "[ -s '$RN/nested.bad.jsonl' ]"
+check "a parser fault names the line that poisoned it" \
+  "python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/nested.bad.jsonl' | grep -qx 2"
+check "a parser fault is the internal code, never the malformed one" "[ $rc -eq 3 ]"
+# Positive control — it is the DEPTH that faults the parser, not the array. The
+# same three lines with a shallow array on line 2 must be plain malformed input:
+# rc 1, both P0s emitted, the array recorded. Without this, "2 survived" could
+# be the tool rejecting every array for some unrelated reason.
+printf '%s\n[1, 2, 3]\n%s\n' "$P0A" "$P0B" > "$RN/shallow.jsonl"
+rm -f "$RN/shallow.bad.jsonl"
+"$BIN/jjstack-review-normalize" "$RN/shallow.jsonl" \
+  --invalid-out "$RN/shallow.bad.jsonl" > "$RN/shallow.out" 2>/dev/null; rc=$?
+check "positive control: a SHALLOW array is malformed input (rc 1)" \
+  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RN/shallow.out')\" -eq 2 ]"
+check "positive control: the shallow array is recorded as input" \
+  "reasons_of '$RN/shallow.bad.jsonl' | grep -q 'not a JSON object'"
+
+# The CLASS this time is POSITION, not type: no statement of the per-line body
+# may be outside the per-line guard. Enumerating statements the way round 2
+# enumerated exception types is the same mistake, so the injection points are
+# DERIVED from the tool's own AST — the `try` guarding the body of the
+# `for lineno, line in ...` loop — and a fault of a type the tool has never
+# heard of is raised at each of them in turn, on the MIDDLE finding only.
+# Contract at every point that actually executes: the other two findings are
+# emitted, the poisoned line is recorded, and the exit code is the internal one.
+# Add a statement to that body tomorrow and this list grows by itself.
+cat > "$RN/bodylines.py" <<'PYEOF5'
+import ast, sys
+
+tree = ast.parse(open(sys.argv[1], encoding="utf-8").read())
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+loop = None
+for node in ast.walk(fn):
+    if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple):
+        names = [e.id for e in node.target.elts if isinstance(e, ast.Name)]
+        if names[:2] == ["lineno", "line"]:
+            loop = node
+            break
+guard = next(n for n in loop.body if isinstance(n, ast.Try))
+lines = set()
+for stmt in guard.body:
+    for n in ast.walk(stmt):
+        if hasattr(n, "lineno"):
+            lines.add(n.lineno)
+print(" ".join(str(n) for n in sorted(lines)))
+PYEOF5
+cat > "$RN/injectline.py" <<'PYEOF6'
+import importlib.machinery, importlib.util, sys
+
+target, tool, rest = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+loader = importlib.machinery.SourceFileLoader("jjnorm", tool)
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+fired = []
+
+
+def liner(frame, event, arg):
+    if (
+        event == "line"
+        and frame.f_lineno == target
+        and frame.f_locals.get("lineno") == 2
+        and not fired
+    ):
+        fired.append(target)
+        raise ZeroDivisionError(f"injected at line {target}")
+    return liner
+
+
+def tracer(frame, event, arg):
+    if frame.f_code.co_filename == tool and frame.f_code.co_name == "main":
+        return liner
+    return None
+
+
+sys.settrace(tracer)
+try:
+    rc = mod.main(rest)
+finally:
+    sys.settrace(None)
+sys.stderr.write("FIRED=%d\n" % (1 if fired else 0))
+sys.exit(rc)
+PYEOF6
+MID='{"lens":"perf","file":"b.py","start_line":3,"severity":"P1","confidence":0.5,"message":"middle finding","quote":"qm","explanation":"e","remediation":"r"}'
+printf '%s\n%s\n%s\n' "$P0A" "$MID" "$P0B" > "$RN/inj.jsonl"
+inj_fired=0; inj_bad=0
+for L in $(python3 "$RN/bodylines.py" "$BIN/jjstack-review-normalize"); do
+  rm -f "$RN/inj.bad.jsonl"
+  python3 "$RN/injectline.py" "$L" "$BIN/jjstack-review-normalize" "$RN/inj.jsonl" \
+    --invalid-out "$RN/inj.bad.jsonl" > "$RN/inj.out" 2>"$RN/inj.err"; rc=$?
+  grep -q 'FIRED=1' "$RN/inj.err" || continue          # that line never runs here
+  inj_fired=$((inj_fired+1))
+  [ "$rc" -eq 3 ] || inj_bad=$((inj_bad+1))
+  [ "$(wc -l < "$RN/inj.out")" -eq 2 ] || inj_bad=$((inj_bad+1))
+  grep -q 'valid p0 two' "$RN/inj.out" || inj_bad=$((inj_bad+1))
+  [ -s "$RN/inj.bad.jsonl" ] || inj_bad=$((inj_bad+1))
+done
+# Harness self-test FIRST: an injector that never fires would report a perfect
+# score. The pre-fix tree has exactly ONE statement inside the guard, so this
+# assertion is also what pins "the whole body", not a fragment of it.
+check "the fault injector reached 3+ statements of the per-line body" \
+  "[ $inj_fired -ge 3 ]"
+check "NO statement of the per-line body can lose the other findings" \
+  "[ $inj_bad -eq 0 ]"
+# Positive control — the same injector aimed at a line that never executes must
+# leave a clean run: 3 findings, exit 0. Otherwise "0 violations" could just be
+# an injector that mangles every run it touches.
+rm -f "$RN/inj.bad.jsonl"
+python3 "$RN/injectline.py" 1 "$BIN/jjstack-review-normalize" "$RN/inj.jsonl" \
+  > "$RN/injctl.out" 2>/dev/null; rc=$?
+check "positive control: an injector that never fires changes nothing" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/injctl.out')\" -eq 3 ]"
+
+# PR #16 review ROUND 3 (P2): `int(obj['start_line'])` kept the round-1
+# enumeration `except (TypeError, ValueError)` three lines below the confidence
+# guard that had already been generalized for exactly this reason. `1e400` is
+# plain, standard, json.loads-parseable JSON; it becomes a float infinity and
+# int() rejects it with OverflowError. Malformed INPUT was therefore reported as
+# an internal tool fault (exit 3) — the code SKILL.md 5b tells the caller to
+# discard the whole run over. Reproduced: rc=3 on a two-line file.
+# The expected verdict per value is computed by an ORACLE, not typed here: a
+# value is malformed input exactly when int() refuses what json.loads produced.
+cat > "$RN/lineoracle.py" <<'PYEOF7'
+import json, sys
+
+raw = sys.argv[1]
+try:
+    value = json.loads(raw)
+except Exception:
+    print("nonjson")
+    raise SystemExit(0)
+try:
+    int(value)
+except Exception:
+    print("malformed")
+else:
+    print("valid")
+PYEOF7
+for lit in '1e400' '-1e400' '"abc"' 'null' '[]' '{}' 'true' '1.5' '"12"' '0'; do
+  want="$(python3 "$RN/lineoracle.py" "$lit")"
+  printf '%s\n%s\n' "${P0A/\"start_line\":12/\"start_line\":$lit}" "$P0B" > "$RN/sl.jsonl"
+  rm -f "$RN/sl.bad.jsonl"
+  "$BIN/jjstack-review-normalize" "$RN/sl.jsonl" --invalid-out "$RN/sl.bad.jsonl" \
+    > "$RN/sl.out" 2>/dev/null; rc=$?
+  if [ "$want" = "malformed" ]; then got_ok="[ $rc -eq 1 ] && [ -s '$RN/sl.bad.jsonl' ]"
+  else got_ok="[ $rc -eq 0 ] && [ ! -s '$RN/sl.bad.jsonl' ]"; fi
+  check "start_line $lit is '$want' input, and never an internal fault" \
+    "$got_ok && [ \"\$(grep -c 'valid p0 two' '$RN/sl.out')\" -eq 1 ]"
+done
+# The CLASS: whatever int() refuses is not a line number. Shim the module's own
+# `int` to raise a type nobody enumerated — it must still be malformed INPUT.
+cat > "$RN/badint.py" <<'PYEOF8'
+import importlib.machinery, importlib.util, json, sys
+
+
+class Poison:
+    """A start_line whose int() conversion fails in a way nobody enumerated."""
+
+    def __int__(self):
+        raise ZeroDivisionError("a failure type no guard has ever named")
+
+    def __repr__(self):
+        return "<poison>"
+
+
+loader = importlib.machinery.SourceFileLoader("jjnorm", sys.argv[1])
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+real_loads = json.loads
+
+
+def loads_with_poison(text, *a, **kw):
+    obj = real_loads(text, *a, **kw)
+    if isinstance(obj, dict) and obj.get("start_line") == "poison":
+        obj["start_line"] = Poison()
+    return obj
+
+
+json.loads = loads_with_poison
+try:
+    sys.exit(mod.main(sys.argv[2:]))
+finally:
+    json.loads = real_loads
+PYEOF8
+printf '%s\n%s\n' "${P0A/\"start_line\":12/\"start_line\":\"poison\"}" "$P0B" > "$RN/poison.jsonl"
+rm -f "$RN/poison.bad.jsonl"
+python3 "$RN/badint.py" "$BIN/jjstack-review-normalize" "$RN/poison.jsonl" \
+  --invalid-out "$RN/poison.bad.jsonl" > "$RN/poison.out" 2>/dev/null; rc=$?
+check "an UNNAMED int() failure is malformed input, not an internal fault" \
+  "[ $rc -eq 1 ]"
+check "its reason names start_line"  \
+  "reasons_of '$RN/poison.bad.jsonl' | grep -q 'start_line'"
+check "the finding after it still reaches stdout" "grep -q 'valid p0 two' '$RN/poison.out'"
+# Positive control — the same shim with no poisoned value must pass both lines,
+# or rc=1 could be the shim breaking int() for everything.
+printf '%s\n%s\n' "$P0A" "$P0B" > "$RN/poison.ok.jsonl"
+python3 "$RN/badint.py" "$BIN/jjstack-review-normalize" "$RN/poison.ok.jsonl" \
+  > "$RN/poison.ok.out" 2>/dev/null; rc=$?
+check "positive control: the same int shim passes 2 clean findings" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/poison.ok.out')\" -eq 2 ]"
+
+# PR #16 review ROUND 3 (P2): the round-2 streaming test could not tell
+# streaming from buffering. Reverting emit() to the pre-fix `valid.append(...)`
+# + `for f in valid: print(f)` shape — or any buffer flushed once on every exit
+# path — left ALL 319 PASS, because a run that lets main() return flushes either
+# way. The only observation that separates them is a process that never gets to
+# return: os._exit(9) inside emit for the SECOND record. What is on stdout
+# afterwards is what had genuinely reached the file descriptor.
+# This also pins the flush: a bare stream.write() into a redirected (block
+# buffered) stdout leaves the record inside the process and dies with it.
+cat > "$RN/killemit.py" <<'PYEOF9'
+import importlib.machinery, importlib.util, os, sys
+
+loader = importlib.machinery.SourceFileLoader("jjnorm", sys.argv[1])
+spec = importlib.util.spec_from_loader("jjnorm", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+real_emit = mod.emit
+seen = []
+
+
+def killing_emit(record, *a, **kw):
+    seen.append(record)
+    if len(seen) > 1:
+        os._exit(9)        # no unwind, no finally, no interpreter flush
+    return real_emit(record, *a, **kw)
+
+
+mod.emit = killing_emit
+sys.exit(mod.main(sys.argv[2:]))
+PYEOF9
+printf '%s\n%s\n' "$P0A" "$P0B" > "$RN/durable.jsonl"
+python3 "$RN/killemit.py" "$BIN/jjstack-review-normalize" "$RN/durable.jsonl" \
+  > "$RN/durable.out" 2>/dev/null; rc=$?
+check "the process really died the hard way (rc 9)" "[ $rc -eq 9 ]"
+check "a finding is DURABLE the moment it is emitted" \
+  "grep -q 'valid p0 one' '$RN/durable.out'"
+check "and only that finding — the kill landed mid-run" \
+  "[ \"\$(wc -l < '$RN/durable.out')\" -eq 1 ]"
+# Positive control — the same shim on a 1-line file never reaches the second
+# emit, so the run must complete normally. Without it, "1 line on stdout" could
+# be the shim truncating every run.
+python3 "$RN/killemit.py" "$BIN/jjstack-review-normalize" "$RN/good.jsonl" \
+  > "$RN/durable.ok.out" 2>/dev/null; rc=$?
+check "positive control: the killing shim passes a 1-line file" \
+  "[ $rc -eq 0 ] && [ \"\$(wc -l < '$RN/durable.ok.out')\" -eq 1 ]"
+
+# PR #16 review ROUND 3 (P3): the NaN and infinity guards in normalize_confidence
+# had no coverage at all — deleting either left ALL 319 PASS. `NaN`, `Infinity`
+# and `-Infinity` are what json.loads produces from those literals by default,
+# and without the guards NaN clamps silently to 0.0: the finding is not
+# rejected, it is RANKED LAST, which is how a P0 becomes invisible.
+for lit in NaN Infinity -Infinity; do
+  printf '%s\n%s\n' "${P0A/\"confidence\":0.9/\"confidence\":$lit}" "$P0B" > "$RN/nan.jsonl"
+  rm -f "$RN/nan.bad.jsonl"
+  "$BIN/jjstack-review-normalize" "$RN/nan.jsonl" --invalid-out "$RN/nan.bad.jsonl" \
+    > "$RN/nan.out" 2>/dev/null; rc=$?
+  check "a $lit confidence is REJECTED, not coerced" \
+    "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RN/nan.out')\" -eq 1 ]"
+  check "the $lit confidence is recorded with a reason" \
+    "reasons_of '$RN/nan.bad.jsonl' | grep -qi 'confidence'"
+  check "no $lit finding is silently ranked last instead" \
+    "! grep -q 'valid p0 one' '$RN/nan.out'"
+done
+
 # PR #16 review ROUND 2 (P2): --invalid-out was opened only inside `if invalid:`,
 # so a clean re-run left the PREVIOUS run's malformed records on disk. The skill
 # points a fixed path at this file; a reader who trusts it sees findings that
@@ -1370,6 +1658,169 @@ check "positive control: it suppressed only b.py" \
 check "the suppression annotation shows only the winning alias" \
   "grep -q 'sec\*' '$RB/aliasann.out' && ! grep -q 'rule_id' '$RB/aliasann.out'"
 
+# PR #16 review ROUND 3 (P2): rounds 1 and 2 both left the universality test a
+# SPELLING test — `set(pattern) <= {"*", "?"}` — so `[!@]*`, `[a-z]*` and
+# `[a-zA-Z0-9_.-]*` walked straight through the guard whose entire purpose is to
+# stop a rule muting the repo. Reproduced with each: 0 active, 2 suppressed,
+# rc=0. Adding those three spellings to a refusal list closes three strings and
+# leaves the class open, so the guard now COMPILES the pattern and measures its
+# reach over the repository's own tracked files.
+#
+# The oracle below is deliberately independent of the tool:
+#   * the corpus is `git ls-files` on this repository — a real artifact neither
+#     the tool nor this test authored. Not a probe list, which is how a
+#     "semantic" breadth test becomes true by construction;
+#   * three of the patterns are DERIVED from that corpus at run time (a class of
+#     every leading character; a negated class of a character that leads
+#     nothing; the narrowest real top-level directory), so they are in nobody's
+#     enumeration and change when the repository changes;
+#   * the expected verdict per pattern is COMPUTED by the oracle from the
+#     corpus, never typed here. A spelling nobody has thought of gets an
+#     expected verdict for free, and a tool that stopped measuring would
+#     disagree with it.
+cat > "$RB/breadth-oracle.py" <<'PYEOFB'
+"""Independent breadth oracle: what SHOULD a rule of this shape be, per corpus.
+
+Reads the corpus and decides each pattern's verdict itself. Shares no code and
+no data with jjstack-review-baseline; the contract it holds the tool to (a rule
+may not cover 90% or more of the repository) is stated here on its own.
+"""
+import fnmatch, string, sys
+
+LIMIT = 0.90
+corpus = [c for c in open(sys.argv[1], encoding="utf-8").read().splitlines() if c.strip()]
+total = len(corpus)
+
+
+def hits(pattern):
+    return sum(1 for c in corpus if fnmatch.fnmatchcase(c, pattern))
+
+
+# DERIVED from the corpus, not invented: a class of every leading character in
+# the repository necessarily matches every path in it.
+leads = sorted({c[0] for c in corpus})
+wide = "[" + "".join(ch for ch in leads if ch not in "]!^-\\") + "]*"
+# ...and a negated class of a character that leads nothing does too.
+unused = [
+    ch
+    for ch in string.ascii_letters + string.digits + "_.~"
+    if not any(c.startswith(ch) for c in corpus)
+]
+neg = "[!" + unused[0] + "]*"
+# ...while the smallest real top-level directory is a genuinely scoped rule.
+tops = {}
+for c in corpus:
+    if "/" in c:
+        tops[c.split("/")[0]] = tops.get(c.split("/")[0], 0) + 1
+narrow = min(sorted(tops), key=lambda d: tops[d]) + "/*"
+
+rows = [("derived", p) for p in (wide, neg, narrow)]
+rows += [("fixed", p) for p in ("*", "?*", "[a-z]*", "[A-Za-z]*", "*.md", "*e*", "b*")]
+for kind, pattern in rows:
+    n = hits(pattern)
+    print(kind, "reject" if n >= LIMIT * total else "accept", n, total, pattern)
+PYEOFB
+git -C "$DIR" ls-files > "$RB/corpus.txt"
+# The corpus must be this repository. A corpus of made-up paths is the PR #20
+# failure mode: the measurement then agrees with itself for every string.
+check "the breadth corpus is the real repository" \
+  "[ \"\$(wc -l < '$RB/corpus.txt')\" -gt 50 ] && grep -qx 'test/smoke.sh' '$RB/corpus.txt'"
+python3 "$RB/breadth-oracle.py" "$RB/corpus.txt" > "$RB/patterns.txt"
+n_reject=0; n_accept=0; n_derived=0; n_disagree=0; n_total_reach=0
+while read -r kind want hits total pat; do
+  printf '{"version":2,"jjstack_version":"x","rules":[{"path":"%s","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$pat" > "$RB/breadth.json"
+  JJSTACK_REVIEW_CORPUS="$RB/corpus.txt" "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/breadth.json" > "$RB/breadth.out" 2>/dev/null
+  if [ $? -eq 2 ]; then got=reject; else got=accept; fi
+  if [ "$got" != "$want" ]; then
+    n_disagree=$((n_disagree+1))
+    printf '    breadth disagreement: %s tool=%s oracle=%s (%s/%s)\n' "$pat" "$got" "$want" "$hits" "$total"
+  fi
+  if [ "$want" = reject ]; then n_reject=$((n_reject+1)); else n_accept=$((n_accept+1)); fi
+  if [ "$kind" = derived ]; then
+    n_derived=$((n_derived+1))
+    if [ "$hits" -eq "$total" ]; then n_total_reach=$((n_total_reach+1)); fi
+  fi
+done < "$RB/patterns.txt"
+# Harness self-tests first: a pattern set that is all-reject or all-accept would
+# be satisfied by a guard stuck on one answer, and a derivation that stopped
+# reaching the whole corpus would stop testing anything.
+check "the breadth set discriminates (both verdicts present)" \
+  "[ $n_reject -ge 3 ] && [ $n_accept -ge 3 ]"
+check "3 patterns were DERIVED from the corpus, not enumerated" "[ $n_derived -eq 3 ]"
+check "2 derived patterns really do cover the whole repository" \
+  "[ $n_total_reach -eq 2 ]"
+check "the guard's verdict matches the independent oracle on every pattern" \
+  "[ $n_disagree -eq 0 ]"
+# The three spellings the review named, asserted by consequence rather than by
+# exit code alone: not one finding may be muted.
+for pat in '[!@]*' '[a-z]*' '[a-zA-Z0-9_.-]*'; do
+  printf '{"version":2,"jjstack_version":"x","rules":[{"path":"%s","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$pat" > "$RB/breadth.json"
+  JJSTACK_REVIEW_CORPUS="$RB/corpus.txt" "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/breadth.json" > "$RB/breadth.out" 2>/dev/null; rc=$?
+  check "the bracket disguise $pat suppresses nothing" \
+    "[ $rc -eq 2 ] && [ ! -s '$RB/breadth.out' ]"
+done
+# The refusal has to SAY what it measured, or a human cannot tell an over-broad
+# rule from a typo.
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"[a-z]*","reason":"noisy"}],"fingerprints":[]}\n' \
+  > "$RB/breadth.json"
+JJSTACK_REVIEW_CORPUS="$RB/corpus.txt" "$BIN/jjstack-review-baseline" apply \
+  "$RB/findings.jsonl" --baseline "$RB/breadth.json" > "$RB/breadth.err" 2>&1
+check "the refusal reports the measured reach" \
+  "grep -q 'reaches [0-9]*/[0-9]* tracked files' '$RB/breadth.err'"
+# With no corpus at all (run outside a checkout) breadth cannot be measured, so
+# the guard falls back to a STRUCTURAL property — the pattern pins no character
+# anywhere — which is still not a list of banned spellings.
+: > "$RB/empty-corpus.txt"
+for pat in '[!@]*' '[a-z]*' '*' '?*'; do
+  printf '{"version":2,"jjstack_version":"x","rules":[{"path":"%s","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$pat" > "$RB/breadth.json"
+  JJSTACK_REVIEW_CORPUS="$RB/empty-corpus.txt" "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/breadth.json" >/dev/null 2>&1; rc=$?
+  check "with no corpus, $pat is still refused" "[ $rc -eq 2 ]"
+done
+# Positive control for the fallback — one literal is enough to make a rule a
+# statement about something, so it must still be accepted and still be narrow.
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"[!b]*.py","reason":"policy: vendored"}],"fingerprints":[]}\n' \
+  > "$RB/breadth.json"
+JJSTACK_REVIEW_CORPUS="$RB/empty-corpus.txt" "$BIN/jjstack-review-baseline" apply \
+  "$RB/findings.jsonl" --baseline "$RB/breadth.json" --active-only > "$RB/breadth.out" 2>/dev/null; rc=$?
+check "positive control: a class WITH a literal still suppresses" \
+  "[ $rc -eq 1 ] && [ \"\$(wc -l < '$RB/breadth.out')\" -eq 1 ]"
+check "positive control: it suppressed only the file it named" \
+  "grep -q 'n+1 query' '$RB/breadth.out'"
+# The class extends to the groups that have no corpus of their own: `id` and
+# `message` are matched against lens names and free text, so their breadth is
+# decided structurally in every run, not just outside a checkout.
+for key in id message; do
+  printf '{"version":2,"jjstack_version":"x","rules":[{"%s":"[a-z]*","reason":"noisy"}],"fingerprints":[]}\n' \
+    "$key" > "$RB/breadth.json"
+  JJSTACK_REVIEW_CORPUS="$RB/corpus.txt" "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/breadth.json" > "$RB/breadth.out" 2>/dev/null; rc=$?
+  check "a bracket disguise on $key is refused too" \
+    "[ $rc -eq 2 ] && [ ! -s '$RB/breadth.out' ]"
+done
+# ...and the DEFAULT corpus — no --corpus, no env — is `git ls-files` in the
+# repository under review. Without this the measured path would only ever run
+# under a variable the tests set themselves.
+wide_pat=$(awk '$1=="derived"{print $5; exit}' "$RB/patterns.txt")
+narrow_pat=$(awk '$1=="derived" && $2=="accept"{print $5; exit}' "$RB/patterns.txt")
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"%s","reason":"noisy"}],"fingerprints":[]}\n' \
+  "$wide_pat" > "$RB/default-wide.json"
+printf '{"version":2,"jjstack_version":"x","rules":[{"path":"%s","reason":"policy"}],"fingerprints":[]}\n' \
+  "$narrow_pat" > "$RB/default-narrow.json"
+( cd "$DIR" && env -u JJSTACK_REVIEW_CORPUS "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/default-wide.json" >/dev/null 2>&1 ); rc=$?
+check "the default corpus is git ls-files in the repo under review" "[ $rc -eq 2 ]"
+# Positive control — the same default corpus must still ACCEPT the derived
+# narrow rule, or "exit 2" could mean the default path refuses everything.
+( cd "$DIR" && env -u JJSTACK_REVIEW_CORPUS "$BIN/jjstack-review-baseline" apply \
+    "$RB/findings.jsonl" --baseline "$RB/default-narrow.json" >/dev/null 2>&1 ); rc=$?
+check "positive control: the default corpus still accepts a scoped rule" "[ $rc -ne 2 ]"
+
 # PR #16 review (P1): `generate` built the doc from scratch with `rules: []` and
 # opened "w", so following SKILL.md's documented flow for EXTENDING a baseline
 # destroyed every human-written rule and previously accepted fingerprint.
@@ -1400,10 +1851,19 @@ printf 'this is not json\n' > "$RB/corrupt.json"
   -o "$RB/corrupt.json" >/dev/null 2>&1; rc=$?
 check "generate refuses to clobber a corrupt baseline" "[ $rc -eq 2 ]"
 check "the corrupt baseline is left untouched" "grep -q 'this is not json' '$RB/corrupt.json'"
-check "no .tmp file is left behind" "[ ! -f '$RB/corrupt.json.tmp' ]"
-# ...but that path returns 2 at LOAD time, before any temp file is created, so
-# the check above is vacuous — deleting the unlink cleanup outright kept the
-# whole suite green. Reach the write branch instead: `--replace` skips the load,
+# The load bail returns 2 BEFORE any temp file is created, so asserting the .tmp
+# is absent afterwards is true no matter what the code does — round 2 shipped
+# exactly that and the author's own comment called it vacuous. What that path
+# does guarantee is that it never TOUCHES the temp path, and a sentinel makes
+# that observable: move the .tmp open above the load check, or add an
+# unconditional unlink, and this goes red.
+printf 'sentinel: the load bail must not open or unlink this\n' > "$RB/corrupt.json.tmp"
+"$BIN/jjstack-review-baseline" generate "$RB/findings.jsonl" --reason "x" \
+  -o "$RB/corrupt.json" >/dev/null 2>&1
+check "the load bail never touches the .tmp path" \
+  "grep -q 'sentinel: the load bail' '$RB/corrupt.json.tmp'"
+rm -f "$RB/corrupt.json.tmp"
+# Reach the write branch instead: `--replace` skips the load,
 # a DIRECTORY at the output path lets the .tmp write succeed and only the
 # os.replace fail, which is the single branch the cleanup guards.
 mkdir -p "$RB/adir"
@@ -1519,6 +1979,79 @@ check "the lint has exactly 3 opted-out lines (adding one reddens this)" "[ \"\$
 # Runtime half of the guard: the sandbox must still be in force at the end. A
 # section that reassigns $HOME and forgets to restore it would leave every later
 # assertion pointed at the real store, silently.
+
+# PR #16 review ROUND 3 (P2): 5b spends a paragraph on "read the exit code, do
+# not assume it" and 5d then hands the agent `apply … > findings.adjudicated.jsonl`
+# and says nothing about ITS codes. `apply` exits 1 whenever any active finding
+# remains — the normal outcome of any review that found something — and 2 for a
+# missing or malformed baseline, writing nothing to stdout. An agent following
+# 5d verbatim renders the report from a 0-byte file and prints APPROVE over a
+# diff that had a P0. Documenting the codes for THIS section is the instance;
+# the class is "a section that runs a tool must state that tool's exit codes",
+# and the codes are read from each tool's own docstring, not from a list here.
+cat > "$SANDBOX/exitlint.py" <<'PYEOFD'
+import os, re, sys
+
+md_path, bindir = sys.argv[1], sys.argv[2]
+md = open(md_path, encoding="utf-8").read()
+
+
+def declared_codes(tool):
+    """The tool's OWN `Exit:` line is the source of truth for its codes."""
+    try:
+        src = open(os.path.join(bindir, tool), encoding="utf-8").read()
+    except OSError:
+        return []
+    m = re.search(r"(?ms)^Exit:(.*?)\n\s*\n", src)
+    if not m:
+        return []
+    return sorted(set(re.findall(r"\b([0-9])\b", m.group(1))))
+
+
+problems, checked = [], 0
+for section in re.split(r"(?m)^(?=### )", md):
+    head = section.splitlines()[0].strip()[:48]
+    tools = set()
+    for block in re.findall(r"(?ms)^```bash\n(.*?)^```", section):
+        tools |= set(re.findall(r"bin/(jjstack-[a-z0-9-]+)", block))
+    for tool in sorted(tools):
+        codes = declared_codes(tool)
+        if not codes:
+            continue
+        checked += 1
+        missing = [c for c in codes if "`%s`" % c not in section]
+        if missing:
+            problems.append(
+                "%s runs %s but never documents exit %s"
+                % (head, tool, ", ".join("`%s`" % c for c in missing))
+            )
+print("CHECKED=%d" % checked)
+for p in problems:
+    print(p)
+PYEOFD
+python3 "$SANDBOX/exitlint.py" "$DIR/skills/review/SKILL.md" "$BIN" > "$SANDBOX/exitlint.out" 2>&1
+# Harness self-test first: a lint that inspects nothing reports no problems.
+check "the exit-code lint actually inspected some invocations" \
+  "grep -qE 'CHECKED=[1-9]' '$SANDBOX/exitlint.out'"
+check "every SKILL.md section that runs a tool states that tool's exit codes" \
+  "[ \"\$(grep -c 'never documents exit' '$SANDBOX/exitlint.out')\" -eq 0 ]"
+# Positive control — the lint can fire. Strip the codes out of a COPY of the
+# section that documents them and it must complain about that section.
+python3 - "$DIR/skills/review/SKILL.md" "$SANDBOX/stripped.md" <<'PYEOFE'
+import re, sys
+
+md = open(sys.argv[1], encoding="utf-8").read()
+out = []
+for section in re.split(r"(?m)^(?=### )", md):
+    if section.startswith("### 5b."):
+        section = re.sub(r"`([0-9])`", r"\1", section)
+    out.append(section)
+open(sys.argv[2], "w", encoding="utf-8").write("".join(out))
+PYEOFE
+python3 "$SANDBOX/exitlint.py" "$SANDBOX/stripped.md" "$BIN" > "$SANDBOX/exitlint.ctl" 2>&1
+check "positive control: the lint fires when 5b stops naming its codes" \
+  "grep -q '5b\\..*never documents exit' '$SANDBOX/exitlint.ctl'"
+
 check "the sandbox \$HOME survived the whole run" "[ \"\${HOME#\$SANDBOX}\" != \"\$HOME\" ]"
 
 echo

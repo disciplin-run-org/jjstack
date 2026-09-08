@@ -25,9 +25,16 @@ Fail-closed choices, all of them in the direction of showing more:
   * a mandatory non-empty `reason` on every entry — an unexplained suppression
     is indistinguishable from a bug;
   * a rule that names no matching field at all (reason only) is REJECTED
-    rather than silently matching every finding — and so is one that names a
-    field but fills it with a universal glob (`{"path": "*"}`), which is the
-    same "matches everything" rule wearing a disguise;
+    rather than silently matching every finding — and so is one whose pattern
+    is too BROAD to discriminate. Breadth is measured, never spelled: the
+    pattern is compiled and run over the repository's own tracked files
+    (`git ls-files`), and a rule reaching 90% or more of them is refused.
+    `{"path": "*"}` is caught by that, and so are `[!@]*`, `[a-z]*` and every
+    disguise nobody has written down yet, because none of them leave the
+    reviewer anything to see. Override the corpus with --corpus FILE or
+    $JJSTACK_REVIEW_CORPUS (one path per line) when the tool runs outside the
+    checkout it is judging; with no corpus at all the guard falls back to
+    refusing a pattern that pins no character anywhere;
   * `generate` EXTENDS an existing baseline: human-written rules and already
     accepted fingerprints are merged forward, never rewritten away. Pass
     --replace to deliberately start over;
@@ -43,9 +50,10 @@ while editing the finding's own line does.
 
 Usage:
   jjstack-review-baseline generate <findings.jsonl|-> --reason TEXT [-o FILE]
-                                   [--replace]
+                                   [--replace] [--corpus FILE]
   jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE
                                 [--active-only] [--allow-version-drift]
+                                [--corpus FILE]
 
 `apply` writes annotated JSON Lines to stdout (each finding gains a
 `suppressed` field: null, or {by, reason, matched}) and a count summary to
@@ -61,6 +69,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import subprocess
 import sys
 
 YEL = "\033[33m"
@@ -124,17 +133,144 @@ def stated_patterns(rule):
     return out
 
 
-def is_universal_glob(pattern):
-    """True when an fnmatch pattern can only ever match — i.e. it says nothing.
+# A rule may not be the review's off switch. Breadth is a MEASURED property, not
+# a spelling: a pattern that leaves less than a tenth of the repository still
+# visible to the reviewer discriminates nothing, whatever characters it is
+# written with. 0.90 is the line; the corpus it is measured against is the real
+# repository (see repo_corpus).
+BREADTH_LIMIT = 0.90
+PATH_KEYS = frozenset({"path", "file"})
 
-    `*` is not "present and non-empty means the human named something": a rule
-    keyed on `*` matches every finding in the repo, which is the one thing the
-    non-empty guard exists to prevent. A pattern built only from wildcards
-    (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
-    rejected the same way an absent field is.
+_CORPUS_CACHE = {}
+
+
+def glob_tokens(pattern):
+    """Split an fnmatch pattern into its real tokens, bracket syntax included.
+
+    Yields ("any_seq", "*") / ("any_char", "?") / ("char_class", "[...]") /
+    ("literal", c). Follows fnmatch's own reading of `[`: a `!` right after it
+    negates, a `]` in first position is a member, and an unterminated `[` is a
+    literal bracket.
+    """
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            out.append(("any_seq", c))
+            i += 1
+        elif c == "?":
+            out.append(("any_char", c))
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(("literal", c))  # unterminated: a plain bracket
+                i += 1
+            else:
+                out.append(("char_class", pattern[i : j + 1]))
+                i = j + 1
+        else:
+            out.append(("literal", c))
+            i += 1
+    return out
+
+
+def pins_no_character(pattern):
+    """True when the pattern constrains NO position to a specific character.
+
+    The fallback used only when there is no corpus to measure against, and
+    fail-closed on purpose: `*`, `?*`, `[!@]*`, `[a-z]*` and every spelling
+    nobody has thought of yet all share the property that the human named no
+    character the finding must actually contain. A single literal — `b*`,
+    `*.md`, `docs` — is enough to make the rule a statement about something.
+    """
+    return not any(kind == "literal" for kind, _ in glob_tokens(pattern))
+
+
+def pattern_reach(pattern, corpus):
+    """Fraction of the corpus this pattern matches, or None with no corpus."""
+    if not corpus:
+        return None
+    hits = sum(1 for c in corpus if fnmatch.fnmatchcase(c, pattern))
+    return hits / len(corpus)
+
+
+def repo_corpus(explicit=None):
+    """The universe a path rule's breadth is measured against.
+
+    Source of truth, in order: an explicit --corpus file, $JJSTACK_REVIEW_CORPUS,
+    then `git ls-files` in the repository being reviewed — the actual files a
+    rule can hide. Nothing here is a list of paths this tool invented: a probe
+    list of made-up paths measures the guard against the guard's own author,
+    which is how a "semantic" breadth test becomes true by construction.
+
+    Returns () when no corpus can be derived (not a checkout, no git); the
+    caller then falls back to pins_no_character.
+    """
+    key = explicit or os.environ.get("JJSTACK_REVIEW_CORPUS") or ""
+    if key in _CORPUS_CACHE:
+        return _CORPUS_CACHE[key]
+    paths = ()
+    if key:
+        try:
+            with open(key, encoding="utf-8") as fh:
+                paths = tuple(p for p in fh.read().splitlines() if p.strip())
+        except OSError as exc:
+            err(f"cannot read corpus {key}: {exc}")
+            return None
+    else:
+        try:
+            proc = subprocess.run(
+                ["git", "ls-files"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if proc.returncode == 0:
+                paths = tuple(p for p in proc.stdout.splitlines() if p.strip())
+        except (OSError, subprocess.SubprocessError):
+            paths = ()
+    _CORPUS_CACHE[key] = paths
+    return paths
+
+
+def is_universal_glob(pattern, corpus=()):
+    """True when a rule's pattern says nothing — DECIDED BY REACH, not spelling.
+
+    Round 1 rejected `*`. Round 2 resolved alias pairs so a `*` could not hide
+    behind a scoped sibling. Both still asked what the pattern was SPELLED with,
+    so `[!@]*`, `[a-z]*` and `[a-zA-Z0-9_.-]*` walked through a guard whose whole
+    purpose was to stop a rule muting the repo — and the next spelling would
+    have walked through too. Adding those three to a refusal list closes three
+    strings; measuring reach closes the class.
+
+    So: compile the pattern, run it over the real repository's tracked files,
+    and reject it when it covers BREADTH_LIMIT or more of them. With no corpus
+    (not a checkout), fall back to pins_no_character, which is still a property
+    of the pattern's structure rather than a list of banned spellings.
     """
     p = pattern.strip()
-    return p == "" or set(p) <= {"*", "?"}
+    if p == "":
+        return True
+    reach = pattern_reach(p, corpus)
+    if reach is not None:
+        return reach >= BREADTH_LIMIT
+    return pins_no_character(p)
+
+
+def describe_breadth(key, pattern, corpus):
+    """`path='[a-z]*' reaches 132/139 tracked files` — say WHY it was refused."""
+    shown = f"{key}={pattern!r}"
+    if key in PATH_KEYS and corpus:
+        hits = sum(1 for c in corpus if fnmatch.fnmatchcase(c, pattern))
+        shown += f" reaches {hits}/{len(corpus)} tracked files"
+    return shown
 
 
 def fingerprint(finding):
@@ -169,8 +305,12 @@ def read_findings(src):
     return out
 
 
-def load_baseline(path):
-    """Return (rules, fingerprints, scanner_version) or None after reporting."""
+def load_baseline(path, corpus=()):
+    """Return (rules, fingerprints, scanner_version) or None after reporting.
+
+    `corpus` is the repository's tracked paths — what a path rule's breadth is
+    measured against. () means "unmeasurable here"; see is_universal_glob.
+    """
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -213,8 +353,13 @@ def load_baseline(path):
                 "every finding is never what you meant"
             )
             return None
-        if all(is_universal_glob(v) for v in named.values()):
-            shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
+        if all(
+            is_universal_glob(v, corpus if k in PATH_KEYS else ())
+            for k, v in named.items()
+        ):
+            shown = ", ".join(
+                describe_breadth(k, v, corpus) for k, v in sorted(named.items())
+            )
             ignored = sorted((set(RULE_MATCH_KEYS) & set(r)) - set(named))
             extra = (
                 f". {', '.join(ignored)} never applies: the alias shown wins"
@@ -223,7 +368,7 @@ def load_baseline(path):
             )
             err(
                 f"rules[{i}] states only universal glob(s) ({shown}) — a rule "
-                f"that matches every finding is never what you meant{extra}"
+                f"that discriminates nothing is never what you meant{extra}"
             )
             return None
 
@@ -280,12 +425,19 @@ def rule_matches(rule, finding):
 def cmd_generate(argv):
     src, out_path, reason = None, DEFAULT_BASELINE, None
     replace = False
+    corpus_path = None
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--replace":
             replace = True
             i += 1
+        elif a == "--corpus":
+            if i + 1 >= len(argv):
+                err("--corpus needs a FILE")
+                return 2
+            corpus_path = argv[i + 1]
+            i += 2
         elif a == "--reason":
             if i + 1 >= len(argv):
                 err("--reason needs TEXT")
@@ -311,7 +463,7 @@ def cmd_generate(argv):
     if src is None:
         err(
             "usage: jjstack-review-baseline generate <findings.jsonl|-> "
-            "--reason TEXT [-o FILE] [--replace]"
+            "--reason TEXT [-o FILE] [--replace] [--corpus FILE]"
         )
         return 2
     if reason is None or not reason.strip():
@@ -323,9 +475,13 @@ def cmd_generate(argv):
     # opening "w" destroyed every human-written rule and previously accepted
     # fingerprint on the second run. Merging is the only reading of "extending"
     # that does not lose the reasons a human typed.
+    corpus = repo_corpus(corpus_path)
+    if corpus is None:
+        return 2
+
     old_rules, old_fps, old_version = [], [], None
     if os.path.exists(out_path) and not replace:
-        loaded = load_baseline(out_path)
+        loaded = load_baseline(out_path, corpus)
         if loaded is None:
             err(
                 f"refusing to overwrite {out_path}: the existing baseline did not "
@@ -397,10 +553,17 @@ def cmd_generate(argv):
 def cmd_apply(argv):
     src, bl_path = None, None
     active_only, allow_drift = False, False
+    corpus_path = None
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("-b", "--baseline"):
+        if a == "--corpus":
+            if i + 1 >= len(argv):
+                err("--corpus needs a FILE")
+                return 2
+            corpus_path = argv[i + 1]
+            i += 2
+        elif a in ("-b", "--baseline"):
             if i + 1 >= len(argv):
                 err("--baseline needs a FILE")
                 return 2
@@ -426,7 +589,10 @@ def cmd_apply(argv):
         err("usage: jjstack-review-baseline apply <findings.jsonl|-> --baseline FILE")
         return 2
 
-    loaded = load_baseline(bl_path)
+    corpus = repo_corpus(corpus_path)
+    if corpus is None:
+        return 2
+    loaded = load_baseline(bl_path, corpus)
     if loaded is None:
         return 2
     rules, fps, bl_version = loaded

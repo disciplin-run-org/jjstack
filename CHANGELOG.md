@@ -24,14 +24,30 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   checking a single finding, that finding is written to the malformed file with
   the reason and the line number, and the rest of the run continues. The
   malformed file is also rewritten on every run, so it always describes the run
-  that just finished instead of leaving yesterday's records lying around.
+  that just finished instead of leaving yesterday's records lying around. The
+  same protection now covers the whole of each line's handling rather than part
+  of it — reading it, checking it and writing it — so input that upsets the JSON
+  reader itself, or a line number the tool cannot make sense of, is reported as
+  a bad finding rather than ending the run. And a finding is on disk the instant
+  it is accepted: kill the process outright and everything it had already
+  approved is still there.
+- **The review skill now tells you what the baseline step's exit codes mean.**
+  The step that applies your accepted-findings baseline exits non-zero whenever
+  anything is still active — the normal outcome of a review that found
+  something — and writes nothing at all when the baseline file is missing or
+  malformed. Following the old instructions literally could produce an empty
+  findings file and an `APPROVE` over a change that had blocking issues.
 - **A single baseline entry can no longer mute your whole repo.** A suppression
   rule of `{"path": "*"}` matched every finding, so the review reported nothing
-  active and approved the change. Rules must now name something real; a rule
-  made only of wildcards is rejected with an explanation. Rules may spell the
-  same thing two ways (`id`/`rule_id`, `path`/`file`); the check now reads
-  whichever spelling actually applies, so a wildcard can no longer hide behind a
-  narrow-looking twin.
+  active and approved the change. Rules must now name something real, and how
+  broad a rule is has stopped being a question about how it is spelled: the
+  pattern is run over your repository's own tracked files and refused if it
+  reaches 90% or more of them, with the count it measured printed alongside the
+  refusal. That catches `*`, and equally `[!@]*`, `[a-z]*` and any other
+  wildcard wearing brackets, without anyone having to think of the disguise
+  first. Rules may spell the same thing two ways (`id`/`rule_id`,
+  `path`/`file`); the check reads whichever spelling actually applies, so a
+  wildcard cannot hide behind a narrow-looking twin either.
 - **Extending a review baseline no longer erases the one you had.** Running the
   documented "extend the baseline" command on a repo that already had one
   rebuilt the file from scratch, throwing away every previously accepted finding

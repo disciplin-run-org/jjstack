@@ -33,14 +33,18 @@ stream with the reason, counted, and the exit code says so. Silent deletion is
 the defect this whole change set exists to remove. Three mechanisms make that
 claim true rather than aspirational:
 
-  * NO exception raised while normalizing ONE finding may cost you the others.
-    The per-finding handler catches the whole Exception class, not a list of
-    types: round 1 caught (ValueError, TypeError) because the fixture was
-    `"confidence": null`, and a 400-digit integer then raised OverflowError and
-    aborted the run exactly as before. The failing line is recorded either way;
+  * NO exception raised while handling ONE line may cost you the others. The
+    per-line handler wraps the WHOLE body — parse, normalize, emit — and its
+    last clause catches the Exception class, not a list of types. Where the
+    guard sits matters as much as how wide it is: round 2 widened the handler
+    around normalize_finding to `except Exception` but left `json.loads` one
+    block above guarded by JSONDecodeError alone, so a RecursionError from a
+    deeply-nested array still escaped the loop, lost every later finding, and
+    left --invalid-out empty. One try, around everything the line touches;
   * valid findings are STREAMED to stdout as they normalize (see emit()), not
     buffered until the end, so nothing already validated can be lost by a
-    later line — or by a later failure of any kind;
+    later line — or by a later failure of any kind, up to and including the
+    process being killed outright;
   * an internal error gets its own exit code (3), so "the tool crashed" can
     never be misread by a caller as "some findings were malformed" (1), and it
     names the line that caused it;
@@ -87,6 +91,14 @@ SEVERITY_ALIASES = {
     "P2": "P2",
     "P3": "P3",
 }
+
+
+class MalformedLine(ValueError):
+    """Input this tool rejects ON PURPOSE — exit 1, never the internal code 3.
+
+    A ValueError subclass so every handler that already means "malformed input"
+    catches it without naming a new type.
+    """
 
 
 def err(msg):
@@ -168,8 +180,19 @@ def normalize_finding(obj):
     out["severity"] = normalize_severity(obj["severity"])
     try:
         out["start_line"] = int(obj["start_line"])
-    except (TypeError, ValueError):
-        raise ValueError(f"start_line is not an integer: {obj['start_line']!r}")
+    except Exception as exc:
+        # THE CLASS, for the same reason normalize_confidence takes the class:
+        # enumerating types IS the defect. `1e400` is plain, standard,
+        # json.loads-parseable JSON that becomes a float infinity, and int()
+        # rejects it with OverflowError — an ArithmeticError neither TypeError
+        # nor ValueError covers. Escaping here reported malformed INPUT as an
+        # internal tool fault (exit 3), which SKILL.md 5b tells the caller to
+        # DISCARD the whole run over. Whatever int() refuses is not a line
+        # number, and a bad line number is the emitter's bug, not the tool's.
+        raise ValueError(
+            f"start_line is not an integer ({type(exc).__name__}): "
+            f"{obj['start_line']!r}"
+        )
     return out
 
 
@@ -181,8 +204,16 @@ def emit(record, stream=sys.stdout):
     of any kind, at any point in the run — can take it back. The pre-fix code
     appended to a list and printed after the loop, which is why one bad line
     emptied the whole run's output.
+
+    The flush is part of the claim, not tidiness. stdout is block-buffered when
+    it is redirected to a file, so a bare write leaves the record inside the
+    process; anything that ends the process without running Python's cleanup —
+    a kill, an abort, an os._exit — loses it exactly like buffering did. "Cannot
+    be lost by a later failure of ANY kind" is only true once each record has
+    reached the file descriptor.
     """
     stream.write(json.dumps(record, sort_keys=True) + "\n")
+    stream.flush()
 
 
 def main(argv):
@@ -228,32 +259,37 @@ def main(argv):
         for lineno, line in enumerate(raw.splitlines(), 1):
             if not line.strip():
                 continue
+            # ONE try around the WHOLE per-line body. Splitting it — a narrow
+            # guard on the parse, a wide one on the normalize — is how a
+            # RecursionError from `[[[[…]]]]` escaped to the last-resort guard,
+            # which broke the loop, dropped every later finding and wrote no
+            # invalid record at all. Nothing a single line can do may reach past
+            # this block.
             try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                invalid.append(
-                    {"line": lineno, "reason": f"not JSON: {exc}", "raw": line}
-                )
-                continue
-            try:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise MalformedLine(f"not JSON: {exc}") from None
                 out = normalize_finding(obj)
+                emit(out)
             except (ValueError, TypeError) as exc:
                 # TypeError is caught with ValueError deliberately: a null or
                 # list where a scalar belongs is malformed INPUT, not a crash.
                 invalid.append({"line": lineno, "reason": str(exc), "raw": line})
                 continue
             except Exception as exc:
-                # THE CLASS, not the instance. Round 1 fixed `null` (TypeError)
-                # and round 2 found the same P0 one exception type over
-                # (OverflowError). Whatever goes wrong while normalizing ONE
-                # finding, the other findings are not its to lose: record this
-                # line, keep going, and let the exit code say the tool — not
-                # the emitter — is what misbehaved.
+                # THE CLASS, not the instance, and around the WHOLE body. Round
+                # 1 fixed `null` (TypeError), round 2 found the same P0 one
+                # exception type over (OverflowError), round 3 found it one
+                # STATEMENT over (RecursionError out of json.loads). Whatever
+                # goes wrong while handling ONE line, the other findings are not
+                # its to lose: record this line, keep going, and let the exit
+                # code say the tool — not the emitter — is what misbehaved.
                 invalid.append(
                     {
                         "line": lineno,
                         "reason": (
-                            "internal error normalizing this finding: "
+                            "internal error handling this finding: "
                             f"{type(exc).__name__}: {exc}"
                         ),
                         "raw": line,
@@ -262,7 +298,6 @@ def main(argv):
                 if internal is None:
                     internal, internal_line = exc, lineno
                 continue
-            emit(out)
             n_valid += 1
     except Exception as exc:  # last-resort guard: never exit 1 on a crash
         if internal is None:
