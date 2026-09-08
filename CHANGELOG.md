@@ -21,11 +21,27 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   `/tmp`, `mktemp` directories and throwaway worktrees are ordinary workspace.
   Measured on the real commands that had been prompting: 0 of 6 approved before,
   6 of 6 after, with 11 genuinely destructive commands still refused.
-- **The gate got stricter where it matters, not just looser.** A deterministic
-  denylist now refuses `rm -rf $HOME`, force-pushes, hard resets, `git clean
-  -fdx`, curl-piped-to-a-shell and device writes *before* any model sees them,
-  and it overrides a LOW rating. Previously every one of those was a judgment
-  call the rater could have gotten wrong.
+- **Destructive commands you actually want are now approved.** A blanket
+  denylist refused ordinary work: deleting one named build directory,
+  resetting one named branch, force-pushing one named feature branch. The
+  rule is now that a destructive command passes when it is **specific** —
+  it names a definite target rather than sweeping a broad root — **and
+  matches its stated purpose**. "Remove the stale build directory" justifies
+  deleting that directory; it does not justify deleting a source tree.
+- **Two deterministic rules bracket that judgement**, so a model's opinion is
+  never the only thing between you and an unrecoverable act. A **floor** no
+  rating can lift refuses unbounded reach (a filesystem root, a bare `$HOME`
+  or `~`), unreviewable content (`curl … | sh`), uploading a local file or
+  naming a known secret path, device writes, fork bombs and power commands.
+  And because alignment cannot be judged against a purpose nobody stated, a
+  destructive command carrying **no description defers** — the same command
+  with a purpose is approved.
+- **Two holes in the previous release's gate are closed.** `rm -rf ~` slipped
+  through (the rule required `~/` with a slash), and so did `curl -d @` with
+  a credential file (only curl piped to a shell was caught). Both had been
+  reported as refused — they were, but by the model's rating rather than by
+  the deterministic floor, so the floor was never actually holding them.
+  Both are now on the floor, with fixtures.
 - **Approvals in a tubemail worker no longer leave a permission stuck pending.**
   The hook had a delegation path keyed on `QM_WORKER_NAME` — a variable nothing
   sets, aimed at a socket that has never existed, so it had been dead code the
