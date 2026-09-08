@@ -3823,6 +3823,126 @@ check "the suppressed-section reader can see a planted P0 (control)" \
 rm -f "$s3_probe"
 rm -rf "$S3"
 
+echo "== 7t. round-3: what counts as documentary evidence is DEFINED, not spelled =="
+# Round 2 asked a `refuted` row to carry a doc URL. Round 3 handed it
+# `http://x` — seven characters — and it deleted a P0 while the page asserted a
+# documentation check had happened. The predicate was `claim ~
+# https?://[^space]`: a spelling test for "looks like a URL", which can only
+# ever reject the spellings someone thought of.
+#
+# The rule is now DECLARED, in the script header, as a decomposition:
+#   DOCUMENTARY EVIDENCE = scheme "://" host "/" path
+#     scheme  http | https
+#     host    two or more dot-separated labels (a registrable name)
+#     path    at least one character past the host
+# and — when the review passes `--deps`, the §4.5b inventory —
+#     SUBJECT the claim names a library the inventory holds (§4.5b step 5)
+#     LINKAGE the cited URL references that same library (§4.5b step 2)
+#
+# So the test enumerates the POSITIONS of that decomposition and judges every
+# combination by the RULE, not by a list of expected verdicts. Adding an
+# exemplar to any position below extends the proof without editing an oracle.
+S4="$(mktemp -d)"
+s4row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
+S4_SCHEMES="http https"
+# One label: a machine on some private network. No third party can open it, so
+# it settles nothing — whatever it is spelled.
+S4_HOST_BAD="x localhost example internal-docs"
+S4_HOST_OK="docs.example.com a.b example.org docs.rs"
+# `-` stands for "no path at all"; `/` is a bare origin, which names a site.
+S4_PATH_BAD="- /"
+S4_PATH_OK="/api /api/v2 /en/latest/index.html"
+s4_cases=0; s4_wrong=0; s4_accepted=0; s4_rejected=0
+for sch in $S4_SCHEMES; do
+  for host in $S4_HOST_BAD $S4_HOST_OK; do
+    for path in $S4_PATH_BAD $S4_PATH_OK; do
+      s4_cases=$((s4_cases+1))
+      case " $S4_HOST_OK " in *" $host "*) hok=1 ;; *) hok=0 ;; esac
+      case " $S4_PATH_OK " in *" $path "*) pok=1 ;; *) pok=0 ;; esac
+      [ "$path" = "-" ] && url="$sch://$host" || url="$sch://$host$path"
+      s4row P0 95 src/g.py:1 lens refuted stale-api "current docs disagree $url" > "$S4/g.tsv"
+      "$BIN/jjstack-review-triage" "$S4/g.tsv" --out "$S4/g.md" > /dev/null 2>&1
+      rc=$?
+      # THE RULE, applied by the test: accepted exactly when host and path are
+      # both satisfied. Both schemes are documentation; neither is special.
+      if [ "$hok" = 1 ] && [ "$pok" = 1 ]; then wantrc=0; else wantrc=4; fi
+      [ "$wantrc" = 0 ] && s4_accepted=$((s4_accepted+1)) || s4_rejected=$((s4_rejected+1))
+      [ "$rc" = "$wantrc" ] || { s4_wrong=$((s4_wrong+1)); echo "    $url: exit $rc, rule says $wantrc" >&2; }
+    done
+  done
+done
+check "every combination of the declared grammar positions was tried" \
+      "[ \"\$s4_cases\" = \"\$(( 2 * 8 * 5 ))\" ]"
+check "the grammar corpus contains both verdicts (neither side is vacuous)" \
+      "[ \"\$s4_accepted\" -gt 0 ] && [ \"\$s4_rejected\" -gt 0 ]"
+check "a refutation is accepted exactly when scheme, host and path all hold" \
+      "[ \"\$s4_wrong\" = 0 ]"
+# The round-3 reproducer, verbatim, so the regression has a name.
+s4row P0 95 src/a.py:7 security refuted stale-api 'I do not think this is real http://x' > "$S4/x.tsv"
+"$BIN/jjstack-review-triage" "$S4/x.tsv" --out "$S4/x.md" > "$S4/x.out" 2> "$S4/x.err"
+check "the round-3 reproducer 'http://x' no longer deletes a P0" "[ \$? -eq 4 ]"
+check "and nothing is rendered for it" "[ ! -f '$S4/x.md' ]"
+check "the error says what a document looks like, not just that one is missing" \
+      "grep -q 'names no document' '$S4/x.err'"
+
+# --- SUBJECT and LINKAGE, wired to the inventory this PR builds -------------
+# Round 2 listed five probes for this rule. Two were closed then; the other two
+# — "a URL to an unrelated site" and "a library absent from the dep inventory" —
+# stayed open because nothing connected the refutation to the repo. §4.5b step 1
+# says find the library IN THE INVENTORY, and step 5 says a library that is not
+# in it is capped at 50, never refuted. That is the missing connection.
+#
+# The inventory is produced by the real tool from a real manifest, never typed
+# out here: a hand-written fixture would prove the checker reads a file this
+# test wrote, not the file the review actually passes it.
+mkdir -p "$S4/repo"
+printf '{"dependencies":{"express":"4.18.2","@types/node":"20.1.0"}}\n' > "$S4/repo/package.json"
+"$BIN/jjstack-review-dep-inventory" "$S4/repo" --tsv > "$S4/inv.tsv" 2>/dev/null
+check "the inventory fixture came from the shipped dep-inventory tool" \
+      "grep -q '^npm	express	4.18.2' '$S4/inv.tsv'"
+s4row P2 50 src/h.py:1 lens refuted stale-api 'express changed this in 4.x, see https://expressjs.com/en/4x/api.html' > "$S4/ok.tsv"
+"$BIN/jjstack-review-triage" "$S4/ok.tsv" --deps "$S4/inv.tsv" --out "$S4/ok.md" > /dev/null 2>&1
+check "a refutation about a declared library, citing that library docs, is accepted" "[ \$? -eq 0 ]"
+# SUBJECT — the library is not one this repo declares.
+s4row P2 50 src/h.py:1 lens refuted stale-api 'leftpad changed this, see https://leftpad.example.com/api/v2' > "$S4/nodep.tsv"
+"$BIN/jjstack-review-triage" "$S4/nodep.tsv" --deps "$S4/inv.tsv" --out "$S4/nodep.md" > /dev/null 2> "$S4/nodep.err"
+check "a refutation about a library absent from the inventory is rejected" "[ \$? -eq 4 ]"
+check "and the message cites the rule that caps it instead" \
+      "grep -q 'confidence 50' '$S4/nodep.err'"
+# LINKAGE — a real document, on a real site, about something else entirely.
+s4row P2 50 src/h.py:1 lens refuted stale-api 'express changed this, see https://en.wikipedia.org/wiki/Cat' > "$S4/unrel.tsv"
+"$BIN/jjstack-review-triage" "$S4/unrel.tsv" --deps "$S4/inv.tsv" --out "$S4/unrel.md" > /dev/null 2> "$S4/unrel.err"
+check "a refutation citing an unrelated site is rejected" "[ \$? -eq 4 ]"
+check "and the message names the library whose docs were expected" \
+      "grep -q 'express' '$S4/unrel.err'"
+# NEGATIVE CONTROLS — the two clauses must be what rejects, and they must bind
+# `refuted` alone. Without --deps the same two rows are legal (grammar only),
+# and no other disposition is asked for evidence at all.
+"$BIN/jjstack-review-triage" "$S4/nodep.tsv" --out "$S4/nodep2.md" > /dev/null 2>&1
+check "without --deps the same row passes: the SUBJECT clause is what rejected it" "[ \$? -eq 0 ]"
+"$BIN/jjstack-review-triage" "$S4/unrel.tsv" --out "$S4/unrel2.md" > /dev/null 2>&1
+check "without --deps the unrelated citation passes: the LINKAGE clause is what rejected it" "[ \$? -eq 0 ]"
+s4row P2 40 src/h.py:2 lens suppress baseline 'a baselined nit naming no library and no link' > "$S4/sup.tsv"
+"$BIN/jjstack-review-triage" "$S4/sup.tsv" --deps "$S4/inv.tsv" --out "$S4/sup.md" > /dev/null 2>&1
+check "with --deps a non-refuted row still needs neither library nor link" "[ \$? -eq 0 ]"
+# A scoped name is one name: `@types/node` is matched by its last segment, the
+# way anybody writing the claim would name it.
+s4row P2 50 src/h.py:3 lens refuted stale-api 'node types moved this, see https://types.example.com/node/api' > "$S4/scoped.tsv"
+"$BIN/jjstack-review-triage" "$S4/scoped.tsv" --deps "$S4/inv.tsv" --out "$S4/scoped.md" > /dev/null 2>&1
+check "a scoped package is named by its last segment" "[ \$? -eq 0 ]"
+# The PAGE must say which half of the rule ran. "Every refutation cites a real
+# document" and "…cites the docs of a library we depend on" are different
+# assurances and must not read the same.
+check "a page checked with the inventory says so" \
+      "grep -q 'grammar, subject and linkage' '$S4/ok.md'"
+check "a page checked without it says only the grammar ran" \
+      "grep -q 'GRAMMAR only' '$S4/nodep2.md'"
+# And a --deps path that does not exist may not degrade to "the clauses were
+# not checked" — the caller asked for them.
+"$BIN/jjstack-review-triage" "$S4/ok.tsv" --deps "$S4/nosuch.tsv" --out "$S4/miss.md" > /dev/null 2>&1
+check "a missing inventory is an error, never a silent downgrade" "[ \$? -eq 3 ]"
+rm -rf "$S4"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
