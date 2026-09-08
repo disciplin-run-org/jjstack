@@ -29,7 +29,11 @@
 #
 # Usage:
 #   jjstack-review-preflight --out DIR [--base REF] [--repo DIR]
-#                            [--skip-tests] [--dry-run]
+#                            [--also-repo DIR]... [--skip-tests] [--dry-run]
+#
+# --also-repo is forwarded to the blast-radius scan, repeatable — name each
+# sibling repo whose code calls the shared module this diff touches. Blast radius
+# is computed once, here, so this is where the search is widened.
 #
 # Exit: 0 pack built, 2 usage error, 3 could not build a pack at all.
 #       A sub-pass that skips or finds failures does NOT fail the pack — the
@@ -41,16 +45,30 @@ set -uo pipefail
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-OUT=""; REPO=""; BASE=""; DRY=0; SKIP_TESTS=0
+OUT=""; REPO=""; BASE=""; DRY=0; SKIP_TESTS=0; ALSO=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)        OUT="${2:-}"; shift 2 ;;
     --repo)       REPO="${2:-}"; shift 2 ;;
     --base)       BASE="${2:-}"; shift 2 ;;
+    # Passed straight through to the blast-radius scan, repeatable. Blast radius
+    # is computed ONCE, here — so a diff touching a shared module whose consumers
+    # live in a sibling repo has to be able to say so at this invocation. Without
+    # the passthrough the only way to widen the search was a second scan, which
+    # is exactly the duplication this pack exists to remove.
+    --also-repo)
+      [ $# -ge 2 ] || { echo -e "${CYA}error${RST} --also-repo requires a path" >&2; exit 2; }
+      ALSO+=(--also-repo "$2"); shift 2 ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
     --dry-run)    DRY=1; shift ;;
-    -h|--help)    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)
+      # Computed, not a typed line range: a hardcoded range silently truncates
+      # the header the moment it grows. Same fix already applied to the sibling
+      # review scripts; both sides of this conflict carried a different stale
+      # number, which is the defect rather than a choice between them.
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+      exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -88,7 +106,7 @@ TESTFLAG=(); [ "$SKIP_TESTS" -eq 1 ] && TESTFLAG=(--skip-tests)
 
 echo "== preflight evidence pack → $OUT =="
 run_pass tooling   jjstack-review-tooling-sweep     --out "$OUT" "${REPOFLAG[@]}" "${TESTFLAG[@]}" "${DRYFLAG[@]}"
-run_pass blast     jjstack-review-blast-radius      --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
+run_pass blast     jjstack-review-blast-radius      --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${ALSO[@]+"${ALSO[@]}"}" "${DRYFLAG[@]}"
 run_pass intent    jjstack-review-intent            --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
 run_pass dismissed jjstack-review-prior-dismissals  --out "$OUT" "${REPOFLAG[@]}" "${DRYFLAG[@]}"
 

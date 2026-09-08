@@ -139,7 +139,10 @@ it before running the command below.
 ```
 
 One command runs all five pre-passes and writes `EVIDENCE-PACK.md` plus the
-artifacts. Then read the pack:
+artifacts. This is the **only** blast-radius run in the whole review (Module
+G.1); if the diff touches a shared module whose consumers live in a sibling repo,
+add `--also-repo <path>` here, once per sibling, rather than scanning again
+later. Then read the pack:
 
 ```bash
 cat {OUTPUT_DIR}/preflight/EVIDENCE-PACK.md
@@ -318,7 +321,8 @@ Dropped-dimension passes (the coverage Anthropic explicitly skips — run them):
 Evidence-pack passes (these exist only because Phase 0 ran — they read files the
 diff does not contain, and no diff-only pass can produce them):
 
-9. **Blast-radius pass** — work `blast-radius.md` symbol by symbol. For each
+9. **Blast-radius pass** — work `{OUTPUT_DIR}/preflight/blast-radius.md` (the
+   ONE map, built in Phase 0 — see Module G.1) symbol by symbol. For each
    call site listed, open it and answer: does it still hold against the NEW
    definition — arity, argument types, contract, constant's new value, and every
    enum member still handled at every switch/match/dispatch? A broken call site
@@ -355,8 +359,12 @@ implementation.*
 
 A well-documented false-positive class: the reviewer judges a call against the
 library API it remembers from training, the library has since moved, and correct
-code gets flagged. Macroscope cut third-party-library review comments 55% by
-looking up current docs instead of trusting recall.
+code gets flagged. Macroscope *reports* cutting third-party-library review
+comments 55% by looking up current docs instead of trusting recall — a
+vendor-adjacent figure, published by the search supplier being promoted, and
+`references/vendor-lessons-macroscope.md` says so. The reason this phase exists
+is the failure class, which needs nobody's benchmark to believe; do not repeat
+the number as an established fact.
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-dep-inventory --tsv
@@ -367,9 +375,20 @@ finding that asserts a third-party library/framework/API is used incorrectly:
 
 1. Find the library in the inventory and note its pinned version.
 2. WebSearch the **current official documentation for that version** and confirm
-   the asserted misuse is real for it.
+   the asserted misuse is real for it. **One lookup per (library, version)** —
+   cache the answer and reuse it for every finding about that same pair; thirty
+   findings across five libraries are five lookups, not thirty.
+   **Cap the phase at 10 lookups**, spending them on the libraries carrying the
+   most findings first; anything left unlooked-up takes step 5 below. This is the
+   same self-imposed bound the other expensive pass carries — an unbounded
+   per-finding search is how a noise control becomes the slowest phase in the
+   review.
 3. If current docs show the code is correct as written, **drop the finding** and
-   record it as a stale-knowledge false positive.
+   record it in the Phase 5.11 ledger with disposition `refuted` and reason
+   `stale-api`, carrying the doc URL in the claim column. "Drop" here means
+   *removed from the report*, never *removed from the record* — a refuted
+   finding stays inspectable like every other, so a later reader can see that
+   this reviewer looked and disproved it rather than never looking.
 4. If docs confirm the misuse, cite the doc URL in the finding — it raises the
    Phase 5 confidence score with real evidence.
 5. If the library is absent from the inventory, or docs cannot settle it, keep
@@ -377,8 +396,17 @@ finding that asserts a third-party library/framework/API is used incorrectly:
 
 Note the asymmetry: this drops findings that are **wrong**, never findings that
 are merely low-priority. It costs no recall, which is why it is the one noise
-control adopted here. Exit 3 (no manifests) is normal in a repo with no external
-dependencies — note it, skip to Phase 5.
+control adopted here.
+
+Read the inventory's exit code — two of them mean opposite things:
+
+- **Exit 3 (no manifests)** — normal in a repo with no external dependencies.
+  Note it, skip to Phase 5.
+- **Exit 4 (manifests found, nothing parsed)** — the inventory FAILED. Do **not**
+  read it as "no dependencies": every stale-API finding would fall to step 5 and
+  be capped at 50 while the phase reports success. Treat every library as absent,
+  say so in the report, and raise the parse failure itself as a P2 tooling
+  finding so it gets fixed.
 
 ---
 
@@ -804,6 +832,7 @@ to delete, and no arithmetic threshold appears here:
 | demoted by calibration (§5.10) | `demoted` | `prior-decision` |
 | retired by the committed baseline (§5d) | `suppress` | `baseline` |
 | real but out of scope for this diff | `defer` | `pre-existing` / `not-reachable` / `accepted-risk` |
+| raised, then DISPROVED by evidence (§4.5b) | `refuted` | `stale-api` |
 | never raised — outside Phase 4's emission scope | `out-of-scope` | `tool-covered` / `style-only` / `no-repro` / `duplicate` |
 
 `reason` is a **code from the closed vocabulary**, never free text. A
@@ -812,6 +841,18 @@ sentence that justified the suppression already lives in the committed
 `.jjstack-review-baseline.json` and stays there. Pasting it into this column
 makes the validator exit 4 on a ledger that says exactly what it was told to
 say, and the loop has no way out.
+
+`refuted` is the one row where the finding leaves the report because it is
+**wrong**, and it is the only row whose decision is made *before* Phase 5 — the
+§4.5b stale-API check, which weighs the finding against current official
+documentation rather than against a model's judgement. That is why it does not
+breach the enrich-only rule, and why it needed its own row: `out-of-scope` is
+defined as *never raised*, which is false here, and `suppress` is the
+unexamined-disappearance disposition that Invariant 3 forbids for a P0/P1. A
+refuted P1 is legal precisely because it carries external evidence. The pairing
+is exclusive in both directions — `refuted` takes only `stale-api`, and
+`stale-api` only `refuted` — so it cannot become a general delete hatch, nor be
+smuggled onto `suppress` to dodge Invariant 3.
 
 Then render the ledger. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation
@@ -933,19 +974,25 @@ Rationale, sourcing, and the explicit list of what was rejected as marketing:
 cat ~/.claude/skills/jjstack/references/vendor-lessons-greptile.md
 ```
 
-### G.1 Cross-file blast radius (start of Phase 4)
+### G.1 Cross-file blast radius (computed in Phase 0 — do NOT run it again)
 
 A diff-only reviewer structurally cannot see the callers of the function the
 diff just changed. This is the defect class repo-context reviewers genuinely
 catch and diff-only reviewers genuinely cannot — so compute it deterministically
 instead of hoping a pass wanders into it.
 
-```bash
-~/.claude/skills/jjstack/bin/jjstack-review-blast-radius > {OUTPUT_DIR}/blast-radius.md
-```
+That computation already happened. **Phase 0's pre-flight pack runs
+`jjstack-review-blast-radius` once** and writes the map to
+`{OUTPUT_DIR}/preflight/blast-radius.md`; Phase 4's blast-radius pass (pass 9)
+reads that file. This module is the *explanation* of that map, not a second
+invocation — running it again here would produce two files with the same
+basename in two directories and leave passes disagreeing about which is current.
+Three independent PRs each built this scan; the point of the consolidation was
+one implementation, run once.
 
-Add `--also-repo <path>` once per sibling repo when the diff touches a shared
-module whose consumers live elsewhere.
+If the diff touches a shared module whose consumers live in a sibling repo, add
+`--also-repo <path>` once per sibling **to the Phase 0 pre-flight invocation**,
+before it runs — not to a second run here.
 
 Feed the report to every Phase 4 pass. For each listed site, the question is:
 **does the changed definition still satisfy this out-of-diff caller?** A site
