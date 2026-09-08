@@ -274,7 +274,13 @@ if [ "$VERDICT" = "approve" ]; then
   elif grep -qE "$want_resolved_re" <<<"$body_all"; then
     # The path is not decoration: it must exist, for the same reason the
     # no-report rule stats a link. A pointer to nothing is no pointer.
-    rr=$(sed -E "s/.* - ([A-Za-z0-9_.\/-]+\.md)$/\1/" <<<"$body_all")
+    # head -1: the shape check greps per line, so a canonical line followed by
+    # prose satisfies it and rr would otherwise capture the prose as part of the
+    # filename - failing closed, but printing the wrong rule and a nonsense path.
+    rr=$(head -1 <<<"$body_all" | sed -E "s/.* - ([A-Za-z0-9_.\/-]+\.md)$/\1/")
+    if [ "$(grep -c . <<<"$body_all")" -gt 1 ]; then
+      fail "not-canonical" "a resolved verdict is ONE line. Everything after it belongs in the report."
+    else
     sd=$(cd "$(dirname "$SRC")" && pwd)
     rt=$(git -C "$sd" rev-parse --show-toplevel 2>/dev/null || true)
     fnd=0
@@ -283,6 +289,7 @@ if [ "$VERDICT" = "approve" ]; then
     done
     [ "$fnd" -eq 1 ] || \
       fail "no-report" "the resolved line names \`$rr\` and no such file exists. Commit the report first, then approve."
+    fi
   fi
 fi
 

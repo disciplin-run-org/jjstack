@@ -64,8 +64,15 @@ Three rules follow, and they bind harder than anything else in this file:
    does not go looking for something else to justify the run. A clean result
    from a review that ran every applicable lens is a strong statement; padding
    it with a nit is not thoroughness, it is manufacturing work.
-2. **Nothing is raised on a line the diff did not touch**, at any severity —
-   including a line an earlier round already read and passed.
+2. **Nothing PRE-EXISTING is raised on a line the diff did not touch**, at any
+   severity — including a line an earlier round already read and passed.
+   *Pre-existing* is the whole of the rule. A **consequence of this diff** on
+   an unchanged line is not pre-existing and is fully in scope: a caller the
+   new signature breaks is precisely what the blast-radius walk exists to find
+   and stays P0, and so does everything the absence pass reports — a schema
+   without its migration, an enum member without its consumers. Those two
+   lenses are the only ones here that can see outside the diff, and dropping
+   this qualifier would delete them while claiming precedence over them.
 3. **A new finding on unchanged code is a finding about the PREVIOUS review.**
    If a pass genuinely believes it has found something the last round missed,
    that is a miss, and it is reported as one: name what was missed, and name
@@ -229,10 +236,12 @@ CI, diff size, and the overall posture do not.
   against the commit the last report names) and the previous finding count.
 - Verify only the prior P0/P1: does the reproduction still reproduce? Mark
   each *fixed / still open / regressed*.
-- **Raise nothing at all on unchanged code**, per Idempotence above. New
-  findings are admissible only against lines this round's diff actually
-  changed, and a belief that unchanged code hides something is reported as a
-  miss by the previous review, with its reason, or not at all.
+- **Raise nothing PRE-EXISTING on unchanged code**, per Idempotence above. A
+  belief that unchanged code hides a pre-existing defect is reported as a miss
+  by the previous review, with its reason, or not at all. This does not touch
+  the blast-radius walk or the absence pass: a caller broken *by this diff* is
+  a consequence of the change, not a pre-existing issue, and is reported at
+  full severity however untouched its line is.
 - **Raise nothing below P1 even on changed code.** Not "nothing already
   listed": that weaker rule is the measured failure. Across the stack
   this skill replaces, P0/P1 fell 29 → 13 → 15 while P2/P3 ROSE 46 → 58 → 69,

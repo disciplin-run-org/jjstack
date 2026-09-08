@@ -780,6 +780,14 @@ check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 body att_nolink "$ATT: all issues resolved - lgtm - approved\n"
 check "a resolved line with no report path is refused" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_nolink.md')\""
+# Prose appended AFTER a canonical line WITH a valid path: the shape check
+# greps per line, so it matched and the failure surfaced as a nonsense filename
+# under the wrong rule. Fails closed either way; the message has to be right.
+body att_wordypath "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n\nAnd prose nobody asked for.\n"
+check "prose after a valid resolved line is refused as not-canonical" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_wordypath.md')\""
+check "…and is NOT misdiagnosed as a missing report" \
+      "! grep -q no-report <<<\"\$(why '$PCL/att_wordypath.md')\""
 body att_ghost "$ATT: all issues resolved - lgtm - approved - review-9999-99-99.md\n"
 check "…and one naming a report that does not exist" \
       "grep -q no-report <<<\"\$(why '$PCL/att_ghost.md')\""
@@ -826,8 +834,22 @@ check "the skill states idempotence as a governing property" \
       "grep -q '^## Idempotence' '$SK'"
 check "…once all findings are resolved, the next review says so and stops" \
       "grep -qi 'the next review says so and stops' '$SK'"
-check "…nothing is raised on a line the diff did not touch" \
-      "grep -q 'Raise nothing at all on unchanged code' '$SK'"
+check "…nothing PRE-EXISTING is raised on a line the diff did not touch" \
+      "grep -q 'Raise nothing PRE-EXISTING on unchanged code' '$SK'"
+# The qualifier is the whole rule. Without "pre-existing" it reads as "raise
+# nothing on unchanged code at any severity" while claiming to bind harder than
+# anything else in the file - which deletes the only two lenses that can see
+# OUTSIDE the diff, and those are the headline contribution of this skill.
+# Asserting the idempotence text is PRESENT could not catch that; asserting it
+# does not CONTRADICT the correctness lens can.
+check "…and the out-of-diff caller lens survives that rule" \
+      "grep -q 'A broken out-of-diff caller is P0' '$SK'"
+check "…as does the absence lens" \
+      "grep -q \"what should have changed and didn't\" '$SK'"
+check "…and idempotence names them both as still in scope" \
+      "grep -q 'blast-radius walk exists to find' '$SK'"
+check "…so the unqualified form is absent" \
+      "! grep -qE 'Nothing is raised on a line the diff did not touch' '$SK'"
 check "…and a new finding on unchanged code is a MISS by the previous review" \
       "grep -q 'finding about the PREVIOUS review' '$SK'"
 # The weaker rule this replaces must be gone, or both are in the file and the
