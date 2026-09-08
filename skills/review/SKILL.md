@@ -228,6 +228,16 @@ For each merged finding (batch them; do not spawn per finding):
    wrongly, check the docs for the version the repo pins. Stale training
    knowledge is a known false-positive class; no script needed.
 
+**A guard's title is a claim, and carries the same burden as a finding.** A
+check named for a concept while its body tests something that does not exist is
+worse than no check: it reads as coverage to the next reviewer and to you. Any
+assertion that scopes its own input — a `sed` range, a file list, a glob — gets
+an anti-vacuity floor beside it asserting that input is non-empty, because an
+empty input makes a negative assertion pass unconditionally. This skill shipped
+exactly that: a guard titled "no location-scoped posture row" whose range named
+a table header that had never existed, green on the very row it was written to
+reject.
+
 Never report: anything a category marked COVERED in `exclusions.md` already
 checked; style not called out in a CLAUDE.md; pre-existing issues on lines
 the diff did not touch; a test-quality opinion about the test suite itself

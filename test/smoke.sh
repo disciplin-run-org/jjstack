@@ -864,8 +864,36 @@ check "no rule anywhere scopes by changed-vs-unchanged lines" \
       "! grep -niE 'nothing new on changed lines|even on changed code' '$SK'"
 # The verdict table scopes by severity alone: a row conditioned on location
 # fired simultaneously with the P0 row, with no precedence between them.
-check "the verdict table has no location-scoped posture row" \
-      "! sed -n '/Active findings profile/,/^$/p' '$SK' | grep -qiE 'changed|untouched'"
+# ANTI-VACUITY FLOOR FIRST. The range below was written as
+# `/Active findings profile/` and the header says `| Active findings |`, so it
+# matched ZERO lines: `grep -q` on empty input returns 1, `!` inverted it, and
+# the guard passed unconditionally. Proven by re-adding a location-scoped row
+# in a fourth vocabulary - all three table guards stayed green.
+#
+# A guard's TITLE is a claim and needs the same evidence as a finding. This one
+# said "no location-scoped posture row" while testing a header that does not
+# exist, which is worse than no guard: it reads as coverage in a review.
+sed -n '/| Active findings |/,/^$/p' "$SK" > "$SANDBOX/posture.txt"
+check "the posture table is locatable (anti-vacuity floor)" "[ -s '$SANDBOX/posture.txt' ]"
+# The row set is PINNED, not word-filtered. A blocklist of vocabulary is what
+# failed here twice over: the class returned in a third wording the prose guard
+# could not see, and then in a FOURTH ("nothing new where the diff edited") that
+# carries neither "changed" nor "untouched" and walked straight past a grep for
+# them. Every posture row must be one of the five conditions that scope by
+# severity; anything else fails, whatever words it uses, and adding a row is
+# then a deliberate act that updates this list.
+cut -d'|' -f2 "$SANDBOX/posture.txt" | sed -e '1,2d' -e 's/^ *//' -e 's/ *$//' \
+  | grep -v '^$' | sort > "$SANDBOX/posture-rows.txt"
+printf '%s\n' 'A lens or the verification did not run' 'Any P0' 'Any P1' \
+               'Nothing above P3' 'P2s only' | sort > "$SANDBOX/posture-want.txt"
+check "the posture table has rows to check (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/posture-rows.txt') -eq 5 ]"
+check "the verdict table's rows are exactly the five severity conditions" \
+      "diff -q '$SANDBOX/posture-rows.txt' '$SANDBOX/posture-want.txt' >/dev/null"
+check "…and none of them is location-scoped, in any vocabulary" \
+      "! grep -qiE 'changed|untouched|diff edited|did not touch' '$SANDBOX/posture-rows.txt'"
+check "the skill requires an anti-vacuity floor on self-scoping guards" \
+      "grep -q \"guard's title is a claim\" '$SK'"
 check "…and says so, so it is not re-added" \
       "grep -q 'scopes by \*\*severity\*\*, never by location' '$SK'"
 # The qualifier is the whole rule. Without "pre-existing" it reads as "raise
