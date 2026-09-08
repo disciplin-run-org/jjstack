@@ -35,24 +35,39 @@ three things gstack does not do (run the repo's real tooling first, map the
 callers outside the diff, post a short verdict to the PR) and one thing every
 recall-max reviewer forgets: a budget.
 
-## Do not run this skill on a prose document
+## The equivalence gate — a change that says the same thing is not a change
 
-**This skill reviews code. Pointing it at a prompt, a skill, a policy or a
-README does not terminate.** Code has a compiler and a test suite that define
-correct, so a review of it converges. Prose has neither: a rule can always be
-read one more way, a sentence can always be found that qualifies another, and a
-model asked to look adversarially will always succeed. "No reading of this text
-suppresses a P0" is not a condition anything can satisfy.
+A skill is machine instructions written in prose, and it is reviewed like any
+other machine instruction. What makes a review of it fail to converge is not
+the medium. It is publishing findings, and committing fixes, whose before and
+after **say the same thing**.
 
-Measured, on this skill's own PR: eight rounds, one P1 each after the second,
-every one of them in material the review engagement itself had just caused to
-be written — three siblings of a single commit, then the guard written to fix
-them, then the audit of that guard. +389 insertions against 26 deletions. Each
-finding was real. None was in anything a user of the skill would touch.
+Before any finding is published and before any fix is committed, put the two
+texts side by side — the current text and the proposed text — and answer one
+question: **name one input on which they lead to a different result.** A
+different action a reader takes, a different output the code produces, a
+different verdict, a different line in a report. If you cannot name one, the
+two are equivalent, and:
 
-For a prose artifact the acceptance test is **behavioural and declared before
-the first round**: the defect set it must catch, the runs it must complete, the
-verdicts it must produce. Run that, once. Then ship it or do not.
+- a **finding** whose fix is equivalent to the current text is not a finding.
+  Drop it. Reordering three words does not make a new story.
+- a **fix** that is equivalent to the text it replaces is not a fix. Do not
+  commit it. Back and forth is the same distance.
+- a **finding** equivalent to one already raised this engagement is not new —
+  it is the earlier finding, and it means the earlier fix was incomplete. Say
+  that; do not count it again.
+
+This applies identically to prose, code, comments, tests and commit messages.
+It is the gate that stops a review from producing unlimited change that
+changes nothing.
+
+Measured on this skill's own PR: eight rounds, one P1 each after the second.
+Rounds 4, 5 and 6 were one finding — "this section suppresses a consequence of
+the diff" — raised in three vocabularies against three siblings of one commit,
+and answered by three fixes that each restated the same scope in a different
+place. Every round was a real reading of real text, and the net movement was a
+qualifier that already existed elsewhere in the file. +389 insertions against
+26 deletions, most of them paraphrase.
 
 ## Budgets — these are rules, not targets
 
@@ -246,6 +261,10 @@ For each merged finding (batch them; do not spawn per finding):
 5. **Library misuse claims:** before asserting a third-party API is used
    wrongly, check the docs for the version the repo pins. Stale training
    knowledge is a known false-positive class; no script needed.
+6. **Equivalence gate.** Name one input on which the current text and the
+   proposed fix lead to a different result. None → the finding is a paraphrase;
+   drop it. Equivalent to a finding already raised → it is that finding, and
+   the earlier fix was incomplete; say so instead of counting it again.
 
 **A guard's title is a claim, and carries the same burden as a finding.** A
 check named for a concept while its body tests something that does not exist is
@@ -309,6 +328,11 @@ already covers a clean re-review, and Idempotence rule 1 already says stop.
   machinery the previous round had caused to be written. A new low-severity
   observation goes in one line under Coverage notes, uncounted.
 - The author may answer "won't fix" on any P2/P3 and it is not re-argued.
+- **Every fix passes the equivalence gate before it is committed.** Name the
+  input on which the tree now behaves differently. A fix that restates the
+  same rule in a new place, or the same guard in new words, has not moved the
+  base and is not committed — it goes back as "the earlier fix was
+  incomplete," with the class named.
 - Do not mutation-test or re-review the tests a fix added.
 - **If the finding count did not fall, the verdict is `STOP`**: the review is
   generating work faster than it retires it. Say so and hand back to the human.

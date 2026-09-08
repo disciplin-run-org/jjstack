@@ -893,10 +893,22 @@ check "the verdict table's rows are exactly the five severity conditions" \
       "diff -q '$SANDBOX/posture-rows.txt' '$SANDBOX/posture-want.txt' >/dev/null"
 check "…and none of them is location-scoped, in any vocabulary" \
       "! grep -qiE 'changed|untouched|diff edited|did not touch' '$SANDBOX/posture-rows.txt'"
-check "the skill refuses to be run on a prose document" \
-      "grep -q 'Do not run this skill on a prose document' '$SK'"
-check "…and requires a behavioural acceptance test declared up front" \
-      "grep -q 'behavioural and declared before' '$SK'"
+# The gate that stops a review producing unlimited change that changes
+# nothing: before and after must lead to a different result on some input, or
+# the finding is a paraphrase and the fix is a no-op. Applies to prose, code,
+# comments and tests alike.
+check "the skill has an equivalence gate" \
+      "grep -q '^## The equivalence gate' '$SK'"
+check "…that asks for one input on which before and after differ" \
+      "grep -q 'name one input on which they lead to a different result' '$SK'"
+check "…and applies it to findings, fixes, and repeat findings" \
+      "[ \$(grep -cE 'is not a finding|is not a fix|is not new' '$SK') -ge 3 ]"
+check "…in the verification step, per finding" \
+      "grep -q 'Equivalence gate\.' '$SK'"
+check "…and on the author side, per fix" \
+      "grep -q 'Every fix passes the equivalence gate' '$SK'"
+check "…and the retracted prose-is-unreviewable rule is gone" \
+      "! grep -q 'Do not run this skill on a prose document' '$SK'"
 check "the skill requires an anti-vacuity floor on self-scoping guards" \
       "grep -q \"guard's title is a claim\" '$SK'"
 check "…and says so, so it is not re-added" \
