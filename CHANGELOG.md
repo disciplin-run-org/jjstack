@@ -38,6 +38,28 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   hung or broken gbrain quietly costs you deduplication, with nobody watching.
   Every capture now prints the same one-line state.
 
+- **The guard that keeps medical records off the shared index is now actually
+  tested.** jjstack refuses to write a sensitive project's memories to the
+  shared vector index for two independent reasons: a marker file in the
+  project's memory dir, or the project's git remote being registered
+  `deny`/`read-only`. Only the first was ever exercised — the second could have
+  been deleted outright and every test still passed, on a machine where it
+  mattered most. Both are now driven by fixtures, and the suite proves they are
+  load-bearing by switching each one off in turn and requiring the refusal to
+  disappear. It also reads the list of gates from the code that owns them, so a
+  gate added later cannot arrive untested.
+
+- **Near-duplicate merging is pinned to the number the README states.** A newly
+  captured lesson merges into an existing memory when the semantic match scores
+  0.85 or higher. That threshold is now documented and enforced from both
+  sides: loosening it (which would fuse unrelated lessons into one) fails the
+  suite just as tightening it does.
+
+- **The test suite gives the same verdict on any machine.** It already ran
+  against a throwaway home directory; it now also runs against a PATH with no
+  gbrain on it, so having gbrain installed no longer changes which branch the
+  tests take. A clean machine and a developer's machine now agree.
+
 - **The test suite no longer reads or writes your real memory.** Running
   `test/smoke.sh` used to point parts of itself at your actual memory store,
   your actual gstack learnings and this checkout's git remote. Three
