@@ -12,7 +12,12 @@
 #
 # Baseline resolution, in order:
 #   1. --baseline REF          explicit
-#   2. the marker written by --mark (taken before the fixing step ran)
+#   2. the marker written by --mark (taken before the fixing step ran). --mark
+#      also snapshots the untracked files BY CONTENT, because `git stash create`
+#      captures the index and the tracked worktree and ignores untracked files by
+#      design — without that second half, a file the user wrote before the review
+#      comes back to them as "new untracked", i.e. as a finding against their own
+#      work.
 #   3. HEAD                    fallback: everything uncommitted is assumed
 #                              review-authored. Reported, so the caller can say
 #                              so instead of silently over-claiming.
@@ -83,6 +88,18 @@ fi
 SLUG="$(printf '%s' "$ROOT" | tr '/' '-')"
 STATE="${XDG_CACHE_HOME:-$HOME/.cache}/jjstack/review/$SLUG"
 MARKER="$STATE/autofix-baseline"
+UNTRACKED_SNAPSHOT="$STATE/autofix-untracked"
+
+# "<blob-hash><TAB><path>" for every untracked, non-ignored file. Hashes, not
+# just paths, so the diff step can still see the review EDITING a file the user
+# already had — subtracting on path alone would hide that.
+snapshot_untracked() {
+  git -C "$ROOT" ls-files --others --exclude-standard | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    h="$(git -C "$ROOT" hash-object -- "$f" 2>/dev/null)"
+    [ -n "$h" ] && printf '%s\t%s\n' "$h" "$f"
+  done
+}
 
 if [ "$MARK" -eq 1 ]; then
   # `git stash create` snapshots a dirty tree as a dangling commit WITHOUT
@@ -100,14 +117,17 @@ if [ "$MARK" -eq 1 ]; then
   fi
   mkdir -p "$STATE" || exit 3
   printf '%s\n' "$snap" > "$MARKER"
-  echo -e "${GRN}marked${RST} baseline $snap"
+  snapshot_untracked > "$UNTRACKED_SNAPSHOT" || exit 3
+  echo -e "${GRN}marked${RST} baseline $snap ($(grep -c . "$UNTRACKED_SNAPSHOT" 2>/dev/null || true) untracked file(s) snapshotted)"
   exit 0
 fi
 
 SOURCE="explicit --baseline"
+FROM_MARKER=0
 if [ -z "$BASELINE" ] && [ -f "$MARKER" ]; then
   BASELINE="$(tr -d '[:space:]' < "$MARKER")"
   SOURCE="marker taken before the fixing step"
+  FROM_MARKER=1
 fi
 if [ -z "$BASELINE" ]; then
   BASELINE="HEAD"
@@ -122,6 +142,44 @@ fi
 UNTRACKED="$(git -C "$ROOT" ls-files --others --exclude-standard)"
 CHANGED="$(git -C "$ROOT" diff --name-only "$BASELINE" 2>/dev/null)"
 
+# The tracked half of "what did the review touch" is `git diff <baseline>`, and
+# the baseline commit already carries the user's pre-existing tracked edits,
+# staged changes, deletions and the delete-half of a rename. The UNTRACKED half
+# has no such commit to lean on, so it is diffed against the --mark snapshot
+# here. Ignored files are outside both halves on purpose (--exclude-standard):
+# build output is nobody's review finding.
+NEW_FILES=""; CHANGED_FILES=""; GONE_FILES=""; PRE_COUNT=0
+append() { # append <var-name> <line>
+  if [ -z "${!1}" ]; then printf -v "$1" '%s' "$2"
+  else printf -v "$1" '%s\n%s' "${!1}" "$2"; fi
+}
+
+# Only a snapshot that PAIRS with this baseline may be subtracted. An explicit
+# --baseline names a commit, which says nothing about what was untracked then.
+if [ "$FROM_MARKER" -eq 1 ] && [ -f "$UNTRACKED_SNAPSHOT" ]; then
+  PRE_COUNT="$(grep -c . "$UNTRACKED_SNAPSHOT" 2>/dev/null)"
+  case "$PRE_COUNT" in ''|*[!0-9]*) PRE_COUNT=0 ;; esac
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    was="$(awk -F'\t' -v p="$f" '$2 == p { print $1; exit }' "$UNTRACKED_SNAPSHOT")"
+    if [ -z "$was" ]; then
+      append NEW_FILES "$f"
+    else
+      now="$(git -C "$ROOT" hash-object -- "$f" 2>/dev/null)"
+      [ "$now" != "$was" ] && append CHANGED_FILES "$f"
+    fi
+  done <<EOF
+$UNTRACKED
+EOF
+  # A file the user had and the review deleted is the review's work too.
+  while IFS="$(printf '\t')" read -r _hash path; do
+    [ -n "${path:-}" ] || continue
+    [ -e "$ROOT/$path" ] || append GONE_FILES "$path"
+  done < "$UNTRACKED_SNAPSHOT"
+else
+  NEW_FILES="$UNTRACKED"
+fi
+
 # Line count of a possibly-empty newline-joined list. `grep -c` would exit 1 on
 # empty and trip the `||` fallback into printing twice.
 count_lines() { [ -z "$1" ] && { echo 0; return; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
@@ -129,12 +187,15 @@ count_lines() { [ -z "$1" ] && { echo 0; return; }; printf '%s\n' "$1" | wc -l |
 if [ "$DRY" -eq 1 ]; then
   echo "[dry-run] repo:     $ROOT"
   echo "[dry-run] baseline: $BASELINE ($SOURCE)"
-  echo "[dry-run] tracked changes: $(count_lines "$CHANGED")"
-  echo "[dry-run] untracked files: $(count_lines "$UNTRACKED")"
+  echo "[dry-run] tracked changes:    $(count_lines "$CHANGED")"
+  echo "[dry-run] untracked new:      $(count_lines "$NEW_FILES")"
+  echo "[dry-run] untracked changed:  $(count_lines "$CHANGED_FILES")"
+  echo "[dry-run] untracked removed:  $(count_lines "$GONE_FILES")"
+  echo "[dry-run] pre-existing untracked at the marker (excluded): $PRE_COUNT"
   exit 0
 fi
 
-if [ -z "$CHANGED" ] && [ -z "$UNTRACKED" ]; then
+if [ -z "$CHANGED" ] && [ -z "$NEW_FILES" ] && [ -z "$CHANGED_FILES" ] && [ -z "$GONE_FILES" ]; then
   echo -e "${YEL}skip${RST}  no changes since $BASELINE — the review applied no auto-fixes."
   exit 4
 fi
@@ -143,11 +204,28 @@ echo "# auto-fix diff"
 echo "# repo:     $ROOT"
 echo "# baseline: $BASELINE"
 echo "# source:   $SOURCE"
+if [ "$FROM_MARKER" -eq 1 ]; then
+  echo "# untracked: $PRE_COUNT file(s) already present at the marker, excluded below"
+else
+  echo "# untracked: no snapshot — every untracked file is listed as new"
+fi
 echo
 
-if [ -n "$UNTRACKED" ]; then
+if [ -n "$NEW_FILES" ]; then
   echo "## new untracked files (not in the diff below — read them in full)"
-  printf '%s\n' "$UNTRACKED"
+  printf '%s\n' "$NEW_FILES"
+  echo
+fi
+
+if [ -n "$CHANGED_FILES" ]; then
+  echo "## untracked files that existed at the marker and changed since (read them in full)"
+  printf '%s\n' "$CHANGED_FILES"
+  echo
+fi
+
+if [ -n "$GONE_FILES" ]; then
+  echo "## untracked files that existed at the marker and are now gone"
+  printf '%s\n' "$GONE_FILES"
   echo
 fi
 

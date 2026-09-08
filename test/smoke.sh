@@ -937,6 +937,83 @@ check "non-repo path exits 3" "[ $rc -eq 3 ]"
 unset XDG_CACHE_HOME
 rm -rf "$AFD"
 
+echo "== 7b2. --mark must snapshot every git file state, not just the ones with a fixture =="
+# Round 1 taught --mark to exclude the user's pre-existing TRACKED edits, because
+# the fixture used tracked files. `git stash create` captures the index and the
+# tracked worktree and ignores untracked files BY DESIGN, so a file the user
+# wrote BEFORE the review still surfaced under "new untracked files" while the
+# header affirmed "marker taken before the fixing step" — post-pass 2 then files
+# the user's own scratch file back at them as a P1. The old fixture could not see
+# it: it removed XDG_CACHE_HOME (destroying the marker) before creating its
+# untracked file, so it only ever exercised the already-handled HEAD fallback.
+#
+# This fixture enumerates every state git distinguishes, all of it created BEFORE
+# the marker, and asserts the marker excludes each one.
+MKS="$(mktemp -d)"; MKR="$MKS/repo"; mkdir -p "$MKR"
+XDG_CACHE_HOME="$MKS/cache"; export XDG_CACHE_HOME
+git -C "$MKR" init -q >/dev/null 2>&1
+git -C "$MKR" config user.email t@example.com >/dev/null 2>&1
+git -C "$MKR" config user.name  jjstack-test   >/dev/null 2>&1
+printf 'ignored.log\n' > "$MKR/.gitignore"
+for f in clean mod staged del ren fix; do printf 'base\n' > "$MKR/$f.txt"; done
+git -C "$MKR" add -A >/dev/null 2>&1
+git -C "$MKR" commit -qm init >/dev/null 2>&1
+# --- the user's own work: every state git distinguishes, all before the marker
+printf 'PRE_MODIFIED\n' >> "$MKR/mod.txt"                    # tracked-modified
+printf 'PRE_STAGED\n'   >> "$MKR/staged.txt"                 # staged
+git -C "$MKR" add staged.txt >/dev/null 2>&1
+rm -f "$MKR/del.txt"                                         # deleted
+mv "$MKR/ren.txt" "$MKR/renamed.txt"                         # renamed = delete + untracked
+printf 'PRE_UNTRACKED\n' > "$MKR/pre_untouched.txt"          # untracked, never touched again
+printf 'PRE_EDITED\n'    > "$MKR/pre_edited.txt"             # untracked, later edited by the review
+printf 'PRE_DOOMED\n'    > "$MKR/pre_doomed.txt"             # untracked, later deleted by the review
+printf 'PRE_IGNORED\n'   > "$MKR/ignored.log"                # ignored
+"$BIN/jjstack-review-autofix-diff" --repo "$MKR" --mark >/dev/null 2>&1
+# --- only now does the "review" apply its auto-fixes ---
+printf 'AUTOFIX_TRACKED\n'  >> "$MKR/fix.txt"
+printf 'AUTOFIX_NEW\n'       > "$MKR/autofix_new.txt"
+printf 'AUTOFIX_APPENDED\n' >> "$MKR/pre_edited.txt"
+rm -f "$MKR/pre_doomed.txt"
+mout="$("$BIN/jjstack-review-autofix-diff" --repo "$MKR" 2>&1)"; mrc=$?
+# Positive control first: if detection were simply broken, every exclusion below
+# would pass for the wrong reason.
+check "mark/states: the review's tracked edit is reported" \
+  "[ $mrc -eq 0 ] && grep -q 'AUTOFIX_TRACKED' <<<\"\$mout\""
+check "mark/states: the review's new untracked file is reported" \
+  "grep -q 'autofix_new.txt' <<<\"\$mout\""
+# One assertion per pre-marker state. Each is the USER's work, not the review's.
+check "mark/states: tracked-clean never appears"                "! grep -q 'clean.txt' <<<\"\$mout\""
+check "mark/states: tracked-modified is excluded"               "! grep -q 'PRE_MODIFIED' <<<\"\$mout\""
+check "mark/states: staged is excluded"                         "! grep -q 'PRE_STAGED' <<<\"\$mout\""
+check "mark/states: a deletion is excluded"                     "! grep -q 'del.txt' <<<\"\$mout\""
+check "mark/states: an ignored file is excluded"                "! grep -q 'ignored.log' <<<\"\$mout\""
+check "mark/states: pre-existing UNTRACKED is excluded"         "! grep -q 'pre_untouched.txt' <<<\"\$mout\""
+check "mark/states: the untracked half of a rename is excluded" "! grep -q 'renamed.txt' <<<\"\$mout\""
+# ...but the subtraction must not overshoot: an untracked file that already
+# existed and which the review then CHANGED is the review's work and must still
+# surface — and be distinguishable from a file the review created.
+check "mark/states: an edited pre-existing untracked file still surfaces" \
+  "grep -q 'pre_edited.txt' <<<\"\$mout\""
+check "mark/states: it is reported as changed, not as new" \
+  "grep -q 'existed at the marker and changed' <<<\"\$mout\""
+check "mark/states: an untracked file the review deleted is reported" \
+  "grep -q 'pre_doomed.txt' <<<\"\$mout\""
+# And the pass must not claim the review did something when it did nothing: a
+# tree whose only dirt predates the marker is "no auto-fixes" — exit 4.
+MK2="$MKS/repo2"; mkdir -p "$MK2"
+git -C "$MK2" init -q >/dev/null 2>&1
+git -C "$MK2" config user.email t@example.com >/dev/null 2>&1
+git -C "$MK2" config user.name  jjstack-test   >/dev/null 2>&1
+printf 'base\n' > "$MK2/a.txt"
+git -C "$MK2" add -A >/dev/null 2>&1
+git -C "$MK2" commit -qm init >/dev/null 2>&1
+printf 'user scratch\n' > "$MK2/user_only.txt"
+"$BIN/jjstack-review-autofix-diff" --repo "$MK2" --mark >/dev/null 2>&1
+"$BIN/jjstack-review-autofix-diff" --repo "$MK2" >/dev/null 2>&1; rc=$?
+check "mark/states: pre-existing dirt alone is 'no auto-fixes' (exit 4)" "[ $rc -eq 4 ]"
+unset XDG_CACHE_HOME
+rm -rf "$MKS"
+
 echo "== 7c. review-calibration (accept/reject memory) =="
 # Post-pass 5: a class the team keeps rejecting must be ranked DOWN THE PAGE and a
 # class they keep confirming ranked up, or the reviewer re-guesses every run.
@@ -978,12 +1055,52 @@ check "unknown key reports rank=0"             "grep -q 'rank=0' <<<\"\$out\""
 check "invalid verdict actually rejected (exit 2)" "[ $rc -eq 2 ]"
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --verdict accepted >/dev/null 2>&1; rc=$?
 check "missing --key is a usage error (2)" "[ $rc -eq 2 ]"
-# Field-count integrity: a tab in free text would shift every column after it.
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "tabby" --verdict accepted --note "a	b	c" >/dev/null 2>&1
-check "tabs in --note cannot corrupt the row" "awk -F'\t' '/tabby/{exit !(NF==6)}' '$LEDGER'"
+# Field-count integrity: a tab in free text would shift every column after it.
+# The old form, `awk -F'\t' '/tabby/{exit !(NF==6)}'`, exits 0 when NO line
+# matches — so it passed just as happily when the row was missing entirely.
+# Assert the row EXISTS and is well formed, and prove the assertion can fail.
+row_is_intact() { # row_is_intact <ledger> <key>
+  awk -F'\t' -v k="$2" '$2 == k { seen = 1; if (NF != 6) bad = 1 }
+                        END { exit (seen && !bad) ? 0 : 1 }' "$1"
+}
+check "tabs in --note cannot corrupt the row" "row_is_intact '$LEDGER' tabby"
+check "control: the row check fails when the row is absent" \
+  "! row_is_intact '$LEDGER' definitely-never-recorded"
 before=$(wc -l < "$LEDGER")
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "dry" --verdict accepted --dry-run >/dev/null 2>&1
 check "--dry-run appends nothing" "[ \$(wc -l < '$LEDGER') -eq $before ]"
+# Ordering IS the product of `report` — it is the ranked view of the ledger.
+# `%+6d` emits "+20", and `sort -n` cannot parse a leading '+', so the sort key
+# collapsed to 0 and the ranked output came back unranked. The keys below are
+# chosen so alphabetical order is NOT rank order; otherwise a broken sort could
+# come out right by coincidence.
+ORD="$CAL/ordering.tsv"
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "aaa-top" --verdict accepted >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "aaa-top" --verdict accepted >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "bbb-mid" --verdict accepted >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "ccc-low" --verdict rejected >/dev/null 2>&1
+rout="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
+# The rank column of each data row, in the order printed (last field is the
+# placement word, so the rank is the one before it).
+ranks="$(printf '%s\n' "$rout" | awk '/(demoted|normal)$/ { print $(NF-1)+0 }')"
+check "report emits one row per pattern key" \
+  "[ \$(printf '%s\n' \"\$ranks\" | grep -c .) -eq 3 ]"
+check "report actually orders by rank" \
+  "[ \"\$ranks\" = \"\$(printf '%s\n' \"\$ranks\" | sort -n)\" ]"
+check "report puts the most-demoted pattern first" \
+  "[ \"\$(printf '%s\n' \"\$ranks\" | head -1)\" = '-10' ]"
+check "report puts the highest-ranked pattern last" \
+  "[ \"\$(printf '%s\n' \"\$ranks\" | tail -1)\" = '20' ]"
+# Ties must not be left to awk's hash order, or the ranked view reshuffles
+# between two runs over an unchanged ledger.
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "tie-a" --verdict accepted >/dev/null 2>&1
+"$BIN/jjstack-review-calibration" record --store "$ORD" --key "tie-b" --verdict accepted >/dev/null 2>&1
+r1="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
+r2="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
+check "report is byte-identical across runs on an unchanged ledger" "[ \"\$r1\" = \"\$r2\" ]"
+check "tied ranks fall back to key order" \
+  "[ \"\$(printf '%s\n' \"\$r1\" | awk '/(demoted|normal)\$/ && \$1 ~ /^tie-/ { print \$1 }' | tr '\n' ' ')\" = 'tie-a tie-b ' ]"
 rm -rf "$CAL"
 
 echo "== 7d. value-less flags must be a usage error, never a hang =="
@@ -1063,6 +1180,45 @@ check "same plan plus a test runner exits 0"       "[ $rc -eq 0 ]"
 check "with a test runner it says SWEEP CLEAN"     "printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
 rm -rf "$SHIM" "$PSW"
 
+echo "== 7f2. the sweep must read package.json as data, never as code =="
+# jjstack-review-sweep spliced $ROOT into a `node -p` JS *string literal* — the
+# only detection path that evaluates a path as code. A repo path containing a
+# quote ends the literal: at best node throws, the sweep swallows it with
+# 2>/dev/null, `scripts` comes back empty and every npm check is silently dropped
+# from the plan (a sweep reporting on fewer checks than it should, which is the
+# same failure class as calling a partial sweep clean). At worst the path is
+# executed: a directory named
+#   A'+require('fs').writeFileSync('PWNED','owned')+'
+# needs no slash, is a legal directory name, and writes the file. The python3
+# fallback two lines below already did it correctly, via argv.
+NQS="$(mktemp -d)"; NQD="$NQS/it's a repo"
+mkdir -p "$NQD"
+printf '{"scripts":{"lint":"echo l","test":"echo t"}}\n' > "$NQD/package.json"
+NSHIM="$NQS/shim"; mkdir -p "$NSHIM"
+for t in bash node python3; do
+  p="$(command -v "$t" 2>/dev/null)"; [ -n "$p" ] && ln -s "$p" "$NSHIM/$t"
+done
+printf '#!/bin/sh\nexit 0\n' > "$NSHIM/npm"; chmod +x "$NSHIM/npm"
+nout="$(timeout 30 env PATH="$NSHIM" "$BIN/jjstack-review-sweep" --repo "$NQD" --dry-run 2>&1)"
+check "sweep finds npm scripts under a quoted path (lint)" "grep -q 'npm run lint' <<<\"\$nout\""
+check "sweep finds npm scripts under a quoted path (test)" "grep -q 'npm run test' <<<\"\$nout\""
+# Positive control — the same fixture at an ordinary path must find the same two
+# scripts, or the assertions above could pass for want of a working fixture.
+NQP="$NQS/plain"; mkdir -p "$NQP"
+cp "$NQD/package.json" "$NQP/package.json"
+pout="$(timeout 30 env PATH="$NSHIM" "$BIN/jjstack-review-sweep" --repo "$NQP" --dry-run 2>&1)"
+check "control: the same fixture at a plain path finds them" \
+  "grep -q 'npm run lint' <<<\"\$pout\" && grep -q 'npm run test' <<<\"\$pout\""
+# And the path must never be evaluated: a directory name that would execute code
+# if spliced into a JS literal must leave no trace behind.
+NQX="$NQS/A'+require('fs').writeFileSync('PWNED','owned')+'"
+mkdir -p "$NQX"
+cp "$NQD/package.json" "$NQX/package.json"
+( cd "$NQS" && rm -f PWNED
+  timeout 30 env PATH="$NSHIM" "$BIN/jjstack-review-sweep" --repo "$NQX" --dry-run >/dev/null 2>&1 )
+check "a hostile path name is never executed as JavaScript" "[ ! -e '$NQS/PWNED' ]"
+rm -rf "$NQS"
+
 echo "== 7g. the docs must not teach the deleted rescoring/deletion model =="
 # The single guard that existed (a grep for 'delta=' on one command's stdout)
 # could not see PROSE, which is exactly how four written copies of the deleted
@@ -1071,6 +1227,15 @@ echo "== 7g. the docs must not teach the deleted rescoring/deletion model =="
 # model too, and a guard that only reads the skill would let it survive there.
 REVDOCS="$DIR/skills/review/SKILL.md $DIR/references/review-post-passes.md $DIR/CHANGELOG.md $DIR/README.md"
 REVSRC="$BIN/jjstack-review-sweep $BIN/jjstack-review-autofix-diff $BIN/jjstack-review-calibration"
+# A negated grep over a path that no longer resolves EXITS NON-ZERO, and the `!`
+# turns that into a PASS — so a rename silently disarms every guard below it.
+# SKILL.md, review-post-passes.md and CHANGELOG.md each had a companion positive
+# grep that a rename would trip; README.md had none anywhere in the suite, so
+# renaming it and re-adding the deleted model left ALL 305 PASS. Assert the
+# corpus RESOLVES before asserting anything about its contents.
+for f in $REVDOCS $REVSRC; do
+  check "guarded doc/source is present: $(basename "$f")" "[ -f '$f' ]"
+done
 # Each literal below is an affirmative statement of a model this repo deleted:
 # findings decaying/being promoted across a threshold, DISPROVEN dropping a
 # finding, and calibration adjusting a confidence.
@@ -1087,17 +1252,49 @@ check "SKILL.md gives DISPROVEN a section instead of a delete" \
   "grep -qF 'Disproven by test' '$DIR/skills/review/SKILL.md'"
 check "the post-pass reference gives DISPROVEN a section too" \
   "grep -qF 'Disproven by test' '$DIR/references/review-post-passes.md'"
+# ONE definition of the rescoring/deletion guard, used by the real assertion AND
+# by the positive controls below. A control that re-implements the check only
+# proves the control matches itself — which is how a dead alternative shipped.
+deleted_model_hits() { # deleted_model_hits <file>...
+  # Flatten before matching. grep is line-based, and the prose that shipped this
+  # model WRAPPED between "adjusts its" and "confidence" — so the pattern could
+  # never fire on the very string it was written for, and only the other
+  # alternative was ever live. A regex validated against a mental model of the
+  # string instead of the string itself is not a guard.
+  cat -- "$@" | tr '\n' ' ' | tr -s ' ' \
+    | grep -qE 'gets dropped|adjusts its.{0,30}confidence'
+}
 check "the changelog does not promise findings get dropped or rescored" \
-  "! grep -qE 'gets dropped|adjusts its.{0,30}confidence' '$DIR/CHANGELOG.md'"
+  "! deleted_model_hits '$DIR/CHANGELOG.md'"
 check "the changelog documents the PARTIAL sweep state" \
   "grep -qF 'PARTIAL' '$DIR/CHANGELOG.md'"
-# Positive control — the prose guard must be able to fire, or it is a grep over
+# Positive controls — the prose guard must be able to fire, or it is a grep over
 # documents that can never match and the next copy of the model ships green.
+# These are RECOVERED LITERALS, not invented ones: the exact lines that shipped
+# the deleted model, taken from CHANGELOG.md at commit 0998a19^. There is one
+# control per alternative, because a single control lets a dead alternative hide
+# behind a live one.
 probe_doc="$(mktemp)"
 printf 'repeat false positives decay out of the report\n' > "$probe_doc"
 check "prose guard actually catches the deleted model" \
   "grep -qF -- 'decay out' '$probe_doc'"
-rm -f "$probe_doc"
+# Recovered verbatim. This one WRAPS between "adjusts its" and "confidence",
+# which is exactly why a line-based grep could never fire on the string it was
+# written for. Do not reflow these two lines.
+probe_wrap="$(mktemp)"
+cat > "$probe_wrap" <<'PROBE'
+     repo (`jjstack/review-calibration.tsv`), and the next review adjusts its
+     confidence from them — so a false positive you dismissed twice stops being
+PROBE
+probe_drop="$(mktemp)"
+cat > "$probe_drop" <<'PROBE'
+     made to fail, the finding was never real and gets dropped — and if it can,
+PROBE
+check "rescoring guard fires on the prose that shipped it (wrapped line)" \
+  "deleted_model_hits '$probe_wrap'"
+check "deletion guard fires on the prose that shipped it" \
+  "deleted_model_hits '$probe_drop'"
+rm -f "$probe_doc" "$probe_wrap" "$probe_drop"
 
 echo "== 7h. --mark is actually invoked, not just implemented =="
 # The marker is the ONLY thing separating the reviewer's auto-fixes from the

@@ -82,9 +82,17 @@ review is delegated to at all — take the baseline marker:
 ~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --mark
 ```
 
-`--mark` snapshots the dirty tree with `git stash create`, without touching the
-working tree or the stash list. It is the only thing that separates *the
-reviewer's fixes* from *the user's own uncommitted work*. Without it the baseline
+`--mark` snapshots the dirty tree in two halves, without touching the working
+tree or the stash list. `git stash create` covers the tracked half — the index,
+tracked modifications, deletions, and the delete-half of a rename. It ignores
+untracked files by design, so `--mark` records those separately, by content
+hash. Both halves matter: with only the first, a file the user wrote before the
+review still comes back under "new untracked files" while the header affirms the
+marker was taken first, and the pass files the user's own scratch file at them
+as a P1.
+
+The marker is the only thing that separates *the reviewer's fixes* from *the
+user's own uncommitted work*. Without it the baseline
 falls back to `HEAD`, and this pass diffs the entire dirty tree — so a user who
 had hours of work in progress gets a report full of P1s attributed to an
 automaton that wrote none of them. Take the marker; do not rely on the fallback.
@@ -96,8 +104,14 @@ from memory of what was fixed:
 ~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --stat
 ```
 
-Drop `--stat` for the full patch. Baseline resolution is documented in the
-script's header; if the output still says it fell back to `HEAD` the marker step
+Drop `--stat` for the full patch. Untracked files cannot appear in a patch, so
+they are listed above it in three separate sections — files the review created,
+files that already existed at the marker and changed since, and files that
+existed at the marker and are now gone. Read each in full; only the first is a
+new file. Files that existed at the marker and are untouched are excluded
+entirely, and ignored files are outside the pass on purpose.
+
+Baseline resolution is documented in the script's header; if the output still says it fell back to `HEAD` the marker step
 above was missed, and the pass must repeat that caveat in the report rather than
 claiming the diff is purely reviewer-authored — and must not report P1s against
 work it cannot attribute.

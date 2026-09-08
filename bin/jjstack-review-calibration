@@ -214,9 +214,13 @@ awk -F'\t' '
       d = 10 * (a[k]+0) - 10 * (r[k]+0)
       if (d < -30) d = -30
       if (d >  20) d =  20
-      printf "  %-40s %5d %5d %+6d  %s\n", k, a[k]+0, r[k]+0, d, (d < 0 ? "demoted" : "normal")
+      # Two columns for two audiences: a machine sort key, then the human row.
+      # "%+6d" prints "+20", and `sort -n` cannot parse a leading '+' — the key
+      # collapsed to 0 and the ranked view came back unranked. Never sort on a
+      # column that was formatted for a reader.
+      printf "%d\t  %-40s %5d %5d %+6d  %s\n", d, k, a[k]+0, r[k]+0, d, (d < 0 ? "demoted" : "normal")
     }
-  }' "$STORE" | sort -k4 -n
+  }' "$STORE" | sort -t"$(printf '\t')" -k1,1n -k2,2 | cut -f2-
 echo
 echo "Rank is PLACEMENT, not score. A demoted finding is printed under"
 echo "\"Demoted (prior decision)\" with its severity and confidence untouched."
