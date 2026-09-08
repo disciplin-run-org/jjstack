@@ -3680,6 +3680,149 @@ check "and all four render in the one section the sort orders" \
       "[ \"\$(grep -c '^## Reported.*(4)' '$R3/p.md')\" = 1 ]"
 rm -rf "$R3"
 
+echo "== 7s. round-3: the merged-record invariants — which are implied, and which is not =="
+# Round 3 deleted all five checks that re-ran the per-row invariants on the
+# collapsed record and the suite stayed green. Re-adding them so a mutation
+# reddens would have been the wrong repair: FOUR of the five genuinely cannot
+# fire, and a check that cannot fire is not made real by a fixture aimed at it.
+# The right repair is to say which is which, delete the four, and assert the
+# IMPLICATIONS that make them unnecessary — a claim that CAN fail if the merge
+# is ever rewritten to break them.
+#
+# The vocabulary is read OUT OF THE SCRIPT, not retyped: it is the one ordered
+# list that is both the disposition vocabulary and the rank ladder, so a
+# disposition added tomorrow is covered by this section on the day it is added.
+S3="$(mktemp -d)"
+s3row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
+S3_DISPS=$(sed -n 's/.*ndisp = split("\([^"]*\)".*/\1/p' "$BIN/jjstack-review-triage")
+s3_n=$(printf '%s\n' $S3_DISPS | grep -c .)
+check "the disposition vocabulary was recovered from the shipped script" \
+      "[ \"\$s3_n\" -ge 7 ] && printf '%s\n' \$S3_DISPS | grep -qx refuted"
+# The reason is DERIVED from the declared rules too: `report` takes `-`,
+# `refuted` is bound to `stale-api` by invariant 4, and everything else takes a
+# reason that no invariant binds.
+s3rank() { # rank of a disposition, read off the declared list
+  printf '%s\n' $S3_DISPS | grep -nx "$1" | cut -d: -f1; }
+S3_REASONS=$(sed -n 's/.*split("\(unverified[^"]*\)".*/\1/p' "$BIN/jjstack-review-triage")
+check "the reason vocabulary was recovered from the shipped script too" \
+      "printf '%s\n' \$S3_REASONS | grep -qx prior-decision"
+# A DISTINCT reason per disposition, so a merged record that keeps the losing
+# member's reason is visible rather than coincidentally equal. Derived: `-` for
+# `report`, `stale-api` for `refuted` (invariant 4 binds it), and otherwise the
+# n-th reason of the declared vocabulary with the two bound codes removed.
+s3reason() {
+  case "$1" in report) echo '-'; return ;; refuted) echo stale-api; return ;; esac
+  printf '%s\n' $S3_REASONS | grep -vx not-reachable | grep -vx stale-api \
+    | sed -n "$(s3rank "$1")p"
+}
+# Nine shared words, so the URL a refutation must carry falls past the
+# eight-word fingerprint key and every pair actually merges.
+s3claim() { case "$1" in
+    refuted) echo 'one shared opening phrase used across every single disposition https://docs.example.com/x' ;;
+    *) echo 'one shared opening phrase used across every single disposition' ;; esac; }
+# --- IMPLICATION 1: the merged disposition is the minimum-rank MEMBER --------
+# and IMPLICATION 2: its reason is that same member's reason. Together these
+# are why re-running invariants 1 and 2 on the collapsed record is dead code:
+# the merged (disposition, reason) is always a pair that already passed per row.
+s3_pairs=0; s3_badpair=0; s3_nomerge=0
+for a in $S3_DISPS; do for b in $S3_DISPS; do
+  [ "$a" = "$b" ] && continue
+  s3_pairs=$((s3_pairs+1))
+  { s3row P2 50 src/s.py:1 lensA "$a" "$(s3reason "$a")" "$(s3claim "$a")"
+    s3row P2 50 src/s.py:1 lensB "$b" "$(s3reason "$b")" "$(s3claim "$b")"; } > "$S3/p.tsv"
+  rm -f "$S3/p.md" "$S3/p.out"
+  "$BIN/jjstack-review-triage" "$S3/p.tsv" --out "$S3/p.md" > "$S3/p.out" 2>/dev/null
+  [ -f "$S3/p.md" ] || { s3_badpair=$((s3_badpair+1)); echo "    pair rendered nothing: $a / $b" >&2; continue; }
+  grep -q 'unique=1 collapsed=1' "$S3/p.out" || { s3_nomerge=$((s3_nomerge+1)); echo "    pair did not merge: $a / $b" >&2; }
+  # Which disposition survived, read off the tally: one finding is left, so
+  # exactly one disposition carries a count of 1.
+  # Only the vocabulary names count: the same line carries `unique=1`,
+  # `collapsed=1` and `merges-raised=1`, and taking every `=1` field made this
+  # read three answers at once.
+  got=$(grep -o 'TALLY.*' "$S3/p.out" | tr ' ' '\n' \
+        | awk -F= -v ok=" $(printf '%s ' $S3_DISPS)" '$2 == 1 && index(ok, " " $1 " ") { print $1 }')
+  ra=$(s3rank "$a"); rb=$(s3rank "$b")
+  if [ "$ra" -lt "$rb" ]; then want="$a"; else want="$b"; fi
+  [ "$got" = "$want" ] || { s3_badpair=$((s3_badpair+1)); echo "    $a/$b merged to '$got', declared rank says '$want'" >&2; continue; }
+  # And the reason came with it. Sections that print a reason column are the
+  # ones where a mismatched reason would be visible; where the column does not
+  # exist the reason is `-` by the vocabulary and is checked as that.
+  wantrsn="$(s3reason "$want")"
+  gotrsn=$(awk -F'|' '/^\| P[0-9] \|/ { r = $6; gsub(/[ `]/, "", r); print r; exit }' "$S3/p.md")
+  # `report`, `unconfirmed` and `demoted` render in the three sections that
+  # carry a corroboration column instead of a reason one, so their merged
+  # reason is not on the page to read. For those the assertion is that the run
+  # RENDERED at all — a reason that does not belong to the merged disposition
+  # is refused by the merge recompute (exit 4, nothing written), which the
+  # `pair rendered nothing` branch above counts. For the other four the reason
+  # cell is read directly, and every disposition carries a distinct one, so a
+  # reason taken from the losing member shows up as a mismatch.
+  case "$want" in
+    report|unconfirmed|demoted) : ;;
+    *) [ "$gotrsn" = "$wantrsn" ] || { s3_badpair=$((s3_badpair+1)); echo "    $a/$b merged reason '$gotrsn', member holds '$wantrsn'" >&2; } ;;
+  esac
+done; done
+check "every ordered pair of dispositions was merged (n*(n-1))" \
+      "[ \"\$s3_pairs\" = \"\$((s3_n * (s3_n - 1)))\" ]"
+check "every pair actually collapsed into one finding" "[ \"\$s3_nomerge\" = 0 ]"
+check "IMPLIED: the merged disposition and reason are always one member's pair, the lowest-ranked" \
+      "[ \"\$s3_badpair\" = 0 ]"
+# --- IMPLICATION 3: `refuted` is the maximum rank ---------------------------
+# which is why re-running invariant 5 on the collapsed record is dead code: a
+# merged `refuted` means EVERY member was `refuted`, and each carried its
+# document past the per-row check. Asserted behaviourally — no mixed pair may
+# ever render as a refutation — not by reading the ladder back out.
+s3_refmix=0
+for a in $S3_DISPS; do
+  [ "$a" = refuted ] && continue
+  { s3row P2 50 src/s.py:2 lensA "$a" "$(s3reason "$a")" "$(s3claim "$a")"
+    s3row P2 50 src/s.py:2 lensB refuted stale-api "$(s3claim refuted)"; } > "$S3/r.tsv"
+  rm -f "$S3/r.out"
+  "$BIN/jjstack-review-triage" "$S3/r.tsv" --out "$S3/r.md" > "$S3/r.out" 2>/dev/null
+  grep -q 'refuted=1' "$S3/r.out" && { s3_refmix=$((s3_refmix+1)); echo "    $a merged with refuted still rendered as refuted" >&2; }
+done
+check "IMPLIED: no mixed group renders as a refutation, so a merged refutation always carries its document" \
+      "[ \"\$s3_refmix\" = 0 ]"
+
+# --- NOT implied, and the one check that stays -----------------------------
+# `suppress` is rank 6 of 7, so a merged `suppress` does NOT mean every member
+# was suppressed. A P0 `refuted` — legal per row, because invariant 3 binds
+# `suppress` alone — merging with a P2 `suppress` produces a merged P0 in the
+# Suppressed section that no per-row check has ever seen. This is the reviewer's
+# own reasoning applied one rank further, and it comes out the other way.
+#
+# Stated as the property rather than as the instance: over EVERY pairing of a
+# top-severity row with a suppressed row, no page may ever show a P0 or P1
+# among the suppressed.
+s3_absorb=0; s3_cases=0
+for a in $S3_DISPS; do
+  for sev in P0 P1; do
+    s3_cases=$((s3_cases+1))
+    { s3row "$sev" 95 src/s.py:3 lensA "$a" "$(s3reason "$a")" "$(s3claim "$a")"
+      s3row P2 50 src/s.py:3 lensB suppress baseline "$(s3claim suppress)"; } > "$S3/a.tsv"
+    rm -f "$S3/a.md"
+    "$BIN/jjstack-review-triage" "$S3/a.tsv" --out "$S3/a.md" > /dev/null 2>&1
+    [ -f "$S3/a.md" ] || continue          # refused outright: that is the guard working
+    sed -n '/^## Suppressed/,/^## /p' "$S3/a.md" | grep -qE '^\| P[01] \|' && {
+      s3_absorb=$((s3_absorb+1)); echo "    $sev absorbed into a suppressed row via '$a'" >&2; }
+  done
+done
+check "every top-severity/suppressed pairing was tried" "[ \"\$s3_cases\" = \"\$((s3_n * 2))\" ]"
+check "NOT implied, and caught: no merge may absorb a P0/P1 into a suppressed row" \
+      "[ \"\$s3_absorb\" = 0 ]"
+# POSITIVE CONTROL on the reader: the section extractor must be able to SEE a
+# top-severity row among the suppressed, or the count above is zero for the
+# wrong reason. The specimen is the shipped renderer's own row shape.
+s3_probe="$(mktemp)"
+{ echo '## Suppressed by baseline — with a recorded reason (1)'
+  echo '| sev | conf | location | exposure | reason | lenses | finding |'
+  echo '| P0 | 95 | `src/s.py:3` | prod | `baseline` | lensA | planted |'
+  echo '## Refuted'; } > "$s3_probe"
+check "the suppressed-section reader can see a planted P0 (control)" \
+      "sed -n '/^## Suppressed/,/^## /p' '$s3_probe' | grep -qE '^\\| P[01] \\|'"
+rm -f "$s3_probe"
+rm -rf "$S3"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
