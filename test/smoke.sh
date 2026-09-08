@@ -938,9 +938,11 @@ unset XDG_CACHE_HOME
 rm -rf "$AFD"
 
 echo "== 7c. review-calibration (accept/reject memory) =="
-# Post-pass 5: repeat false positives must decay and confirmed patterns must get
-# promoted, or the reviewer re-guesses every run. The value is entirely in the
-# key normalization (same class -> same row) and the clamped delta arithmetic.
+# Post-pass 5: a class the team keeps rejecting must be ranked DOWN THE PAGE and a
+# class they keep confirming ranked up, or the reviewer re-guesses every run.
+# Nothing leaves the report and no confidence ever moves — this is ordering only.
+# The value is entirely in the key normalization (same class -> same row) and the
+# clamped, placement-only rank arithmetic.
 CAL="$(mktemp -d)"; LEDGER="$CAL/review-calibration.tsv"
 "$BIN/jjstack-review-calibration" report --store "$LEDGER" >/dev/null 2>&1; rc=$?
 check "no ledger yet exits 4 (skip, no adjustment)" "[ $rc -eq 4 ]"
@@ -983,6 +985,142 @@ before=$(wc -l < "$LEDGER")
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "dry" --verdict accepted --dry-run >/dev/null 2>&1
 check "--dry-run appends nothing" "[ \$(wc -l < '$LEDGER') -eq $before ]"
 rm -rf "$CAL"
+
+echo "== 7d. value-less flags must be a usage error, never a hang =="
+# Reproduced before the fix: every one of these returned 124 under `timeout 5`.
+# `shift 2` is a silent no-op when only one argument remains, and `set -e` is
+# deliberately off in these scripts, so the arg loop spun on the same argv
+# forever. A hung review tool is worse than a broken one: it burns the session
+# with no output at all. Each case runs under `timeout` and asserts NOT 124.
+for spec in \
+  "jjstack-review-sweep|--repo" \
+  "jjstack-review-sweep|--cmd" \
+  "jjstack-review-sweep|--timeout" \
+  "jjstack-review-autofix-diff|--repo" \
+  "jjstack-review-autofix-diff|--baseline" \
+  "jjstack-review-calibration|report --store" \
+  "jjstack-review-calibration|suggest --key" \
+  "jjstack-review-calibration|record --verdict" ; do
+  tool="${spec%%|*}"; args="${spec#*|}"
+  timeout 5 "$BIN/$tool" $args >/dev/null 2>&1; rc=$?
+  check "$tool ${args##* } with no value does not hang" "[ $rc -ne 124 ]"
+  check "$tool ${args##* } with no value is a usage error (2)" "[ $rc -eq 2 ]"
+done
+# Positive control — `timeout` must actually be able to report 124 here, or every
+# "does not hang" assertion above is vacuously true and a real hang ships green.
+timeout 1 sleep 5 >/dev/null 2>&1; rc=$?
+check "timeout harness actually reports 124 on a real hang" "[ $rc -eq 124 ]"
+# Positive control — the flags must still ACCEPT a value; a guard that rejected
+# everything would also never hang.
+SWV="$(mktemp -d)"
+timeout 30 "$BIN/jjstack-review-sweep" --repo "$SWV" --cmd "true" >/dev/null 2>&1; rc=$?
+check "a flag WITH a value still works (exit 0)" "[ $rc -eq 0 ]"
+rm -rf "$SWV"
+
+echo "== 7e. --help is derived from the header, not a hand-kept line range =="
+# A `sed -n 'A,Bp'` range drifts the moment a line is added: calibration's help
+# stopped mid-sentence and dropped the Usage and Exit sections that usage() sends
+# the reader to find, while its two siblings leaked `set -uo pipefail` and the
+# raw colour definitions into their own help output.
+for tool in jjstack-review-sweep jjstack-review-autofix-diff jjstack-review-calibration; do
+  hout=$("$BIN/$tool" --help 2>&1)
+  check "$tool --help leaks no shell source" \
+    "! printf '%s' \"\$hout\" | grep -qE 'set -uo pipefail|\\\\033\\['"
+  check "$tool --help reaches the Usage section"  "printf '%s' \"\$hout\" | grep -q '^Usage:'"
+  check "$tool --help reaches the Exit section"   "printf '%s' \"\$hout\" | grep -q '^Exit'"
+  check "$tool --help ends on the last header line" \
+    "printf '%s' \"\$hout\" | grep -q 'No color red anywhere'"
+done
+# Positive control — the leak detector must be able to fire, or "no shell source"
+# is a grep that never matches anything and the truncation ships green.
+probe_help=$(printf 'Usage:\nset -uo pipefail\n')
+check "help leak guard actually catches leaked source" \
+  "printf '%s' \"\$probe_help\" | grep -qE 'set -uo pipefail'"
+
+echo "== 7f. review-sweep PARTIAL: a check set with no test runner is not clean =="
+# Detection only adds a tool that is installed, so a Python project with ruff but
+# no pytest ran the linter alone and printed SWEEP CLEAN at exit 0 — while the
+# pass's headline promise (catching the fix that turned a passing test red) went
+# untested. The shim PATH makes the plan deterministic regardless of what this
+# machine happens to have installed.
+SHIM="$(mktemp -d)"; PSW="$(mktemp -d)"
+printf '[project]\nname = "fixture"\n' > "$PSW/pyproject.toml"
+ln -s "$(command -v bash)" "$SHIM/bash"
+ln -s "$(command -v mktemp)" "$SHIM/mktemp"
+ln -s "$(command -v rm)" "$SHIM/rm"
+printf '#!/bin/sh\nexit 0\n' > "$SHIM/ruff"; chmod +x "$SHIM/ruff"
+out=$(timeout 30 env PATH="$SHIM" "$BIN/jjstack-review-sweep" --repo "$PSW" 2>&1); rc=$?
+check "lint-only plan exits 5 (partial), not 0"    "[ $rc -eq 5 ]"
+check "partial says PARTIAL, never CLEAN"          "printf '%s' \"\$out\" | grep -q 'SWEEP PARTIAL'"
+check "partial never prints SWEEP CLEAN"           "! printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
+check "partial names the missing test runner"      "printf '%s' \"\$out\" | grep -q 'NO test runner'"
+# Positive control — add a test runner to the SAME fixture and the SAME shim. If
+# this did not flip to CLEAN/0 the partial check above would pass for the wrong
+# reason: a sweep that can only ever say PARTIAL is just as broken.
+printf '#!/bin/sh\nexit 0\n' > "$SHIM/pytest"; chmod +x "$SHIM/pytest"
+out=$(timeout 30 env PATH="$SHIM" "$BIN/jjstack-review-sweep" --repo "$PSW" 2>&1); rc=$?
+check "same plan plus a test runner exits 0"       "[ $rc -eq 0 ]"
+check "with a test runner it says SWEEP CLEAN"     "printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
+rm -rf "$SHIM" "$PSW"
+
+echo "== 7g. the docs must not teach the deleted rescoring/deletion model =="
+# The single guard that existed (a grep for 'delta=' on one command's stdout)
+# could not see PROSE, which is exactly how four written copies of the deleted
+# model survived a fix that corrected the tool. This guard reads the documents.
+# CHANGELOG and README are in scope: the user-facing copy restated the deleted
+# model too, and a guard that only reads the skill would let it survive there.
+REVDOCS="$DIR/skills/review/SKILL.md $DIR/references/review-post-passes.md $DIR/CHANGELOG.md $DIR/README.md"
+REVSRC="$BIN/jjstack-review-sweep $BIN/jjstack-review-autofix-diff $BIN/jjstack-review-calibration"
+# Each literal below is an affirmative statement of a model this repo deleted:
+# findings decaying/being promoted across a threshold, DISPROVEN dropping a
+# finding, and calibration adjusting a confidence.
+for phrase in \
+  "decay out" "decays out" "across the gate" "reporting gate" \
+  "drops the finding" "the finding drops" "no confidence adjustment"; do
+  check "no doc teaches \"$phrase\"" \
+    "! grep -qF -- '$phrase' $REVDOCS $REVSRC"
+done
+# The two rules those documents MUST still state, positively.
+check "SKILL.md still forbids deleting a finding" \
+  "grep -qF 'Never delete a finding' '$DIR/skills/review/SKILL.md'"
+check "SKILL.md gives DISPROVEN a section instead of a delete" \
+  "grep -qF 'Disproven by test' '$DIR/skills/review/SKILL.md'"
+check "the post-pass reference gives DISPROVEN a section too" \
+  "grep -qF 'Disproven by test' '$DIR/references/review-post-passes.md'"
+check "the changelog does not promise findings get dropped or rescored" \
+  "! grep -qE 'gets dropped|adjusts its.{0,30}confidence' '$DIR/CHANGELOG.md'"
+check "the changelog documents the PARTIAL sweep state" \
+  "grep -qF 'PARTIAL' '$DIR/CHANGELOG.md'"
+# Positive control — the prose guard must be able to fire, or it is a grep over
+# documents that can never match and the next copy of the model ships green.
+probe_doc="$(mktemp)"
+printf 'repeat false positives decay out of the report\n' > "$probe_doc"
+check "prose guard actually catches the deleted model" \
+  "grep -qF -- 'decay out' '$probe_doc'"
+rm -f "$probe_doc"
+
+echo "== 7h. --mark is actually invoked, not just implemented =="
+# The marker is the ONLY thing separating the reviewer's auto-fixes from the
+# user's own uncommitted work. Before this fix `--mark` appeared nowhere but the
+# script and this test file, so post-pass 2 always fell back to HEAD and diffed
+# the whole dirty tree — reporting the user's work back to them as P1s. The
+# smoke suite was green the entire time because it exercised a branch the shipped
+# workflow never reached.
+check "SKILL.md invokes jjstack-review-autofix-diff --mark" \
+  "grep -qF 'jjstack-review-autofix-diff --mark' '$DIR/skills/review/SKILL.md'"
+check "the post-pass reference invokes --mark too" \
+  "grep -qF 'jjstack-review-autofix-diff --mark' '$DIR/references/review-post-passes.md'"
+# It has to be marked BEFORE gstack can auto-apply anything, i.e. before the
+# Phase 2 delegation line — a marker taken afterwards baselines the fixes away.
+check "the marker is taken before the gstack delegation" \
+  "[ \$(grep -n 'jjstack-review-autofix-diff --mark' '$DIR/skills/review/SKILL.md' | head -1 | cut -d: -f1) -lt \$(grep -n 'cat ~/.claude/skills/gstack/review/SKILL.md' '$DIR/skills/review/SKILL.md' | head -1 | cut -d: -f1) ]"
+# Positive control — prove the ordering comparison can fail, or "before" is an
+# assertion that would hold for any two line numbers.
+probe_ord="$(mktemp)"
+printf 'cat ~/.claude/skills/gstack/review/SKILL.md\njjstack-review-autofix-diff --mark\n' > "$probe_ord"
+check "ordering guard actually catches a late marker" \
+  "[ \$(grep -n 'jjstack-review-autofix-diff --mark' '$probe_ord' | head -1 | cut -d: -f1) -gt \$(grep -n 'cat ~/.claude/skills/gstack/review/SKILL.md' '$probe_ord' | head -1 | cut -d: -f1) ]"
+rm -f "$probe_ord"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0

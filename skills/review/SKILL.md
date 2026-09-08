@@ -181,6 +181,20 @@ that all three categories are IN SCOPE.
 
 ## Phase 2: Delegate to gstack — recall-max
 
+**First, mark the auto-fix baseline. This is not optional and it cannot be done
+later.** gstack's Step 5b auto-applies fixes; Phase 5.7 reviews that diff, and
+the marker is the only thing separating the reviewer's edits from the user's own
+uncommitted work. Take it now, before gstack can write anything:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --mark
+```
+
+Without it, 5.7 falls back to `HEAD` and diffs the entire dirty tree — reporting
+the user's own work-in-progress back to them as P1 findings written by an
+automaton. Exit 3 (not a git repo, or no commits) means 5.7 is structurally
+inapplicable: note it here and report 5.7 as skipped with that reason.
+
 ```bash
 cat ~/.claude/skills/gstack/review/SKILL.md
 ```
@@ -513,7 +527,7 @@ easier; **omit empty sections**.
 ## /review: <target>
 
 **Verdict:** {APPROVE | CAUTION | REJECT} — <short meaning>
-**Posture:** <profile from 5e> · <active count> active, <n> suppressed, <n> unconfirmed
+**Posture:** <profile from 5e> · <active count> active, <n> suppressed, <n> unconfirmed, <n> disproven
 **Coverage:** <passes run> / <passes applicable><, degraded: see below>
 
 ### Bottom line
@@ -529,6 +543,16 @@ Each row expands below with its quote, failure scenario, and remediation.
 
 ### Unconfirmed  (tagged `llm-unconfirmed` — kept deliberately, not verified)
 Same shape. These were NOT deleted; nobody could confirm them at the source.
+
+### Disproven by test  (tagged `DISPROVEN` in 5.8 — kept deliberately, not deleted)
+| Sev | Conf | Location | Finding | The test that did NOT go red |
+|---|---|---|---|---|
+
+A test written to prove the finding passed. That has two readings and this report
+does not choose between them: the finding is false, **or the test is wrong**
+(masking fixture, weak assertion, wrong seam). Quote the test so the reader can
+judge which. These are NOT deleted and NOT auto-recorded as `rejected` in 5.10 —
+a green test is evidence, not the team's decision.
 
 ### Demoted (prior decision)  (still active; ranked lower, never rescored)
 | Sev | Conf | Location | Finding | Demoted because |
@@ -633,17 +657,29 @@ unknown author with the full Phase 4 lens set.
 ~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --stat
 ```
 
-Exit 4 = no auto-fixes were applied → SKIP and say so. Findings here are P1 by
-default. If the output says the baseline fell back to `HEAD`, repeat that caveat
-in the report.
+This reads the marker Phase 2 took. Exit 4 = no auto-fixes were applied → SKIP
+and say so. Findings here are P1 by default — but only against code the marker
+attributes to the reviewer. If the output says the baseline fell back to `HEAD`,
+the Phase 2 marker was missed: repeat that caveat in the report and do NOT report
+the tree's contents as reviewer-authored P1s.
 
 ### Phase 5.8 — Prove it with a failing test
 
-For each high-confidence finding, write the test that goes red and RUN it. Mark
-each finding `PROVEN` / `DISPROVEN` / `UNPROVABLE`. `DISPROVEN` drops the finding
-(and records a `rejected` verdict in 5.10). `UNPROVABLE` is itself a finding —
-per the jjstack TDD rule an untestable behavior yields a **failing** test, never a
-hidden or skipped one. Get deliberate red tests out of the tree before Phase 5.9.
+For each high-confidence finding, write the test that goes red and RUN it. Tag
+each finding `PROVEN` / `DISPROVEN` / `UNPROVABLE`.
+
+**All three tags are enrichments. None of them deletes a finding** — 5c's hard
+rule has no exception here. `DISPROVEN` moves the finding into the report's
+**Disproven by test** section with the test that failed to go red; it does not
+drop it, and it does not by itself record a `rejected` verdict in 5.10. A green
+test has two readings — the finding is false, *or the test is wrong* (masking
+fixture, weak assertion, wrong seam) — and this pass cannot tell them apart, so
+it hands both to the human instead of betting on one. Only the committed baseline
+(5d), with an explicit human reason, takes a finding out of the active set.
+
+`UNPROVABLE` is itself a finding — per the jjstack TDD rule an untestable
+behavior yields a **failing** test, never a hidden or skipped one. Get deliberate
+red tests out of the tree before Phase 5.9.
 
 ### Phase 5.9 — Re-run the deterministic sweep
 
@@ -651,9 +687,12 @@ hidden or skipped one. Get deliberate red tests out of the tree before Phase 5.9
 ~/.claude/skills/jjstack/bin/jjstack-review-sweep
 ```
 
-Exit 0 = clean, exit 1 = the fixes regressed something (every failed check is a
-P0; attribute it against the pre-fix baseline before reporting), exit 4 = no
-checks available → SKIP and say so.
+Exit 0 = clean **and a test runner ran**, exit 1 = the fixes regressed something
+(every failed check is a P0; attribute it against the pre-fix baseline before
+reporting), exit 4 = no checks available → SKIP and say so, exit 5 = everything
+that ran passed but **no test runner was among the checks** → report PARTIAL, name
+what was missing, and say the regression question is still open. Never round a 5
+up to a clean sweep; re-run with `--cmd "<the project's real test command>"`.
 
 ### Phase 5.10 — Calibration persistence
 

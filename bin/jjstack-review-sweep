@@ -14,16 +14,48 @@
 # Detection is a fallback, not a policy: --cmd overrides it entirely, and a
 # project with no runnable checks is a clean SKIP (exit 4), never a failure.
 #
+# THREE outcomes, not two. "Everything I found passed" is not the same claim as
+# "the tests still pass". Detection only adds a tool that is actually installed,
+# so a Python project with ruff but no pytest would otherwise run the linter
+# alone and print CLEAN — while the headline promise of this pass (catching the
+# fix that quietly turned a previously-passing test red) went untested. A plan
+# with no test runner in it therefore ends PARTIAL (exit 5), never CLEAN.
+# A --cmd the caller supplied is authoritative: they said what to run.
+#
 # Usage:
 #   jjstack-review-sweep [--repo DIR] [--cmd "CMD"]... [--timeout SECS] [--dry-run]
 #
-# Exit: 0 every check passed, 1 at least one check FAILED, 2 usage error,
-#       3 repo unusable, 4 nothing applicable (skipped — say so, don't fail).
+# Exit: 0 every check passed AND a test runner was among them,
+#       1 at least one check FAILED,
+#       2 usage error,
+#       3 repo unusable,
+#       4 nothing applicable (skipped — say so, don't fail),
+#       5 every check passed but NO test runner ran (partial — say so, not clean).
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+# Help is DERIVED from the leading comment block, never a hand-maintained
+# `sed -n 'A,Bp'` range. A range silently drifts the moment a line is added,
+# which is how this help came to truncate mid-sentence and leak `set -uo
+# pipefail` into its own output.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
+# A flag that takes a value must GET one. `shift 2` is a silent no-op when only
+# one argument remains, so the loop would spin on the same argv forever (and
+# `set -e` is deliberately off here, so nothing stops it). Verified: this script
+# returned 124 under `timeout 5` for `--repo` with no value.
+need_val() { # need_val <flag> <remaining argc, i.e. "$#">
+  [ "$2" -ge 2 ] && return 0
+  echo -e "${CYA}error${RST} $1 requires a value" >&2
+  exit 2
+}
 
 REPO=""
 TIMEOUT=600
@@ -32,13 +64,11 @@ declare -a USER_CMDS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)    REPO="${2:-}"; shift 2 ;;
-    --cmd)     USER_CMDS+=("${2:-}"); shift 2 ;;
-    --timeout) TIMEOUT="${2:-}"; shift 2 ;;
+    --repo)    need_val "$1" "$#"; REPO="$2"; shift 2 ;;
+    --cmd)     need_val "$1" "$#"; USER_CMDS+=("$2"); shift 2 ;;
+    --timeout) need_val "$1" "$#"; TIMEOUT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help)
-      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
+    -h|--help) show_help; exit 0 ;;
     *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,25 +86,29 @@ ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# label<TAB>command
+# kind<TAB>label<TAB>command
+# `kind` is what makes the third outcome computable: only a `test` (or a caller-
+# supplied `custom`) check licenses the CLEAN claim. It is a property of the
+# command we chose to run, so it is decided here, deterministically, at plan
+# time — never inferred later from output text.
 declare -a PLAN=()
-add() { PLAN+=("$1	$2"); }
+add() { PLAN+=("$1	$2	$3"); }
 
 if [ "${#USER_CMDS[@]}" -gt 0 ]; then
   i=0
   for c in "${USER_CMDS[@]}"; do
     i=$((i + 1))
     [ -n "$c" ] || { echo -e "${CYA}error${RST} --cmd given an empty command" >&2; exit 2; }
-    add "custom $i" "$c"
+    add custom "custom $i" "$c"
   done
 else
   # --- Python ---------------------------------------------------------------
   if [ -f "$ROOT/pyproject.toml" ] || [ -f "$ROOT/setup.py" ] || [ -f "$ROOT/setup.cfg" ]; then
-    have ruff  && add "ruff (lint)" "ruff check ."
+    have ruff  && add lint "ruff (lint)" "ruff check ."
     if have mypy && { [ -f "$ROOT/mypy.ini" ] || grep -qs 'mypy' "$ROOT/pyproject.toml" "$ROOT/setup.cfg"; }; then
-      add "mypy (types)" "mypy ."
+      add types "mypy (types)" "mypy ."
     fi
-    have pytest && add "pytest (tests)" "pytest -q"
+    have pytest && add test "pytest (tests)" "pytest -q"
   fi
 
   # --- Node -----------------------------------------------------------------
@@ -86,31 +120,38 @@ else
       scripts="$(python3 -c "import json,sys;print(' '.join(json.load(open(sys.argv[1])).get('scripts',{})))" "$ROOT/package.json" 2>/dev/null)"
     fi
     for s in typecheck lint test; do
-      case " $scripts " in *" $s "*) add "npm run $s" "npm run --silent $s" ;; esac
+      case "$s" in test) k=test ;; typecheck) k=types ;; *) k=lint ;; esac
+      case " $scripts " in *" $s "*) add "$k" "npm run $s" "npm run --silent $s" ;; esac
     done
   fi
 
   # --- Go -------------------------------------------------------------------
   if [ -f "$ROOT/go.mod" ] && have go; then
-    add "go vet" "go vet ./..."
-    add "go test" "go test ./..."
+    add lint "go vet" "go vet ./..."
+    add test "go test" "go test ./..."
   fi
 
   # --- Rust -----------------------------------------------------------------
   if [ -f "$ROOT/Cargo.toml" ] && have cargo; then
-    add "cargo check" "cargo check --quiet"
-    add "cargo test" "cargo test --quiet"
+    add types "cargo check" "cargo check --quiet"
+    add test  "cargo test"  "cargo test --quiet"
   fi
 
   # --- Fallbacks: only when nothing above claimed the project ---------------
   if [ "${#PLAN[@]}" -eq 0 ]; then
     if [ -x "$ROOT/test/smoke.sh" ]; then
-      add "test/smoke.sh" "./test/smoke.sh"
+      add test "test/smoke.sh" "./test/smoke.sh"
     elif [ -f "$ROOT/Makefile" ] && have make && grep -qE '^test:' "$ROOT/Makefile"; then
-      add "make test" "make test"
+      add test "make test" "make test"
     fi
   fi
 fi
+
+# Does the plan contain anything that can turn a broken test red?
+HAS_TEST=0
+for row in "${PLAN[@]:-}"; do
+  case "${row%%	*}" in test|custom) HAS_TEST=1; break ;; esac
+done
 
 echo "jjstack-review-sweep — repo: $ROOT"
 
@@ -121,9 +162,10 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
 fi
 
 if [ "$DRY" -eq 1 ]; then
-  echo "  plan (${#PLAN[@]} check(s)):"
+  echo "  plan (${#PLAN[@]} check(s), test runner present: $HAS_TEST):"
   for row in "${PLAN[@]}"; do
-    echo "  [dry-run] ${row%%	*} -> ${row#*	}"
+    rest="${row#*	}"
+    echo "  [dry-run] [${row%%	*}] ${rest%%	*} -> ${rest#*	}"
   done
   exit 0
 fi
@@ -137,7 +179,7 @@ LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 
 for row in "${PLAN[@]}"; do
-  label="${row%%	*}"; cmd="${row#*	}"
+  rest="${row#*	}"; label="${rest%%	*}"; cmd="${rest#*	}"
   ( cd "$ROOT" && eval "$RUNNER $cmd" ) > "$LOG" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -152,9 +194,15 @@ for row in "${PLAN[@]}"; do
 done
 
 echo
-if [ "$failed" -eq 0 ]; then
+if [ "$failed" -eq 0 ] && [ "$HAS_TEST" -eq 1 ]; then
   echo -e "${GRN}SWEEP CLEAN${RST} $passed check(s) passed post-fix"
   exit 0
+fi
+if [ "$failed" -eq 0 ]; then
+  echo -e "${YEL}SWEEP PARTIAL${RST} $passed check(s) passed post-fix, but NO test runner was among them"
+  echo -e "${YEL}partial${RST} this pass could not check whether the fixes turned a passing test red."
+  echo -e "${YEL}partial${RST} report PARTIAL and name the missing runner — never report it as clean."
+  exit 5
 fi
 echo -e "${YEL}SWEEP BROKEN${RST} $failed of $((passed + failed)) check(s) failed post-fix — the fixes regressed something"
 exit 1
