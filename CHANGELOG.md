@@ -20,7 +20,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   pattern key still runs, so dedup is reduced rather than silently skipped. The
   dry-run output now states which dedup layers ran instead of leaving you to
   guess. The test suite uses this, and went from intermittently failing to
-  stable — and from seconds of waiting to under three.
+  stable — and it no longer waits on the network at all.
 
 - **A gbrain lookup that failed no longer claims it ran clean.** The dry-run's
   dedup report used to say `ran-clean` — "semantic dedup ran and found no
@@ -30,6 +30,24 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   reported success while doing nothing. Those cases now report
   `ran-error:<code>` and their empty answer is discarded rather than believed.
   `ran-clean` again means only what it says.
+
+- **Capture now tells you whether dedup ran when it actually matters.** The
+  report naming which duplicate-detection layers ran — and why one didn't —
+  used to appear only under `--dry-run`. The real capture path, the background
+  worker that runs when a session ends, said nothing. That is precisely where a
+  hung or broken gbrain quietly costs you deduplication, with nobody watching.
+  Every capture now prints the same one-line state.
+
+- **The test suite no longer reads or writes your real memory.** Running
+  `test/smoke.sh` used to point parts of itself at your actual memory store,
+  your actual gstack learnings and this checkout's git remote. Three
+  consequences, all bad: the background capture worker could change the store
+  mid-run and turn a passing suite red; a failure on one machine could not be
+  reproduced on another; and one guard was watching a directory the run never
+  touched, so it passed whether the code worked or not. The whole suite now
+  runs against a throwaway home directory and throwaway fixture projects,
+  removed when it exits, and it lints itself so a future test cannot quietly
+  reach back out.
 
 - **The gbrain lookup deadline is documented and adjustable.**
   `JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds>` (default 8) sets how long capture

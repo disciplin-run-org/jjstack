@@ -229,9 +229,11 @@ repeatable answer. Exact-key dedup still runs, so dedup is reduced, not skipped.
 That gbrain lookup runs under a deadline, default 8 seconds;
 `JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds>` changes it. On a slow link or a large
 index, raise the deadline rather than pinning the layer off — a longer wait
-keeps semantic dedup, the pin removes it. A `--dry-run` always reports which
-state the layer reached: `ran-clean`, `ran-timeout`, `ran-error:<rc>`, or
-`not-run:<reason>`. Only `ran-clean` means an answer was actually used.
+keeps semantic dedup, the pin removes it. Every capture reports which state the
+layer reached — under `--dry-run` and on the real path alike, since the real
+path is where a broken lookup silently costs you dedup: `ran-clean`,
+`ran-timeout`, `ran-error:<rc>`, or `not-run:<reason>`. Only `ran-clean` means
+an answer was actually used.
 
 **`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
 markdown headed for disk and blocks high-confidence prompt-injection
@@ -283,7 +285,12 @@ git-remote policy of `deny`/`read-only`); their memories stay in local native
 files only and never reach the shared index. This is enforced in one shared
 library that every memory tool uses.
 
-Regression coverage lives in `test/smoke.sh`.
+Regression coverage lives in `test/smoke.sh`. It is hermetic: every assertion
+runs against a throwaway home directory and throwaway fixture projects, so it
+never reads or writes your real memory store, learnings or gbrain index, and
+it gives the same verdict on any machine. The suite lints itself for that
+property, so a test that reaches back out to your real environment fails
+loudly instead of passing quietly.
 
 ---
 

@@ -38,7 +38,7 @@
 #   hung-query test cost a second instead of eight. A non-numeric value makes
 #   timeout(1) itself fail, which surfaces as ran-error:125, not as a clean run.
 #
-# --dry-run reports which dedup layers ran as one of:
+# BOTH paths report which dedup layers ran, as one of:
 #   ran-clean | ran-timeout | ran-error:<rc>
 #   | not-run:{layer-a-hit,phi-optout,no-gbrain,pinned}
 # ran-timeout and ran-error are distinct on purpose: a killed or failed query
@@ -215,6 +215,13 @@ EOF
     grep -qF "($fname)" "$idx" 2>/dev/null || printf -- '- [%s](%s) — %s\n' "$L_NAME" "$fname" "$L_DESC" >> "$idx"
     echo "jjstack-capture-write: created $fname"
 fi
+
+# ── Dedup observability on the REAL path ─────────────────────────────
+# Not a --dry-run curiosity. The real path is where a hung or broken gbrain
+# actually costs you semantic dedup — in the background capture worker, where
+# nobody is watching — so the state has to be reported here too, in the same
+# words --dry-run uses.
+echo "jjstack-capture-write: gbrain dedup: $LAYER_B"
 
 # ── PHI stop: nothing beyond native ──────────────────────────────────
 if [ "$PHI" = "1" ]; then
