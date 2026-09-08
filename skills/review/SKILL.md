@@ -780,9 +780,11 @@ and the tally are the script's job, not the model's:
 Pass `--reconcile` whenever 5d ran: it counts findings per `file:start_line` on
 both sides and refuses to render if the ledger is short, which is what turns
 "write the **complete** merged set" from an instruction into a checked fact.
-Without it the rendered header says so rather than certifying what nobody
-verified — drop the flag only when the repo has no baseline and 5d produced no
-adjudicated file.
+A `path:N-M` ledger row reconciles on its **start** line. An adjudicated file
+holding no findings earns no stronger header than no flag at all — reconciling
+against nothing checks nothing. Without the flag the rendered header says so
+rather than certifying what nobody verified; drop it only when the repo has no
+baseline and 5d produced no adjudicated file.
 
 The script enforces three invariants that prose cannot:
 
@@ -801,16 +803,31 @@ The script enforces three invariants that prose cannot:
 3. **Top severity is never suppressed** — a P0/P1 may be deferred with a stated
    reason; it may not be made to disappear.
 
-All three run on the **merged** record, not the raw row, because merging is what
-changes a finding's severity and disposition. Rows that share a fingerprint
+All three run per row on the way in. Rows that share a fingerprint then
 collapse into one finding carrying the **highest severity** of its members —
 along with that member's claim and confidence — and their **weakest**, most
 visible **disposition**, ranked `report` < `unconfirmed` < `demoted` < `defer` <
 `out-of-scope` < `suppress`. A suppressed nit therefore cannot absorb a reported
 P0 that happens to share its location and opening phrase; suppression by
-absorption is still suppression, and a per-row check cannot see it. Every merge
-that raised a severity or weakened a disposition is listed in the ledger's own
-**Merges** section, so the collapse stays as auditable as everything else.
+absorption is still suppression, and a per-row check cannot see it.
+
+Preserving severity is not enough, because a merge can lose the **claim**.
+An equal-severity collision is still a merge: two distinct P0s at one line are
+two findings, and collapsing them onto one sentence made the second one's text
+vanish from the report entirely while the tally read `report=1`. So the leading
+member is (highest severity, then highest confidence), its severity, confidence
+and claim always travel together, and **every other member's claim rides on the
+same row** with its own severity and confidence (`· also P0/60: …`). A merge
+that changed severity, disposition **or the finding text** is listed in the
+ledger's own **Merges** section, so the collapse stays as auditable as
+everything else.
+
+The collapse is then **checked rather than trusted**: the script recomputes the
+merged record from an independent per-member ledger and renders nothing if the
+two disagree. Re-running the same three invariants on the collapsed row would
+be dead code — the per-row pass has already rejected every input that could
+violate them — so what the merged pass actually guards is the fidelity of the
+merge itself.
 
 It exits **4** and renders nothing if any of those is violated, or if
 `--reconcile` finds a finding with no row: fix the ledger and rerun rather than
