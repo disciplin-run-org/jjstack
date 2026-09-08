@@ -1,48 +1,68 @@
 #!/bin/bash
 # jjstack auto-approve hook — permission gate for Claude Code's PermissionRequest.
 #
+# A destructive command may be approved when it is BOTH:
+#   1. specific     — it names a definite target rather than sweeping a broad
+#                     root, and
+#   2. goal-aligned — it matches the stated purpose of the action.
+# Deleting one build directory to rebuild it is ordinary work. Deleting a home
+# directory is not, and neither is a force-push while the stated purpose is
+# "fix a typo". Judging that is judgement, so it belongs to the rater.
+#
+# What is NOT left to judgement is the floor. Two deterministic rules bracket
+# the rater so its opinion can never be the only thing standing between the
+# user and an unrecoverable act:
+#
+#   FLOOR   unbounded reach or unreviewable content is refused outright, and
+#           no rating can lift it. Nothing under here is "specific" by
+#           definition: `rm -rf ~` names no target, and `curl … | sh` cannot
+#           be specific about code nobody has seen.
+#   PURPOSE alignment cannot be judged when nothing was stated. A destructive
+#           command arriving with no description defers. This is what stops
+#           criterion 2 being a rubber stamp.
+#
 # Decision order, strictest first:
-#   1. Read-only tools (Read, Glob, Grep, …)  → allow, no rating, no network
-#   2. Non-Bash / empty command               → defer to the user
-#   3. Deterministic denylist                 → defer, and it BEATS any rating.
-#      This is the fail-closed core: the model never gets a vote on rm -rf $HOME,
-#      a force-push, a hard reset, or curl-piped-to-shell.
-#   4. Deterministic safe-readonly allowlist   → allow, no network
-#   5. Everything else → Claude Haiku rates LOW / MEDIUM / HIGH, WITH CONTEXT
-#      (cwd + the tool's own description + what counts as scratch space).
-#      LOW → allow, MEDIUM/HIGH → defer, API failure → fail closed.
+#   1. Read-only tools            → allow, no rating, no network
+#   2. Non-Bash / empty command   → defer
+#   3. Absolute floor             → defer, beats any rating
+#   4. Safe-readonly allowlist    → allow, no network
+#   5. Destructive + no purpose   → defer
+#   6. Everything else            → Haiku rates it WITH context and both
+#                                   criteria. LOW → allow, else defer.
+#                                   A missing key or failed call defers.
 #
 # Rating with context is the point. A context-free rater sees `rm -rf $SP/mut`
-# and says MEDIUM, because it cannot know $SP is a session scratchpad. That one
-# blind spot is what turns a code-review worker's mutation-testing run into a
-# permission prompt every few seconds.
+# and says MEDIUM, because it cannot know $SP is a session scratchpad — which
+# turned a code-review worker's mutation run into a prompt every few seconds.
+#
+# NOTE ON GOAL CONTEXT: the "overall goal" is taken from the action's own
+# stated purpose, NOT by reading transcript_path. Scraping the transcript would
+# serve a broader notion of goal, but a session in a PHI project would leak
+# medical content into the rater call, against the standing rule that sensitive
+# data stays out of shared/third-party surfaces.
 #
 # ── tubemail / QM socket dispatch ────────────────────────────────────────────
-# In a tubemail worker the forwarder holds something this script cannot know:
-# the request_id of the permission_request it forwarded to the hub. Without
-# telling it, a locally-approved tool leaves a pending entry stuck hub-side
-# (RCA 2026-05-10, "stuck pending permissions").
-#
-# So on a LOCAL ALLOW we hand the decision to the forwarder's socket for
-# pairing. Two rules make that safe:
-#   • The local decision is authoritative. A forwarder still running the old
-#     context-free policy may answer "defer"; we do not let that veto an allow
-#     this script already reasoned about with context. Otherwise wiring the
-#     socket would REGRESS every worker session.
-#   • A local defer never touches the socket. There is nothing to pair — the
-#     user's answer to the prompt resolves it through the normal channel.
-# The payload carries `jjstack_decision` so a forwarder can honour it directly
-# once tubemail supports that; harmless to forwarders that ignore it.
+# In a tubemail worker the forwarder holds the request_id of the
+# permission_request it forwarded to the hub; without telling it, a locally
+# approved tool leaves a pending entry stuck hub-side (RCA 2026-05-10).
+# On a LOCAL ALLOW we hand the decision to that socket for pairing, under two
+# rules: the local decision is authoritative (a forwarder still running the old
+# context-free policy must not veto an allow reasoned about with context), and
+# a local defer never touches the socket — the user's answer resolves it.
+# The payload carries `jjstack_decision` so a forwarder can honour it directly.
 #
 # Requires: jq, python3 (socket dispatch), curl (rating).
 # API key: ANTHROPIC_API_KEY, or ~/.claude/anthropic_api_key (chmod 600).
 #
-# Test/diagnostic env vars (never grant approval on their own):
+# Test/diagnostic env vars (none of them can grant an approval on their own):
 #   JJSTACK_HOOK_LOG=<path>        where to append the one-line audit trail
+#   JJSTACK_HOOK_CAPTURE=<path>    dump the raw payload (field discovery)
 #   JJSTACK_HOOK_FORCE_RISK=LOW    skip the API, use this rating (test harness)
 #   JJSTACK_HOOK_PRINT_PROMPT=1    print the rater prompt and defer, no API call
 
 INPUT=$(cat)
+
+[ -n "${JJSTACK_HOOK_CAPTURE:-}" ] && printf '%s' "$INPUT" > "$JJSTACK_HOOK_CAPTURE" 2>/dev/null
 
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
@@ -76,37 +96,63 @@ esac
 [ "$TOOL_NAME" != "Bash" ] && defer "not-bash"
 [ -z "$COMMAND" ] && defer "empty-command"
 
-# ── 3. deterministic denylist — beats any rating ─────────────────────────────
-# Anything here is refused no matter what the rater says. Kept narrow and
-# literal on purpose: it must not swallow ordinary scratch-directory work.
-DENY_RE='(^|[[:space:]=])(rm|rmdir|mv|cp|chmod|chown|shred|truncate)([[:space:]]+-[^[:space:]]+)*[[:space:]]+("?\$HOME|"?~/|/etc/|/usr/|/var/|/boot/|/bin/|/sbin/|/lib/|/opt/|/etc[[:space:]]|/$|/\*)'
-GIT_DESTRUCTIVE_RE='git[[:space:]]+(push[[:space:]]+([^|;&]*[[:space:]])?(--force|-f)([[:space:]]|$)|reset[[:space:]]+--hard|clean[[:space:]]+-[a-z]*f)'
-PIPE_TO_SHELL_RE='(curl|wget)[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh'
-OTHER_DANGER_RE='(^|[[:space:]])(dd[[:space:]]+[^|;&]*of=/dev/|mkfs|sudo[[:space:]]+rm|shutdown|reboot|:\(\)\{)'
+matches() { printf '%s' "$COMMAND" | grep -qE "$1"; }
 
-if printf '%s' "$COMMAND" | grep -qE "$DENY_RE" \
-   || printf '%s' "$COMMAND" | grep -qE "$GIT_DESTRUCTIVE_RE" \
-   || printf '%s' "$COMMAND" | grep -qE "$PIPE_TO_SHELL_RE" \
-   || printf '%s' "$COMMAND" | grep -qE "$OTHER_DANGER_RE"; then
-  defer "denylist"
-fi
+# ── 3. absolute floor — no rating lifts these ────────────────────────────────
+# A destructive verb whose target IS a root, with nothing after it. The
+# trailing (space|end|;) is what separates `rm -rf $HOME` from the perfectly
+# ordinary `rm -rf $HOME/project/build`.
+ROOT_TARGET='("?\$\{?HOME\}?"?|~/?|/|/\*|\.)'
+UNBOUNDED="(^|[[:space:];&|])(rm|rmdir|shred|chmod|chown)([[:space:]]+-[^[:space:]]+)*[[:space:]]+${ROOT_TARGET}([[:space:]]|;|$)"
+
+# Piping fetched code into a shell: the content is unreviewable, so it can
+# never satisfy the specificity criterion no matter what it claims to do.
+PIPE_TO_SHELL='(curl|wget)[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|k)?sh'
+
+# Sending a local file to the network — the shape of credential exfiltration.
+# Both the generic upload flags and, separately, any network command that so
+# much as mentions a well-known secret path.
+UPLOAD_FILE='(curl|wget)[^;&|]*(-d|--data|--data-binary|--data-raw|-T|--upload-file|-F|--form)[[:space:]=]*[^;&|]*@'
+SECRET_PATH='(curl|wget|nc|ncat|scp|rsync|ftp)[^;&|]*(\.ssh/|\.aws/credentials|\.netrc|anthropic_api_key|id_rsa|id_ed25519|\.env([[:space:]]|$)|credentials\.json|\.git-credentials)'
+
+DEVICE='(^|[[:space:]])(dd[[:space:]]+[^;&|]*of=/dev/|mkfs(\.[a-z0-9]+)?[[:space:]]|fdisk[[:space:]]|parted[[:space:]])'
+FORKBOMB=':\(\)[[:space:]]*\{'
+POWER='(^|[[:space:]])(shutdown|reboot|halt|poweroff)([[:space:]]|$)'
+SUDO_ROOT='(^|[[:space:]])sudo[[:space:]]+(rm|dd|mkfs|shutdown|reboot)([[:space:]]|$)'
+
+for rule in UNBOUNDED PIPE_TO_SHELL UPLOAD_FILE SECRET_PATH DEVICE FORKBOMB POWER SUDO_ROOT; do
+  if matches "${!rule}"; then
+    log "decision=defer reason=floor:$rule"
+    exit 0
+  fi
+done
 
 # ── 4. deterministic safe-readonly allowlist ─────────────────────────────────
 SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
 
 RISK=""
-if printf '%s' "$COMMAND" | grep -qE "$SAFE_READONLY" \
-   && ! printf '%s' "$COMMAND" | grep -qE '[;&|`]|\$\('; then
+if matches "$SAFE_READONLY" && ! matches '[;&|`]|\$\('; then
   RISK="LOW"
 fi
 
-# ── 5. rate the rest, with context ───────────────────────────────────────────
+# ── 5. destructive with no stated purpose → alignment is unjudgeable ─────────
+DESTRUCTIVE="(^|[[:space:];&|])(rm|rmdir|mv|chmod|chown|shred|truncate|dd|kill|killall)([[:space:]]|$)|git[[:space:]]+(push[^;&|]*(--force|--force-with-lease|-f)([[:space:]]|$)|reset[[:space:]]+--hard|clean[[:space:]]+-[a-z]*f)|(^|[[:space:]])sudo[[:space:]]|docker[[:space:]]+(rm|rmi|volume[[:space:]]+rm|system[[:space:]]+prune)|(DROP|TRUNCATE)[[:space:]]+(TABLE|DATABASE)"
+
+if [ -z "$RISK" ] && [ -z "$DESCRIPTION" ] && matches "$DESTRUCTIVE"; then
+  defer "destructive-without-stated-purpose"
+fi
+
+# ── 6. rate the rest, with context and both criteria ─────────────────────────
 if [ -z "$RISK" ]; then
-  RATER_SYSTEM="You are a shell command safety rater for a developer's own machine. Respond with exactly one word: LOW, MEDIUM, or HIGH.
+  RATER_SYSTEM="You are a permission gate for a developer working on their own machine. Respond with exactly one word: LOW, MEDIUM, or HIGH.
 
-Rate the risk of DAMAGE THE DEVELOPER WOULD MIND: destroying their real source files, their home directory, credentials, system packages, or published/remote state (force pushes, deploys, deletions on a remote).
+A destructive command is acceptable — LOW — when it is BOTH:
+  1. SPECIFIC: it names a definite target. Removing one named directory, resetting one named branch, force-pushing one named feature branch. A command whose target is a whole home directory, a filesystem root, or an unbounded wildcard is NOT specific.
+  2. ALIGNED with the stated purpose below. 'Remove the stale build directory' justifies deleting that build directory. It does not justify deleting a source tree, rewriting history, or touching credentials.
 
-Work confined to scratch space is routine and rates LOW even when it uses rm -rf, sed -i, chmod, cp -a or heredocs. Scratch space means: paths under /tmp, directories from mktemp, a session scratchpad such as /tmp/claude-*/…/scratchpad, throwaway git worktrees under .claude/worktrees, and fixture repos the command itself creates. Building, copying, mutating and deleting inside those is the normal shape of test and review work, not a hazard.
+Rate MEDIUM or HIGH when the command reaches wider than its stated purpose needs, when the two do not match, or when the damage would be hard to undo and was not asked for.
+
+Work confined to scratch space is routine and rates LOW even when it uses rm -rf, sed -i, chmod, cp -a or heredocs. Scratch space means paths under /tmp, directories from mktemp, a session scratchpad such as /tmp/claude-*/…/scratchpad, throwaway git worktrees under .claude/worktrees, and fixture repos the command itself creates. Building, mutating and deleting inside those is the normal shape of test and review work.
 
 Rate on the effect, not on how alarming the verbs look."
 
@@ -147,18 +193,17 @@ $COMMAND"
   fi
 fi
 
-# Anything that is not an explicit LOW defers — including a missing key, a
-# failed call, and an unparseable answer. Fail closed.
+# Anything that is not an explicit LOW defers — missing key, failed call and
+# unparseable answer included. Fail closed.
 [ "$RISK" = "LOW" ] || defer "risk=${RISK:-unrated}"
 
-# ── 6. local decision is ALLOW — pair it with the forwarder if there is one ──
+# ── 7. local decision is ALLOW — pair it with the forwarder if there is one ──
 LOCAL_DECISION="allow"
 
-dispatch_socket() {  # $1 = socket path
+dispatch_socket() {
   PAIR_PAYLOAD=$(printf '%s' "$INPUT" \
     | jq -c --arg d "$LOCAL_DECISION" '. + {jjstack_decision: $d}' 2>/dev/null)
   [ -z "$PAIR_PAYLOAD" ] && PAIR_PAYLOAD="$INPUT"
-  # Script via -c so stdin stays free for the payload; a heredoc would hijack it.
   printf '%s' "$PAIR_PAYLOAD" | python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -194,8 +239,6 @@ for SOCK in "/tmp/tubemail-hook-${TM_WORKER_NAME}.sock" \
     printf '%s' "$RESP"
     exit 0
   fi
-  # Forwarder deferred, timed out, or is running the old context-free policy.
-  # Our decision stands; the hub sweeper reconciles any unpaired entry.
   log "decision=allow reason=risk-low paired=no socket=$SOCK"
   emit_allow
 done

@@ -255,6 +255,39 @@ check "silent socket still yields the local allow" "allows \"\$out\""
 kill "$DEADPID" 2>/dev/null; wait "$DEADPID" 2>/dev/null
 rm -f "$SOCKP" "$SOCKP.ready" "$SOCKP.seen"; rm -rf "$SOCKDIR"
 
+echo "== 6b. destructive-but-intended (specific + goal-aligned) =="
+# A destructive command MAY be approved when it is (1) specific — it names a
+# definite target rather than sweeping a broad root — and (2) in line with the
+# action's stated purpose. Kept honest by an absolute floor that no rating can
+# lift, and by the rule that alignment cannot be judged with no purpose stated.
+#
+# The cases live in test/fixtures/permission-policy.tsv as DATA, driven by
+# test/permission-policy-check.py. Each row is handed to the hook as JSON; no
+# row is ever interpolated into a shell command or executed. That separation is
+# what lets the table carry the real literals a guard has to match — a guard
+# proved against invented strings only proves it matches what you invented.
+POLICY_TSV="$DIR/test/fixtures/permission-policy.tsv"
+POLICY_RUN="$DIR/test/permission-policy-check.py"
+check "policy fixture table exists" "[ -f '$POLICY_TSV' ]"
+check "policy runner exists"        "[ -f '$POLICY_RUN' ]"
+
+# The runner forces the risk rating, so what is under test is the policy and
+# not the model's opinion of any one command. It self-checks first: if a floor
+# case can be allowed, it exits 2 rather than reporting a green table.
+policy_out=$(python3 "$POLICY_RUN" 2>&1); policy_rc=$?
+printf '%s\n' "$policy_out" | grep -v '^CASES=' | sed 's/^/    /'
+check "policy self-check and every fixture verdict pass" "[ $policy_rc -eq 0 ]"
+n_cases=$(printf '%s' "$policy_out" | sed -n 's/^CASES=//p')
+check "policy table actually ran its rows" "[ \"${n_cases:-0}\" -ge 20 ]"
+
+# --- the rater is told both criteria ------------------------------------------
+prompt=$(printf '{"tool_name":"Bash","tool_input":{"command":"make widget","description":"build the widget"}}' \
+         | JJSTACK_HOOK_LOG=/dev/null JJSTACK_HOOK_PRINT_PROMPT=1 bash "$HK" 2>/dev/null)
+check "rater prompt states the specificity criterion" \
+  "printf '%s' \"\$prompt\" | grep -qi 'specific'"
+check "rater prompt states the goal-alignment criterion" \
+  "printf '%s' \"\$prompt\" | grep -qi 'stated purpose'"
+
 # --- the diagnostic log is opt-in, not a hardcoded /tmp path ------------------
 check "log path is configurable, not hardcoded" \
   "! grep -q '/tmp/auto-approve-hook.log' '$HK'"
