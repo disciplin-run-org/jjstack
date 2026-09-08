@@ -22,6 +22,8 @@
 # skill; only the checkable half lives in this script.
 #
 # Rules enforced (from the Jesper Jurcenoks Voice DNA, Executive register):
+#   - the attribution line, so a reader knows a machine wrote it
+#   - a resolved/clean verdict is ONE line, in a fixed form
 #   - no credential literal anywhere in the body  (fails closed, exit 4)
 #   - hard size budget: lines and characters
 #   - at most N findings inline, counted as OCCURRENCES not lines
@@ -230,10 +232,40 @@ n_find=$(count_findings "$SRC")
 # comment is both under-capped and mis-classified as clean, and the second error
 # is silent. One counter, one place to fix.
 VERDICT="findings"
-if [ "$n_find" -eq 0 ] && grep -qE '\b(APPROVE|LGTM)\b' "$SRC"; then
+if [ "$n_find" -eq 0 ] && grep -qiE '\b(APPROVE|APPROVED|LGTM)\b' "$SRC"; then
+  # No separate budget for an approve: the canonical-form check below is an
+  # exact match on the whole body, which is strictly stricter than any line or
+  # character count. Setting one here was dead code - reverting it to the old
+  # 3-line/250-char budget changed no assertion.
   VERDICT="approve"
-  MAX_LINES=3
-  MAX_CHARS=250
+fi
+
+# --- attribution: the comment must say a machine wrote it ---
+# It posts under a human's GitHub account, because that is whose token `gh`
+# holds. Without this line a reader cannot tell the review from something its
+# apparent author wrote, and every comment this skill has posted so far read
+# as Jesper's own words.
+ATTRIB='Claude jjstack/code-review/skill.md'
+grep -qF "$ATTRIB" "$SRC" || \
+  fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it."
+
+# --- a resolved or clean verdict is exactly one line, in a fixed form ---
+# Not "short": FIXED. A budget alone leaves room to fill, and it got filled -
+# 25 lines of evidence proving a review had nothing to say, then an eleven-
+# paragraph reply restating three findings that were already closed.
+if [ "$VERDICT" = "approve" ]; then
+  # `lgtm` verbatim: it is the human idiom, and a model left to itself writes
+  # "Looks good to me!" or "LGTM ✅" instead. Disclosure is the attribution
+  # line's job; the prose does not also have to sound like a machine.
+  want_resolved="$ATTRIB: all issues resolved - lgtm - approved"
+  want_clean="$ATTRIB: no findings - lgtm - approved"
+  # The WHOLE body, not its first line: appending prose after the canonical
+  # line would otherwise pass this check and be caught only by the length
+  # budget, which names the wrong problem.
+  body_all=$(sed -e '/^[[:space:]]*$/d' "$SRC")
+  if [ "$body_all" != "$want_resolved" ] && [ "$body_all" != "$want_clean" ]; then
+    fail "not-canonical" "a resolved verdict is one line, verbatim: \"$want_resolved\" (or \"no findings\" on a first clean review). Nothing else - the evidence is in the committed report."
+  fi
 fi
 
 [ "$n_lines" -gt "$MAX_LINES" ] && {
@@ -266,7 +298,9 @@ report_ref=$(grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0
 url_ref=$(grep -oE 'https?://[^)>[:space:]`"'"'"']+' "$SRC" 2>/dev/null \
   | grep -E '(\.md([?#].*)?$|/jjstack/|review-[0-9]{4}-[0-9]{2}-[0-9]{2})' | head -1)
 
-if [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
+if [ "$VERDICT" = "approve" ]; then
+  : # the canonical resolved line carries no link: there is nothing to move
+elif [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
   fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a bare URL inside a citation: brevity moves evidence, it never deletes it."
 elif [ -n "$report_ref" ]; then
   # Resolve against the repo the comment lives in, then against the comment's own
@@ -288,8 +322,7 @@ fi
 # how "be brief" turns into "drop findings". The arithmetic is checkable, so it
 # is checked: M-N must be stated, and it must equal total minus shown.
 if [ "$VERDICT" = "approve" ]; then
-  grep -qiE '(no findings|\b0 total\b)' "$SRC" || \
-    fail "no-residual" "an approve must say what it found: \"no findings\". A verdict with no count is a claim with no shape."
+  : # the canonical one-line form above already states the outcome
 else
   decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$SRC" 2>/dev/null | head -1)
   if [ -z "$decl" ]; then

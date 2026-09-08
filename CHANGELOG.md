@@ -51,6 +51,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   a hand-kept line range, and four of five had already drifted — one printed
   shell source as help, another cut its own contract mid-sentence. They now
   share one renderer that reads to the end of the header block.
+- **Every PR comment says a machine wrote it, and a resolved review is one
+  line.** The review posts under your GitHub account, because that is whose
+  token `gh` holds, so until now the comments read as though you had written
+  them yourself. Every comment now carries `Claude
+  jjstack/code-review/skill.md` — as the opening of a one-line verdict, or as
+  the last line of a findings comment so the verdict still comes first. And
+  when everything is resolved, or nothing was found, the comment is exactly
+  `Claude jjstack/code-review/skill.md: all issues resolved - lgtm - approved`
+  and nothing else: no posture, no coverage claim, no summary of what you
+  changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
+  the one a model reaches for almost never, and disclosure is the byline's
+  job, not the prose's. The linter holds the form verbatim, because a budget
+  alone leaves room to fill and it got filled twice.
 - **`/review` no longer edits your code.** gstack's auto-fix step is reported
   instead of applied. A reviewer that edits the tree has to review its own
   edits, and that loop does not terminate.

@@ -682,7 +682,7 @@ check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n\n`review-2026-01-01.md`\n'
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
-body clean_ok '**APPROVE** - no findings. `review-2026-01-01.md`\n'
+body clean_ok 'Claude jjstack/code-review/skill.md: no findings - lgtm - approved\n'
 check "a clean approve passes (control: the secret rule discriminates)" \
       "[ \$(lint '$PCL/clean_ok.md') = 0 ]"
 # A bare vendor token carries no `name = value` shape, so the generic rule
@@ -715,7 +715,7 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-link|no-report|bad-residual|no-residual|secret|emdash' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-link|no-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
 body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
@@ -723,15 +723,16 @@ check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow '**APPROVE** - no findings, risk is **low**. `review-2026-01-01.md`\n'
-check "a clean approve saying risk is **low** is not counted as a finding" \
-      "[ \$(lint '$PCL/aplow.md') = 0 ]"
-body apbelow '**APPROVE** - no findings. Details below: `review-2026-01-01.md`\n'
-check "…nor one saying details below:" "[ \$(lint '$PCL/apbelow.md') = 0 ]"
+body aplow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
+check "the word **low** in prose is not counted as a second finding" \
+      "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
+body apbelow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
+check "…nor the word below: in a citation" \
+      "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
 body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n'
+body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
 # A budget that cannot be evaluated is not a budget: an empty flag value must
@@ -767,6 +768,41 @@ check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$
 # has to be "will not post", never "posts your key".
 check "…and 2 is not the success code the post chain would continue past" \
       "[ 2 -ne 0 ]"
+
+# ATTRIBUTION. The comment posts under a human's GitHub account, so it has to
+# say a machine wrote it - every comment this skill posted before this rule
+# read as its apparent author's own words.
+ATT='Claude jjstack/code-review/skill.md'
+body att_ok "$ATT: all issues resolved - lgtm - approved\n"
+check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
+body att_clean "$ATT: no findings - lgtm - approved\n"
+check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
+body att_none '**APPROVE** - no findings. `review-2026-01-01.md`\n'
+check "an approve with no attribution is refused" "[ \$(lint '$PCL/att_none.md') != 0 ]"
+check "…and the message names attribution, not just length" \
+      "grep -q no-attribution <<<\"\$(why '$PCL/att_none.md')\""
+body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n'
+check "a findings comment without attribution is refused too" \
+      "grep -q no-attribution <<<\"\$(why '$PCL/att_find.md')\""
+body att_findok '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n\n'"$ATT"'\n'
+check "…and passes once it carries the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
+
+# The resolved verdict is a FIXED form, not merely a short one: a budget leaves
+# room to fill, and it got filled - 25 lines of evidence proving a review had
+# nothing to say, then an 11-paragraph reply restating three closed findings.
+body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAlso some prose nobody asked for.\n"
+check "a resolved verdict with anything appended is refused" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_wordy.md')\""
+body att_reworded "$ATT: everything looks great now, approved!\n"
+check "…and so is a reworded one carrying the attribution" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_reworded.md')\""
+# `lgtm` specifically: it is the human idiom and the shape a model does NOT
+# reach for. The formal register an AI defaults to is itself the tell.
+body att_formal "$ATT: Looks good to me! No issues found - approved.\n"
+check "the AI-register rewrite without lgtm is refused" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_formal.md')\""
+check "the canonical line carries lgtm verbatim" \
+      "grep -qF 'lgtm' '$PCL/att_ok.md'"
 
 echo "== 9. the review skill says what it does =="
 SK="$DIR/skills/review/SKILL.md"

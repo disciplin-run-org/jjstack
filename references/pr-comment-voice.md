@@ -30,6 +30,53 @@ where every other repro already lives. `jjstack-pr-comment-lint` refuses this
 one closed - it exits 4, it cannot be silenced, and it will not print the thing
 it caught.
 
+## Attribution: every comment says a machine wrote it
+
+A review posted through this skill goes out under Jesper's GitHub account,
+because that is whose token `gh` holds. It was not written by him. A reader
+scanning a PR cannot tell the difference unless the comment says so, and
+leaving that ambiguous misrepresents who reviewed the code.
+
+So every comment carries this line, verbatim:
+
+```
+Claude jjstack/code-review/skill.md
+```
+
+On a one-line approve it is the opening of the line. On a findings comment it
+is the last line, so the verdict still comes first. The linter refuses a
+comment that does not carry it.
+
+## A resolved review is one line
+
+When every finding is fixed, or there were none to begin with, the comment is
+exactly this and nothing else:
+
+```
+Claude jjstack/code-review/skill.md: all issues resolved - lgtm - approved
+```
+
+For a first review that found nothing, `no findings` replaces
+`all issues resolved`. No posture line, no coverage claim, no list of what was
+checked, no summary of what the author changed. The author of a clean PR wants
+the verdict. Everything else is already in the committed report, and a reader
+who wants it will open that.
+
+**Write `lgtm`, in those letters.** It is the idiom a human reviewer uses and
+one a model reaches for almost never — left to itself an AI writes "Looks good
+to me!", "LGTM ✅", "Approved — no issues found." Reaching for the formal
+register is itself a tell, and a comment that reads like a machine trying to
+sound thorough is worse than one that reads like a colleague signing off.
+
+The two rules are not in tension. Disclosure is the attribution line's job:
+it says plainly that a machine wrote this. The prose does not also have to
+sound like one. Say the short human thing, and let the byline carry the truth.
+
+This is the rule the previous version got wrong twice: once at 25 lines of
+evidence proving a review had nothing to say, and once at a round-2 reply that
+restated three fixed findings in eleven paragraphs. Both were true and neither
+was wanted.
+
 ## The one principle
 
 **The comment is a doorbell, not the delivery.** Verdict, the blocking findings,
@@ -57,6 +104,8 @@ sentence setting the stage, the voice is lost.
 
 M-N more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
 Guardrail: the condition under which this verdict holds.
+
+Claude jjstack/code-review/skill.md
 ```
 
 One line per finding. `file:line` is not decoration - it is what makes the
@@ -71,14 +120,9 @@ a link to nothing reads exactly like no link at all.
 
 ## A clean approve is one line
 
-When nothing was found, say that and stop:
-
-```
-**APPROVE** - no findings. `jjstack/review-YYYY-MM-DD.md`
-```
-
-The budget for an approve is 3 lines, not 12, and the linter enforces it
-separately. The reason is the failure it prevents: a real clean review once
+When nothing was found, say that and stop - the exact line is above. The
+budget for a resolved or clean verdict is ONE line, and the linter enforces
+it separately. The reason is the failure it prevents: a real clean review once
 spent about 25 lines - posture counts, coverage claims, five evidence bullets -
 proving it had nothing to say. Every one of those lines was true and none of
 them was wanted.

@@ -267,7 +267,24 @@ cross-repository PR; `headRepository` would name the fork.
 
 Compose `{OUTPUT_DIR}/pr-comment.md` in the structure the voice reference
 gives: verdict, ≤ 3 blocking findings one line each, `N blocking, M total`,
-link to the committed report. A clean approve is one line.
+link to the committed report, and the attribution line last.
+
+**Every comment carries `Claude jjstack/code-review/skill.md`.** It posts under
+a human's GitHub account — that is whose token `gh` holds — so without that
+line a reader cannot tell this review from something its apparent author
+wrote. The lint refuses a comment that omits it.
+
+**When every finding is resolved, or there were none, the comment is exactly
+one line and nothing else:**
+
+```text
+Claude jjstack/code-review/skill.md: all issues resolved - lgtm - approved
+```
+
+(`no findings` in place of `all issues resolved` on a first clean review.) No
+posture, no coverage line, no summary of what the author changed, no list of
+what was checked. The lint holds this form verbatim, because a budget alone
+leaves room to fill and it got filled twice.
 
 <HARD-GATE>
 Do NOT run `gh pr comment` unless `jjstack-pr-comment-lint` exited 0 on
