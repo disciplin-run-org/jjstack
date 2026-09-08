@@ -74,17 +74,33 @@ incomplete, fix the symptom rather than the cause, or introduce a fresh bug in
 code that had none. The person who lands the PR usually never sees it as a diff
 at all, because it arrives blended into the branch.
 
-Get the diff deterministically — do not reconstruct it from memory of what was
-fixed:
+This pass has a **prerequisite that runs hours earlier**, and skipping it is what
+makes the pass lie. Before anything can auto-apply a fix — i.e. before gstack's
+review is delegated to at all — take the baseline marker:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --mark
+```
+
+`--mark` snapshots the dirty tree with `git stash create`, without touching the
+working tree or the stash list. It is the only thing that separates *the
+reviewer's fixes* from *the user's own uncommitted work*. Without it the baseline
+falls back to `HEAD`, and this pass diffs the entire dirty tree — so a user who
+had hours of work in progress gets a report full of P1s attributed to an
+automaton that wrote none of them. Take the marker; do not rely on the fallback.
+
+Then, after the fixes, get the diff deterministically — do not reconstruct it
+from memory of what was fixed:
 
 ```bash
 ~/.claude/skills/jjstack/bin/jjstack-review-autofix-diff --stat
 ```
 
 Drop `--stat` for the full patch. Baseline resolution is documented in the
-script's header; when it falls back to `HEAD` (no marker was taken before the
-fixing step) the output says so, and the pass must repeat that caveat in the
-report rather than claiming the diff is purely reviewer-authored.
+script's header; if the output still says it fell back to `HEAD` the marker step
+above was missed, and the pass must repeat that caveat in the report rather than
+claiming the diff is purely reviewer-authored — and must not report P1s against
+work it cannot attribute.
 
 Then review that patch as **a fresh diff from an unknown author**, with the full
 Phase 4 lens set. Explicitly re-ask:
@@ -125,16 +141,33 @@ Procedure, per finding:
 
 1. Write the smallest test that exercises the failure scenario already recorded
    in Phase 5. The scenario IS the test plan; if it is too vague to turn into a
-   test, that is a Phase 5 verification defect, and the finding drops.
+   test, that is a Phase 5 verification defect — report it as one against the
+   finding. The finding stays.
 2. Run it. Confirm it fails, **and read the failure** — a test that errors on a
    typo or a missing import is not proof of anything.
-3. Record the result on the finding: `PROVEN` (red as predicted, quote the
-   assertion output), `DISPROVEN` (passes — the finding is a false positive;
-   drop it and record a `rejected` verdict in post-pass 5), or `UNPROVABLE`.
+3. Record the result on the finding as a tag: `PROVEN` (red as predicted, quote
+   the assertion output), `DISPROVEN` (the test passed), or `UNPROVABLE`.
 4. `UNPROVABLE` is a finding in its own right, never an excuse. Per the project's
    TDD rule, a behavior that cannot currently be tested yields a **failing** test
    — never a hidden, skipped, or deleted one. Report what is missing (harness,
    fixture, seam, injectable clock) as the finding, and keep the red test.
+
+**`DISPROVEN` is an enrichment, not a deletion.** This is the same rule as Phase
+5c and it has no exception here: the finding moves into the report's labelled
+**Disproven by test** section, carrying the test that failed to go red, and is
+never removed. A green test has exactly two explanations and the pass cannot tell
+them apart:
+
+- the finding is a false positive, or
+- **the test is wrong** — the fixture masks the path, the assertion is weak, the
+  wrong seam was exercised.
+
+Deleting on a green test bets everything on the first reading. The failure mode
+is precise: a real P0 gets a test that passes for the wrong reason, the finding
+vanishes with no baseline entry and no human reason, and post-pass 5 then teaches
+the ledger to rank its whole class down forever — through exactly the door the
+committed baseline exists to keep shut. Only the baseline, with an explicit human
+reason, takes a finding out of the active set.
 
 Then get the proof tests out of the way of post-pass 4: either hand the red test
 to the fix in the same pass (preferred — a red test plus its fix is the whole
@@ -142,8 +175,10 @@ deliverable), or park it in the report and revert it from the working tree. Neve
 leave deliberate red tests in the tree while running the sweep; they make a
 broken build indistinguishable from a proven finding.
 
-Budget it: prove the P0/P1 findings first, and every finding whose confidence
-sits near the reporting gate — that is where proof changes the outcome.
+Budget it: prove the P0/P1 findings first, then work down by severity and
+confidence. Nothing is filtered out by a threshold — every finding is reported —
+so spend the proof budget where a red test most changes what the *reader* does,
+which is the top of the report.
 
 **Skip only when:** there are no high-confidence findings to prove, or the
 project has no way to execute a test at all (record that as a finding, per
@@ -164,16 +199,27 @@ embarrassing possible way to end a review that reported "all clear".
 ```
 
 The script detects the ecosystem, runs only tools that are actually installed,
-prints each check's result, and exits: `0` all green, `1` at least one check
-failed, `4` nothing applicable. Override detection with repeated `--cmd "…"` when
-the project's real command differs; `--dry-run` prints the plan without running
-it.
+prints each check's result, and exits: `0` all green **and a test runner ran**,
+`1` at least one check failed, `4` nothing applicable, `5` everything that ran
+passed but **no test runner was among the checks**. Override detection with
+repeated `--cmd "…"` when the project's real command differs; `--dry-run` prints
+the plan (with each check's kind) without running it.
+
+Three outcomes, because "everything I found passed" is a weaker claim than "the
+tests still pass". Detection only adds an installed tool, so a Python project
+with `ruff` but no `pytest` runs the linter alone — and this pass's whole promise,
+catching the fix that quietly turned a passing test red, went untested.
 
 On exit 1: every failed check is a **P0 finding** — the branch does not merge.
 Attribute it before reporting: run the same command against the pre-fix baseline
 (`git stash` the fixes, or check out the baseline the auto-fix diff used) to tell
 "the fixes broke it" apart from "it was already broken". The two are different
 bugs with different owners.
+
+On exit 5: report the pass **PARTIAL**, name which check kinds ran and that no
+test runner was found, and say the regression question is still open. Never round
+a 5 up to a clean sweep — pass `--cmd "<the project's real test command>"` and
+re-run instead.
 
 **Skip only when:** the script exits 4. Report SKIPPED with the reason it gives —
 never report a skipped sweep as a clean one.
@@ -189,11 +235,13 @@ never report a skipped sweep as a clean one.
 Record which findings the user accepted and which they rejected, so the next
 review starts from evidence instead of re-guessing.
 
-Without it the reviewer never learns: the same false positive returns at the same
-confidence forever, and a pattern the user has confirmed three times gets no more
-credit than a first guess. That is how alert fatigue sets in and a report stops
-being read. With it, repeat false positives decay out of the report and confirmed
-patterns get promoted across the gate.
+Without it the reviewer never learns: the same false positive returns in the same
+position forever, and a pattern the user has confirmed three times reads no more
+urgently than a first guess. That is how alert fatigue sets in and a report stops
+being read. With it, a class the team has repeatedly rejected is **ranked down
+the page** under a labelled section that states the prior decision, and a class
+they have repeatedly confirmed is **ranked up**. Nothing leaves the report and no
+confidence moves — this is ordering, and only ordering.
 
 **Write** one row per triaged finding:
 
@@ -209,8 +257,13 @@ Same convention as `pattern_key` in the jjstack memory system.
 
 Record a verdict for every finding whose fate you actually know:
 - the user fixed it, or told you it was real → `accepted`
-- the user dismissed it, or post-pass 3 DISPROVED it → `rejected`
+- the user dismissed it → `rejected`
 - the user never responded → record nothing. A guess pollutes the ledger.
+
+A post-pass 3 `DISPROVEN` tag is **not** a `rejected` verdict on its own. The
+ledger records the team's decisions, and a green test is not a decision — it is
+evidence with two readings (see post-pass 3). Show the finding under **Disproven
+by test**, let the user rule on it, and record `rejected` only if they do.
 
 **Read** at the start of the next review's verification step:
 

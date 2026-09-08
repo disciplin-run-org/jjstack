@@ -230,19 +230,29 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
      auto-applies safe fixes writes real code that no reviewer has ever looked
      at — it arrives blended into your branch under the banner of a completed
      review. It is now pulled out as its own diff and reviewed as if a stranger
-     wrote it.
+     wrote it. `/review` takes a snapshot of your tree *before* it is allowed to
+     change anything, so this pass shows you only the reviewer's edits — your own
+     work in progress is never handed back to you as someone else's bug.
   3. **A failing test for each serious finding.** Instead of asserting a bug
-     exists, `/review` writes the test that goes red and runs it. If it can't be
-     made to fail, the finding was never real and gets dropped — and if it can,
-     you get the regression test along with the report.
+     exists, `/review` writes the test that goes red and runs it, and you get
+     that regression test along with the report. If the test comes out green the
+     finding is *not* deleted: it moves to a "Disproven by test" section with the
+     test attached, because a green test can equally mean the test is wrong — and
+     that call is yours, not the reviewer's.
   4. **Your typechecker, linter and tests re-run after the fixes land.** The
      cheapest, most certain reviewer you own, pointed at the post-fix code. This
-     is what catches a fix that broke the build or turned a green test red.
+     is what catches a fix that broke the build or turned a green test red. If
+     your project has a linter but no test runner, this pass now says **PARTIAL**
+     and names what it couldn't check, instead of reporting "clean" on the
+     strength of the linter alone.
   5. **Memory of what you accepted and rejected.** Verdicts are recorded in your
-     repo (`jjstack/review-calibration.tsv`), and the next review adjusts its
-     confidence from them — so a false positive you dismissed twice stops being
-     raised, and a pattern you confirmed gets promoted. Previously every review
-     started from zero and re-guessed.
+     repo (`jjstack/review-calibration.tsv`), and the next review uses them to
+     ORDER its report — a class you have dismissed twice is ranked down the page
+     under a section that says so, a class you keep confirming is ranked up.
+     Nothing is removed and no confidence score is touched: the score is a claim
+     about your code, the demotion is a claim about your past decision, and only
+     the baseline (with a reason you wrote) takes anything off the active list.
+     Previously every review started from zero and re-guessed.
 
   Any of the five that doesn't apply to your project — no test runner, no
   auto-fixes, no history yet — is reported as SKIPPED with the reason, never

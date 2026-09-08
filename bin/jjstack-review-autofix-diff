@@ -29,6 +29,25 @@ set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
+# Help is DERIVED from the leading comment block, never a hand-maintained
+# `sed -n 'A,Bp'` range. A range silently drifts the moment a line is added,
+# which is how this help came to leak `set -uo pipefail` into its own output.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
+# A flag that takes a value must GET one. `shift 2` is a silent no-op when only
+# one argument remains, so the loop would spin on the same argv forever (and
+# `set -e` is deliberately off here, so nothing stops it). Verified: this script
+# returned 124 under `timeout 5` for `--baseline` with no value.
+need_val() { # need_val <flag> <remaining argc, i.e. "$#">
+  [ "$2" -ge 2 ] && return 0
+  echo -e "${CYA}error${RST} $1 requires a value" >&2
+  exit 2
+}
+
 REPO=""
 BASELINE=""
 MARK=0
@@ -37,14 +56,12 @@ DRY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)     REPO="${2:-}"; shift 2 ;;
-    --baseline) BASELINE="${2:-}"; shift 2 ;;
+    --repo)     need_val "$1" "$#"; REPO="$2"; shift 2 ;;
+    --baseline) need_val "$1" "$#"; BASELINE="$2"; shift 2 ;;
     --mark)     MARK=1; shift ;;
     --stat)     STAT=1; shift ;;
     --dry-run)  DRY=1; shift ;;
-    -h|--help)
-      sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
+    -h|--help)  show_help; exit 0 ;;
     *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
