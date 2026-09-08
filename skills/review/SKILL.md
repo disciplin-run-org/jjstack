@@ -251,10 +251,16 @@ Rank by severity, then confidence. Cap the main table at 10.
 | Any P1 | `CAUTION`; `REJECT` only if a P1 is unexplained and unbounded |
 | Any P0 | `REJECT` unless it has a landed mitigation |
 | A lens or the verification did not run | Drop one step and say so |
-| Every prior finding resolved, nothing new on changed lines | `APPROVE`, one line, and stop |
 
 Only evidence read at the source moves a finding. Author reputation, green
 CI, diff size, and the overall posture do not.
+
+The table scopes by **severity**, never by location. A row conditioned on the
+absence of new findings *at a location* used to sit directly under the P0 row:
+a caller the diff breaks does not live where the diff edited, so both rows
+fired at once — `REJECT` and `APPROVE, one line, and stop` — with no precedence
+stated between them. It is deleted rather than re-worded; "nothing above P3"
+already covers a clean re-review, and Idempotence rule 1 already says stop.
 
 **Re-review rules** (a `review-*.md` for this branch already existed):
 
@@ -267,7 +273,7 @@ CI, diff size, and the overall posture do not.
   pre-existing defect is reported as a miss by the previous review, with its
   reason, or not at all. Consequences of this diff are untouched by any of
   that, per the distinction stated there.
-- **Raise nothing below P1 even on changed code.** Not "nothing already
+- **Raise nothing below P1, wherever it lands.** Not "nothing already
   listed": that weaker rule is the measured failure. Across the stack
   this skill replaces, P0/P1 fell 29 → 13 → 15 while P2/P3 ROSE 46 → 58 → 69,
   and almost none of those were re-raised — they were fresh nits about

@@ -855,6 +855,19 @@ check "…and owes no attribution for a consequence of this diff" \
       "grep -q 'No attribution is owed for a consequence' '$SK'"
 check "…so the unscoped form of rule 3 is absent" \
       "! grep -q 'A new finding on unchanged code is a finding about' '$SK'"
+# The class swept file-wide, not just where a report named it. beb3711 scoped
+# by LOCATION in three places; rounds 4 and 5 each fixed the one bullet in front
+# of them, and the third sibling - a verdict row - went untouched through both.
+# Assert the axis is absent from the WHOLE file, so the next instance cannot
+# hide in a section nobody was staring at.
+check "no rule anywhere scopes by changed-vs-unchanged lines" \
+      "! grep -niE 'nothing new on changed lines|even on changed code' '$SK'"
+# The verdict table scopes by severity alone: a row conditioned on location
+# fired simultaneously with the P0 row, with no precedence between them.
+check "the verdict table has no location-scoped posture row" \
+      "! sed -n '/Active findings profile/,/^$/p' '$SK' | grep -qiE 'changed|untouched'"
+check "…and says so, so it is not re-added" \
+      "grep -q 'scopes by \*\*severity\*\*, never by location' '$SK'"
 # The qualifier is the whole rule. Without "pre-existing" it reads as "raise
 # nothing on unchanged code at any severity" while claiming to bind harder than
 # anything else in the file - which deletes the only two lenses that can see
@@ -877,7 +890,7 @@ check "…and the weaker 'only what was already listed' rule is gone" \
       "! grep -q 'Raise nothing below P1 that the previous report already listed' '$SK'"
 # The ratchet the post-mortem measured: barring only RE-RAISED nits still lets
 # a round invent unlimited NEW ones about the fix it just asked for.
-check "a re-review raises nothing below P1 even on changed code" "grep -q 'Raise nothing below P1 even on changed code' '$SK'"
+check "a re-review raises nothing below P1, wherever it lands" "grep -q 'Raise nothing below P1, wherever it lands' '$SK'"
 check "…and says so rather than only barring what was already listed"       "! grep -q 'Raise nothing below P1 that the previous report already listed' '$SK'"
 # The lint and the post must share a shell or the gate is decorative, and the
 # skill must say so where a reader would otherwise split them for CLAUDE.md.
