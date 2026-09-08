@@ -58,33 +58,59 @@ gave it.** Same code in, same answer out. A reviewer whose output changes while
 its input does not is not measuring the code; its findings are not evidence,
 and its approval is worth nothing either.
 
-Three rules follow, and they bind harder than anything else in this file:
+### First, the distinction every rule below depends on
+
+"Unchanged code" is two different things, and conflating them is how this
+section has twice been written wrong. Read this before the rules:
+
+| | |
+|---|---|
+| **Pre-existing** | A defect that was there before this diff and would still be there without it. **Out of scope, at any severity**, however plainly you can see it. |
+| **A consequence of this diff** | A defect the change *creates*, wherever it lands — including on lines the diff never touched. **In scope at full severity**, and owed no attribution to any earlier round: it did not exist when the earlier round ran. |
+
+A caller the new signature breaks lives on a line the diff did not touch and is
+a **consequence**. So is everything the absence pass reports — a schema without
+its migration, an enum member without its consumers, a signature without its
+callers. The blast-radius walk and the absence pass are the only two lenses
+here that can see outside the diff; they exist to produce exactly this
+category, and no rule below may be read as suppressing them.
+
+Every rule below is scoped to **pre-existing** findings. None of them applies
+to a consequence of this diff.
+
+### The rules — they bind harder than anything else in this file
 
 1. **Once every finding is resolved, the next review says so and stops.** It
    does not go looking for something else to justify the run. A clean result
    from a review that ran every applicable lens is a strong statement; padding
    it with a nit is not thoroughness, it is manufacturing work.
-2. **Nothing PRE-EXISTING is raised on a line the diff did not touch**, at any
-   severity — including a line an earlier round already read and passed.
-   *Pre-existing* is the whole of the rule. A **consequence of this diff** on
-   an unchanged line is not pre-existing and is fully in scope: a caller the
-   new signature breaks is precisely what the blast-radius walk exists to find
-   and stays P0, and so does everything the absence pass reports — a schema
-   without its migration, an enum member without its consumers. Those two
-   lenses are the only ones here that can see outside the diff, and dropping
-   this qualifier would delete them while claiming precedence over them.
-3. **A new finding on unchanged code is a finding about the PREVIOUS review.**
-   If a pass genuinely believes it has found something the last round missed,
-   that is a miss, and it is reported as one: name what was missed, and name
-   why the earlier pass did not see it. If you cannot say why it was missed,
-   you have not found a defect — you have found a new opinion, and an opinion
-   that arrives on round three about code that was clean on round two is the
-   ratchet this skill exists to stop.
+2. **No pre-existing finding is raised on a line the diff did not touch**, at
+   any severity — including a line an earlier round already read and passed.
+3. **A new pre-existing finding on unchanged code is a finding about the
+   PREVIOUS review.** If a pass genuinely believes the last round missed
+   something, that is a miss, and it is reported as one: name what was missed,
+   and name why the earlier pass did not see it. If you cannot say why it was
+   missed, you have not found a defect — you have found a new opinion, and an
+   opinion that arrives on round three about code that was clean on round two
+   is the ratchet this skill exists to stop.
+
+   No attribution is owed for a consequence of this diff. Demanding one is how
+   this rule suppressed a P0: a caller the change breaks was not *missed* by
+   the last round, so no reason can be given, so the terminal clause dropped
+   it.
 
 The measured failure this prevents: three rounds over one artifact published
 75, then 71, then 84 findings while the code was converging. Almost none were
 re-raised items. They were new nits about machinery the previous round had
 caused to be written, each defensible on its own and worthless in aggregate.
+
+**Why this section is shaped as a definition plus three short rules, and must
+stay that way.** It was twice written as self-contained bullets, each carrying
+its own scope wording, and twice a bullet lost the qualifier and silently
+outranked the correctness lens — once in rule 2, then, after that was patched,
+in rule 3 one bullet below. Patching a third instance would have been the wrong
+fix. The scope is now stated once, above, and the rules inherit it; a bullet
+cannot drift from a definition it does not restate.
 
 ## Preamble
 
@@ -236,12 +262,11 @@ CI, diff size, and the overall posture do not.
   against the commit the last report names) and the previous finding count.
 - Verify only the prior P0/P1: does the reproduction still reproduce? Mark
   each *fixed / still open / regressed*.
-- **Raise nothing PRE-EXISTING on unchanged code**, per Idempotence above. A
-  belief that unchanged code hides a pre-existing defect is reported as a miss
-  by the previous review, with its reason, or not at all. This does not touch
-  the blast-radius walk or the absence pass: a caller broken *by this diff* is
-  a consequence of the change, not a pre-existing issue, and is reported at
-  full severity however untouched its line is.
+- **Raise nothing pre-existing on unchanged code**, per Idempotence above —
+  including the attribution rule: a belief that unchanged code hides a
+  pre-existing defect is reported as a miss by the previous review, with its
+  reason, or not at all. Consequences of this diff are untouched by any of
+  that, per the distinction stated there.
 - **Raise nothing below P1 even on changed code.** Not "nothing already
   listed": that weaker rule is the measured failure. Across the stack
   this skill replaces, P0/P1 fell 29 → 13 → 15 while P2/P3 ROSE 46 → 58 → 69,

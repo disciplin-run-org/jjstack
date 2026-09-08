@@ -834,8 +834,27 @@ check "the skill states idempotence as a governing property" \
       "grep -q '^## Idempotence' '$SK'"
 check "…once all findings are resolved, the next review says so and stops" \
       "grep -qi 'the next review says so and stops' '$SK'"
-check "…nothing PRE-EXISTING is raised on a line the diff did not touch" \
-      "grep -q 'Raise nothing PRE-EXISTING on unchanged code' '$SK'"
+check "…nothing pre-existing is raised on a line the diff did not touch" \
+      "grep -q 'Raise nothing pre-existing on unchanged code' '$SK'"
+# The scope is DEFINED once and the rules inherit it. Two rounds running, a
+# self-contained bullet lost the qualifier and silently outranked the
+# correctness lens - rule 2, then rule 3 one bullet below. A bullet cannot
+# drift from a definition it does not restate, so assert the definition exists
+# and that EVERY rule is covered by it, not that each bullet repeats it.
+check "the scope distinction is defined once, above the rules" \
+      "grep -q 'the distinction every rule below depends on' '$SK'"
+check "…naming a consequence of the diff as IN scope at full severity" \
+      "grep -q 'A consequence of this diff' '$SK'"
+check "…and every rule is declared scoped to pre-existing findings" \
+      "grep -q 'Every rule below is scoped to' '$SK'"
+# Rule 3 is the one that regressed after rule 2 was fixed: it demanded an
+# attribution no consequence can supply, so its terminal clause dropped a P0.
+check "rule 3 is scoped to pre-existing findings too" \
+      "grep -q 'A new pre-existing finding on unchanged code' '$SK'"
+check "…and owes no attribution for a consequence of this diff" \
+      "grep -q 'No attribution is owed for a consequence' '$SK'"
+check "…so the unscoped form of rule 3 is absent" \
+      "! grep -q 'A new finding on unchanged code is a finding about' '$SK'"
 # The qualifier is the whole rule. Without "pre-existing" it reads as "raise
 # nothing on unchanged code at any severity" while claiming to bind harder than
 # anything else in the file - which deletes the only two lenses that can see
@@ -847,11 +866,11 @@ check "…and the out-of-diff caller lens survives that rule" \
 check "…as does the absence lens" \
       "grep -q \"what should have changed and didn't\" '$SK'"
 check "…and idempotence names them both as still in scope" \
-      "grep -q 'blast-radius walk exists to find' '$SK'"
-check "…so the unqualified form is absent" \
-      "! grep -qE 'Nothing is raised on a line the diff did not touch' '$SK'"
-check "…and a new finding on unchanged code is a MISS by the previous review" \
-      "grep -q 'finding about the PREVIOUS review' '$SK'"
+      "grep -q 'exist to produce exactly this' '$SK'"
+check "…so the unqualified form of rule 2 is absent" \
+      "! grep -qE '\*\*Nothing is raised on a line the diff did not touch' '$SK'"
+check "…and a pre-existing finding on unchanged code is a MISS by the last round" \
+      "grep -q 'is a finding about the' '$SK'"
 # The weaker rule this replaces must be gone, or both are in the file and the
 # reader follows whichever they reach first.
 check "…and the weaker 'only what was already listed' rule is gone" \
