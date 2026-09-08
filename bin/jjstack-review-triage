@@ -8,7 +8,7 @@
 # reviewer that simply stops mentioning a finding is indistinguishable from one
 # that never found it, and nobody can audit the difference six months later.
 #
-# So this script enforces three invariants no prose prompt can guarantee:
+# So this script enforces four invariants no prose prompt can guarantee:
 #   1. NO SILENT DROP — any disposition other than `report` needs a reason code
 #      from a closed vocabulary.
 #   2. REACHABILITY DEPRIORITISES, IT NEVER DELETES — reason `not-reachable` is
@@ -16,6 +16,10 @@
 #      today is reachable after the next refactor.
 #   3. TOP SEVERITY IS NEVER SUPPRESSED — a P0/P1 may be deferred with a stated
 #      reason, but it may not be made to disappear.
+#   4. `refuted` AND `stale-api` PAIR EXCLUSIVELY — the only "this finding is
+#      wrong" outcome is the one earned by external evidence (Phase 4.5b's
+#      documentation lookup). Binding the two stops it becoming a general delete
+#      hatch, and stops `stale-api` routing a P0/P1 past invariant 3.
 #
 # The invariants run on the MERGED record, never on the raw row. Dedup used to
 # keep the first-seen row and discard the rest, so a baseline-suppressed P3
@@ -50,13 +54,17 @@
 #     path:line    file path, colon, line number (or range N-M)
 #     lens         the pass that flagged it (free text, no tabs)
 #     disposition  report | unconfirmed | demoted | defer | suppress |
-#                  out-of-scope   (tracks the enrich-only model: `unconfirmed`
-#                  and `demoted` are SHOWN sections, and no disposition here is
-#                  a score threshold, because a finding is never deleted)
+#                  out-of-scope | refuted   (tracks the enrich-only model:
+#                  `unconfirmed` and `demoted` are SHOWN sections, and no
+#                  disposition here is a score threshold, because a finding is
+#                  never deleted. `refuted` is the sole "this finding is WRONG"
+#                  outcome and belongs to the Phase 4.5b stale-API check, which
+#                  runs BEFORE Phase 5 and decides on external evidence.)
 #     reason       `-` for `report`; otherwise one of:
 #                  unverified prior-decision low-confidence pre-existing
 #                  tool-covered style-only no-repro duplicate not-reachable
-#                  accepted-risk baseline
+#                  accepted-risk baseline stale-api
+#                  `refuted` and `stale-api` are legal ONLY with each other.
 #     claim        the finding text (any further columns are rejoined)
 #
 # Usage:
@@ -236,8 +244,14 @@ BEGIN {
   # Vocabulary tracks the enrich-only verification model: a finding is never
   # deleted, so there is no score-threshold disposition. "unconfirmed" and
   # "demoted" are SHOWN sections; only the committed baseline suppresses.
-  split("report unconfirmed demoted defer suppress out-of-scope", a, " "); for (i in a) DISP[a[i]] = 1
-  split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline", a, " ")
+  # "refuted" is the single exception and it is not a Phase 5 decision at all:
+  # the Phase 4.5b stale-API check disproves a finding against current official
+  # documentation, BEFORE Phase 5 runs. Without it that check had nowhere to
+  # record itself — it was told to "drop the finding", the closed vocabulary had
+  # no code for it, and `out-of-scope` means "never raised", which is false for a
+  # finding that was raised and then disproved.
+  split("report unconfirmed demoted defer suppress out-of-scope refuted", a, " "); for (i in a) DISP[a[i]] = 1
+  split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline stale-api", a, " ")
   for (i in a) REASON[a[i]] = 1
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0; nraised = 0
 }
@@ -278,6 +292,14 @@ BEGIN {
   # INVARIANT 3 — top severity is never made to disappear.
   if ((sev == "P0" || sev == "P1") && disp == "suppress") {
     fail(NR, sev " may not be suppressed — defer it with a stated reason instead"); bad = 1
+  }
+  # INVARIANT 4 — "refuted" and "stale-api" pair exclusively. `refuted` is the
+  # only disposition that removes a finding for being WRONG, and it is earned by
+  # external evidence (current official docs, §4.5b), not by judgement. Bind the
+  # two so it cannot spread into a general delete hatch, and so `stale-api`
+  # cannot be attached to `suppress` to route a P0/P1 around Invariant 3.
+  if ((disp == "refuted") != (rsn == "stale-api")) {
+    fail(NR, "\"refuted\" and reason \"stale-api\" are only legal together — got disposition \"" disp "\" with reason \"" rsn "\""); bad = 1
   }
 
   if (bad) next
@@ -470,14 +492,15 @@ END {
   print ""                                                                    >> render
   print "| disposition | count |"                                             >> render
   print "|---|---|"                                                           >> render
-  split("report unconfirmed demoted defer suppress out-of-scope", d, " ")
-  for (i = 1; i <= 6; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)      >> render
+  nd = split("report unconfirmed demoted defer suppress out-of-scope refuted", d, " ")
+  for (i = 1; i <= nd; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)     >> render
 
   section("Reported — main report", "report")
   section("Unconfirmed — kept deliberately, nobody could verify at the source", "unconfirmed")
   section("Demoted (prior decision) — still active, ranked lower", "demoted")
   section("Deferred — real, out of scope for this diff", "defer")
   section("Suppressed by baseline — with a recorded reason", "suppress")
+  section("Refuted — raised, then disproved against current official docs", "refuted")
   section("Out of scope — never raised, per Phase 4 emission scope", "out-of-scope")
 
   # The merge itself is a decision about what the reader sees, so it is on the
@@ -502,6 +525,7 @@ END {
   print "TALLY report=" TALLY["report"] + 0 " unconfirmed=" TALLY["unconfirmed"] + 0 \
         " demoted=" TALLY["demoted"] + 0 " defer=" TALLY["defer"] + 0 \
         " suppress=" TALLY["suppress"] + 0 " out-of-scope=" TALLY["out-of-scope"] + 0 \
+        " refuted=" TALLY["refuted"] + 0 \
         " unique=" uniq " collapsed=" dupes " merges-raised=" nraised + 0
   for (i = 1; i <= nadv; i++) print "ADVISORY " advisories[i]
   exit 0

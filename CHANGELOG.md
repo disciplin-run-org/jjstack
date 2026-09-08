@@ -195,6 +195,32 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   backgrounded subagent, and the upgrade path itself can no longer delete your
   install on a failed swap.
 
+- **`/review`'s dependency inventory no longer loses your runtime dependencies.**
+  A `package.json` written on one line — the form npm, bundlers and code
+  generators emit — had every dependency group but the last silently discarded.
+  The inventory reported success with `react` missing, and every stale-API
+  finding about the dropped library was then treated as "unknown library" and
+  quietly downgraded. It also died outright on a checkout path containing a `#`
+  (`build#42` and friends are ordinary in CI), producing an empty inventory, and
+  it hung at 100% CPU forever if you typed `--depth` without a number.
+
+- **`/review` can no longer read a broken dependency scan as "no dependencies".**
+  "This repo declares nothing external" and "the scan found manifests but parsed
+  none of them" used to share one exit code, and the review was told the first
+  one is normal — so a parser failure read as a clean bill of health. They are
+  now distinct, and a parse failure is reported as a problem to fix rather than
+  skipped past.
+
+- **A review finding disproved by the docs is now on the record instead of just
+  gone.** `/review` looks up current official documentation before believing its
+  own "you're using this library wrong" findings, and drops the ones the docs
+  refute. That drop had nowhere to be written down: the triage ledger's
+  vocabulary had no code for it, so the finding simply left the report — the
+  exact disappearing act the ledger exists to prevent. Refuted findings now
+  appear in their own ledger section with the documentation link that settled
+  them. Those lookups are also capped and deduplicated per library, so a review
+  with thirty findings across five libraries makes five searches, not thirty.
+
 ### Added
 
 - **`/review` now gathers evidence before it starts thinking.** A new pre-flight

@@ -4,9 +4,11 @@
 # Why this exists. A large, well-documented class of AI-review false positive is
 # the stale-API flag: the model reviews a call against the library API it
 # remembers from training, the library has since changed, and correct code gets
-# reported as a bug. Macroscope measured this class and cut third-party-library
-# review comments by 55% simply by looking up current docs during review instead
-# of trusting recall (see references/vendor-lessons-macroscope.md).
+# reported as a bug. Macroscope reports cutting third-party-library review
+# comments by 55% simply by looking up current docs during review instead of
+# trusting recall — a vendor-adjacent figure (the search supplier published it),
+# so treat the FAILURE CLASS as the reason this exists, not the number. See
+# references/vendor-lessons-macroscope.md, which records that caveat.
 #
 # The lookup itself needs judgment. Knowing WHICH library at WHICH version does
 # not — that is written down, in the repo, in the manifests. So this script
@@ -25,7 +27,11 @@
 # Output: grouped human table, or `ecosystem<TAB>name<TAB>version<TAB>manifest`
 # with --tsv. Version is `*` when the manifest declares no constraint.
 #
-# Exit: 0 inventory printed, 2 usage error, 3 no dependency manifests found.
+# Exit: 0 inventory printed, 2 usage error, 3 no dependency manifests found
+#       (this repo declares nothing external — a normal, safe state),
+#       4 manifests found but NOTHING parsed (the inventory FAILED — a parser
+#       bug or an unsupported dialect; the stale-API phase must not treat this
+#       as "no dependencies").
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -38,10 +44,15 @@ TSV=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --depth) DEPTH="${2:-}"; shift 2 ;;
+    # `shift 2` on a lone `--depth` is a no-op (only one arg remains), and with
+    # `set -e` off the loop then spins on the same argument forever at 100% CPU.
+    # Demand the operand explicitly rather than relying on shift to fail.
+    --depth)
+      [ $# -ge 2 ] || { echo -e "${CYA}error${RST} --depth requires a number" >&2; exit 2; }
+      DEPTH="$2"; shift 2 ;;
     --tsv)   TSV=1; shift ;;
     -h|--help)
-      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  [ -z "$REPO" ] && REPO="$1" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
@@ -56,6 +67,17 @@ esac
 [ -z "$REPO" ] && REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 [ -d "$REPO" ] || { echo -e "${CYA}error${RST} not a directory: $REPO" >&2; exit 2; }
 
+# mktemp -d, never a PID-named path: such a path in a world-writable
+# directory is guessable and was created with a plain `>` — no O_EXCL — so
+# another user could pre-create it as a symlink and have this script clobber the
+# target (CWE-377). The directory is created 0700 and the cleanup trap is armed
+# BEFORE anything is written into it, so an interrupted run leaves nothing behind.
+TMPD="$(mktemp -d "${TMPDIR:-/tmp}/jjdep.XXXXXXXXXX")" || {
+  echo -e "${CYA}error${RST} could not create a temporary directory" >&2; exit 2; }
+trap 'rm -rf "$TMPD"' EXIT
+MANIFESTS="$TMPD/manifests"
+ROWS="$TMPD/rows"
+
 # Vendored trees carry thousands of foreign manifests. They are not this repo's
 # declared dependencies, and including them would bury the ones that are.
 find "$REPO" -maxdepth "$DEPTH" \
@@ -64,11 +86,7 @@ find "$REPO" -maxdepth "$DEPTH" \
      -o -name __pycache__ -o -name .next -o -name .tox \) -prune -o \
   -type f \( -name package.json -o -name 'requirements*.txt' -o -name pyproject.toml \
      -o -name go.mod -o -name Cargo.toml -o -name Gemfile -o -name pom.xml \) \
-  -print 2>/dev/null | sort > "${TMPDIR:-/tmp}/.jjdep.$$.manifests"
-
-MANIFESTS="${TMPDIR:-/tmp}/.jjdep.$$.manifests"
-ROWS="${TMPDIR:-/tmp}/.jjdep.$$.rows"
-trap 'rm -f "$MANIFESTS" "$ROWS"' EXIT
+  -print 2>/dev/null | sort > "$MANIFESTS"
 
 if [ ! -s "$MANIFESTS" ]; then
   echo -e "${YEL}warn${RST}  no dependency manifests found under $REPO (depth $DEPTH)" >&2
@@ -77,10 +95,22 @@ fi
 
 : > "$ROWS"
 
-parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-regex
+parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-alternation  $4=display path
   # Handles both pretty-printed and compact package.json: a dependency block may
   # open, list every entry and close on a single line.
-  awk -v eco="$2" -v file="$1" -v keys="$3" '
+  #
+  # SLURPED, not line-oriented, and that is the whole point. The line-oriented
+  # version opened a block by stripping its prefix with a GREEDY `^.*"...":\s*\{`,
+  # which on a line carrying more than one group opener consumed through the LAST
+  # one. On the ordinary compact form
+  #   {"name":"x","dependencies":{"react":"18.2.0"},"devDependencies":{...}}
+  # that silently discarded the runtime dependencies — exit 0, no warning, and
+  # every stale-API finding about them then fell through to "library absent from
+  # the inventory" and was capped at confidence 50. Locate each group by NAME and
+  # take the text up to its FIRST closing brace instead: dependency objects are
+  # flat maps, so the first `}` is this group's end, and undershooting can only
+  # miss entries, never invent them.
+  awk -v eco="$2" -v file="$4" -v keys="$3" '
     function emit(chunk,   pair, n, v) {
       while (match(chunk, /"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
         pair  = substr(chunk, RSTART, RLENGTH)
@@ -92,21 +122,25 @@ parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-regex
         if (n != "" && v != "") print eco "\t" n "\t" v "\t" file
       }
     }
-    {
-      line = $0
-      if (!indep && line ~ "\"(" keys ")\"[[:space:]]*:[[:space:]]*\\{") {
-        indep = 1
-        sub(/^.*"[[:space:]]*:[[:space:]]*\{/, "", line)   # keep only what follows the {
+    { buf = buf $0 "\n" }
+    END {
+      nk = split(keys, K, "|")
+      for (i = 1; i <= nk; i++) {
+        s = buf
+        while (match(s, "\"" K[i] "\"[[:space:]]*:[[:space:]]*\\{")) {
+          s = substr(s, RSTART + RLENGTH)
+          e = index(s, "}")
+          if (e == 0) { emit(s); break }          # unterminated block: take what is there
+          emit(substr(s, 1, e - 1))
+          s = substr(s, e + 1)
+        }
       }
-      if (!indep) next
-      if (line ~ /\}/) { sub(/\}.*$/, "", line); indep = 0 }
-      emit(line)
     }
   ' "$1"
 }
 
 parse_requirements() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     /^[[:space:]]*($|#|-)/ { next }
     {
       line = $0
@@ -124,7 +158,7 @@ parse_requirements() {
 }
 
 parse_pyproject() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     # PEP 621 / setuptools:  dependencies = [ "fastapi>=0.1", ... ]
     /^[[:space:]]*(dependencies|requires)[[:space:]]*=[[:space:]]*\[/ { inarr = 1 }
     inarr {
@@ -157,7 +191,7 @@ parse_pyproject() {
 }
 
 parse_gomod() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     /^require[[:space:]]*\(/ { inreq = 1; next }
     inreq && /^\)/          { inreq = 0; next }
     inreq && NF >= 2 && $1 !~ /^\/\// { print "go\t" $1 "\t" $2 "\t" file; next }
@@ -166,7 +200,7 @@ parse_gomod() {
 }
 
 parse_cargo() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     /^\[(dependencies|dev-dependencies|build-dependencies)\]/ { indep = 1; next }
     /^\[/ { indep = 0 }
     indep && /=/ {
@@ -183,7 +217,7 @@ parse_cargo() {
 }
 
 parse_gemfile() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     /^[[:space:]]*gem[[:space:]]+["'"'"']/ {
       line = $0; n = ""; v = "*"; i = 0
       while (match(line, /["'"'"'][^"'"'"']*["'"'"']/)) {
@@ -199,7 +233,7 @@ parse_gemfile() {
 }
 
 parse_pom() {
-  awk -v file="$1" '
+  awk -v file="$2" '
     /<dependency>/  { indep = 1; a = ""; v = "*"; next }
     indep && /<artifactId>/ { a = $0; sub(/^.*<artifactId>/, "", a); sub(/<\/artifactId>.*$/, "", a) }
     indep && /<version>/    { v = $0; sub(/^.*<version>/, "", v);    sub(/<\/version>.*$/, "", v) }
@@ -207,24 +241,38 @@ parse_pom() {
   ' "$1"
 }
 
+# The relative path is passed INTO each parser as an awk variable, never
+# substituted back afterwards. The old `sed "s#\t$m\$#\t$rel#"` interpolated a
+# raw `find` path into an s-command delimited by `#`: any `#` in the path
+# terminated the command (`sed: unknown option to 's'`, zero rows, exit 3) and
+# regex metacharacters — `[`, `*`, `.` — were interpreted instead of matched.
+# Paths like `build#42` are ordinary in CI checkouts. awk -v needs no quoting.
 while read -r m; do
-  rel="${m#$REPO/}"
+  rel="${m#"$REPO"/}"
   case "$(basename "$m")" in
-    package.json)     parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' ;;
-    requirements*.txt) parse_requirements "$m" ;;
-    pyproject.toml)   parse_pyproject "$m" ;;
-    go.mod)           parse_gomod "$m" ;;
-    Cargo.toml)       parse_cargo "$m" ;;
-    Gemfile)          parse_gemfile "$m" ;;
-    pom.xml)          parse_pom "$m" ;;
-  esac | sed "s#\t$m\$#\t$rel#" >> "$ROWS"
+    package.json)     parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' "$rel" ;;
+    requirements*.txt) parse_requirements "$m" "$rel" ;;
+    pyproject.toml)   parse_pyproject "$m" "$rel" ;;
+    go.mod)           parse_gomod "$m" "$rel" ;;
+    Cargo.toml)       parse_cargo "$m" "$rel" ;;
+    Gemfile)          parse_gemfile "$m" "$rel" ;;
+    pom.xml)          parse_pom "$m" "$rel" ;;
+  esac >> "$ROWS"
 done < "$MANIFESTS"
 
 sort -u -o "$ROWS" "$ROWS"
 
+# Exit 4, NOT 3. The two states are opposite conclusions and were sharing a code:
+# exit 3 means "this repo declares no external dependencies", which the review
+# skill is told to treat as normal and skip past. "Manifests exist but nothing
+# parsed" means the inventory FAILED — a parser bug, an unreadable file, an
+# unsupported dialect — and the stale-API phase is about to run blind while
+# reading a positive safety claim. Conflating them turned every parse failure
+# into a green light.
 if [ ! -s "$ROWS" ]; then
-  echo -e "${YEL}warn${RST}  manifests found but no declared dependencies parsed" >&2
-  exit 3
+  echo -e "${YEL}warn${RST}  $(wc -l < "$MANIFESTS") manifest(s) found under $REPO but NO declared dependencies parsed —" >&2
+  echo -e "${YEL}    ${RST}  this is a parse failure, not an empty repo; do not read it as 'no dependencies'" >&2
+  exit 4
 fi
 
 if [ "$TSV" -eq 1 ]; then

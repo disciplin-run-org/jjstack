@@ -1501,6 +1501,46 @@ check "blast-radius guard actually catches a duplicate" \
   "[ \"\$(ls -1 '$probe_bin' | grep -c '^jjstack-review-blast-radius')\" = 2 ]"
 rm -rf "$probe_bin"
 
+# ONE implementation in bin/ is only half of "computed once". The skill also has
+# to INVOKE it once. Phase 4.5's consolidation note said blast radius "is computed
+# once, in Phase 0", while Module G.1 still told the model to run the scan again
+# at the start of Phase 4 into a DIFFERENT path — so a model reading the skill top
+# to bottom produced two files with the same basename in two directories, and the
+# passes disagreed about which was current. Phase 0's pre-flight is the only
+# caller; the skill must name the binary exactly once, in that pre-flight.
+n_blast_calls=$(grep -c 'jjstack-review-blast-radius' "$SK" 2>/dev/null)
+check "the review skill invokes blast-radius exactly once" "[ \"\$n_blast_calls\" = 1 ]"
+check "that one invocation is the Phase 0 pre-flight" \
+  "grep -q 'jjstack-review-preflight' '$SK' && ! grep -q 'jjstack-review-blast-radius >' '$SK'"
+# Positive control — the guard must catch the exact shape that regressed.
+probe_two="$(mktemp)"
+printf 'a\n~/x/jjstack-review-blast-radius > {OUTPUT_DIR}/blast-radius.md\nb\n~/x/jjstack-review-blast-radius --out y\n' > "$probe_two"
+check "the single-invocation guard actually catches a second run" \
+  "[ \"\$(grep -c 'jjstack-review-blast-radius' '$probe_two')\" = 2 ]"
+rm -f "$probe_two"
+# The widening flag has to exist where the skill now sends people, or the
+# consolidation traded a duplicate scan for an impossible instruction.
+check "pre-flight forwards --also-repo to the one blast-radius run" \
+  "grep -q -- '--also-repo' '$BIN/jjstack-review-preflight'"
+
+# The stale-API phase's own marketing filter must not leak around its output:
+# references/vendor-lessons-macroscope.md calls the 55% figure "a vendor-adjacent
+# number", and the skill and the script both stated it as fact.
+n_bare55=$(grep -cE 'cut third-party-library review comments (by )?55%' "$SK" "$BIN/jjstack-review-dep-inventory" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
+check "the 55% figure is never asserted as bare fact" "[ \"\$n_bare55\" = 0 ]"
+check "the 55% figure is attributed where it is used" \
+  "grep -q 'vendor-adjacent' '$SK' && grep -q 'vendor-adjacent' '$BIN/jjstack-review-dep-inventory'"
+# The per-finding WebSearch had no bound and no per-library dedup, in a skill
+# whose other expensive pass caps itself in three places.
+check "the stale-API lookup carries an explicit bound" \
+  "grep -q 'Cap the phase at 10 lookups' '$SK'"
+check "the stale-API lookup dedups per library+version" \
+  "grep -q 'One lookup per (library, version)' '$SK'"
+# Exit 4 is a new, opposite-meaning state; the skill must not leave the model
+# reading a parse failure as the safe "no dependencies" case.
+check "the skill distinguishes dep-inventory exit 3 from exit 4" \
+  "grep -q 'Exit 4 (manifests found, nothing parsed)' '$SK'"
+
 # Every disposition must route to a section 5f actually defines. Two separate
 # PRs independently routed findings to "the appendix" — a section that stopped
 # existing when verification became enrich-only. A finding with a disposition
@@ -1936,6 +1976,35 @@ row P2 70 node_modules/x/y.js:3 sec report - 'vendor finding reported' > "$TRI/a
 rc=$?
 check "vendor-path report warns but still exits 0" "[ $rc -eq 0 ]"
 check "vendor-path report emits an ADVISORY"       "grep -q 'ADVISORY' '$TRI/adv.err'"
+
+# Phase 4.5b is ORDERED to "drop the finding and record it as a stale-knowledge
+# false positive" when current docs disprove it — and the closed vocabulary had
+# nowhere to record that. `out-of-scope` is defined as "never raised", which is
+# false for a finding that WAS raised and then disproved, and `suppress` is
+# forbidden for a P0/P1 by invariant 3. So the one phase permitted to delete had
+# no accounting: the finding just left. `refuted` + `stale-api` is that row.
+row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is correct per current docs (https://example/docs)' > "$TRI/ref.tsv"
+"$BIN/jjstack-review-triage" "$TRI/ref.tsv" --out "$TRI/ref.md" > "$TRI/ref.out" 2> "$TRI/ref.err"
+rc=$?
+check "a refuted stale-API finding is a legal ledger row" "[ $rc -eq 0 ]"
+check "a refuted P1 is accepted (invariant 3 is about suppress)" "[ -f '$TRI/ref.md' ]"
+check "the refuted finding stays visible with its evidence" \
+      "grep -q 'current docs' '$TRI/ref.md'"
+check "refuted gets its own rendered section" "grep -q 'Refuted' '$TRI/ref.md'"
+check "refuted is counted in the tally"       "grep -q 'refuted=1' '$TRI/ref.out'"
+# POSITIVE CONTROL 4a — `refuted` may not carry any other reason, or it becomes
+# a general delete hatch for anything a reviewer dislikes.
+row P2 30 src/f.py:1 sec refuted style-only 'refuted for the wrong reason' > "$TRI/ref2.tsv"
+"$BIN/jjstack-review-triage" "$TRI/ref2.tsv" > /dev/null 2> "$TRI/ref2.err"
+rc=$?
+check "POSITIVE CONTROL: refuted with a non-stale-api reason rejected" "[ $rc -eq 4 ]"
+check "the pairing error names both halves" "grep -q 'only legal together' '$TRI/ref2.err'"
+# POSITIVE CONTROL 4b — and `stale-api` may not ride any other disposition, or a
+# P0/P1 could be routed past invariant 3 by relabelling it.
+row P0 90 src/g.py:1 sec suppress stale-api 'P0 suppressed via stale-api' > "$TRI/ref3.tsv"
+"$BIN/jjstack-review-triage" "$TRI/ref3.tsv" > /dev/null 2> "$TRI/ref3.err"
+rc=$?
+check "POSITIVE CONTROL: stale-api cannot ride suppress" "[ $rc -eq 4 ]"
 
 # A missing ledger is a clean exit 3, not a crash or a silent success.
 "$BIN/jjstack-review-triage" "$TRI/nope.tsv" > /dev/null 2>&1
@@ -3003,7 +3072,97 @@ check "node_modules fixture really holds a manifest to exclude" \
 DEPEMPTY="$(mktemp -d)"
 "$BIN/jjstack-review-dep-inventory" "$DEPEMPTY" >/dev/null 2>&1
 check "dep-inventory exits 3 with no manifests" "[ \$? -eq 3 ]"
-rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT"
+
+# A COMPACT package.json — the form npm, bundlers and generators emit. Every
+# dependency group sits on one line. The parser used to open a group by stripping
+# its prefix with a GREEDY regex, which consumed through the LAST group opener on
+# the line, so on this exact input `react` (the runtime dependency) vanished:
+# one row out, exit 0, no warning, and the header eight lines above claimed
+# "Handles both pretty-printed and compact package.json". Every stale-API finding
+# about the dropped library then fell to "absent from the inventory" and was
+# capped at confidence 50 — the phase silently doing nothing while reporting
+# success. The old fixture put the groups on separate lines, so the case the
+# comment explicitly claimed was never exercised.
+DEPC="$(mktemp -d)"; DEPCOUT="$(mktemp)"
+printf '{"name":"x","dependencies":{"react":"18.2.0"},"devDependencies":{"vitest":"1.0.0"}}\n' > "$DEPC/package.json"
+"$BIN/jjstack-review-dep-inventory" "$DEPC" --tsv > "$DEPCOUT" 2>/dev/null
+check "dep-inventory keeps the FIRST group of a compact package.json" \
+      "grep -q '^npm	react	18.2.0' '$DEPCOUT'"
+check "dep-inventory keeps the LAST group of a compact package.json" \
+      "grep -q '^npm	vitest	1.0.0' '$DEPCOUT'"
+# Positive control: the fixture really is compact — one line carrying BOTH
+# group openers. Split across lines it would pass even with the greedy bug.
+check "compact fixture really puts both groups on one line (control)" \
+      "[ \"\$(grep -c 'devDependencies' '$DEPC/package.json')\" = 1 ] && [ \"\$(wc -l < '$DEPC/package.json')\" = 1 ] && grep -q 'dependencies.*devDependencies' '$DEPC/package.json'"
+
+# A manifest under a path containing `#`. The relative path used to be spliced
+# raw into `sed "s#\t\$m\$#\t\$rel#"` — `#` was the delimiter, so the s-command
+# terminated early ("sed: unknown option to `s'"), ZERO rows were written and the
+# run fell through to a non-zero exit. Directories like `build#42` are ordinary
+# in CI checkouts. The path now goes in via `awk -v`, which needs no escaping.
+DEPH="$(mktemp -d)"; DEPHOUT="$(mktemp)"
+mkdir -p "$DEPH/build#42"
+printf 'module example.com/x\nrequire (\n\tgithub.com/stretchr/testify v1.8.4\n)\n' > "$DEPH/build#42/go.mod"
+"$BIN/jjstack-review-dep-inventory" "$DEPH" --tsv > "$DEPHOUT" 2>/dev/null
+check "dep-inventory exits 0 under a path containing #" "[ \$? -eq 0 ]"
+check "dep-inventory parses a manifest under a # path" \
+      "grep -q '^go	github.com/stretchr/testify	v1.8.4' '$DEPHOUT'"
+check "dep-inventory reports the # path verbatim, unmangled" \
+      "grep -q 'build#42/go.mod\$' '$DEPHOUT'"
+# Positive control: regex metacharacters in a path are equally fatal to a raw
+# sed splice, and equally invisible to a fixture that has none.
+DEPM="$(mktemp -d)"; DEPMOUT="$(mktemp)"
+mkdir -p "$DEPM/a.b[1]"
+printf 'module example.com/y\nrequire (\n\tgithub.com/pkg/errors v0.9.1\n)\n' > "$DEPM/a.b[1]/go.mod"
+"$BIN/jjstack-review-dep-inventory" "$DEPM" --tsv > "$DEPMOUT" 2>/dev/null
+check "dep-inventory survives regex metacharacters in a path (control)" \
+      "grep -q 'a.b\\[1\\]/go.mod\$' '$DEPMOUT'"
+
+# "Manifests exist but nothing parsed" is a PARSE FAILURE and must not share an
+# exit code with "this repo declares nothing external". They are opposite
+# conclusions, and SKILL.md tells the model exit 3 is normal — so conflating them
+# turned every parser bug into a green light. Exit 4 now, with its own message.
+DEPN="$(mktemp -d)"
+printf '{"name":"x","version":"1.0.0"}\n' > "$DEPN/package.json"
+"$BIN/jjstack-review-dep-inventory" "$DEPN" --tsv >/dev/null 2>&1
+check "dep-inventory exits 4 when manifests parse to nothing" "[ \$? -eq 4 ]"
+# Positive control: the two states must be DISTINGUISHABLE, not merely non-zero.
+"$BIN/jjstack-review-dep-inventory" "$DEPEMPTY" >/dev/null 2>&1
+check "no-manifests is still 3, so 3 and 4 are distinguishable (control)" "[ \$? -eq 3 ]"
+
+# A lone `--depth` used to spin forever at 100% CPU: `shift 2` with one argument
+# left is a no-op and `set -e` is off, so the loop re-read the same flag. Verified
+# 124 under `timeout 3` with zero bytes written. It must be a usage error.
+timeout 5 "$BIN/jjstack-review-dep-inventory" --depth >/dev/null 2>&1
+check "dep-inventory rejects a valueless --depth instead of hanging" "[ \$? -eq 2 ]"
+# Positive control: the guard must not have been bought by rejecting --depth
+# outright — a real depth still works.
+"$BIN/jjstack-review-dep-inventory" "$DEPC" --depth 2 --tsv >/dev/null 2>&1
+check "dep-inventory still accepts --depth with a value (control)" "[ \$? -eq 0 ]"
+
+# Predictable PID-named temp files in a world-writable directory, created with a
+# plain `>` and no O_EXCL (CWE-377), and the find redirect ran BEFORE the cleanup
+# trap was installed. Assert the script names no such path any more.
+_dep_mktemp=$(grep -c 'mktemp -d' "$BIN/jjstack-review-dep-inventory")
+_dep_pid=$(grep -cF '.jjdep.$$' "$BIN/jjstack-review-dep-inventory")
+check "dep-inventory creates its scratch with mktemp, not a PID-named path" \
+      "[ \"\$_dep_mktemp\" -ge 1 ] && [ \"\$_dep_pid\" = 0 ]"
+# Positive control on the GUARD: a probe file carrying the old pattern must be
+# caught, or the assertion above passes forever on a grep that matches nothing.
+_dep_probe="$(mktemp)"
+printf 'x > "${TMPDIR:-/tmp}/.jjdep.$$.manifests"\n' > "$_dep_probe"
+_dep_probe_hits=$(grep -cF '.jjdep.$$' "$_dep_probe")
+check "the PID-temp-file guard actually catches a \$\$ path (control)" \
+      "[ \"\$_dep_probe_hits\" = 1 ]"
+# And behaviourally: a run leaves nothing behind in TMPDIR, so the trap covers
+# everything the script created — it is now armed BEFORE the first write.
+DEPTMP="$(mktemp -d)"
+TMPDIR="$DEPTMP" "$BIN/jjstack-review-dep-inventory" "$DEPC" --tsv >/dev/null 2>&1
+check "dep-inventory leaves no temp files behind (control)" \
+      "[ \"\$(ls -A '$DEPTMP' | wc -l)\" = 0 ]"
+
+rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT" "$DEPC" "$DEPCOUT" "$DEPH" "$DEPHOUT" \
+       "$DEPM" "$DEPMOUT" "$DEPN" "$DEPTMP" "$_dep_probe"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
