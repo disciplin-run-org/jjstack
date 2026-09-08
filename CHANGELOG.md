@@ -204,10 +204,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
   Only the last one can silence anything, and only with a written reason. That
   is what stops a broad, half-remembered preference from quietly burying a real
-  P0 — and it is enforced by the tools, not by good intentions, when the record
-  is written AND again every time it is read. A wide-scope record that claims a
-  suppression is rejected outright, and so is a record that would act on your
-  findings with any verdict other than the one its rung is for.
+  P0 — and it is enforced by the tools, not by good intentions, on all three
+  rungs, when the record is written AND again every time it is read. A
+  wide-scope record that claims a suppression is rejected outright, and so is a
+  record that would act on your findings with any verdict other than the one its
+  rung is for — including a verdict that is too WEAK, because a dismissal
+  recorded as "changes nothing" was still demoting.
+
+  A dismissal must name a place, too: a path pattern made only of wildcards
+  matches your whole repo, so it is refused when it is written and on every row
+  every time the store is read — including the rows the migration below
+  produces.
 
   **Why TSV for all three:** the value of these files is their diff. One
   decision is one line, so accepting a finding shows up in a pull request as a
@@ -219,7 +226,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   `bin/jjstack-review-memory-migrate --repo <your repo>` once. Read the new
   files, delete the old ones, commit both together. Nothing migrates itself:
   these files are version controlled, and a tool that rewrote one behind your
-  back would produce a diff nobody approved.
+  back would produce a diff nobody approved. And the migration cannot let
+  anything through that the stores themselves would refuse: every converted file
+  is handed to the validator of the tool that owns it, and only what passes is
+  installed. If a legacy row will not convert — a repo-wide `*` pattern, say —
+  the conversion is left beside its destination as `<store>.rejected` for you to
+  read, the legacy file stays put, and you are not told to delete it. Notes
+  containing a `|` now survive the move whole, instead of being cut at the first
+  pipe.
 
 - **The per-run triage ledger is now called the run report.**
   `bin/jjstack-review-triage` is `bin/jjstack-review-run-report`, and its output

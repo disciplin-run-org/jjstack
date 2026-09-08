@@ -921,8 +921,16 @@ vocabulary and not to the ranking, fell into a shared default bucket, tied with
 merged record is now the minimum of a total order over the group, the lens list
 is sorted, findings render in a fixed (severity, location) order, and a collapse
 is listed in **Merges** whenever the group held more than one severity or
-disposition — so the rendered ledger is a function of the SET of findings, not
+disposition — so the rendered report is a function of the SET of findings, not
 of the order they were written down.
+
+`stale-api` is also the one reason code no memory store may hold. Its ceiling in
+`bin/jjstack-review-vocab.tsv` is `none`, so `baseline generate --code
+stale-api`, `ledger --record --code stale-api` and `calibration record --code
+stale-api` all exit 4. A refutation is evidence gathered against current docs in
+ONE run; remembering it would suppress a future finding with no doc URL and
+nothing having consulted any documentation. Record the refutation in that run's
+report, not in the repo's memory.
 
 Then render the report. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation

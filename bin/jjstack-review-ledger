@@ -66,16 +66,25 @@
 #           | test-coverage | performance | api-contract | style | type-safety
 #           | dependency | other
 #   PATTERN is a shell glob matched against the finding's repo-relative path.
-#           It must name a PLACE. Breadth is judged on what the glob actually
-#           matches, not on how it is spelled: the pattern is run against a
-#           fixed corpus of unrelated probe paths, and a pattern that reaches
-#           across three or more unrelated top-level names is rejected as a
-#           blanket. Spelling-based rules do not survive contact — stripping
-#           `*?/` and rejecting the empty remainder catches `*` and `*/*` and
-#           waves through `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*` and every other
-#           spelling nobody happened to list. The same test is applied to
-#           patterns READ from the ledger, because the ledger is meant to be
-#           hand-edited in git and a merged blanket row is the same blanket.
+#           It must name a PLACE, and that is guarded twice, because the two
+#           guards catch different things and sit at different points.
+#
+#           On EVERY READ of the store, a pattern built only from `*`, `?` and
+#           `/` is rejected outright: it has no discriminating character, so it
+#           is never a decision about a place in the code, wherever it came
+#           from. `--record` refused one; `validate_store` had no glob check at
+#           all, so the same blanket arriving any other way — a hand edit, or
+#           the migration every existing user is told to run — was certified
+#           `ok` and then demoted every path in its category.
+#
+#           At `--record`, and per row at `--match`, breadth is judged on what
+#           the glob actually MATCHES: the pattern is run against a fixed corpus
+#           of unrelated probe paths, and one that reaches across three or more
+#           unrelated top-level names is a blanket. Spelling-based rules do not
+#           survive contact — stripping `*?/` catches `*` and `*/*` and waves
+#           through `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*` and every other spelling
+#           nobody happened to list. A row like that stays in the file as
+#           history; it just never demotes anything.
 #
 #   NOTE    is stored in the printable alphabet, and that is defined by what is
 #           ALLOWED, not by a list of characters to strip. A record is one
@@ -267,6 +276,33 @@ in_set() {
   return 1
 }
 
+# ONE definition of "this glob names a place in the repo", because there were
+# two questions and only one of them was ever asked. `--record` refused an
+# unscoped glob; `validate_store` had no glob check at all, so the same blanket
+# arriving any other way — a hand edit, or the migration every existing user is
+# told to run — was certified `ok` and then demoted every path in its category.
+# A pattern built only from `*`, `?` and `/` has no discriminating character: it
+# is never a decision about a place in the code, wherever it came from.
+glob_has_literal() {
+  case "$(printf '%s' "${1:-}" | tr -d '*?/')" in
+    '') return 1 ;;
+  esac
+  return 0
+}
+
+# ONE definition of the verb a row is allowed to carry. `vocab_check` asks only
+# whether an effect is WITHIN this rung's ceiling — and `none` and `rank` both
+# are, being weaker than `demote`. But a row states a decision, and each kind of
+# row has exactly one decision it can state: a `dismissed` row DEMOTES, and a
+# `fixed`/`confirmed` row is history and changes nothing. A `dismissed` row
+# spelled `none` validated clean and then printed the self-contradictory
+# `DEMOTE effect=none`; a `fixed` row spelled `demote` is a suppression wearing
+# history's clothes. Neither is a downgrade to be tolerated — a verdict that is
+# not this rung's belongs on another rung, so both are store errors.
+expected_effect() {
+  if [ "$1" = "dismissed" ]; then printf 'demote\n'; else printf 'none\n'; fi
+}
+
 # A row is eight tab-separated fields on one line, and free text arrives from a
 # human at the command line. Left unsanitized, a value carrying a newline plus
 # tabs does not corrupt its own row — it FORGES AN ENTIRE ADDITIONAL ONE, which
@@ -323,11 +359,10 @@ if [ "$MODE" = "record" ]; then
   fi
   # Only a dismissal acts on a future finding, so only a dismissal carries an
   # effect and a reason code. History rows have effect `none`.
+  EFFECT="$(expected_effect "$TYPE")"
   if [ "$TYPE" = "dismissed" ]; then
-    EFFECT="demote"
     if [ "$CODE" = "-" ]; then CODE="prior-decision"; fi
   else
-    EFFECT="none"
     CODE="-"
   fi
   if [ "$CODE" != "-" ] && ! vocab_is_reason "$CODE"; then
@@ -387,7 +422,7 @@ slug() {
 # stronger effect than this scope allows is the exact failure the ladder exists
 # to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
 validate_store() {
-  local f="$1" line n=0 hdr_scope f_type f_effect f_code
+  local f="$1" line n=0 hdr_scope f_type f_effect f_code f_pat f_want
   [ -f "$f" ] || return 0
   hdr_scope="$(head -n 1 "$f" | awk -F'\t' '$1 == "#jjstack-review-store" { for (i = 2; i <= NF; i++) if ($i ~ /^scope=/) { sub(/^scope=/, "", $i); print $i } }')"
   if [ -z "$hdr_scope" ]; then
@@ -411,12 +446,33 @@ validate_store() {
     f_type="$(printf '%s' "$line" | cut -f3)"
     f_effect="$(printf '%s' "$line" | cut -f4)"
     f_code="$(printf '%s' "$line" | cut -f5)"
+    f_pat="$(printf '%s' "$line" | cut -f6)"
     if ! in_set "$f_type" "$VALID_TYPES"; then
       echo -e "${CYA}error${RST} $f:$n unknown type '$f_type'" >&2; return 4
+    fi
+    # The scope guard, on the READ path. This is where the upgrade path's `*`
+    # row was certified as a valid decision. Every consumer — --match, --list,
+    # --record's append, and migrate, which validates what it wrote — reaches
+    # the store through here, so the guard is stated once and holds everywhere.
+    if ! glob_has_literal "$f_pat"; then
+      echo -e "${CYA}error${RST} $f:$n path glob '$f_pat' matches every file in the repo" >&2
+      echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
+      echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+      return 4
     fi
     if ! vocab_check "$SCOPE" "$f_code" "$f_effect" 2>/dev/null; then
       echo -e "${CYA}error${RST} $f:$n effect '$f_effect' with code '$f_code' violates the ladder:" >&2
       vocab_check "$SCOPE" "$f_code" "$f_effect"
+      return 4
+    fi
+    # The ceiling is only half the ladder — the same half the baseline already
+    # closed one rung down. `vocab_check` above asked whether the effect is
+    # within this scope's maximum; this asks whether it is this ROW's verb.
+    f_want="$(expected_effect "$f_type")"
+    if [ "$f_effect" != "$f_want" ]; then
+      echo -e "${CYA}error${RST} $f:$n effect '$f_effect' is not '$f_want' — this row violates the ladder: a '$f_type' row has exactly one verb" >&2
+      echo -e "${YEL}why${RST}   a weaker verdict belongs on a wider rung: 'rank' is calibration's," >&2
+      echo -e "${YEL}why${RST}   'none' is history. A stronger one belongs on the baseline." >&2
       return 4
     fi
     if [ "$f_type" = "dismissed" ] && [ "$f_code" = "-" ]; then

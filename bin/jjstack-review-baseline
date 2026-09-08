@@ -47,7 +47,12 @@ Fail-closed choices, all of them in the direction of showing more:
     "matches everything" rule wearing a disguise;
   * `generate` EXTENDS an existing store: human-written rules and already
     accepted fingerprints are merged forward, never rewritten away. Pass
-    --replace to deliberately start over;
+    --replace to deliberately start over — but --replace starts over a store of
+    THIS rung only. It has never been a way to claim the ledger's or
+    calibration's file, and asking whose file this is now happens before the
+    flag is consulted;
+  * `generate` stops on an un-migrated legacy JSON store exactly as `validate`
+    and `apply` do. The guard used to live only on the path they take;
   * a baseline written by a different jjstack version makes fingerprints inert
     (they cannot be trusted to still mean what they meant); rules still apply.
     Override with --allow-version-drift once you have re-read them;
@@ -236,9 +241,14 @@ def is_universal_glob(pattern):
     non-empty guard exists to prevent. A pattern built only from wildcards
     (`*`, `**`, `?`, `*?`) carries no discriminating character, so it is
     rejected the same way an absent field is.
+
+    `/` counts as a wildcard here for the same reason: `*/*` matches every
+    nested path there is, so it names no place either. The ledger's version of
+    this guard already stripped `/`; this one did not, which is the same rule
+    written twice and only one of them right.
     """
     p = str(pattern).strip()
-    return p in ("", "-") or set(p) <= {"*", "?"}
+    return p in ("", "-") or set(p) <= {"*", "?", "/"}
 
 
 def fingerprint(finding):
@@ -252,23 +262,62 @@ def fingerprint(finding):
 
 
 # --- the store ----------------------------------------------------------------
+def legacy_json_notice(path):
+    """3 when an un-migrated legacy JSON store stands in for `path`, else None.
+
+    Lifted OUT of load_store because it was reachable only from load_store's
+    not-exists branch — which is exactly the branch `generate` skips. With no
+    new store yet and a legacy JSON beside it, `generate` wrote a fresh baseline
+    and silently abandoned every human-written rule in the file it never read,
+    while `validate` and `apply` on the same path correctly stopped and named
+    the migration. One guard, every entry point.
+    """
+    # Only look for the legacy JSON where the default store implies a repo
+    # root: <root>/jjstack/review-memory/baseline.tsv -> <root>/…json.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+    legacy = os.path.join(root, LEGACY_STORE)
+    if not path.replace(os.sep, "/").endswith(DEFAULT_STORE.replace(os.sep, "/")):
+        return None
+    if not os.path.exists(legacy):
+        return None
+    # Migrate-vs-instruct: INSTRUCT. These stores are version controlled and
+    # their whole point is that a change is a reviewed diff — a tool that
+    # silently rewrote one mid-review would produce a diff nobody approved.
+    warn(f"legacy JSON baseline found: {legacy}")
+    warn("the three review memory stores now live together in")
+    warn("jjstack/review-memory/ as TSV. Migrate it, then commit the diff:")
+    warn(f"  jjstack-review-memory-migrate --repo '{root}'")
+    return 3
+
+
+def store_scope(path):
+    """The scope a store's header declares, or None when it declares none.
+
+    Cheap enough to ask BEFORE deciding whether a file is ours to write, which
+    is a different question from whether its rows parse. `--replace` skipped
+    load_store, and load_store is where the cross-rung check lived, so the flag
+    the refusal message itself recommends converted another rung's store into an
+    empty baseline.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            first = fh.readline().rstrip("\n")
+    except OSError:
+        return None
+    if not first.startswith("#jjstack-review-store"):
+        return None
+    meta = dict(
+        part.split("=", 1) for part in first.split("\t")[1:] if "=" in part
+    )
+    return meta.get("scope")
+
+
 def load_store(path):
     """Return (rules, fingerprints, scanner_version) or an int exit code."""
     if not os.path.exists(path):
-        # Only look for the legacy JSON where the default store implies a repo
-        # root: <root>/jjstack/review-memory/baseline.tsv -> <root>/…json.
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
-        legacy = os.path.join(root, LEGACY_STORE)
-        if path.replace(os.sep, "/").endswith(DEFAULT_STORE.replace(os.sep, "/")) and os.path.exists(legacy):
-            # Migrate-vs-instruct: INSTRUCT. These stores are version controlled
-            # and their whole point is that a change is a reviewed diff — a tool
-            # that silently rewrote one mid-review would produce a diff nobody
-            # approved.
-            warn(f"legacy JSON baseline found: {legacy}")
-            warn("the three review memory stores now live together in")
-            warn("jjstack/review-memory/ as TSV. Migrate it, then commit the diff:")
-            warn(f"  jjstack-review-memory-migrate --repo '{root}'")
-            return 3
+        rc = legacy_json_notice(path)
+        if rc is not None:
+            return rc
         err(f"baseline unreadable: no such file: {path}")
         return 2
 
@@ -329,8 +378,8 @@ def load_store(path):
         # through here, so neither can act on a row the other would reject.
         if effect != EFFECT:
             err(
-                f"{path}:{n} effect {effect!r} is not {EFFECT!r} — a scope={SCOPE} row "
-                "has exactly one verb"
+                f"{path}:{n} effect {effect!r} is not {EFFECT!r} — this row violates the "
+                f"ladder: a scope={SCOPE} row has exactly one verb"
             )
             warn("a weaker verdict belongs on a wider rung: `demote` is the ledger's, `rank` is calibration's.")
             return 4
@@ -471,6 +520,24 @@ def cmd_generate(argv):
     # Merging is the only reading of "extending" that does not lose the reasons
     # a human typed.
     old_rules, old_fps, old_version = [], [], None
+    if os.path.exists(out_path):
+        # WHOSE FILE IS THIS is asked FIRST, and it is not the same question as
+        # whether the file parses — so it is asked with or without --replace.
+        # Another rung's store is never ours to start fresh in: the refusal for
+        # an unparseable store says "pass --replace to start fresh", and
+        # following that printed advice converted a ledger into an empty
+        # baseline. Say so without offering the flag that does the damage.
+        scope = store_scope(out_path)
+        if scope is not None and scope != SCOPE:
+            err(f"{out_path} declares scope {scope!r} but this tool owns scope {SCOPE!r}.")
+            warn("the three stores are rungs of a ladder, not interchangeable files.")
+            warn("--replace starts a store of THIS rung over; it does not claim another's.")
+            return 4
+    else:
+        # No store yet — the branch that skipped the legacy-JSON guard entirely.
+        rc = legacy_json_notice(out_path)
+        if rc is not None:
+            return rc
     if os.path.exists(out_path) and not replace:
         loaded = load_store(out_path)
         if isinstance(loaded, int):
