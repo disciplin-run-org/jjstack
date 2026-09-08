@@ -231,8 +231,10 @@ the model spends its judgment on the finding instead of on the grep.
 | Knowledge-base `Reverts` section | `bin/jjstack-review-revert-history` | Ask git which changed files have been reverted, rolled back or hotfixed before, and hand that to the git-history pass as a pre-computed input. |
 
 **The one deliberate divergence.** Greptile's memory *suppresses*. Ours
-**demotes**: a matched dismissal moves a finding to the report appendix with the
-prior decision quoted, and never drops it. A recall-first reviewer that silently
+**demotes**: a matched dismissal moves a finding into 5f's `Demoted (prior
+decision)` section with the prior decision quoted, and never drops it — it keeps
+its severity and confidence and only moves down the page. A recall-first
+reviewer that silently
 inherits every past wave-off becomes a precision-first reviewer without anyone
 deciding to. Demotion keeps the finding visible and keeps the decision
 re-litigable; deletion of a ledger line is a reviewable diff like any other.

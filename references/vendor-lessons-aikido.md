@@ -166,7 +166,8 @@ model-made suppressions specifically. Deliberately out of scope for this PR.
   skeptically — scores it **86.67% precision against 27.66% recall, missing 34 of
   47 issues**. Quiet because it reports little. That is the exact trade `/review`
   exists to refuse, so our rule is stricter than any of the three: a model here may
-  demote a finding into the `demoted` or `suppress` section, never out of the
+  demote a finding into the `Demoted (prior decision)` section, or retire it
+  through the committed baseline into `Suppressed by baseline`, never out of the
   ledger.
 - **[REJECTED MECHANIC] A class-level "confidence" label presented as evidence
   about the instance.** Every SAST AutoFix carries a High/Medium/Low confidence

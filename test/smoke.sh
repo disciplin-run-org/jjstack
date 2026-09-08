@@ -1486,14 +1486,75 @@ rm -rf "$probe_bin"
 # existing when verification became enrich-only. A finding with a disposition
 # and nowhere to be printed is invisible in exactly the way this skill exists to
 # prevent, and prose review missed it twice.
-n_appendix=$(grep -ciE 'to the \*{0,2}appendix\*{0,2}' "$SK" 2>/dev/null)
+#
+# The FIRST version of this guard was itself a false pass, in both halves, and
+# that is the more expensive lesson:
+#
+#  1. Its regex was 'to the \*{0,2}appendix\*{0,2}', which requires "appendix"
+#     to follow "to the" immediately. Not one of the six strings that actually
+#     shipped is written that way — they say "to the report appendix", "to the
+#     report's appendix", "or `appendix`". The regex was written to match the
+#     probe, and the probe was invented to match the regex, so the pair proved
+#     only that they agreed with each other.
+#  2. It grepped SKILL.md alone, while the surviving routings lived in
+#     references/ and CHANGELOG.md.
+#
+# So: the corpus is now every file that can carry a routing instruction, the
+# test is the bare word (a rephrasing cannot dodge it — this guard is meant to
+# fail closed, and if a section named "appendix" is ever wanted, 5f must define
+# it first), and the positive control below is built from the literal strings
+# this tree really contained, recovered from git, not from anything invented
+# here.
+ROUTE_CORPUS=("$SK" "$DIR/CHANGELOG.md" "$DIR"/references/*.md "$BIN"/jjstack-review-*)
+# An unexpanded glob or a moved file is how a widened corpus silently narrows
+# again: grep cannot read the path, says nothing, and reports a clean tree.
+route_missing=0
+for f in "${ROUTE_CORPUS[@]}"; do [ -f "$f" ] || route_missing=$((route_missing + 1)); done
+check "positive control: every file in the routing corpus exists" "[ $route_missing -eq 0 ]"
+check "positive control: the corpus reaches past SKILL.md into references/" \
+  "[ \"\$(printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -c '/references/')\" -ge 3 ]"
+check "positive control: the corpus includes the changelog" \
+  "printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -q '/CHANGELOG\.md\$'"
+check "positive control: the corpus includes the ledger tool" \
+  "printf '%s\n' \"\${ROUTE_CORPUS[@]}\" | grep -q '/jjstack-review-ledger\$'"
+
+# No -c: over several files `grep -c` prints one count PER FILE, so piping that
+# to `wc -l` would count files and report a constant. Count matching lines.
+n_appendix=$(grep -inE 'appendix' "${ROUTE_CORPUS[@]}" 2>/dev/null | wc -l | tr -d ' ')
 check "no finding is routed to a section 5f does not define" "[ \"\$n_appendix\" = 0 ]"
 check "the Demoted section it routes to instead exists" \
   "grep -q '^### Demoted (prior decision)' '$SK'"
+
+# POSITIVE CONTROL — every line below is a LITERAL that this repository really
+# shipped (recovered with `git grep -i appendix HEAD` at 754d63d), not a string
+# written to satisfy the pattern. That distinction is the whole finding: the old
+# control fired on a synthetic "to the **appendix**" that no file ever contained,
+# which is how the guard stayed green while six real routings survived.
 probe_sec="$(mktemp)"
-printf 'Move the finding to the **appendix** and quote it.\n' > "$probe_sec"
-check "routing guard actually catches a dead section" \
-  "[ \"\$(grep -ciE 'to the \\*{0,2}appendix\\*{0,2}' '$probe_sec')\" = 1 ]"
+{
+  printf '# match here DEMOTES a finding to the report appendix with the prior decision\n'
+  printf '        echo "the report appendix with this note cited — they never drop it. Delete a"\n'
+  printf '**demotes**: a matched dismissal moves a finding to the report appendix with the\n'
+  printf "  A finding you previously dismissed moves to the report's appendix with your own\n"
+  printf '  demote a finding into the appendix or the suppressed section, never out of the\n'
+  printf '  as: reason `not-reachable` is legal only with `defer` or `appendix`.\n'
+} > "$probe_sec"
+check "routing guard catches all 6 shipped phrasings" \
+  "[ \"\$(grep -icE 'appendix' '$probe_sec')\" = 6 ]"
+# And the meta-control: prove the OLD regex really was blind to them, so this
+# rewrite is a fix and not a restatement.
+check "the regex it replaced missed 5 of those 6 shipped strings" \
+  "[ \"\$(grep -icE 'to the \\*{0,2}appendix\\*{0,2}' '$probe_sec')\" = 1 ]"
+# The strongest control of the three: run the guard's exact MULTI-FILE
+# expression over a corpus that does contain shipped routings. "The files exist"
+# and "the pattern matches one file" together still do not prove the real
+# invocation counts — that seam is where `grep -c` over many files silently
+# counts files instead of lines and pins the total to a constant.
+probe_corpus="$(mktemp -d)"
+cp "$probe_sec" "$probe_corpus/a.md"; : > "$probe_corpus/b.md"; : > "$probe_corpus/c.md"
+check "the guard's own multi-file count finds all 6, not one-per-file" \
+  "[ \"\$(grep -inE 'appendix' '$probe_corpus'/*.md 2>/dev/null | wc -l | tr -d ' ')\" = 6 ]"
+rm -rf "$probe_corpus"
 rm -f "$probe_sec"
 echo "== 7a. review-sweep (post-fix deterministic checks) =="
 # /review's post-pass 4 re-runs the project's typechecker/linter/tests AFTER the
@@ -2152,6 +2213,90 @@ check "same shape in an unprotected category DOES demote" "[ \$? -eq 0 ]"
 check "unknown category exits 2" "[ \$? -eq 2 ]"
 "$BIN/jjstack-review-ledger" --record --type maybe --path x --category style --ledger "$LD" >/dev/null 2>&1
 check "unknown type exits 2"     "[ \$? -eq 2 ]"
+
+# Rule 4: a record only speaks about a finding whose PATH it matches. The
+# protected branch used to print and `continue` before the glob was ever tested,
+# so a dismissal recorded against 'docs/*' announced itself on a security
+# finding in 'src/payments.py'. The skill then tells the reviewer to cite that
+# prior dismissal in the finding body: a fabricated precedent, pointing at a
+# live P0. The pre-existing protected test could not catch it because its glob
+# ('src/*' vs 'src/a.py') happened to match.
+LDG="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'docs/*' --category security \
+  --note 'docs only' --ledger "$LDG" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'src/payments.py' --category security \
+  --ledger "$LDG" > "$LDG.out" 2>/dev/null
+check "a protected record whose glob does NOT match stays silent" "[ ! -s '$LDG.out' ]"
+# POSITIVE CONTROL — the same record on a path its glob DOES match must still
+# announce, or "stays silent" would merely mean PROTECTED reporting is broken.
+"$BIN/jjstack-review-ledger" --match --path 'docs/readme.md' --category security \
+  --ledger "$LDG" > "$LDG.hit" 2>/dev/null
+check "positive control: the same record DOES announce on a matching path" \
+  "grep -q 'PROTECTED' '$LDG.hit'"
+
+# Rule 5: a dismissal is a decision about a place in the code, not a blanket.
+# '*' has no literal character in it, so it matches every path in the repo and
+# would demote every finding in its category, repo-wide and permanently — while
+# reading like any other line in a PR diff. CATEGORY and TYPE both get
+# closed-vocabulary checks; the other half of the key was unchecked.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '*' --category style \
+  --ledger "$LDG" >/dev/null 2>&1
+check "an unscoped '*' path glob exits 2" "[ \$? -eq 2 ]"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '*/*' --category style \
+  --ledger "$LDG" >/dev/null 2>&1
+check "'*/*' is unscoped too"             "[ \$? -eq 2 ]"
+# POSITIVE CONTROL — a glob that names a real place must still be accepted, or
+# the guard could simply be rejecting every --record.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/legacy/*' --category style \
+  --ledger "$LDG" >/dev/null 2>&1
+check "positive control: a scoped glob is still recorded" "[ \$? -eq 0 ]"
+
+# Rule 6: the note is quoted by the skill as the demotion reason, so it must
+# survive the round trip whole. The reader took field 6 of a '|'-separated line,
+# which truncated any note containing a pipe at the first one — silently
+# dropping the condition attached to the dismissal.
+LDP="$(mktemp -d)/ledger.md"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --note 'safe today | revisit when we drop py38' --ledger "$LDP" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
+  --ledger "$LDP" > "$LDP.out" 2>/dev/null
+check "a note containing '|' survives the round trip" \
+  "grep -q 'revisit when we drop py38' '$LDP.out'"
+# POSITIVE CONTROL — prove the note was really written with the pipe in it, and
+# that the line really did demote, or the grep proves nothing about parsing.
+check "positive control: the recorded line really contains the pipe" \
+  "grep -q 'safe today | revisit' '$LDP'"
+check "positive control: that record really demoted" "grep -q '^DEMOTE ' '$LDP.out'"
+
+# Rule 7: "no ledger" and "no prior decision applies" are different statements.
+# --match exited 1 in silence for a missing file, so a mistyped --ledger path
+# was reported to the reviewer as an authoritative all-clear for the whole run.
+out=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
+  --ledger "$LDP.nope" 2>&1); rc=$?
+check "--match on a missing ledger still exits 1"  "[ $rc -eq 1 ]"
+check "--match on a missing ledger is NOT silent"  "printf '%s' \"\$out\" | grep -qi 'no ledger'"
+# POSITIVE CONTROL — a real ledger with no matching row must stay quiet, else
+# "not silent" would just mean the tool warns unconditionally.
+out=$("$BIN/jjstack-review-ledger" --match --path 'nowhere/x.py' --category style \
+  --ledger "$LDP" 2>&1)
+check "positive control: a real ledger with no match warns nothing" \
+  "! printf '%s' \"\$out\" | grep -qi 'no ledger'"
+
+# Rule 8: a flag given with no value must be a usage error, not a hang. `shift 2`
+# is a NO-OP when one argument remains and `set -e` is off, so the arg loop
+# re-read the same $1 for ever: `jjstack-review-ledger --list --ledger` spun
+# until killed (verified rc=124 under `timeout 5`). An unattended /review step
+# that spins is worse than one that crashes — nothing reports and nothing times
+# out. Every value-taking flag is covered, since one unguarded arm is enough.
+for vflag in --type --path --category --note --ledger --repo; do
+  timeout 5 "$BIN/jjstack-review-ledger" --list "$vflag" >/dev/null 2>&1
+  check "ledger $vflag with no value exits 2, never hangs" "[ \$? -eq 2 ]"
+done
+# POSITIVE CONTROL — `timeout` must really be able to report a hang here, or
+# every check above would pass just as well against a script that cannot run.
+timeout 2 bash -c 'while :; do :; done' >/dev/null 2>&1
+check "positive control: timeout reports a real hang as 124" "[ \$? -eq 124 ]"
+rm -rf "$(dirname "$LDG")" "$(dirname "$LDP")"
 rm -rf "$(dirname "$LD")"
 
 echo "== 7g. review-revert-history (files that burned us before) =="
@@ -2189,7 +2334,40 @@ check "non-numeric --limit exits 2" "[ \$? -eq 2 ]"
 NOGIT="$(mktemp -d)"
 "$BIN/jjstack-review-revert-history" --repo "$NOGIT" --diff-file "$RH/d.diff" >/dev/null 2>&1
 check "non-git directory exits 3" "[ \$? -eq 3 ]"
-rm -rf "$RH" "$NOGIT"
+
+# A SHALLOW clone has no history to search, and `git log --since` says so by
+# returning nothing — which is indistinguishable from "searched two years, found
+# nothing clean". `actions/checkout` fetches depth 1 by default, and /review's
+# git-history pass is told to trust this file as a pre-computed input, so the
+# report must never present a truncated search as a completed one. The old
+# caveat named only the subject-line limitation: it told the reader the search
+# was complete in the one dimension that had actually failed.
+SH="$(mktemp -d)"
+git clone -q --depth 1 "file://$RH" "$SH/clone" >/dev/null 2>&1
+out=$("$BIN/jjstack-review-revert-history" --repo "$SH/clone" --diff-file "$RH/d.diff" 2>/dev/null)
+check "a shallow clone is really shallow" \
+  "[ \"\$(git -C '$SH/clone' rev-parse --is-shallow-repository 2>/dev/null)\" = true ]"
+check "shallow report says the window is TRUNCATED" \
+  "printf '%s' \"\$out\" | grep -q 'TRUNCATED'"
+check "shallow report does not claim a clean history" \
+  "! printf '%s' \"\$out\" | grep -q 'No revert, rollback or hotfix history on any changed file'"
+check "shallow report says the history was NOT searched" \
+  "printf '%s' \"\$out\" | grep -q 'the history was not'"
+# POSITIVE CONTROL — the SAME diff against the FULL repo must find the incident
+# and print no truncation notice. Without it, "says TRUNCATED" could just mean
+# the script warns on every run, and "no clean claim" could mean it found the
+# history after all.
+out=$("$BIN/jjstack-review-revert-history" --repo "$RH" --diff-file "$RH/d.diff" 2>/dev/null)
+check "positive control: the full clone finds the incident"   "printf '%s' \"\$out\" | grep -q 'pay.py'"
+check "positive control: the full clone claims no truncation" "! printf '%s' \"\$out\" | grep -q 'TRUNCATED'"
+
+# Same value-less-flag hang as the ledger: `shift 2` cannot shift 2 when one
+# argument remains, and with `set -e` off the loop never advances.
+for vflag in --repo --base --diff-file --since --limit; do
+  timeout 5 "$BIN/jjstack-review-revert-history" "$vflag" >/dev/null 2>&1
+  check "revert-history $vflag with no value exits 2, never hangs" "[ \$? -eq 2 ]"
+done
+rm -rf "$RH" "$NOGIT" "$SH"
 
 echo "== 7e. value-less flags must be a usage error, never a hang =="
 # Reproduced before the fix: every one of these returned 124 under `timeout 5`.
