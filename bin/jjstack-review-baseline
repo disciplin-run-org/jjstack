@@ -67,7 +67,11 @@ choice for a file whose whole point is being read as a diff.
   #jjstack-review-store<TAB>scope=instance<TAB>max-effect=suppress<TAB>v=3
   kind  effect  code  match  lens  file  message  reason
     kind    fingerprint | rule
-    effect  always `suppress` here — the scope cap; nothing stronger exists
+    effect  always `suppress` here — the scope cap; nothing stronger exists,
+            and nothing WEAKER is accepted either. A `demote` or `rank` row is
+            rejected on read (exit 4), not quietly honoured as a suppression:
+            weaker verdicts are the wider rungs' to make, and a row this file
+            would act on must be one its own validator certifies.
     code    a reason code from bin/jjstack-review-vocab.tsv
     match   sha256:<64 hex> for a fingerprint; `-` for a rule
     lens/file/message
@@ -311,6 +315,24 @@ def load_store(path):
         bad = vocab_check(SCOPE, code, effect)
         if bad:
             err(f"{path}:{n} {bad}")
+            return 4
+        # The ceiling is only half the ladder. vocab_check asks "is this effect
+        # WITHIN what scope=instance may emit?" — and `demote`, `rank` and `none`
+        # all are, being weaker than `suppress`. But this store has exactly one
+        # verb. Reading a weaker spelling and then acting on it is how a row that
+        # validates `ok` silently suppresses a P0: the write path refused the
+        # word `suppress` from a demote-capped reason code, while the read path
+        # suppressed on ANY match without ever looking at this column. A verdict
+        # weaker than `suppress` belongs on a wider rung — the ledger demotes,
+        # calibration ranks — never here, so it is a store error, not a downgrade.
+        # This is the single enforcement point: `validate` and `apply` both load
+        # through here, so neither can act on a row the other would reject.
+        if effect != EFFECT:
+            err(
+                f"{path}:{n} effect {effect!r} is not {EFFECT!r} — a scope={SCOPE} row "
+                "has exactly one verb"
+            )
+            warn("a weaker verdict belongs on a wider rung: `demote` is the ledger's, `rank` is calibration's.")
             return 4
         if not reason.strip() or reason.strip() == "-":
             err(f"{path}:{n} has no reason — every suppression must be explained")
@@ -606,6 +628,11 @@ def cmd_apply(argv):
     if findings is None:
         return 2
 
+    # Every row reaching here has effect == EFFECT: load_store rejects any other
+    # spelling with exit 4, which is why matching is allowed to imply suppression
+    # below. That guarantee lives in ONE place on purpose — a second copy of the
+    # check here would drift from it, and a check that lives only here would not
+    # cover `validate`.
     active = 0
     suppressed = 0
     for f in findings:

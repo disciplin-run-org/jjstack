@@ -39,13 +39,19 @@ set -uo pipefail
 
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
+HERE="${BASH_SOURCE[0]%/*}"
+# Sourced for review_need_value, the family's ONE argument guard. The vocabulary
+# itself is not loaded here — this tool converts stores, it does not judge them.
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-vocab.sh" || exit 3
+
 REPO=""
 DRY=0
 FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)    REPO="${2:-}"; shift 2 ;;
+    --repo)    review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --force)   FORCE=1; shift ;;
     -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

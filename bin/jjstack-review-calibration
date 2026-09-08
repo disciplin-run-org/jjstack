@@ -90,17 +90,10 @@ show_help() {
        { exit }' "$0"
 }
 
-# A flag that takes a value must GET one. `shift 2` is a silent no-op when only
-# one argument remains, so the loop would spin on the same argv forever (and
-# `set -e` is deliberately off here, so nothing stops it). Verified: this script
-# returned 124 under `timeout 5` for `report --store` with no value. It looked
-# safe only because a bare `--store` with no subcommand exits 2 above, before
-# this loop is ever reached.
-need_val() { # need_val <flag> <remaining argc, i.e. "$#">
-  [ "$2" -ge 2 ] && return 0
-  echo -e "${CYA}error${RST} $1 requires a value" >&2
-  exit 2
-}
+# A flag that takes a value must GET one, or `shift 2` is a silent no-op and the
+# loop spins on the same argv forever. The guard is `review_need_value`, sourced
+# from jjstack-review-vocab.sh below: the bug was identical in every script in
+# this family, so the fix lives in one place too.
 
 HERE="${BASH_SOURCE[0]%/*}"
 # shellcheck source=/dev/null
@@ -137,14 +130,14 @@ esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)    need_val "$1" "$#"; REPO="$2"; shift 2 ;;
-    --store)   need_val "$1" "$#"; STORE="$2"; shift 2 ;;
-    --key)     need_val "$1" "$#"; KEY="$2"; shift 2 ;;
-    --verdict) need_val "$1" "$#"; VERDICT="$2"; shift 2 ;;
-    --code)    need_val "$1" "$#"; CODE="$2"; shift 2 ;;
-    --lens)    need_val "$1" "$#"; LENS="$2"; shift 2 ;;
-    --file)    need_val "$1" "$#"; FILE="$2"; shift 2 ;;
-    --note)    need_val "$1" "$#"; NOTE="$2"; shift 2 ;;
+    --repo)    review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
+    --store)   review_need_value "$1" $# || exit 2; STORE="$2"; shift 2 ;;
+    --key)     review_need_value "$1" $# || exit 2; KEY="$2"; shift 2 ;;
+    --verdict) review_need_value "$1" $# || exit 2; VERDICT="$2"; shift 2 ;;
+    --code)    review_need_value "$1" $# || exit 2; CODE="$2"; shift 2 ;;
+    --lens)    review_need_value "$1" $# || exit 2; LENS="$2"; shift 2 ;;
+    --file)    review_need_value "$1" $# || exit 2; FILE="$2"; shift 2 ;;
+    --note)    review_need_value "$1" $# || exit 2; NOTE="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) show_help; exit 0 ;;
     *) echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
@@ -187,7 +180,7 @@ if [ -z "$STORE" ]; then
 fi
 
 # --- validate the store's ladder compliance ----------------------------------
-# Runs before every read and after every write. A hand-edited row claiming a
+# Runs before every read AND before every write. A hand-edited row claiming a
 # stronger effect than this scope allows is the exact failure the ladder exists
 # to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
 validate_store() {
@@ -204,7 +197,12 @@ validate_store() {
     echo -e "${YEL}why${RST}   the three stores are rungs of a ladder, not interchangeable files." >&2
     return 4
   fi
-  while IFS= read -r line; do
+  # `|| [ -n "$line" ]` catches a final line with NO trailing newline. Without it
+  # `read` returns non-zero on that line and the loop drops it — so a store whose
+  # LAST row violates the ladder validated clean, while the awk readers below,
+  # and grep, saw the row perfectly well. A validator that reads less of the file
+  # than its consumers certifies exactly the row it failed to look at.
+  while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     case "$line" in ''|'#'*) continue ;; esac
     local f_verdict f_effect f_code
@@ -250,6 +248,16 @@ if [ "$CMD" = "record" ]; then
   if ! vocab_check "$SCOPE" "$CODE" "$EFFECT"; then
     exit 4
   fi
+  # ...and the structural cap on the ROW is not the same question as whether the
+  # FILE is ours to write. Validating only on the read path meant `record --store
+  # <ledger.tsv>` exited 0 and appended a pattern-class row into another rung's
+  # file: the victim store then failed every operation with exit 4 until a human
+  # hand-edited it, and the write that broke it reported success. The store's own
+  # header is the check — scope= says which rung owns the file — and existing
+  # rows are checked too, because appending a decision to a file no reader will
+  # accept just buries the decision. Runs before the dry-run branch as well: a
+  # dry run states what a real one WOULD do, and it would refuse.
+  validate_store "$STORE" || exit 4
   slug="$(slugify "$KEY")"
   [ -n "$slug" ] || { echo -e "${CYA}error${RST} --key slugifies to nothing: '$KEY'" >&2; exit 2; }
   row="$(date +%F)	$slug	$VERDICT	$EFFECT	$(clean "$CODE")	$(clean "$LENS")	$(clean "$FILE")	$(clean "$NOTE")"

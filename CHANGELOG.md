@@ -30,8 +30,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
   Only the last one can silence anything, and only with a written reason. That
   is what stops a broad, half-remembered preference from quietly burying a real
-  P0 — and it is enforced by the tools, not by good intentions: a wide-scope
-  record that claims a suppression is rejected outright.
+  P0 — and it is enforced by the tools, not by good intentions, when the record
+  is written AND again every time it is read. A wide-scope record that claims a
+  suppression is rejected outright, and so is a record that would act on your
+  findings with any verdict other than the one its rung is for.
 
   **Why TSV for all three:** the value of these files is their diff. One
   decision is one line, so accepting a finding shows up in a pull request as a

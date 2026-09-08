@@ -860,6 +860,45 @@ check "a store from another rung exits 4" "[ $rc -eq 4 ]"
 "$BIN/jjstack-review-baseline" apply "$RB/findings.jsonl" --baseline "$RB/ceiling.tsv" >/dev/null 2>&1; rc=$?
 check "not-reachable may not suppress here either" "[ $rc -eq 4 ]"
 
+# THE READ PATH IS THE OTHER HALF OF THE LADDER, and it was open. The ceiling
+# check asserts a row's effect is WITHIN this scope's maximum; it never asserted
+# the row IS a suppression. `demote`, `rank` and `none` all sit BELOW `suppress`,
+# so a row spelled that way passed `validate` with `ok` and then suppressed at
+# read time anyway, because `apply` acted on any match. That is exactly the
+# silent suppression the three stores were kept apart to prevent — and it stayed
+# invisible because the ceiling test above writes `effect=suppress`, the one
+# spelling the check already rejected. This store has ONE verb; a weaker verdict
+# belongs on a wider rung, not in this file.
+P0F='{"lens":"security","file":"a.py","start_line":1,"severity":"P0","confidence":0.9,"message":"remote code execution","quote":"eval(x)","explanation":"e","remediation":"r"}'
+printf '%s\n' "$P0F" > "$RB/p0.jsonl"
+for weak in demote rank none; do
+  { printf '%s\n' "$BL_HDR"
+    printf 'rule\t%s\tnot-reachable\t-\t-\ta.py\t-\tdead code path\n' "$weak"; } > "$RB/weak.tsv"
+  "$BIN/jjstack-review-baseline" validate --baseline "$RB/weak.tsv" >/dev/null 2>&1; rc=$?
+  check "a baseline row spelled '$weak' fails validate (exit 4)" "[ $rc -eq 4 ]"
+  "$BIN/jjstack-review-baseline" apply "$RB/p0.jsonl" --baseline "$RB/weak.tsv" \
+    --active-only >/dev/null 2> "$RB/weak.err"; rc=$?
+  check "a baseline row spelled '$weak' cannot suppress a P0 (exit 4)" "[ $rc -eq 4 ]"
+  check "no suppression is reported for '$weak'" "! grep -q '1 suppressed' '$RB/weak.err'"
+done
+# Rules are not the only kind of row — a fingerprint carries an effect column too.
+{ printf '%s\n' "$BL_HDR"
+  printf 'fingerprint\tdemote\tnot-reachable\tsha256:%064d\t-\ta.py\t-\tdead code path\n' 1; } > "$RB/weakfp.tsv"
+"$BIN/jjstack-review-baseline" validate --baseline "$RB/weakfp.tsv" >/dev/null 2>&1; rc=$?
+check "a weak-effect FINGERPRINT row is rejected too (exit 4)" "[ $rc -eq 4 ]"
+# POSITIVE CONTROL — the byte-identical store spelled `suppress` still validates
+# and still suppresses. Without it, "exit 4" above could mean the store shape is
+# broken rather than that the effect column is now enforced.
+{ printf '%s\n' "$BL_HDR"
+  printf 'rule\tsuppress\tbaseline\t-\t-\ta.py\t-\tdead code path\n'; } > "$RB/strong.tsv"
+"$BIN/jjstack-review-baseline" validate --baseline "$RB/strong.tsv" >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: the same store spelled 'suppress' validates" "[ $rc -eq 0 ]"
+"$BIN/jjstack-review-baseline" apply "$RB/p0.jsonl" --baseline "$RB/strong.tsv" \
+  --active-only >/dev/null 2> "$RB/strong.err"; rc=$?
+check "POSITIVE CONTROL: and it does suppress the P0" "[ $rc -eq 0 ]"
+check "POSITIVE CONTROL: the suppression really was counted" \
+  "grep -q '1 suppressed' '$RB/strong.err'"
+
 # Fingerprints fail CLOSED across a jjstack version change: they cannot be
 # trusted to still mean what they meant, so they go inert rather than hide.
 sed 's/jjstack=.*/jjstack=0.0.0-ancient/' "$RB/bl.tsv" > "$RB/old.tsv"
@@ -1169,6 +1208,46 @@ check "the same store without that row validates clean" "[ $rc -eq 0 ]"
 printf '#jjstack-review-store\tscope=instance\tmax-effect=suppress\tv=3\n' > "$CAL/wrong.tsv"
 "$BIN/jjstack-review-calibration" validate --store "$CAL/wrong.tsv" >/dev/null 2>&1; rc=$?
 check "a store from another rung exits 4" "[ $rc -eq 4 ]"
+
+# ...and refusing it on the READ path is only half the guarantee. `record` used
+# to validate nothing, so it appended a calibration row straight into another
+# rung's file: the write succeeded with exit 0 and every subsequent operation on
+# the victim store then failed with exit 4 until a human hand-edited it. Three
+# stores that refuse each other on two of three write paths are not a ladder.
+XL="$CAL/foreign-ledger.tsv"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/*' --category style \
+  --code prior-decision --note n --ledger "$XL" >/dev/null 2>&1
+before=$(wc -l < "$XL")
+"$BIN/jjstack-review-calibration" record --store "$XL" --key "some pattern" --verdict accepted >/dev/null 2>&1; rc=$?
+check "record into another rung's store exits 4" "[ $rc -eq 4 ]"
+check "record into another rung's store appends nothing" "[ \$(wc -l < '$XL') -eq $before ]"
+"$BIN/jjstack-review-ledger" --validate --ledger "$XL" >/dev/null 2>&1; rc=$?
+check "the foreign store is left valid on its own tool" "[ $rc -eq 0 ]"
+# A store of the RIGHT scope that already holds a bad row must stop a write too:
+# appending a decision to a file no reader will accept just buries the decision.
+BADC="$CAL/corrupt.tsv"
+printf '#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1\n' > "$BADC"
+printf '2020-01-01\tk\tmaybe\trank\t-\t-\t-\tbogus verdict\n' >> "$BADC"
+before=$(wc -l < "$BADC")
+"$BIN/jjstack-review-calibration" record --store "$BADC" --key k2 --verdict accepted >/dev/null 2>&1; rc=$?
+check "record into a corrupt own-scope store exits 4" "[ $rc -eq 4 ]"
+check "record into a corrupt own-scope store appends nothing" "[ \$(wc -l < '$BADC') -eq $before ]"
+# POSITIVE CONTROL — a healthy store of this scope still accepts a write, or the
+# two "exit 4" results above would only prove that record is broken for everything.
+GOODC="$CAL/healthy.tsv"
+"$BIN/jjstack-review-calibration" record --store "$GOODC" --key k3 --verdict accepted >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: a healthy store still accepts a record (exit 0)" "[ $rc -eq 0 ]"
+check "POSITIVE CONTROL: and the recorded row really landed" \
+  "awk -F'\t' '\$2==\"k3\" && \$3==\"accepted\"{f=1} END{exit !f}' '$GOODC'"
+# A plain `while read` drops a final line with no trailing newline, so the
+# ladder-violating LAST row of a store validated `ok` while grep and awk saw it.
+CN="$CAL/nonewline.tsv"
+printf '#jjstack-review-store\tscope=pattern-class\tmax-effect=rank\tv=1\n' > "$CN"
+printf '2026-01-01\tevil\trejected\tsuppress\tstyle-only\t-\t-\t-' >> "$CN"
+"$BIN/jjstack-review-calibration" validate --store "$CN" >/dev/null 2>&1; rc=$?
+check "a violating LAST row with no trailing newline still exits 4" "[ $rc -eq 4 ]"
+check "POSITIVE CONTROL: that row really lacks a trailing newline" \
+  "[ -n \"\$(tail -c 1 '$CN')\" ]"
 rm -rf "$CAL"
 echo "== 7d. review-run-report (per-run audit trail, NOT memory) =="
 # /review casts wide on purpose, so the interesting question is not what it
@@ -1652,6 +1731,60 @@ check "a ladder-violating store is not silently matched" "[ \$? -eq 4 ]"
 grep -v '	evil$' "$LD" > "$LD.clean"
 "$BIN/jjstack-review-ledger" --validate --ledger "$LD.clean" >/dev/null 2>&1
 check "the same store without that row validates clean" "[ \$? -eq 0 ]"
+
+# FIELD-COUNT INTEGRITY ON THE WRITE PATH. Both sibling stores sanitize what
+# they write; this one passed --note and --path through untouched. A note
+# carrying a newline plus tabs therefore forged an ENTIRE second row — one that
+# validates clean, claims a `*` glob, and demotes the whole repo. A per-file
+# dismissal silently became a repo-wide one: the widest possible escalation,
+# reached through the narrowest-looking command.
+LI="$(dirname "$LD")/inject.tsv"
+FORGED=$'benign\n2020-01-01\tacme/repo\tdismissed\tdemote\tprior-decision\t*\tstyle\tforged repo-wide demotion'
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'src/one.py' --category style \
+  --code prior-decision --note "$FORGED" --ledger "$LI" >/dev/null 2>&1
+check "a newline in --note cannot forge a second row" \
+  "[ \"\$(grep -c '^[0-9][0-9][0-9][0-9]-' '$LI')\" -eq 1 ]"
+check "no forged repo-wide '*' glob lands in the store" \
+  "! awk -F'\t' '\$6==\"*\"{f=1} END{exit !f}' '$LI'"
+"$BIN/jjstack-review-ledger" --match --path 'totally/other.py' --category style --ledger "$LI" >/dev/null 2>&1
+check "an unrelated file is not demoted by the forged row" "[ \$? -eq 1 ]"
+# ...and a tab in --path must not shift every column after it either.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path "$(printf 'a\tb')" --category style \
+  --code prior-decision --note n --ledger "$LI" >/dev/null 2>&1
+check "tabs in --path cannot corrupt the row" \
+  "awk -F'\t' '/^[0-9][0-9][0-9][0-9]-/{ if (NF != 8) bad = 1 } END{ exit bad + 0 }' '$LI'"
+# POSITIVE CONTROL — a DELIBERATELY recorded WIDE glob does demote across the
+# tree it names, so "not demoted" above is about the forgery being blocked, not
+# a broken matcher. It cannot be a bare `*`: Rule 5 above rejects an unscoped
+# glob at --record, which is the point — the only way a `*` row can reach this
+# store is by forgery, which is exactly what the guard under test prevents.
+LW="$(dirname "$LD")/wide.tsv"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 't*' --category style \
+  --code prior-decision --note 'deliberate repo-wide' --ledger "$LW" >/dev/null 2>&1
+"$BIN/jjstack-review-ledger" --match --path 'totally/other.py' --category style --ledger "$LW" >/dev/null 2>&1
+check "POSITIVE CONTROL: a real wide glob does demote across its tree" "[ \$? -eq 0 ]"
+# POSITIVE CONTROL — sanitizing must not mangle ordinary notes into uselessness.
+check "POSITIVE CONTROL: a benign note is stored verbatim" \
+  "awk -F'\t' '\$8==\"deliberate repo-wide\"{f=1} END{exit !f}' '$LW'"
+
+# The same class as the read-path hole in the baseline, at a different seam: a
+# plain `while read` DROPS a final line that has no trailing newline, so a store
+# whose LAST row claims `suppress` from this demote-capped rung validated `ok`
+# — while grep and awk, which every other consumer of the file uses, saw the row
+# perfectly well. A validator that reads less of the file than its consumers do
+# is worse than none: it certifies exactly the row it failed to look at.
+LN="$(dirname "$LD")/nonewline.tsv"
+printf '#jjstack-review-store\tscope=path-glob\tmax-effect=demote\tv=1\n' > "$LN"
+printf '2026-01-01\t.\tdismissed\tsuppress\tprior-decision\tsrc/*\tstyle\tevil' >> "$LN"
+"$BIN/jjstack-review-ledger" --validate --ledger "$LN" >/dev/null 2>&1; rc=$?
+check "a violating LAST row with no trailing newline still exits 4" "[ $rc -eq 4 ]"
+check "POSITIVE CONTROL: that row really lacks a trailing newline" \
+  "[ -n \"\$(tail -c 1 '$LN')\" ]"
+# POSITIVE CONTROL — the same file WITH the newline was already caught, so the
+# test above measures the missing newline and not merely a broken validator.
+printf '\n' >> "$LN"
+"$BIN/jjstack-review-ledger" --validate --ledger "$LN" >/dev/null 2>&1; rc=$?
+check "POSITIVE CONTROL: and it is still caught once newline-terminated" "[ $rc -eq 4 ]"
 rm -rf "$(dirname "$LDG")" "$(dirname "$LDP")"
 rm -rf "$(dirname "$LD")"
 echo "== 7g. review-revert-history (files that burned us before) =="
@@ -2212,6 +2345,50 @@ MGE="$(mktemp -d)"
 "$BIN/jjstack-review-memory-migrate" --repo "$MGE" >/dev/null 2>&1
 check "nothing to migrate is a clean exit 0" "[ \$? -eq 0 ]"
 rm -rf "$MG" "$MGE"
+
+echo "== 7r. a value-less flag is a usage error, never a hang (whole family) =="
+# `--flag` with no value used to spin forever. bash's `shift 2` is a NO-OP when
+# fewer than two arguments remain — shift FAILS when n > $# rather than shifting
+# what it can — and `set -e` is deliberately off across this family, so the
+# `while [ $# -gt 0 ]` loop re-read the same flag until killed. Measured as
+# rc=124 under `timeout 5`. In a review chain a hung tool is strictly worse than
+# a failed one: a failure is reported, a hang means the run never reports at all
+# and the operator is left guessing which of nine tools stalled. Every
+# value-taking flag in the family is now guarded from ONE shared helper, so the
+# class is closed rather than the four instances that happened to be found.
+timeout 5 sleep 10 >/dev/null 2>&1
+check "POSITIVE CONTROL: timeout really reports a hang as rc=124" "[ \$? -eq 124 ]"
+probe_flag() {   # probe_flag TOOL ARGS... — must exit 2 well inside the timeout
+  local tool="$1"; shift
+  timeout 5 "$BIN/$tool" "$@" </dev/null >/dev/null 2>&1
+  local rc=$?
+  check "$tool $* → usage error (2), not a hang" "[ $rc -eq 2 ]"
+}
+for f in --type --path --category --code --note --ledger --repo; do
+  probe_flag jjstack-review-ledger "$f"
+done
+for f in --repo --store --key --verdict --code --lens --file --note; do
+  probe_flag jjstack-review-calibration record "$f"
+done
+probe_flag jjstack-review-calibration validate --store
+probe_flag jjstack-review-memory-migrate --repo
+probe_flag jjstack-review-run-report --out
+# The python rung shares the contract even though it never shared the bug — the
+# guarantee is chain-wide, so the test is too.
+probe_flag jjstack-review-baseline validate --baseline
+probe_flag jjstack-review-baseline apply --baseline
+probe_flag jjstack-review-baseline generate --reason
+probe_flag jjstack-review-baseline generate --code
+probe_flag jjstack-review-baseline generate -o
+# POSITIVE CONTROL — the same flags WITH a value get past parsing, or "exit 2"
+# above would just mean every flag is rejected unconditionally.
+PB="$(mktemp -d)"
+timeout 5 "$BIN/jjstack-review-memory-migrate" --repo "$PB" </dev/null >/dev/null 2>&1
+check "POSITIVE CONTROL: --repo WITH a value parses and runs (exit 0)" "[ \$? -eq 0 ]"
+timeout 5 "$BIN/jjstack-review-calibration" record --store "$PB/c.tsv" --key k --verdict accepted \
+  </dev/null >/dev/null 2>&1
+check "POSITIVE CONTROL: valued calibration flags parse and record (exit 0)" "[ \$? -eq 0 ]"
+rm -rf "$PB"
 
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
