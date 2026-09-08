@@ -27,14 +27,23 @@
 # Env: JJSTACK_CAPTURE_NO_GBRAIN=1 skips the Layer-B semantic dedup query.
 #   Layer B asks a LIVE gbrain index whether a near-duplicate page already
 #   exists. That answer changes as the index grows, and the query is remote
-#   enough to need an 8s timeout — so any caller that needs a DETERMINISTIC,
+#   enough to need a timeout — so any caller that needs a DETERMINISTIC,
 #   fast result (the smoke suite; offline or air-gapped use) sets this. Layer A
 #   (pattern_key) still runs, so dedup is reduced, never silently skipped.
 #
+# Env: JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds> sets that Layer-B deadline.
+#   Default 8. RAISE it on a slow link or a large index rather than reaching for
+#   JJSTACK_CAPTURE_NO_GBRAIN — a longer deadline keeps semantic dedup, whereas
+#   the pin disables it outright. LOWER it (the smoke suite uses 1) to make a
+#   hung-query test cost a second instead of eight. A non-numeric value makes
+#   timeout(1) itself fail, which surfaces as ran-error:125, not as a clean run.
+#
 # --dry-run reports which dedup layers ran as one of:
-#   ran-clean | ran-timeout | not-run:{layer-a-hit,phi-optout,no-gbrain,pinned}
-# ran-timeout is distinct on purpose: a killed query returns empty, which reads
-# exactly like "no duplicate found" unless the state says otherwise.
+#   ran-clean | ran-timeout | ran-error:<rc>
+#   | not-run:{layer-a-hit,phi-optout,no-gbrain,pinned}
+# ran-timeout and ran-error are distinct on purpose: a killed or failed query
+# returns empty, which reads exactly like "no duplicate found" unless the state
+# says otherwise.
 set -uo pipefail
 
 CWD="" LESSON="" DRY_RUN=0
@@ -95,14 +104,17 @@ MERGE_FILE=""
 # Observable so callers (and the smoke suite) can verify which dedup layers ran
 # rather than assuming — a silently-skipped layer looks identical to a clean one.
 #
-# THREE states, not two, and the reason is the whole point of this reporting:
-#   ran-clean          the query completed and its answer was used
+# FOUR states, not two, and the reason is the whole point of this reporting:
+#   ran-clean          the query completed (rc 0) and its answer was used
 #   ran-timeout        the query was killed at the deadline — NO answer was used,
 #                      so this run got NO semantic dedup even though it tried
+#   ran-error:<rc>     the query failed some OTHER way (corrupt index, bad
+#                      deadline, missing binary) — again NO answer was used
 #   not-run:<reason>   never attempted; the reason says which of four causes
 #
-# Collapsing "ran-timeout" into "ran" would report the exact failure this
-# observability exists to expose — a hung gbrain — as a successful clean run.
+# Collapsing "ran-timeout" or "ran-error" into "ran" would report the exact
+# failures this observability exists to expose — a hung or broken gbrain — as a
+# successful clean run.
 # The query redirects stderr to /dev/null and yields an empty result on timeout,
 # which is indistinguishable from "no near-duplicate found" unless the exit
 # status is captured. So capture it.
@@ -118,10 +130,23 @@ else
     # Layer B — semantic near-duplicate within THIS project's canonical pages.
     _gb_raw=$(timeout "${JJSTACK_CAPTURE_GBRAIN_TIMEOUT:-8}" "$GBRAIN" query "$L_NAME. $L_DESC" --no-expand --limit 3 2>/dev/null)
     _gb_rc=$?
-    # 124 is timeout(1)'s "deadline reached, child killed".
-    if [ "$_gb_rc" -eq 124 ]; then LAYER_B="ran-timeout"; else LAYER_B="ran-clean"; fi
-    local_top=$(printf '%s\n' "$_gb_raw" \
-        | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
+    # 124 is timeout(1)'s "deadline reached, child killed". EVERY other non-zero
+    # status is its own failure — a corrupt/unreadable index (1), timeout(1)
+    # itself failing on a bad deadline (125), a non-executable (126) or vanished
+    # (127) binary. All of them yield empty stdout on this stderr-discarded path,
+    # exactly like a timeout does, so believing them is the same bug: the run
+    # would claim "ran-clean" — that semantic dedup ran and found nothing — when
+    # no answer was ever produced. Disbelieve the whole class, not one member.
+    local_top=""
+    if   [ "$_gb_rc" -eq 124 ]; then LAYER_B="ran-timeout"
+    elif [ "$_gb_rc" -ne 0 ];   then LAYER_B="ran-error:$_gb_rc"
+    else
+        LAYER_B="ran-clean"
+        # Only a rc=0 answer is parsed: "ran-clean" must mean the query
+        # completed AND its answer was used, or the state is a lie.
+        local_top=$(printf '%s\n' "$_gb_raw" \
+            | sed -nE "s/^\[([0-9.]+)\] +(${CANON_LC}\/[^ ]+) +-- .*/\1 \2/p" | head -1)
+    fi
     if [ -n "$local_top" ]; then
         score=${local_top%% *}
         if awk -v s="$score" 'BEGIN{exit !(s>=0.85)}'; then

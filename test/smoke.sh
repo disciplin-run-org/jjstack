@@ -88,15 +88,60 @@ printf '#!/bin/sh\nsleep 30\n' > "$HANG/gbrain"; chmod +x "$HANG/gbrain"
 out_hang=$(PATH="$HANG:$PATH" JJSTACK_CAPTURE_GBRAIN_TIMEOUT=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
 check "a timed-out gbrain query reports ran-timeout" "grep -q 'gbrain dedup:  ran-timeout' <<<\"\$out_hang\""
 check "a timed-out query is NOT reported as clean"   "! grep -q 'gbrain dedup:  ran-clean' <<<\"\$out_hang\""
-rm -rf "$HANG" "$STUB"
+
+# A timeout is only ONE way the query fails. A corrupt or unreadable index (1),
+# timeout(1) itself failing on a bad deadline (125), a non-executable (126) or a
+# vanished binary (127) all produce the same empty stdout on the same
+# stderr-discarded path — so believing any of them is the identical bug, and the
+# fix that disbelieved only 124 left the rest reporting ran-clean.
+ERR=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$ERR/gbrain"; chmod +x "$ERR/gbrain"
+out_err=$(PATH="$ERR:$PATH" "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+check "a failing gbrain query reports ran-error"   "grep -q 'gbrain dedup:  ran-error:1' <<<\"\$out_err\""
+check "a failing query is NOT reported as clean"   "! grep -q 'gbrain dedup:  ran-clean' <<<\"\$out_err\""
+# Positive control on the CODE, not just the state: a different failure must
+# report a different rc, or the state could be a constant that happens to match.
+printf '#!/bin/sh\nexit 3\n' > "$ERR/gbrain"
+out_err3=$(PATH="$ERR:$PATH" "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" 2>&1)
+check "the failing query's exit code is carried through (control)" "grep -q 'gbrain dedup:  ran-error:3' <<<\"\$out_err3\""
+# Positive control on the WHOLE branch: the exit-0 stub above still reaches
+# ran-clean, so ran-error is a discrimination and not a blanket refusal.
+check "a clean query still reports ran-clean (control)" "grep -q 'gbrain dedup:  ran-clean' <<<\"\$out_live\""
+rm -rf "$HANG" "$STUB" "$ERR"
 
 # The section is named "no writes" but only ever checked stdout. Assert the
 # actual claim: a --dry-run leaves the memory dir untouched.
-_MEMD="$HOME/.claude/projects/-home-jesper-PycharmProjects-jjstack/memory"
-before=$(ls -1 "$_MEMD" 2>/dev/null | wc -l)
-JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" --cwd "$DIR" --dry-run --lesson "$LESSON" >/dev/null 2>&1
-after=$(ls -1 "$_MEMD" 2>/dev/null | wc -l)
+#
+# The watched dir must be DERIVED, not baked. An earlier version hardcoded
+# "$HOME/.claude/projects/-home-jesper-PycharmProjects-jjstack/memory" while the
+# script derives its dir from the --cwd it is given. Run from any other checkout
+# the two never coincide, so `ls | wc -l` counted an unrelated directory
+# identically before and after and the guard could not fail; run from that one
+# clone it read the user's LIVE memory store, which the capture-on-end worker
+# writes to concurrently, so it flaked. A guard that cannot fire, in the section
+# whose whole point is hermeticity.
+#
+# Fixed by giving the test its own project AND its own HOME, and computing the
+# watched path with the script's own cwd→dashed transform.
+FIXH=$(mktemp -d); FIXP=$(mktemp -d)
+FIXMEM="$FIXH/.claude/projects/$(printf '%s' "$FIXP" | sed 's|/|-|g')/memory"
+# Mark the fixture project PHI-opted-out. The positive control below performs a
+# REAL write; the PHI gate stops it at the native .md, so nothing reaches gstack,
+# gbrain, or the user's own stores. Hermetic, and it exercises the real path.
+mkdir -p "$FIXMEM"; : > "$FIXMEM/.no-gbrain"
+before=$(ls -1 "$FIXMEM" 2>/dev/null | wc -l)
+HOME="$FIXH" JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" \
+    --cwd "$FIXP" --dry-run --lesson "$LESSON" >/dev/null 2>&1
+after=$(ls -1 "$FIXMEM" 2>/dev/null | wc -l)
 check "capture-write --dry-run writes no memory file" "[ \"\$before\" = \"\$after\" ]"
+# POSITIVE CONTROL: the same call WITHOUT --dry-run must move that count. If it
+# does not, the assertion above is watching a directory the script never touches
+# and proves nothing — which is exactly how the baked path passed everywhere.
+HOME="$FIXH" JJSTACK_CAPTURE_NO_GBRAIN=1 "$BIN/jjstack-capture-write" \
+    --cwd "$FIXP" --lesson "$LESSON" >/dev/null 2>&1
+wrote=$(ls -1 "$FIXMEM" 2>/dev/null | wc -l)
+check "the no-write guard watches the dir the script writes (control)" "[ \"\$wrote\" -gt \"\$after\" ]"
+rm -rf "$FIXH" "$FIXP"
 
 echo "== 5. global-learn dry-run (no writes) =="
 out=$("$BIN/jjstack-global-learn" --key smoke-probe --insight "x" --dry-run 2>&1)

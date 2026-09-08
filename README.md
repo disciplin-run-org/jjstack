@@ -226,6 +226,12 @@ Deduplication runs in two layers: an exact `pattern_key` match, then a semantic
 near-duplicate lookup against gbrain. `JJSTACK_CAPTURE_NO_GBRAIN=1` pins the
 semantic layer off — for offline or air-gapped use, or when you need a fast,
 repeatable answer. Exact-key dedup still runs, so dedup is reduced, not skipped.
+That gbrain lookup runs under a deadline, default 8 seconds;
+`JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds>` changes it. On a slow link or a large
+index, raise the deadline rather than pinning the layer off — a longer wait
+keeps semantic dedup, the pin removes it. A `--dry-run` always reports which
+state the layer reached: `ran-clean`, `ran-timeout`, `ran-error:<rc>`, or
+`not-run:<reason>`. Only `ran-clean` means an answer was actually used.
 
 **`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
 markdown headed for disk and blocks high-confidence prompt-injection

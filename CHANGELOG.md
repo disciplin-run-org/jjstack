@@ -22,6 +22,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   guess. The test suite uses this, and went from intermittently failing to
   stable — and from seconds of waiting to under three.
 
+- **A gbrain lookup that failed no longer claims it ran clean.** The dry-run's
+  dedup report used to say `ran-clean` — "semantic dedup ran and found no
+  duplicate" — whenever the lookup did anything other than time out. A corrupt
+  or unreadable index, a gbrain binary that had been moved, or a bad deadline
+  value all produce the same empty result as a genuine no-match, so the run
+  reported success while doing nothing. Those cases now report
+  `ran-error:<code>` and their empty answer is discarded rather than believed.
+  `ran-clean` again means only what it says.
+
+- **The gbrain lookup deadline is documented and adjustable.**
+  `JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds>` (default 8) sets how long capture
+  waits for the semantic dedup query. On a slow link or a large index, raise it
+  instead of turning dedup off entirely — previously the only documented remedy
+  was `JJSTACK_CAPTURE_NO_GBRAIN=1`, which removes the layer altogether.
+
 ### Changed
 
 - **`/review` is now the deepest review in the stack — on purpose.** It used to
