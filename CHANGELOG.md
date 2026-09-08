@@ -11,6 +11,27 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A file whose name is not plain English no longer comes back as the
+  reviewer's work.** The marker that separates the reviewer's auto-fixes from
+  your own uncommitted files read git's file list as text, and git escapes any
+  name outside plain ASCII — so `résumé.md`, a name with a space, a quote or a
+  backslash never made it into the marker at all. At the end of the run the file
+  reappeared under "new untracked files", listed as something the reviewer had
+  created, beneath a header stating that your pre-existing files had been
+  excluded. Those findings are P1 by default, so your own draft came back to you
+  as a blocking issue. Names are now handled as raw bytes end to end, and a file
+  the marker cannot record says so out loud instead of vanishing quietly.
+- **Staging a file mid-review no longer hands it back to you as the reviewer's
+  work.** If you ran `git add` on something you had written before the review
+  started, it left the set the marker was watching and the whole file turned up
+  in the auto-fix diff. Files you staged are now recognised as yours for as long
+  as their contents are unchanged — and the moment the review actually edits
+  one, it goes back to being reported, tracked or not.
+- **`/review` in a repository with no commits yet now says so instead of failing
+  oddly.** Taking the marker appeared to succeed, and the pass that followed
+  died with a confusing "not a commit" error and an exit code meaning "you typed
+  the command wrong". It now reports the documented "no commits" outcome from
+  both halves, so the review can note the pass as inapplicable and carry on.
 - **The auto-fix review pass no longer reports your own scratch files back at
   you.** Post-pass 2 takes a marker before the review is allowed to change
   anything, so it can tell the reviewer's edits from work you already had open.

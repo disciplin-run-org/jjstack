@@ -39,6 +39,13 @@
 #   Asymmetric on purpose — under-ranking noise is cheaper to get wrong than
 #   over-ranking it.
 #
+# Ranked view (`report`): rank ascending, ties broken by pattern key ascending.
+#   Ordering IS the product of `report`, so it is part of the contract, not an
+#   implementation detail. A tie left to the producer's iteration order
+#   reshuffles the ranked view between two runs over an unchanged ledger, and
+#   sorting on a column formatted for a reader does not order it at all —
+#   "%+6d" prints "+20" and `sort -n` cannot parse a leading '+'.
+#
 # Usage:
 #   jjstack-review-calibration record --key K --verdict accepted|rejected \
 #                                     [--lens L] [--file F] [--note N]

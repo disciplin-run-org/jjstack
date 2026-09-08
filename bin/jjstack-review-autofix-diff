@@ -27,7 +27,11 @@
 #                               [--baseline REF] [--stat] [--dry-run]
 #
 # Exit: 0 diff emitted (or --mark/--dry-run ok), 2 usage error,
-#       3 not a git repo, 4 no changes since baseline (pass not applicable).
+#       3 not a git repo or no commits, 4 no changes since baseline.
+#
+# Every exit above is a statement about the REPO, never about the caller's
+# argv, and the only usage error is a malformed invocation. A repo shape the
+# tool cannot serve exits 3 so the caller can skip the pass and say why.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -90,27 +94,57 @@ STATE="${XDG_CACHE_HOME:-$HOME/.cache}/jjstack/review/$SLUG"
 MARKER="$STATE/autofix-baseline"
 UNTRACKED_SNAPSHOT="$STATE/autofix-untracked"
 
-# "<blob-hash><TAB><path>" for every untracked, non-ignored file. Hashes, not
-# just paths, so the diff step can still see the review EDITING a file the user
-# already had — subtracting on path alone would hide that.
+# "<blob-hash><TAB><path>" per record, NUL-TERMINATED.
+#
+# `-z` is not a nicety: core.quotePath is on by default, so plain `ls-files
+# --others` hands back `"r\303\251sum\303\251.md"` for `résumé.md`. hash-object
+# on that literal fails, the file drops out of the snapshot, and at diff time the
+# same quoted name misses the lookup — so the USER's file is reported as new work
+# the review wrote, under a header saying pre-existing files were excluded. A
+# path is a byte string: read it as one.
+#
+# NUL between records because a path may legally contain a newline; TAB inside a
+# record because a blob hash never contains one.
 snapshot_untracked() {
-  git -C "$ROOT" ls-files --others --exclude-standard | while IFS= read -r f; do
+  git -C "$ROOT" ls-files -z --others --exclude-standard | while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
     h="$(git -C "$ROOT" hash-object -- "$f" 2>/dev/null)"
-    [ -n "$h" ] && printf '%s\t%s\n' "$h" "$f"
+    if [ -z "$h" ]; then
+      # Never silent. A file missing from the snapshot comes back to the user as
+      # a P1 against their own work, so say so at the moment it is dropped.
+      echo -e "${YEL}warn${RST}  cannot hash untracked file — it will read as new: $f" >&2
+      continue
+    fi
+    printf '%s\t%s\0' "$h" "$f"
   done
 }
+
+snapshot_count() { # snapshot_count <file> — RECORDS, not lines
+  [ -f "$1" ] || { echo 0; return; }
+  tr -dc '\0' < "$1" | wc -c | tr -d ' '
+}
+
+# The tracked half needs a commit to lean on, and `git rev-parse HEAD` on an
+# unborn HEAD PRINTS the four characters "HEAD" on stdout and exits 128 — so the
+# stdout of a git command is never the truth, its exit status is. `--verify
+# --quiet` reports the state as emptiness, which is what the caller can test.
+HEAD_COMMIT="$(git -C "$ROOT" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)"
+if [ -z "$HEAD_COMMIT" ]; then
+  echo -e "${YEL}warn${RST}  repo has no commits — nothing to baseline against" >&2
+  echo -e "${YEL}warn${RST}  cannot isolate the auto-fix diff — skip this pass and say so." >&2
+  exit 3
+fi
 
 if [ "$MARK" -eq 1 ]; then
   # `git stash create` snapshots a dirty tree as a dangling commit WITHOUT
   # touching the working tree or the stash list. On a clean tree it prints
-  # nothing, so fall back to HEAD.
+  # nothing — and, like every git command here, anything it prints is only a
+  # baseline once git confirms it is a commit.
   snap="$(git -C "$ROOT" stash create 2>/dev/null | tr -d '[:space:]')"
-  [ -z "$snap" ] && snap="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null | tr -d '[:space:]')"
-  if [ -z "$snap" ]; then
-    echo -e "${YEL}warn${RST}  repo has no commits — nothing to baseline against" >&2
-    exit 3
+  if [ -n "$snap" ]; then
+    git -C "$ROOT" rev-parse --verify --quiet "$snap^{commit}" >/dev/null 2>&1 || snap=""
   fi
+  [ -z "$snap" ] && snap="$HEAD_COMMIT"
   if [ "$DRY" -eq 1 ]; then
     echo "[dry-run] would mark baseline $snap -> $MARKER"
     exit 0
@@ -118,7 +152,7 @@ if [ "$MARK" -eq 1 ]; then
   mkdir -p "$STATE" || exit 3
   printf '%s\n' "$snap" > "$MARKER"
   snapshot_untracked > "$UNTRACKED_SNAPSHOT" || exit 3
-  echo -e "${GRN}marked${RST} baseline $snap ($(grep -c . "$UNTRACKED_SNAPSHOT" 2>/dev/null || true) untracked file(s) snapshotted)"
+  echo -e "${GRN}marked${RST} baseline $snap ($(snapshot_count "$UNTRACKED_SNAPSHOT") untracked file(s) snapshotted)"
   exit 0
 fi
 
@@ -139,63 +173,83 @@ if ! git -C "$ROOT" rev-parse --verify --quiet "$BASELINE^{commit}" >/dev/null 2
   exit 2
 fi
 
-UNTRACKED="$(git -C "$ROOT" ls-files --others --exclude-standard)"
-CHANGED="$(git -C "$ROOT" diff --name-only "$BASELINE" 2>/dev/null)"
+# Everything below reads paths as NUL-delimited byte strings, for the same
+# reason the snapshot writes them that way.
+UNTRACKED=(); mapfile -d '' UNTRACKED < <(git -C "$ROOT" ls-files -z --others --exclude-standard)
 
 # The tracked half of "what did the review touch" is `git diff <baseline>`, and
 # the baseline commit already carries the user's pre-existing tracked edits,
 # staged changes, deletions and the delete-half of a rename. The UNTRACKED half
-# has no such commit to lean on, so it is diffed against the --mark snapshot
-# here. Ignored files are outside both halves on purpose (--exclude-standard):
-# build output is nobody's review finding.
-NEW_FILES=""; CHANGED_FILES=""; GONE_FILES=""; PRE_COUNT=0
-append() { # append <var-name> <line>
-  if [ -z "${!1}" ]; then printf -v "$1" '%s' "$2"
-  else printf -v "$1" '%s\n%s' "${!1}" "$2"; fi
-}
+# has no such commit to lean on — `git stash create` ignores untracked files by
+# design — so it is diffed against the --mark snapshot here. Ignored files are
+# outside both halves on purpose (--exclude-standard): build output is nobody's
+# review finding.
+NEW_FILES=(); CHANGED_FILES=(); GONE_FILES=(); RECLAIMED=(); PRE_COUNT=0
+declare -A SNAP=()
+declare -A NOW_UNTRACKED=()
 
 # Only a snapshot that PAIRS with this baseline may be subtracted. An explicit
 # --baseline names a commit, which says nothing about what was untracked then.
 if [ "$FROM_MARKER" -eq 1 ] && [ -f "$UNTRACKED_SNAPSHOT" ]; then
-  PRE_COUNT="$(grep -c . "$UNTRACKED_SNAPSHOT" 2>/dev/null)"
-  case "$PRE_COUNT" in ''|*[!0-9]*) PRE_COUNT=0 ;; esac
-  while IFS= read -r f; do
+  PRE_COUNT="$(snapshot_count "$UNTRACKED_SNAPSHOT")"
+  while IFS= read -r -d '' rec; do
+    [ -n "$rec" ] || continue
+    SNAP["${rec#*$'\t'}"]="${rec%%$'\t'*}"
+  done < "$UNTRACKED_SNAPSHOT"
+  for f in "${UNTRACKED[@]}"; do
     [ -n "$f" ] || continue
-    was="$(awk -F'\t' -v p="$f" '$2 == p { print $1; exit }' "$UNTRACKED_SNAPSHOT")"
-    if [ -z "$was" ]; then
-      append NEW_FILES "$f"
+    NOW_UNTRACKED["$f"]=1
+    if [ -z "${SNAP[$f]+set}" ]; then
+      NEW_FILES+=("$f")
     else
       now="$(git -C "$ROOT" hash-object -- "$f" 2>/dev/null)"
-      [ "$now" != "$was" ] && append CHANGED_FILES "$f"
+      [ "$now" != "${SNAP[$f]}" ] && CHANGED_FILES+=("$f")
     fi
-  done <<EOF
-$UNTRACKED
-EOF
-  # A file the user had and the review deleted is the review's work too.
-  while IFS="$(printf '\t')" read -r _hash path; do
-    [ -n "${path:-}" ] || continue
-    [ -e "$ROOT/$path" ] || append GONE_FILES "$path"
-  done < "$UNTRACKED_SNAPSHOT"
+  done
+  # A snapshot path that is no longer untracked left the set one of two ways.
+  for p in "${!SNAP[@]}"; do
+    [ -n "${NOW_UNTRACKED[$p]+set}" ] && continue
+    if [ ! -e "$ROOT/$p" ]; then
+      # The review deleted a file the user had. That is the review's work too.
+      GONE_FILES+=("$p")
+      continue
+    fi
+    # ...or the user STAGED it. Staging does not turn the user's file into the
+    # review's: it only moves it out of the untracked set, where the snapshot
+    # can no longer speak for it. `git stash create` never captured it either,
+    # so `git diff <marker>` would show the whole file as an addition. Exclude
+    # it — but only while its bytes still match the snapshot, because content
+    # the review changed after the marker is the review's work, tracked or not.
+    now="$(git -C "$ROOT" hash-object -- "$p" 2>/dev/null)"
+    [ "$now" = "${SNAP[$p]}" ] && RECLAIMED+=("$p")
+  done
 else
-  NEW_FILES="$UNTRACKED"
+  for f in "${UNTRACKED[@]}"; do [ -n "$f" ] && NEW_FILES+=("$f"); done
 fi
 
-# Line count of a possibly-empty newline-joined list. `grep -c` would exit 1 on
-# empty and trip the `||` fallback into printing twice.
-count_lines() { [ -z "$1" ] && { echo 0; return; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+# ONE definition of the diff's scope, used by the name listing, the emptiness
+# test and the diff itself — a second copy is a second chance to disagree.
+DIFF_SCOPE=("$BASELINE")
+if [ "${#RECLAIMED[@]}" -gt 0 ]; then
+  DIFF_SCOPE+=(-- ".")
+  for p in "${RECLAIMED[@]}"; do DIFF_SCOPE+=(":(exclude,literal)$p"); done
+fi
+CHANGED=(); mapfile -d '' CHANGED < <(git -C "$ROOT" diff -z --name-only "${DIFF_SCOPE[@]}" 2>/dev/null)
 
 if [ "$DRY" -eq 1 ]; then
   echo "[dry-run] repo:     $ROOT"
   echo "[dry-run] baseline: $BASELINE ($SOURCE)"
-  echo "[dry-run] tracked changes:    $(count_lines "$CHANGED")"
-  echo "[dry-run] untracked new:      $(count_lines "$NEW_FILES")"
-  echo "[dry-run] untracked changed:  $(count_lines "$CHANGED_FILES")"
-  echo "[dry-run] untracked removed:  $(count_lines "$GONE_FILES")"
+  echo "[dry-run] tracked changes:    ${#CHANGED[@]}"
+  echo "[dry-run] untracked new:      ${#NEW_FILES[@]}"
+  echo "[dry-run] untracked changed:  ${#CHANGED_FILES[@]}"
+  echo "[dry-run] untracked removed:  ${#GONE_FILES[@]}"
   echo "[dry-run] pre-existing untracked at the marker (excluded): $PRE_COUNT"
+  echo "[dry-run] of those, staged since the marker and still unchanged: ${#RECLAIMED[@]}"
   exit 0
 fi
 
-if [ -z "$CHANGED" ] && [ -z "$NEW_FILES" ] && [ -z "$CHANGED_FILES" ] && [ -z "$GONE_FILES" ]; then
+if [ "${#CHANGED[@]}" -eq 0 ] && [ "${#NEW_FILES[@]}" -eq 0 ] \
+   && [ "${#CHANGED_FILES[@]}" -eq 0 ] && [ "${#GONE_FILES[@]}" -eq 0 ]; then
   echo -e "${YEL}skip${RST}  no changes since $BASELINE — the review applied no auto-fixes."
   exit 4
 fi
@@ -206,35 +260,37 @@ echo "# baseline: $BASELINE"
 echo "# source:   $SOURCE"
 if [ "$FROM_MARKER" -eq 1 ]; then
   echo "# untracked: $PRE_COUNT file(s) already present at the marker, excluded below"
+  [ "${#RECLAIMED[@]}" -gt 0 ] && \
+    echo "# untracked: ${#RECLAIMED[@]} of those staged since, still the user's — excluded from the tracked diff"
 else
   echo "# untracked: no snapshot — every untracked file is listed as new"
 fi
 echo
 
-if [ -n "$NEW_FILES" ]; then
+if [ "${#NEW_FILES[@]}" -gt 0 ]; then
   echo "## new untracked files (not in the diff below — read them in full)"
-  printf '%s\n' "$NEW_FILES"
+  printf '%s\n' "${NEW_FILES[@]}"
   echo
 fi
 
-if [ -n "$CHANGED_FILES" ]; then
+if [ "${#CHANGED_FILES[@]}" -gt 0 ]; then
   echo "## untracked files that existed at the marker and changed since (read them in full)"
-  printf '%s\n' "$CHANGED_FILES"
+  printf '%s\n' "${CHANGED_FILES[@]}"
   echo
 fi
 
-if [ -n "$GONE_FILES" ]; then
+if [ "${#GONE_FILES[@]}" -gt 0 ]; then
   echo "## untracked files that existed at the marker and are now gone"
-  printf '%s\n' "$GONE_FILES"
+  printf '%s\n' "${GONE_FILES[@]}"
   echo
 fi
 
-if [ -n "$CHANGED" ]; then
+if [ "${#CHANGED[@]}" -gt 0 ]; then
   echo "## tracked changes"
   if [ "$STAT" -eq 1 ]; then
-    git -C "$ROOT" diff --stat "$BASELINE"
+    git -C "$ROOT" diff --stat "${DIFF_SCOPE[@]}"
   else
-    git -C "$ROOT" diff "$BASELINE"
+    git -C "$ROOT" diff "${DIFF_SCOPE[@]}"
   fi
 fi
 

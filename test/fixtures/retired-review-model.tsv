@@ -1,0 +1,31 @@
+# retired-review-model.tsv — the DECLARED source of truth for the review models
+# this repo has DELETED, and which no document it ships may teach again.
+#
+# Why a declaration and not a list inside the test: the guard, the corpus it is
+# asserted over, and its positive controls are all DERIVED from this file. Adding
+# a row here arms that model against every document in the /review closure at
+# once AND forces a control proving the new pattern can actually fire. The test
+# holds no pattern and no probe of its own, so a model nobody has thought of yet
+# is one row away from being guarded everywhere.
+#
+# Columns, TAB separated:
+#   id          stable name, unique
+#   pattern     ERE, matched against each document FLATTENED to a single line, so
+#               a claim that WRAPS across a line break is still caught — the bug
+#               that let the last copy of this model ship green
+#   probe       the prose that actually shipped this model, recovered VERBATIM
+#               from git at the provenance below. printf %b escapes: \n is a line
+#               break. Never invent a probe: a control you wrote yourself only
+#               proves the pattern matches itself. The suite verifies each probe
+#               against its provenance object, so an invented one cannot pass.
+#   provenance  <rev>:<path> the probe was recovered from
+#
+# id	pattern	probe	provenance
+decays-out	decays? out	being read. With it, repeat false positives decay out of the report and confirmed	7c0cab2^:references/review-post-passes.md
+promoted-across-gate	across the gate	patterns get promoted across the gate.	7c0cab2^:references/review-post-passes.md
+reporting-gate	reporting gate	sits near the reporting gate — that is where proof changes the outcome.	7c0cab2^:references/review-post-passes.md
+disproven-drops-the-finding	drops the finding	each finding `PROVEN` / `DISPROVEN` / `UNPROVABLE`. `DISPROVEN` drops the finding	7c0cab2^:skills/review/SKILL.md
+the-finding-drops	the finding drops	   test, that is a Phase 5 verification defect, and the finding drops.	7c0cab2^:references/review-post-passes.md
+no-confidence-adjustment	no confidence adjustment	  echo -e "${YEL}skip${RST}  first calibrated review — no confidence adjustment, and say so."	7c0cab2^:bin/jjstack-review-calibration
+gets-dropped	gets dropped	     made to fail, the finding was never real and gets dropped — and if it can,	0998a19^:CHANGELOG.md
+adjusts-its-confidence	adjusts its.{0,30}confidence	     repo (`jjstack/review-calibration.tsv`), and the next review adjusts its\n     confidence from them — so a false positive you dismissed twice stops being	0998a19^:CHANGELOG.md

@@ -285,11 +285,11 @@ check "writes PROVENANCE.md"             "[ -f '$CRR/out/PROVENANCE.md' ]"
 check "PROVENANCE stamps gstack version" "grep -q '9.9.9.9' '$CRR/out/PROVENANCE.md'"
 # Exclusions — the whole point of an allowlist.
 check "excludes procedural SKILL.md"   "[ ! -f '$CRR/out/SKILL.md' ]"
-check "excludes .tmpl build artifacts" "! find '$CRR/out' -name '*.tmpl' | grep -q ."
-check "excludes manifest.json"         "! find '$CRR/out' -name 'manifest.json' | grep -q ."
+check "excludes .tmpl build artifacts" "[ -z \"\$(find '$CRR/out' -name '*.tmpl')\" ]"
+check "excludes manifest.json"         "[ -z \"\$(find '$CRR/out' -name 'manifest.json')\" ]"
 # Positive control — an exclusion grep that can never fire looks exactly like a
 # clean capture, which is how a broken guard passes for months.
-check "tmpl guard actually catches a .tmpl" "find '$CRR/src' -name '*.tmpl' | grep -q ."
+check "tmpl guard actually catches a .tmpl" "[ -n \"\$(find '$CRR/src' -name '*.tmpl')\" ]"
 # --dry-run must not write.
 "$BIN/jjstack-capture-review-refs" "$CRR/out2" --gstack-review-dir "$CRR/src" --dry-run >/dev/null 2>&1
 check "--dry-run writes nothing" "[ ! -d '$CRR/out2' ]"
@@ -943,12 +943,12 @@ NL="$(mktemp -d)"
 printf 'def foo():\n\n    return 1' > "$NL/src.py"   # no trailing newline on purpose
 "$BIN/jjstack-number-lines" "$NL/src.py" > "$NL/out.txt" 2>/dev/null; rc=$?
 check "number-lines exits 0"          "[ $rc -eq 0 ]"
-check "numbers from L1"               "head -1 '$NL/out.txt' | grep -q '^L1: def foo():$'"
+check "numbers from L1"               "grep -q '^L1: def foo():\$' <<<\"\$(head -1 '$NL/out.txt')\""
 check "numbers the blank line too"    "grep -qx 'L2: ' '$NL/out.txt'"
 check "keeps unterminated last line"  "grep -q '^L3:     return 1$' '$NL/out.txt'"
 check "emits exactly 3 lines"         "[ \"\$(wc -l < '$NL/out.txt')\" -eq 3 ]"
 "$BIN/jjstack-number-lines" "$NL/src.py" --start 100 > "$NL/off.txt" 2>/dev/null
-check "--start offsets a chunk"       "head -1 '$NL/off.txt' | grep -q '^L100: '"
+check "--start offsets a chunk"       "grep -q '^L100: ' <<<\"\$(head -1 '$NL/off.txt')\""
 # Positive control — the blank-line assertion above only means something if the
 # fixture actually contains a blank line; a fixture drift would make it vacuous.
 check "fixture really has a blank line" "grep -qx '' '$NL/src.py'"
@@ -971,7 +971,7 @@ check "positive control: same command to a good sink exits 0" "[ $rc -eq 0 ]"
 # --help is delimited by the first non-comment line, not a hardcoded range, so
 # editing the header block above cannot silently truncate it.
 check "--help reaches the end of the header" \
-  "\"$BIN/jjstack-number-lines\" --help 2>/dev/null | grep -q 'No color red anywhere'"
+  "grep -q 'No color red anywhere' <<<\"\$(\"$BIN/jjstack-number-lines\" --help 2>/dev/null)\""
 rm -rf "$NL"
 
 echo "== 5f. review-normalize (finding struct + confidence) =="
@@ -1041,9 +1041,9 @@ check "the malformed finding IS recorded"          "[ -s '$RN/nullconf.bad.jsonl
 # Read the REASON, never the whole record: `raw` echoes the input line, so a
 # grep over the file matches the emitter's own word and not the tool's verdict.
 check "the malformed record names the bad field"   \
-  "reasons_of '$RN/nullconf.bad.jsonl' | grep -q 'confidence'"
+  "grep -q 'confidence' <<<\"\$(reasons_of '$RN/nullconf.bad.jsonl')\""
 check "the reason names the LINE that poisoned it" \
-  "python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/nullconf.bad.jsonl' | grep -qx 2"
+  "grep -qx 2 <<<\"\$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/nullconf.bad.jsonl')\""
 # Positive control — the identical three lines with a real confidence must all
 # pass, or "2 survived" could mean the guard rejects far more than null.
 printf '%s\n%s\n%s\n' "$P0A" "${NULLCONF/\"confidence\":null/\"confidence\":0.5}" "$P0B" \
@@ -1080,7 +1080,7 @@ check "both P0s around a huge confidence survive" \
 check "the P0 AFTER a huge confidence is emitted" "grep -q 'valid p0 two' '$RN/bigconf.out'"
 check "the huge confidence IS recorded"          "[ -s '$RN/bigconf.bad.jsonl' ]"
 check "its reason names confidence, not a crash" \
-  "reasons_of '$RN/bigconf.bad.jsonl' | grep -q 'confidence'"
+  "grep -q 'confidence' <<<\"\$(reasons_of '$RN/bigconf.bad.jsonl')\""
 
 # The CLASS, not the instance. OverflowError is one exception type; the defect
 # is that ANY exception raised while normalizing ONE finding took the whole run
@@ -1118,7 +1118,7 @@ check "an unanticipated exception loses no other finding" \
 check "the finding AFTER the poisoned one is emitted" "grep -q 'valid p0 two' '$RN/cls.out'"
 check "--invalid-out is written on the internal path" "[ -s '$RN/cls.bad.jsonl' ]"
 check "the internal failure names its own line"  \
-  "python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/cls.bad.jsonl' | grep -qx 2"
+  "grep -qx 2 <<<\"\$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())[\"line\"])' '$RN/cls.bad.jsonl')\""
 # Positive control — the identical harness with NO poisoned file must pass all
 # three, or \"2 survived\" could be the shim rejecting b.py for its own reasons.
 printf '%s\n%s\n' "$P0A" "$P0B" > "$RN/cls.ok.jsonl"
@@ -1199,7 +1199,7 @@ check "a null quote is rejected"        "[ $rc -eq 1 ] && [ ! -s '$RN/nullquote.
 # Same de-tautologising as above: the reason must NAME quote. A grep over the
 # whole record passed even when every diagnostic was renamed to gibberish.
 check "the null quote is REPORTED"      \
-  "reasons_of '$RN/nullquote.bad.jsonl' | grep -q '^empty required field(s): quote$'"
+  "grep -q '^empty required field(s): quote$' <<<\"\$(reasons_of '$RN/nullquote.bad.jsonl')\""
 printf '%s\n' "${GOOD/\"remediation\":\"r\"/\"remediation\":[]}" > "$RN/emptyrem.jsonl"
 "$BIN/jjstack-review-normalize" "$RN/emptyrem.jsonl" > "$RN/emptyrem.out" 2>/dev/null; rc=$?
 check "an empty-list remediation is rejected" "[ $rc -eq 1 ] && [ ! -s '$RN/emptyrem.out' ]"
@@ -1488,7 +1488,7 @@ SW="$(mktemp -d)"
 "$BIN/jjstack-review-sweep" --repo "$SW" >/dev/null 2>&1; rc=$?
 check "no checks available exits 4 (skip, not pass)" "[ $rc -eq 4 ]"
 out=$("$BIN/jjstack-review-sweep" --repo "$SW" 2>&1)
-check "skip message says SKIPPED, not clean" "printf '%s' \"\$out\" | grep -qi 'skip'"
+check "skip message says SKIPPED, not clean" "grep -qi 'skip' <<<\"\$out\""
 "$BIN/jjstack-review-sweep" --repo "$SW" --cmd "true" >/dev/null 2>&1; rc=$?
 check "all checks green exits 0" "[ $rc -eq 0 ]"
 # Positive control — a failure detector that can never fire looks exactly like a
@@ -1496,7 +1496,7 @@ check "all checks green exits 0" "[ $rc -eq 0 ]"
 "$BIN/jjstack-review-sweep" --repo "$SW" --cmd "false" >/dev/null 2>&1; rc=$?
 check "FAIL path actually fires (exit 1 on a failing check)" "[ $rc -eq 1 ]"
 out=$("$BIN/jjstack-review-sweep" --repo "$SW" --cmd "true" --cmd "false" 2>&1)
-check "a failing check among passing ones still fails" "printf '%s' \"\$out\" | grep -q 'SWEEP BROKEN'"
+check "a failing check among passing ones still fails" "grep -q 'SWEEP BROKEN' <<<\"\$out\""
 # --dry-run prints the plan and runs nothing.
 "$BIN/jjstack-review-sweep" --repo "$SW" --cmd "touch '$SW/ran'" --dry-run >/dev/null 2>&1
 check "--dry-run executes no command" "[ ! -f '$SW/ran' ]"
@@ -1526,17 +1526,17 @@ out=$("$BIN/jjstack-review-autofix-diff" --repo "$AFD" 2>&1); rc=$?
 # Positive control — the exit-4 guard would also be silent if detection were
 # simply broken, so prove the detector finds a real change before trusting a 4.
 check "detects the post-marker change (exit 0)" "[ $rc -eq 0 ]"
-check "diff contains the auto-fix"              "printf '%s' \"\$out\" | grep -q 'AUTOFIXED'"
-check "marker excludes pre-existing dirt"       "! printf '%s' \"\$out\" | grep -q 'PRE_EXISTING'"
+check "diff contains the auto-fix"              "grep -q 'AUTOFIXED' <<<\"\$out\""
+check "marker excludes pre-existing dirt"       "! grep -q 'PRE_EXISTING' <<<\"\$out\""
 # Without a marker the fallback is HEAD, and it must SAY that it over-claims.
 rm -rf "$XDG_CACHE_HOME"
 out=$("$BIN/jjstack-review-autofix-diff" --repo "$AFD" 2>&1)
-check "HEAD fallback discloses its caveat" "printf '%s' \"\$out\" | grep -q 'fallback HEAD'"
-check "HEAD fallback sees pre-existing dirt" "printf '%s' \"\$out\" | grep -q 'PRE_EXISTING'"
+check "HEAD fallback discloses its caveat" "grep -q 'fallback HEAD' <<<\"\$out\""
+check "HEAD fallback sees pre-existing dirt" "grep -q 'PRE_EXISTING' <<<\"\$out\""
 # New files an auto-fix creates are untracked and invisible to `git diff`.
 printf 'x\n' > "$AFD/new_file.txt"
 out=$("$BIN/jjstack-review-autofix-diff" --repo "$AFD" 2>&1)
-check "untracked new files are surfaced" "printf '%s' \"\$out\" | grep -q 'new_file.txt'"
+check "untracked new files are surfaced" "grep -q 'new_file.txt' <<<\"\$out\""
 "$BIN/jjstack-review-autofix-diff" --repo "$AFD/nope" >/dev/null 2>&1; rc=$?
 check "non-repo path exits 3" "[ $rc -eq 3 ]"
 unset XDG_CACHE_HOME
@@ -1619,6 +1619,175 @@ check "mark/states: pre-existing dirt alone is 'no auto-fixes' (exit 4)" "[ $rc 
 unset XDG_CACHE_HOME
 rm -rf "$MKS"
 
+echo "== 7b3. a path is bytes, not a word — whatever git enumerates, --mark must hold =="
+# `core.quotePath` is on by default, so `git ls-files --others` C-QUOTES every
+# path outside printable ASCII: `résumé.md` comes back as the literal
+# "r\303\251sum\303\251.md". `hash-object` on that literal fails, the guard
+# swallowed the failure, and the file never entered the snapshot — so at diff
+# time the same quoted name missed the lookup and the user's own file was listed
+# under "## new untracked files", directly beneath a header asserting that
+# pre-existing untracked files had been excluded. Phase 5.7 findings are P1 by
+# default: the user's work came back to them as reviewer-authored P1s.
+#
+# 7b2 above enumerates every STATE git distinguishes and still could not see it,
+# because every filename it uses is [a-z_.]. Adding `résumé.md` to that fixture
+# would close the instance. The class is "a path was treated as a word", so the
+# ORACLE here is an INVARIANT, not a name:
+#
+#     a tree that has not changed since the marker has NO auto-fix diff (exit 4)
+#
+# Any path git can enumerate and --mark cannot hold turns that 4 into a 0,
+# whatever the byte sequence is. The names below are only a generator for the
+# invariant — a byte class nobody has thought of is caught by the same assertion,
+# and the count assertion below reads its expected value out of git rather than
+# out of this file.
+PTH="$(mktemp -d)"; PR="$PTH/repo"; mkdir -p "$PR"
+XDG_CACHE_HOME="$PTH/cache"; export XDG_CACHE_HOME
+git -C "$PR" init -q >/dev/null 2>&1
+git -C "$PR" config user.email t@example.com >/dev/null 2>&1
+git -C "$PR" config user.name  jjstack-test   >/dev/null 2>&1
+printf 'base\n' > "$PR/base.txt"
+git -C "$PR" add -A >/dev/null 2>&1
+git -C "$PR" commit -qm init >/dev/null 2>&1
+# One name per byte class that git has to quote, or a shell has to re-quote, or
+# a line-oriented reader has to mis-split.
+PATHNAMES=(
+  'résumé.md'                    # non-ASCII UTF-8 — C-quoted by ls-files
+  'a file with spaces.md'        # word splitting
+  'quote"inside.md'              # double quote — C-quoted, ends a shell literal
+  'back\slash.md'                # backslash — C-quoted
+  $'tab\tinside.md'              # TAB — the snapshot's own field separator
+  $'two\nlines.md'               # newline — the snapshot's own record separator
+  '-leading-dash.md'             # parses as a flag
+  '$(touch PWNED).md'            # would run if a path were ever evaluated
+  'ünïcode dir/nested päth.md'   # non-ASCII directory component
+)
+for n in "${PATHNAMES[@]}"; do
+  mkdir -p "$PR/$(dirname -- "$n")"
+  printf 'user content\n' > "$PR/$n"
+done
+# Expected count comes from git, not from a literal here: the fixture and the
+# assertion cannot drift apart.
+gcount="$(git -C "$PR" ls-files -z --others --exclude-standard | tr -dc '\0' | wc -c | tr -d ' ')"
+check "fixture: git enumerates every generated path" "[ \"\$gcount\" -eq ${#PATHNAMES[@]} ]"
+pout="$("$BIN/jjstack-review-autofix-diff" --repo "$PR" --mark 2>&1)"; prc=$?
+check "paths: --mark succeeds over adversarial names (exit 0)" "[ $prc -eq 0 ]"
+mcount="$(printf '%s' "$pout" | sed -n 's/.*(\([0-9][0-9]*\) untracked file(s) snapshotted).*/\1/p')"
+check "paths: --mark snapshots exactly what git enumerates" "[ \"\$mcount\" = \"\$gcount\" ]"
+"$BIN/jjstack-review-autofix-diff" --repo "$PR" >/dev/null 2>&1; prc=$?
+check "paths: an unchanged tree after the marker has no auto-fix diff (exit 4)" "[ $prc -eq 4 ]"
+check "paths: no path was ever evaluated as a command" \
+  "[ ! -e '$PR/PWNED' ] && [ ! -e '$PTH/PWNED' ]"
+# POSITIVE CONTROL, one per generated name: the invariant must be able to break.
+# A snapshot that held nothing at all would satisfy exit 4 just as happily, and a
+# snapshot that held only the ASCII names would satisfy it for the ASCII half.
+for n in "${PATHNAMES[@]}"; do
+  label="$(printf '%s' "$n" | tr '\n\t' '??' | cut -c1-24)"
+  printf 'REVIEW EDIT\n' >> "$PR/$n"
+  cout="$("$BIN/jjstack-review-autofix-diff" --repo "$PR" 2>&1)"; crc=$?
+  check "control: editing the snapshotted path $label is reported" \
+    "[ $crc -eq 0 ] && grep -q 'existed at the marker and changed' <<<\"\$cout\""
+  printf 'user content\n' > "$PR/$n"
+done
+"$BIN/jjstack-review-autofix-diff" --repo "$PR" >/dev/null 2>&1; prc=$?
+check "paths: restoring every path returns the tree to 'no auto-fixes' (exit 4)" "[ $prc -eq 4 ]"
+# The same invariant one state further on. A pre-marker untracked file the user
+# then `git add`s LEAVES the untracked set, so the snapshot is never consulted
+# for it — and `git stash create` never captured it either, so `git diff
+# <marker>` shows the whole file as an addition. It came back in full as
+# reviewer-authored, under the header that says it was excluded.
+git -C "$PR" add -A >/dev/null 2>&1
+"$BIN/jjstack-review-autofix-diff" --repo "$PR" >/dev/null 2>&1; prc=$?
+check "paths: staging pre-marker work does not make it the review's (exit 4)" "[ $prc -eq 4 ]"
+# ...and the subtraction must not overshoot: content the review changed after the
+# marker is still the review's work, tracked or not.
+printf 'REVIEW EDIT\n' >> "$PR/${PATHNAMES[0]}"
+sout="$("$BIN/jjstack-review-autofix-diff" --repo "$PR" 2>&1)"; prc=$?
+check "control: a staged pre-marker file the review then edits IS reported" \
+  "[ $prc -eq 0 ] && grep -q 'REVIEW EDIT' <<<\"\$sout\""
+unset XDG_CACHE_HOME
+rm -rf "$PTH"
+
+echo "== 7b4. --mark must never write a marker the next run cannot use =="
+# `git rev-parse HEAD` on an unborn HEAD PRINTS the four characters "HEAD" on
+# stdout and exits 128. The fallback captured that string, so `[ -z "$snap" ]`
+# was unreachable dead code: --mark reported success, wrote "HEAD" as the
+# baseline, and the run that followed died with "baseline is not a commit: HEAD"
+# — exit 2, the USAGE-ERROR code, for a repo shape the tool was asked to handle.
+# Both SKILL.md and this script's own `# Exit:` table declare 3 for that state.
+#
+# The class is "stdout was consumed without its exit status", so the guard is an
+# invariant over repo SHAPES rather than a case for the unborn one:
+#
+#     for every repo shape, --mark and the run that follows agree, and neither
+#     answers a question about the repo's shape with the usage-error code 2.
+#
+# The set of acceptable codes is PARSED out of the tool's own --help, so a shape
+# nobody has thought of still has to exit with something the tool documents.
+declared_exits() {   # declared_exits <script> -> the exit codes its --help declares
+  "$1" --help 2>/dev/null \
+    | awk '/^Exit:/ { on = 1 } on && NF == 0 { on = 0 } on' \
+    | tr '\n' ' ' | grep -oE '[,:] +[0-9]+ ' | grep -oE '[0-9]+' | sort -un
+}
+AFDX="$(declared_exits "$BIN/jjstack-review-autofix-diff" | tr '\n' ' ')"
+check "the tool declares an exit-code table in its own --help" \
+  "[ \$(printf '%s' \"\$AFDX\" | wc -w) -ge 4 ]"
+AFDHELP="$("$BIN/jjstack-review-autofix-diff" --help 2>/dev/null | tr '\n' ' ' | tr -s ' ')"
+check "--help declares 3 for a repo with no commits" \
+  "grep -q 'no commits' <<<\"\$AFDHELP\""
+SHP="$(mktemp -d)"
+mk_shape() {   # mk_shape <dir> <shape>
+  git -C "$1" init -q >/dev/null 2>&1
+  git -C "$1" config user.email t@example.com >/dev/null 2>&1
+  git -C "$1" config user.name  jjstack-test   >/dev/null 2>&1
+  case "$2" in
+    empty)         : ;;
+    unborn)        printf 'draft\n' > "$1/work.md" ;;
+    unborn-staged) printf 'draft\n' > "$1/work.md"; git -C "$1" add -A >/dev/null 2>&1 ;;
+    clean)         printf 'a\n' > "$1/a.txt"; git -C "$1" add -A >/dev/null 2>&1
+                   git -C "$1" commit -qm i >/dev/null 2>&1 ;;
+    dirty)         printf 'a\n' > "$1/a.txt"; git -C "$1" add -A >/dev/null 2>&1
+                   git -C "$1" commit -qm i >/dev/null 2>&1
+                   printf 'more\n' >> "$1/a.txt"; printf 'u\n' > "$1/u.txt" ;;
+    detached)      printf 'a\n' > "$1/a.txt"; git -C "$1" add -A >/dev/null 2>&1
+                   git -C "$1" commit -qm i >/dev/null 2>&1
+                   git -C "$1" checkout -q --detach >/dev/null 2>&1 ;;
+  esac
+}
+for shape in empty unborn unborn-staged clean dirty detached; do
+  d="$SHP/$shape"; mkdir -p "$d"; mk_shape "$d" "$shape"
+  XDG_CACHE_HOME="$SHP/cache-$shape"; export XDG_CACHE_HOME
+  "$BIN/jjstack-review-autofix-diff" --repo "$d" --mark >/dev/null 2>&1; mrc=$?
+  "$BIN/jjstack-review-autofix-diff" --repo "$d"        >/dev/null 2>&1; rrc=$?
+  check "shape/$shape: --mark exits with a code the tool declares ($mrc)" \
+    "grep -qw '$mrc' <<<\"\$AFDX\""
+  check "shape/$shape: the run after --mark exits with a declared code ($rrc)" \
+    "grep -qw '$rrc' <<<\"\$AFDX\""
+  check "shape/$shape: a repo shape is never answered with the usage code 2" \
+    "[ $mrc -ne 2 ] && [ $rrc -ne 2 ]"
+  check "shape/$shape: a marker --mark accepted is one the run can use" \
+    "[ $mrc -ne 0 ] || [ $rrc -eq 0 ] || [ $rrc -eq 4 ]"
+done
+# The unborn shape, tied to what the documents actually promise.
+XDG_CACHE_HOME="$SHP/cache-unborn2"; export XDG_CACHE_HOME
+uout="$("$BIN/jjstack-review-autofix-diff" --repo "$SHP/unborn" --mark 2>&1)"; urc=$?
+check "no commits: --mark exits 3, the code SKILL.md tells 5.7 to skip on" "[ $urc -eq 3 ]"
+check "no commits: --mark says why"  "grep -q 'no commits' <<<\"\$uout\""
+check "no commits: nothing unusable is left behind for the next run" \
+  "[ ! -f \"\$XDG_CACHE_HOME/jjstack/review/\$(printf '%s' '$SHP/unborn' | tr '/' '-')/autofix-baseline\" ]"
+"$BIN/jjstack-review-autofix-diff" --repo "$SHP/unborn" >/dev/null 2>&1; urc=$?
+check "no commits: the diff run exits 3 too, not the usage code 2" "[ $urc -eq 3 ]"
+check "the skill documents exit 3 as 'no commits' for this pass" \
+  "grep -q 'no commits' '$DIR/skills/review/SKILL.md'"
+# POSITIVE CONTROL — exit 2 must still be reachable, or "never 2" above is an
+# assertion about a code the tool can no longer produce.
+"$BIN/jjstack-review-autofix-diff" --repo "$SHP/clean" --baseline definitely-not-a-ref >/dev/null 2>&1; urc=$?
+check "control: exit 2 is reachable — a bad --baseline is a usage error" "[ $urc -eq 2 ]"
+"$BIN/jjstack-review-autofix-diff" --repo "$SHP/clean" --baseline >/dev/null 2>&1; urc=$?
+check "control: a value-less flag is a usage error, not a hang" "[ $urc -eq 2 ]"
+unset XDG_CACHE_HOME
+rm -rf "$SHP"
+
 echo "== 7c. review-calibration (accept/reject memory) =="
 # Post-pass 5: a class the team keeps rejecting must be ranked DOWN THE PAGE and a
 # class they keep confirming ranked up, or the reviewer re-guesses every run.
@@ -1631,7 +1800,7 @@ check "no ledger yet exits 4 (skip, no adjustment)" "[ $rc -eq 4 ]"
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "Unused Import!!" --verdict rejected >/dev/null 2>&1
 "$BIN/jjstack-review-calibration" record --store "$LEDGER" --key "unused-import" --verdict rejected >/dev/null 2>&1
 out=$("$BIN/jjstack-review-calibration" suggest --store "$LEDGER" --key "UNUSED import" 2>&1)
-check "keys normalize to one row across spellings" "printf '%s' \"\$out\" | grep -q 'rejected=2'"
+check "keys normalize to one row across spellings" "grep -q 'rejected=2' <<<\"\$out\""
 check "two rejections rank the pattern at -20"     "grep -q 'rank=-20' <<<\"\$out\""
 check "a negative rank demotes rather than rescores" "grep -q 'placement=demoted' <<<\"\$out\""
 # The whole point of the rewrite: calibration must never emit an instruction to
@@ -1706,6 +1875,97 @@ r2="$("$BIN/jjstack-review-calibration" report --store "$ORD" 2>&1)"
 check "report is byte-identical across runs on an unchanged ledger" "[ \"\$r1\" = \"\$r2\" ]"
 check "tied ranks fall back to key order" \
   "[ \"\$(printf '%s\n' \"\$r1\" | awk '/(demoted|normal)\$/ && \$1 ~ /^tie-/ { print \$1 }' | tr '\n' ' ')\" = 'tie-a tie-b ' ]"
+# ---- the ranked view, checked against an oracle the tool did not compute -----
+# The two assertions above are properties of a TWO-ROW fixture, not of the sort.
+# Deleting `-k2,2` left ALL 438 PASS: for those two rows awk's emission order
+# already equalled key order on this awk build. Byte-identity across two runs is
+# weaker still — the same producer iterates the same way with or without any
+# sort at all. And the clamps have TWO implementations, one in the shell for
+# `suggest` and one in the awk for `report`; deleting the awk pair left ALL 438
+# PASS while deleting the shell pair reddened correctly.
+#
+# Adding a third fixture row would close those instances. The class is "the
+# expectation was written by looking at the output", so stop writing the
+# expectation at all and COMPUTE it from the two things that actually define it:
+#
+#   * the LEDGER — the input, and
+#   * the placement contract DECLARED in the tool's own --help: the multiplier,
+#     the floor, the ceiling and the tie rule are PARSED out of that text below,
+#     never copied into this file.
+#
+# The oracle is therefore independent of the code under test in both directions:
+# a contract change the awk copy does not follow reddens, a contract change the
+# shell copy does not follow reddens, and the two copies drifting apart reddens
+# even when each is self-consistent.
+CONTRACT="$("$BIN/jjstack-review-calibration" --help 2>/dev/null | tr '\n' ' ' | tr -s ' ')"
+C_MULT="$(grep -oE 'rank \(clamped\): [0-9]+\*accepted' <<<"$CONTRACT" | grep -oE '[0-9]+')"
+C_FLOOR="$(grep -oE 'floor -?[0-9]+' <<<"$CONTRACT" | grep -oE '\-?[0-9]+')"
+C_CEIL="$(grep -oE 'ceiling \+?-?[0-9]+' <<<"$CONTRACT" | grep -oE '\-?[0-9]+')"
+check "the placement contract declares multiplier, floor and ceiling" \
+  "[ -n \"\$C_MULT\" ] && [ -n \"\$C_FLOOR\" ] && [ -n \"\$C_CEIL\" ]"
+check "the contract declares how ties are ordered" \
+  "grep -q 'ties broken by pattern key ascending' <<<\"\$CONTRACT\""
+rank_oracle() {  # rank_oracle <ledger> -> "<rank>\t<key>" in contract order
+  awk -F'\t' -v m="$C_MULT" -v lo="$C_FLOOR" -v hi="$C_CEIL" '
+    $0 ~ /^#/ { next }
+    NF < 3    { next }
+    { seen[$2]; if ($3 == "accepted") a[$2]++; else if ($3 == "rejected") r[$2]++ }
+    END { for (k in seen) {
+            d = m * (a[k] + 0) - m * (r[k] + 0)
+            if (d < lo) d = lo
+            if (d > hi) d = hi
+            printf "%d\t%s\n", d, k
+          } }' "$1" \
+    | sort -t"$(printf '\t')" -k1,1n -k2,2
+}
+# Tie groups are recorded in REVERSE alphabetical order and two keys are driven
+# PAST each clamp, so neither the tie-break nor a clamp can come out right by
+# coincidence on this awk build.
+ORD2="$CAL/oracle.tsv"
+while read -r okey overdict ocount; do
+  [ -n "${okey:-}" ] || continue
+  i=0
+  while [ "$i" -lt "$ocount" ]; do
+    "$BIN/jjstack-review-calibration" record --store "$ORD2" --key "$okey" --verdict "$overdict" >/dev/null 2>&1
+    i=$((i + 1))
+  done
+done <<'ORACLE_LEDGER'
+zzz-tie-high accepted 2
+mmm-ceiling  accepted 5
+aaa-tie-high accepted 2
+zzz-tie-mid  accepted 1
+aaa-tie-mid  accepted 1
+zzz-floor    rejected 5
+aaa-tie-low  rejected 4
+mmm-mild     rejected 1
+bbb-deep     rejected 2
+ORACLE_LEDGER
+expected="$(rank_oracle "$ORD2")"
+actual="$("$BIN/jjstack-review-calibration" report --store "$ORD2" 2>&1 \
+  | awk '/(demoted|normal)$/ { printf "%d\t%s\n", $(NF-1), $1 }')"
+okeys=$(awk -F'\t' '$0 !~ /^#/ && NF >= 3 { print $2 }' "$ORD2" | sort -u | grep -c .)
+# ANTI-VACUITY. An empty oracle equals an empty actual, and a fixture with no
+# ties or no clamp breach proves nothing about either mechanism.
+check "the oracle covers every key in the ledger" \
+  "[ \$(grep -c . <<<\"\$expected\") -eq $okeys ] && [ $okeys -ge 9 ]"
+check "control: the fixture drives keys past BOTH clamps" \
+  "grep -q \"^\$C_FLOOR\$(printf '\t')\" <<<\"\$expected\" && grep -q \"^\$C_CEIL\$(printf '\t')\" <<<\"\$expected\""
+check "control: the fixture holds three tie groups" \
+  "[ \$(cut -f1 <<<\"\$expected\" | uniq -d | grep -c .) -ge 3 ]"
+check "report's ranked view matches the contract oracle exactly" \
+  "[ \"\$actual\" = \"\$expected\" ]"
+check "control: the comparison can fail (a reversed oracle does not match)" \
+  "[ \"\$actual\" != \"\$(tac <<<\"\$expected\")\" ]"
+# The same oracle against the OTHER implementation of the same arithmetic. This
+# is what makes the duplicated clamps testable: `suggest` computes them in the
+# shell and `report` in awk, and both are compared to the declared contract, so
+# neither copy can drift on its own or in step with the other.
+while IFS="$(printf '\t')" read -r erank ekey; do
+  [ -n "${ekey:-}" ] || continue
+  sline="$("$BIN/jjstack-review-calibration" suggest --store "$ORD2" --key "$ekey" 2>&1)"
+  check "suggest matches the contract oracle for $ekey (rank=$erank)" \
+    "grep -qE 'rank=$erank( |\$)' <<<\"\$sline\""
+done <<<"$expected"
 rm -rf "$CAL"
 
 echo "== 7d. value-less flags must be a usage error, never a hang =="
@@ -1747,17 +2007,17 @@ echo "== 7e. --help is derived from the header, not a hand-kept line range =="
 for tool in jjstack-review-sweep jjstack-review-autofix-diff jjstack-review-calibration; do
   hout=$("$BIN/$tool" --help 2>&1)
   check "$tool --help leaks no shell source" \
-    "! printf '%s' \"\$hout\" | grep -qE 'set -uo pipefail|\\\\033\\['"
-  check "$tool --help reaches the Usage section"  "printf '%s' \"\$hout\" | grep -q '^Usage:'"
-  check "$tool --help reaches the Exit section"   "printf '%s' \"\$hout\" | grep -q '^Exit'"
+    "! grep -qE 'set -uo pipefail|\\\\033\\[' <<<\"\$hout\""
+  check "$tool --help reaches the Usage section"  "grep -q '^Usage:' <<<\"\$hout\""
+  check "$tool --help reaches the Exit section"   "grep -q '^Exit' <<<\"\$hout\""
   check "$tool --help ends on the last header line" \
-    "printf '%s' \"\$hout\" | grep -q 'No color red anywhere'"
+    "grep -q 'No color red anywhere' <<<\"\$hout\""
 done
 # Positive control — the leak detector must be able to fire, or "no shell source"
 # is a grep that never matches anything and the truncation ships green.
 probe_help=$(printf 'Usage:\nset -uo pipefail\n')
 check "help leak guard actually catches leaked source" \
-  "printf '%s' \"\$probe_help\" | grep -qE 'set -uo pipefail'"
+  "grep -qE 'set -uo pipefail' <<<\"\$probe_help\""
 
 echo "== 7f. review-sweep PARTIAL: a check set with no test runner is not clean =="
 # Detection only adds a tool that is installed, so a Python project with ruff but
@@ -1773,16 +2033,16 @@ ln -s "$(command -v rm)" "$SHIM/rm"
 printf '#!/bin/sh\nexit 0\n' > "$SHIM/ruff"; chmod +x "$SHIM/ruff"
 out=$(timeout 30 env PATH="$SHIM" "$BIN/jjstack-review-sweep" --repo "$PSW" 2>&1); rc=$?
 check "lint-only plan exits 5 (partial), not 0"    "[ $rc -eq 5 ]"
-check "partial says PARTIAL, never CLEAN"          "printf '%s' \"\$out\" | grep -q 'SWEEP PARTIAL'"
-check "partial never prints SWEEP CLEAN"           "! printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
-check "partial names the missing test runner"      "printf '%s' \"\$out\" | grep -q 'NO test runner'"
+check "partial says PARTIAL, never CLEAN"          "grep -q 'SWEEP PARTIAL' <<<\"\$out\""
+check "partial never prints SWEEP CLEAN"           "! grep -q 'SWEEP CLEAN' <<<\"\$out\""
+check "partial names the missing test runner"      "grep -q 'NO test runner' <<<\"\$out\""
 # Positive control — add a test runner to the SAME fixture and the SAME shim. If
 # this did not flip to CLEAN/0 the partial check above would pass for the wrong
 # reason: a sweep that can only ever say PARTIAL is just as broken.
 printf '#!/bin/sh\nexit 0\n' > "$SHIM/pytest"; chmod +x "$SHIM/pytest"
 out=$(timeout 30 env PATH="$SHIM" "$BIN/jjstack-review-sweep" --repo "$PSW" 2>&1); rc=$?
 check "same plan plus a test runner exits 0"       "[ $rc -eq 0 ]"
-check "with a test runner it says SWEEP CLEAN"     "printf '%s' \"\$out\" | grep -q 'SWEEP CLEAN'"
+check "with a test runner it says SWEEP CLEAN"     "grep -q 'SWEEP CLEAN' <<<\"\$out\""
 rm -rf "$SHIM" "$PSW"
 
 echo "== 7f2. the sweep must read package.json as data, never as code =="
@@ -1824,32 +2084,105 @@ cp "$NQD/package.json" "$NQX/package.json"
 check "a hostile path name is never executed as JavaScript" "[ ! -e '$NQS/PWNED' ]"
 rm -rf "$NQS"
 
-echo "== 7g. the docs must not teach the deleted rescoring/deletion model =="
-# The single guard that existed (a grep for 'delta=' on one command's stdout)
-# could not see PROSE, which is exactly how four written copies of the deleted
-# model survived a fix that corrected the tool. This guard reads the documents.
-# CHANGELOG and README are in scope: the user-facing copy restated the deleted
-# model too, and a guard that only reads the skill would let it survive there.
-REVDOCS="$DIR/skills/review/SKILL.md $DIR/references/review-post-passes.md $DIR/CHANGELOG.md $DIR/README.md"
-REVSRC="$BIN/jjstack-review-sweep $BIN/jjstack-review-autofix-diff $BIN/jjstack-review-calibration"
-# A negated grep over a path that no longer resolves EXITS NON-ZERO, and the `!`
-# turns that into a PASS — so a rename silently disarms every guard below it.
-# SKILL.md, review-post-passes.md and CHANGELOG.md each had a companion positive
-# grep that a rename would trip; README.md had none anywhere in the suite, so
-# renaming it and re-adding the deleted model left ALL 305 PASS. Assert the
-# corpus RESOLVES before asserting anything about its contents.
-for f in $REVDOCS $REVSRC; do
-  check "guarded doc/source is present: $(basename "$f")" "[ -f '$f' ]"
+echo "== 7g. no shipped document may teach a review model this repo deleted =="
+# Round 2 widened the CORPUS by hand — four documents — and left the only pattern
+# that can see WRAPPED prose pointed at one of them. Re-adding the deleted model
+# to SKILL.md, the document /review actually executes, left ALL 438 PASS. Adding
+# SKILL.md to that invocation would have closed the INSTANCE and left the class
+# open: the fifth document added by hand next month is invisible the same way.
+#
+# So neither half of this guard is a list in this file any more.
+#
+#   The CORPUS is DERIVED from skills/review/SKILL.md: the transitive closure of
+#   the references and bin/ scripts it names — the same `~/.claude/skills/jjstack/…`
+#   pointer form jjstack-verify-skills already resolves — plus every markdown
+#   document at the repo root, which is what the user reads. A reference or a
+#   script added to /review next week joins the corpus with no edit here.
+#
+#   The PATTERNS are DERIVED from test/fixtures/retired-review-model.tsv, the
+#   declared ledger of models this repo has retired. Each row carries the prose
+#   that shipped it, recovered from git, and every row must fire on its own probe
+#   — so no alternative can sit dead behind a live one, which is how the wrapped
+#   alternative shipped inert in the first place.
+#
+# What is left as a hand-kept list is the DECLARATION itself, in the ledger. That
+# is irreducible: no algorithm knows which model a team has decided to retire.
+# Everything downstream of the declaration — scope, coverage, controls — derives.
+
+# --- the corpus -------------------------------------------------------------
+review_closure() {   # review_closure -> one absolute path per line
+  local work prev f t
+  work="$(mktemp)"; prev="$(mktemp)"
+  echo "$DIR/skills/review/SKILL.md" > "$work"
+  while :; do
+    sort -u "$work" -o "$work"
+    cmp -s "$work" "$prev" && break
+    cp "$work" "$prev"
+    while read -r f; do
+      grep -ohE '(references/[a-z0-9-]+\.md|jjstack-[a-z0-9-]+)' "$f" 2>/dev/null
+    done < "$prev" | sort -u | while read -r t; do
+      case "$t" in
+        references/*) [ -f "$DIR/$t" ]     && echo "$DIR/$t" ;;
+        *)            [ -f "$DIR/bin/$t" ] && echo "$DIR/bin/$t" ;;
+      esac
+    done >> "$work"
+  done
+  ls "$DIR"/*.md 2>/dev/null >> "$work"
+  sort -u "$work"
+  rm -f "$work" "$prev"
+}
+REVDOCS="$(review_closure)"
+REVDOCS_N=$(grep -c . <<<"$REVDOCS")
+# ANTI-VACUITY. A derivation that silently resolves to nothing satisfies every
+# "! matches" assertion below perfectly. These are a FLOOR the closure must
+# reach, not its scope: rename one of them and the derivation stops reaching it,
+# which is the rename case README.md had no guard for at all in round 2.
+for anchor in skills/review/SKILL.md references/review-post-passes.md \
+              references/review-preflight.md references/code-review-best-practices.md \
+              CHANGELOG.md README.md \
+              bin/jjstack-review-sweep bin/jjstack-review-autofix-diff \
+              bin/jjstack-review-calibration bin/jjstack-review-preflight; do
+  check "the derived corpus reaches $anchor" \
+    "grep -qxF '$DIR/$anchor' <<<\"\$REVDOCS\""
 done
-# Each literal below is an affirmative statement of a model this repo deleted:
-# findings decaying/being promoted across a threshold, DISPROVEN dropping a
-# finding, and calibration adjusting a confidence.
-for phrase in \
-  "decay out" "decays out" "across the gate" "reporting gate" \
-  "drops the finding" "the finding drops" "no confidence adjustment"; do
-  check "no doc teaches \"$phrase\"" \
-    "! grep -qF -- '$phrase' $REVDOCS $REVSRC"
-done
+check "the derived corpus is a closure, not a handful" "[ $REVDOCS_N -ge 20 ]"
+# Transitivity is the property that makes it a closure: review-post-passes.md is
+# reached because SKILL.md names it, and jjstack-review-blast-radius because
+# jjstack-review-preflight names it — nothing in this file names either.
+check "the corpus follows a second hop (script named only by another script)" \
+  "grep -qxF '$DIR/bin/jjstack-review-blast-radius' <<<\"\$REVDOCS\""
+
+# --- the patterns -----------------------------------------------------------
+RETIRED_TSV="$DIR/test/fixtures/retired-review-model.tsv"
+check "the retired-model ledger is present" "[ -f '$RETIRED_TSV' ]"
+RETIRED_ROWS=$(awk -F'\t' '$0 !~ /^#/ && NF == 4' "$RETIRED_TSV" | grep -c .)
+RETIRED_ERE="$(awk -F'\t' '$0 !~ /^#/ && NF == 4 { printf "%s%s", sep, $2; sep = "|" }' "$RETIRED_TSV")"
+check "the ledger declares every model round 2 knew about" "[ $RETIRED_ROWS -ge 8 ]"
+check "every ledger row carries all four TAB fields" \
+  "[ \$(grep -cvE '^(#|\$)' '$RETIRED_TSV') -eq $RETIRED_ROWS ]"
+check "ledger ids are unique" \
+  "[ \$(awk -F'\t' '\$0 !~ /^#/ && NF == 4 { print \$1 }' '$RETIRED_TSV' | sort -u | grep -c .) -eq $RETIRED_ROWS ]"
+# ONE definition of the guard, used by the real assertions AND by the controls.
+# A control that re-implements the check only proves the control matches itself.
+# The flatten is the point: grep is line-based and the prose that shipped this
+# model WRAPPED, so the pattern could never fire on the very string it was
+# written for.
+# `grep -q` MUST NOT sit at the end of a pipe here: this file runs under
+# `set -o pipefail`, and grep -q exits the moment it matches, so the upstream
+# `tr` takes SIGPIPE and the pipeline reports FAILURE on the very inputs that
+# match. Under `! retired_model_hits`, that is a guard that goes green precisely
+# when it should go red — intermittently, by input length. Flatten first, match
+# against a here-string.
+retired_model_hits() {  # retired_model_hits <file>...
+  local flat
+  flat="$(cat -- "$@" | tr '\n' ' ' | tr -s ' ')"
+  grep -qE "$RETIRED_ERE" <<<"$flat"
+}
+while read -r f; do
+  [ -n "$f" ] || continue
+  check "no shipped document teaches a retired model: ${f#$DIR/}" \
+    "! retired_model_hits '$f'"
+done <<<"$REVDOCS"
 # The two rules those documents MUST still state, positively.
 check "SKILL.md still forbids deleting a finding" \
   "grep -qF 'Never delete a finding' '$DIR/skills/review/SKILL.md'"
@@ -1857,49 +2190,34 @@ check "SKILL.md gives DISPROVEN a section instead of a delete" \
   "grep -qF 'Disproven by test' '$DIR/skills/review/SKILL.md'"
 check "the post-pass reference gives DISPROVEN a section too" \
   "grep -qF 'Disproven by test' '$DIR/references/review-post-passes.md'"
-# ONE definition of the rescoring/deletion guard, used by the real assertion AND
-# by the positive controls below. A control that re-implements the check only
-# proves the control matches itself — which is how a dead alternative shipped.
-deleted_model_hits() { # deleted_model_hits <file>...
-  # Flatten before matching. grep is line-based, and the prose that shipped this
-  # model WRAPPED between "adjusts its" and "confidence" — so the pattern could
-  # never fire on the very string it was written for, and only the other
-  # alternative was ever live. A regex validated against a mental model of the
-  # string instead of the string itself is not a guard.
-  cat -- "$@" | tr '\n' ' ' | tr -s ' ' \
-    | grep -qE 'gets dropped|adjusts its.{0,30}confidence'
-}
-check "the changelog does not promise findings get dropped or rescored" \
-  "! deleted_model_hits '$DIR/CHANGELOG.md'"
 check "the changelog documents the PARTIAL sweep state" \
   "grep -qF 'PARTIAL' '$DIR/CHANGELOG.md'"
-# Positive controls — the prose guard must be able to fire, or it is a grep over
-# documents that can never match and the next copy of the model ships green.
-# These are RECOVERED LITERALS, not invented ones: the exact lines that shipped
-# the deleted model, taken from CHANGELOG.md at commit 0998a19^. There is one
-# control per alternative, because a single control lets a dead alternative hide
-# behind a live one.
-probe_doc="$(mktemp)"
-printf 'repeat false positives decay out of the report\n' > "$probe_doc"
-check "prose guard actually catches the deleted model" \
-  "grep -qF -- 'decay out' '$probe_doc'"
-# Recovered verbatim. This one WRAPS between "adjusts its" and "confidence",
-# which is exactly why a line-based grep could never fire on the string it was
-# written for. Do not reflow these two lines.
-probe_wrap="$(mktemp)"
-cat > "$probe_wrap" <<'PROBE'
-     repo (`jjstack/review-calibration.tsv`), and the next review adjusts its
-     confidence from them — so a false positive you dismissed twice stops being
-PROBE
-probe_drop="$(mktemp)"
-cat > "$probe_drop" <<'PROBE'
-     made to fail, the finding was never real and gets dropped — and if it can,
-PROBE
-check "rescoring guard fires on the prose that shipped it (wrapped line)" \
-  "deleted_model_hits '$probe_wrap'"
-check "deletion guard fires on the prose that shipped it" \
-  "deleted_model_hits '$probe_drop'"
-rm -f "$probe_doc" "$probe_wrap" "$probe_drop"
+# POSITIVE CONTROLS, one per declared row, generated FROM the ledger. Two claims
+# per row, because either one alone lets a dead pattern pass:
+#   1. the pattern fires on the prose that shipped it;
+#   2. that prose is RECOVERED, not invented — its first line exists byte for
+#      byte in the object the ledger names. An invented probe cannot satisfy
+#      this, so "the control matches itself" stops being available.
+while IFS="$(printf '\t')" read -r rid rpat rprobe rprov; do
+  case "$rid" in ''|'#'*) continue ;; esac
+  [ -n "${rprov:-}" ] || continue
+  pf="$SANDBOX/retired-probe.$rid"
+  printf '%b\n' "$rprobe" > "$pf"
+  check "control: '$rid' fires on the prose that shipped it" \
+    "retired_model_hits '$pf'"
+  first="$(printf '%b' "$rprobe" | head -1)"
+  # Same pipefail/SIGPIPE rule: read the object into a variable, then match.
+  provtext="$(git -C "$DIR" show "$rprov" 2>/dev/null)"
+  check "control: '$rid' probe is recovered from $rprov, not invented" \
+    "grep -qxF -- \"\$first\" <<<\"\$provtext\""
+done < "$RETIRED_TSV"
+# NEGATIVE CONTROL. A ledger whose ERE had collapsed to something that matches
+# everything would satisfy every control above and redden every corpus file for
+# the wrong reason; prose that says the opposite of the retired model must pass.
+neg_probe="$SANDBOX/retired-negative.txt"
+printf 'Never delete a finding. Verification is enrich-only: it may raise a\nscore or tag a finding unconfirmed, never lower one and never remove one.\n' > "$neg_probe"
+check "control: prose stating the CURRENT model does not trip the guard" \
+  "! retired_model_hits '$neg_probe'"
 
 echo "== 7h. --mark is actually invoked, not just implemented =="
 # The marker is the ONLY thing separating the reviewer's auto-fixes from the
@@ -1961,6 +2279,31 @@ check "the lint flags the exact line this PR removed (control)" "[ \"\$(hermetic
 # And the exemption marker must stay rare enough to read at a glance.
 exempt=$(grep -c 'hermetic-ok' "$SELF")
 check "the lint has exactly 3 opted-out lines (adding one reddens this)" "[ \"\$exempt\" = 3 ]"
+
+# A FOURTH way an assertion goes green when it should go red, found while
+# building this round's guards rather than by reading the diff: `grep -q` at the
+# END of a pipe. This file runs under `set -o pipefail`; `grep -q` exits the
+# instant it matches, the upstream process takes SIGPIPE, and the PIPELINE
+# reports failure — on exactly the inputs that DID match. Under a leading `!`
+# that is a guard which passes precisely when it should fail, intermittently, by
+# input length. Reproduced: the 7g provenance control failed on 2 of 3 otherwise
+# identical runs before it was rewritten. Match against a here-string or a
+# command substitution instead — neither can be interrupted mid-write.
+pipefail_lint() {   # pipefail_lint <file> → one line per pipe ending in grep -q
+  grep -nE '\| *grep +-q' "$1" | grep -v 'pipefail-ok'
+}
+qviol=$(pipefail_lint "$SELF")
+[ -n "$qviol" ] && printf '     %s\n' "$qviol"
+check "no assertion ends a pipe in grep -q" "[ -z \"\$qviol\" ]"
+# POSITIVE CONTROL, recovered rather than invented: the exact line this change
+# converted, read back out of git at 8987f9b:test/smoke.sh:1530. Recovering it
+# at runtime also keeps the specimen OUT of this file, where the lint above
+# would flag it.
+QCTLF="$SANDBOX/pipefail-specimen.sh"
+git -C "$DIR" show 8987f9b:test/smoke.sh 2>/dev/null | sed -n '1530p' > "$QCTLF"
+check "the pipe-lint specimen was recovered from git" "[ -s '$QCTLF' ]"
+check "the pipe lint flags the exact line this change converted (control)" \
+  "[ \"\$(pipefail_lint '$QCTLF' | wc -l)\" = 1 ]"
 
 # Runtime half of the guard: the sandbox must still be in force at the end. A
 # section that reassigns $HOME and forgets to restore it would leave every later
