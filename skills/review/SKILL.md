@@ -269,7 +269,7 @@ Compose `{OUTPUT_DIR}/pr-comment.md` in the structure the voice reference
 gives: verdict, ≤ 3 blocking findings one line each, `N blocking, M total`,
 link to the committed report, and the attribution line last.
 
-**Every comment carries `Claude jjstack/code-review/skill.md`.** It posts under
+**Every comment carries `Claude jjstack/skills/review/SKILL.md`.** It posts under
 a human's GitHub account — that is whose token `gh` holds — so without that
 line a reader cannot tell this review from something its apparent author
 wrote. The lint refuses a comment that omits it.
@@ -278,7 +278,7 @@ wrote. The lint refuses a comment that omits it.
 one line and nothing else:**
 
 ```text
-Claude jjstack/code-review/skill.md: all issues resolved - lgtm - approved
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
 ```
 
 (`no findings` in place of `all issues resolved` on a first clean review.) No

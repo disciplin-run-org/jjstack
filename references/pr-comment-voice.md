@@ -37,10 +37,11 @@ because that is whose token `gh` holds. It was not written by him. A reader
 scanning a PR cannot tell the difference unless the comment says so, and
 leaving that ambiguous misrepresents who reviewed the code.
 
-So every comment carries this line, verbatim:
+So every comment carries this line, verbatim — the repo and the real path to
+the skill that produced it, so a reader can go and read the rules it ran under:
 
 ```
-Claude jjstack/code-review/skill.md
+Claude jjstack/skills/review/SKILL.md
 ```
 
 On a one-line approve it is the opening of the line. On a findings comment it
@@ -53,7 +54,7 @@ When every finding is fixed, or there were none to begin with, the comment is
 exactly this and nothing else:
 
 ```
-Claude jjstack/code-review/skill.md: all issues resolved - lgtm - approved
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
 ```
 
 For a first review that found nothing, `no findings` replaces
@@ -105,7 +106,7 @@ sentence setting the stage, the voice is lost.
 M-N more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
 Guardrail: the condition under which this verdict holds.
 
-Claude jjstack/code-review/skill.md
+Claude jjstack/skills/review/SKILL.md
 ```
 
 One line per finding. `file:line` is not decoration - it is what makes the

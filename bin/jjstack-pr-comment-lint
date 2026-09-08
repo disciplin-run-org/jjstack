@@ -245,7 +245,7 @@ fi
 # holds. Without this line a reader cannot tell the review from something its
 # apparent author wrote, and every comment this skill has posted so far read
 # as Jesper's own words.
-ATTRIB='Claude jjstack/code-review/skill.md'
+ATTRIB='Claude jjstack/skills/review/SKILL.md'
 grep -qF "$ATTRIB" "$SRC" || \
   fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it."
 

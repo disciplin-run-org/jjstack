@@ -682,7 +682,7 @@ check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n\n`review-2026-01-01.md`\n'
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
-body clean_ok 'Claude jjstack/code-review/skill.md: no findings - lgtm - approved\n'
+body clean_ok 'Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved\n'
 check "a clean approve passes (control: the secret rule discriminates)" \
       "[ \$(lint '$PCL/clean_ok.md') = 0 ]"
 # A bare vendor token carries no `name = value` shape, so the generic rule
@@ -723,16 +723,16 @@ check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
+body aplow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
 check "the word **low** in prose is not counted as a second finding" \
       "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
-body apbelow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
+body apbelow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
 check "…nor the word below: in a citation" \
       "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
 body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n\nClaude jjstack/code-review/skill.md\n'
+body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
 # A budget that cannot be evaluated is not a budget: an empty flag value must
@@ -772,7 +772,7 @@ check "…and 2 is not the success code the post chain would continue past" \
 # ATTRIBUTION. The comment posts under a human's GitHub account, so it has to
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
-ATT='Claude jjstack/code-review/skill.md'
+ATT='Claude jjstack/skills/review/SKILL.md'
 body att_ok "$ATT: all issues resolved - lgtm - approved\n"
 check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 body att_clean "$ATT: no findings - lgtm - approved\n"
