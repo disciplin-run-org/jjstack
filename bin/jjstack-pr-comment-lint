@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# jjstack-pr-comment-lint — enforce the safety, brevity and voice rules on a PR
+# review comment BEFORE it is posted, mechanically.
+#
+# Two jobs, in this order.
+#
+# 1. SAFETY. A PR comment is public and permanent. The review's own security lens
+#    is what surfaces credentials, and the voice rules mandate a one-line
+#    `file:line` claim that renders the evidence inline, so the natural output of
+#    a good review is a comment quoting the key it just found. Editing the
+#    comment afterwards does not remove the value from the API's edit history.
+#    The secret rules therefore fail CLOSED: they cannot be silenced by --quiet
+#    and they carry their own exit code.
+#
+# 2. BREVITY AND VOICE. A review nobody reads is a review that did not happen.
+#    The failure mode is not a wrong finding, it is 400 lines of correct findings
+#    that a human scrolls past. Prose instructions to "be concise" lose to a
+#    model's pull toward completeness on every single run, so the budget is
+#    enforced by code instead of by asking.
+#
+# Every rule here is one a machine can decide. Voice judgement stays in the
+# skill; only the checkable half lives in this script.
+#
+# Rules enforced (from the Jesper Jurcenoks Voice DNA, Executive register):
+#   - no credential literal anywhere in the body  (fails closed, exit 4)
+#   - hard size budget: lines and characters
+#   - at most N findings inline, counted as OCCURRENCES not lines
+#   - a link to a report that EXISTS on disk
+#   - a declared residual: "N blocking, M total" plus "M-shown more"
+#   - no emdash "—"            (hard rule, the critical differentiator)
+#
+# Voice beyond that - superlatives, meta-commentary, sentence length, softening
+# qualifiers - is JUDGEMENT and lives in references/pr-comment-voice.md. A
+# grep cannot tell "robust" in a finding's quoted code from "robust" used to
+# sell, and a linter that argues about prose is a linter people stop running.
+#
+# Usage:
+#   jjstack-pr-comment-lint <file> [--max-lines N] [--max-chars N]
+#                                  [--max-findings N] [--quiet]
+# Exit: 0 clean, 1 rule violations found, 2 usage, 3 file missing,
+#       4 a credential literal was found (never post; redact first).
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# review_need_value: the family's ONE argument guard. `--flag` with no value
+# spins forever otherwise - bash's `shift 2` is a NO-OP when fewer than two
+# arguments remain, and `set -e` is off, so the loop re-reads the same flag
+# until something kills it (rc=124 under `timeout 5`).
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-argcheck.sh" || exit 3
+
+# A budget that cannot be evaluated is not a budget. `${2:-}` accepted an empty
+# string, `[ "" -gt 12 ]` printed "integer expression expected" and returned
+# non-zero, and a non-zero `[` does not increment the violation count — so 41
+# lines against a 12-line budget reported `clean`, rc=0. A hard gate that treats
+# an unevaluatable check as a pass is not a gate. Validate at parse time instead,
+# for every numeric flag, against every non-numeric shape.
+need_int() {   # need_int FLAG VALUE
+  case "$2" in
+    ''|*[![:digit:]]*)
+      echo -e "${CYA}error${RST} $1 needs a non-negative integer, got '$2'" >&2; exit 2 ;;
+  esac
+}
+
+# Budget is deliberately brutal. A PR comment is a DOORBELL, not the delivery:
+# verdict, the blocking findings, a link. Everything else is already committed
+# to {repo}/jjstack/ and does not need re-typing into a scroll box.
+# 12 lines / 900 chars is about six seconds of reading. That is the whole point.
+SRC=""; MAX_LINES=12; MAX_CHARS=900; MAX_FINDINGS=3; QUIET=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --max-lines)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_LINES="$2";    shift 2 ;;
+    --max-chars)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_CHARS="$2";    shift 2 ;;
+    --max-findings) review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_FINDINGS="$2"; shift 2 ;;
+    --quiet)     QUIET=1; shift ;;
+    -h|--help)   sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
+    *)  [ -z "$SRC" ] && SRC="$1" || { echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2; }
+        shift ;;
+  esac
+done
+[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N]" >&2; exit 2; }
+[ -f "$SRC" ] || { echo -e "${CYA}error${RST} no such file: $SRC" >&2; exit 3; }
+
+viol=0
+secrets=0
+say() { [ "$QUIET" -eq 1 ] || echo -e "$1"; }
+fail() { viol=$((viol + 1)); say "  ${YEL}$1${RST}  $2"; }
+# Fails CLOSED: always printed, to stderr, whatever --quiet says. A caller that
+# silenced this would be silencing the one rule that prevents a public leak.
+hard() { viol=$((viol + 1)); secrets=$((secrets + 1)); echo -e "  ${YEL}$1${RST}  $2" >&2; }
+
+n_lines=$(wc -l < "$SRC" | tr -d ' ')
+n_chars=$(wc -c < "$SRC" | tr -d ' ')
+
+# --- SAFETY: no credential literal reaches a public PR ------------------------
+# The class is "a credential literal", not "an AWS key" and not a list of
+# vendors. Enumerating vendors is how the round-3 leak happened: the rule was
+# named `aws key id`, matched the 20-char identifier, and let the 40-char SECRET
+# access key through. So rule 1 is SHAPE-based - anything that reads like a
+# credential being assigned to a credential-shaped name - and the vendor
+# prefixes below it are a backstop for tokens that appear bare, not the
+# primary defence.
+#
+# The message names the RULE and the LINE, never the match. A linter that echoes
+# the key has moved the leak into the terminal and the run log instead of
+# stopping it. The fix the message teaches is the one the voice already wants:
+# cite `file:line`, leave the value in the committed report.
+#
+# `grep -E --` because a PEM header STARTS with dashes: without the terminator
+# grep reads the pattern as its own options and that rule silently never fires.
+while IFS='|' read -r label pat; do
+  [ -n "$label" ] || continue
+  hits=$(grep -nEi -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
+  [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
+done <<'SECRETS'
+assigned credential|(api[_-]?key|secret|token|password|passwd|credential)[A-Za-z0-9_-]*[\"']?[[:space:]]*[=:][[:space:]]*[\"']?[A-Za-z0-9/+_.~-]{16,}
+private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----
+credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]+:[^/@[:space:]]{6,}@
+vendor token prefix|(AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}
+SECRETS
+
+# --- how many findings this comment shows -------------------------------------
+# Counted as OCCURRENCES, not lines. `grep -c` OVERRIDES `-o` in GNU grep, so
+# five findings on one physical line counted as one and the comment passed clean.
+# (A ugrep shim counts occurrences, which is why this survives a hand check.)
+#
+# And the token class is the SEVERITY, not the one decoration that had a fixture.
+# Round 1 widened the prefix class to list markers and blockquotes; `[` was not
+# in it, and a spelled-out severity carries no P-token at all. Both evaded the
+# cap. Strip the decorations first, then match the token: that covers `**P0**`,
+# `[P0]`, `(P0)`, `"P0"`, `- P0`, `1. P0` and `| P0 |` without enumerating them.
+#
+# Spelled-out severities are matched on the UNstripped text and must carry a
+# label marker (a colon, a closing bracket, a bold close). "the critical path" in
+# prose is not a finding; "Critical:" is. The word list is the one SKILL.md
+# sanctions - P0-P3 plus CRITICAL/HIGH/MEDIUM/LOW - not the subset that happened
+# to have a fixture: six findings written **HIGH** posted under a cap of three.
+# `P0` matching is case-insensitive for the same reason `p0` evaded it.
+count_findings() {   # count_findings FILE
+  local f="$1" a b
+  a=$(sed 's/[][*_`(){}<>"]/ /g' "$f" | grep -owiE 'P[0-3]' 2>/dev/null | wc -l | tr -d ' ')
+  b=$(grep -oiE '(\*\*|__|\[|\()?(CRITICAL|BLOCKER|SEVERE|MAJOR|MINOR|HIGH|MEDIUM|LOW|SEV[0-3])(\*\*|__|\]|\)|:)' "$f" 2>/dev/null | wc -l | tr -d ' ')
+  echo $(( ${a:-0} + ${b:-0} ))
+}
+n_find=$(count_findings "$SRC")
+
+# --- the budget scales with the verdict, because the information does ---
+# One budget for every verdict was wrong. Twelve lines is right for a REJECT
+# carrying two blocking findings. For an APPROVE with nothing to report it is
+# four times too generous, and a model fills whatever ceiling it is given: a
+# real clean review spent ~25 lines - posture, coverage, five evidence bullets -
+# proving it had nothing to say. On a clean PR the author wants the verdict, not
+# the audit trail that produced it. The evidence is already in the report.
+#
+# Detected, not declared, so no caller has to remember to pass a flag. It reads
+# the SAME count as the cap: when the count under-reads a finding shape, the
+# comment is both under-capped and mis-classified as clean, and the second error
+# is silent. One counter, one place to fix.
+VERDICT="findings"
+if [ "$n_find" -eq 0 ] && grep -qE '\b(APPROVE|LGTM)\b' "$SRC"; then
+  VERDICT="approve"
+  MAX_LINES=3
+  MAX_CHARS=250
+fi
+
+[ "$n_lines" -gt "$MAX_LINES" ] && {
+  if [ "$VERDICT" = "approve" ]; then
+    fail "too-long" "$n_lines lines for a clean approve (budget $MAX_LINES). Nothing was found: say so and link the report. The evidence for why it is clean belongs in the report, not the comment."
+  else
+    fail "too-long" "$n_lines lines (budget $MAX_LINES). Cut findings, do not cut evidence: link instead."
+  fi
+}
+[ "$n_chars" -gt "$MAX_CHARS" ] && \
+  fail "too-long" "$n_chars chars (budget $MAX_CHARS, verdict=$VERDICT)."
+
+# --- finding count: the real cause of a wall of text ---
+# Length is the symptom. The cause is pasting every finding into the comment.
+# Cap what appears inline; the rest stays in the committed report.
+[ "$n_find" -gt "$MAX_FINDINGS" ] && \
+  fail "too-many" "$n_find findings inline (max $MAX_FINDINGS). Show the blocking ones, link the rest."
+
+# --- the link: proof that findings were MOVED, not deleted ---
+# Without this, "be brief" degrades into "drop findings", which is the one
+# failure this whole skill exists to prevent.
+#
+# Two rounds of this rule were satisfiable without a report. First any ".md"
+# substring counted, so a finding whose own subject was `docs/setup.md:12`
+# passed. Then a bare `https://` counted, so a finding citing any URL passed.
+# And a named report path was never stat'd: `jjstack/does-not-exist-anywhere.md`
+# returned clean. So: the reference must LOOK like a report, and if it names a
+# path it must BE there. A link to nothing is the same as no link.
+report_ref=$(grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' "$SRC" 2>/dev/null | head -1)
+url_ref=$(grep -oE 'https?://[^)>[:space:]`"'"'"']+' "$SRC" 2>/dev/null \
+  | grep -E '(\.md([?#].*)?$|/jjstack/|review-[0-9]{4}-[0-9]{2}-[0-9]{2})' | head -1)
+
+if [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
+  fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a bare URL inside a citation: brevity moves evidence, it never deletes it."
+elif [ -n "$report_ref" ]; then
+  # Resolve against the repo the comment lives in, then against the comment's own
+  # directory, then one level up: {OUTPUT_DIR} is normally {repo}/jjstack, so
+  # both "jjstack/review-DATE.md" and a bare "review-DATE.md" have to land.
+  src_dir=$(cd "$(dirname "$SRC")" && pwd)
+  root=$(git -C "$src_dir" rev-parse --show-toplevel 2>/dev/null || true)
+  found=0
+  for cand in "${root:+$root/$report_ref}" "$src_dir/$report_ref" "$src_dir/../$report_ref" "$src_dir/$(basename "$report_ref")"; do
+    [ -n "$cand" ] && [ -f "$cand" ] && { found=1; break; }
+  done
+  [ "$found" -eq 1 ] || \
+    fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 6.2), then link it: a link to nothing is the same as no link."
+fi
+
+# --- the residual: the count that proves nothing was dropped ---
+# "N blocking, M total" lived only as prose in the voice reference, so a comment
+# could show three findings, declare nothing, and pass clean. That is precisely
+# how "be brief" turns into "drop findings". The arithmetic is checkable, so it
+# is checked: M-N must be stated, and it must equal total minus shown.
+if [ "$VERDICT" = "approve" ]; then
+  grep -qiE '(no findings|\b0 total\b)' "$SRC" || \
+    fail "no-residual" "an approve must say what it found: \"no findings\". A verdict with no count is a claim with no shape."
+else
+  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$SRC" 2>/dev/null | head -1)
+  if [ -z "$decl" ]; then
+    fail "no-residual" "no \"N blocking, M total\" declared. Without the total, a reader cannot tell a short comment from a dropped finding."
+  else
+    n_block=$(echo "$decl" | grep -oE '^[0-9]+')
+    n_total=$(echo "$decl" | grep -oE '[0-9]+ total' | grep -oE '^[0-9]+')
+    if [ "$n_total" -lt "$n_block" ]; then
+      fail "bad-residual" "$decl: the total cannot be smaller than the blocking count."
+    elif [ "$n_total" -gt "$n_find" ]; then
+      want=$((n_total - n_find))
+      got=$(grep -oiE '[0-9]+ more\b' "$SRC" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
+      [ "${got:-x}" = "$want" ] || \
+        fail "bad-residual" "$n_total total, $n_find shown: say \"$want more\" and link the report. Findings move into the report, they never disappear."
+    fi
+  fi
+fi
+
+# --- emdash: hard rule, the single most recognisable tell ---
+if grep -q '—' "$SRC"; then
+  fail "emdash" "found '—'. Use the short dash '-' instead."
+fi
+
+# --- emdash: hard rule, the single most recognisable tell ---
+if grep -q '—' "$SRC"; then
+  fail "emdash" "found '—'. Use the short dash '-' instead."
+fi
+
+if [ "$secrets" -gt 0 ]; then
+  echo -e "${YEL}$secrets credential literal(s)${RST} - redact before posting. This comment must not be published." >&2
+  exit 4
+fi
+if [ "$viol" -eq 0 ]; then
+  say "${GRN}clean${RST}    $n_lines lines, $n_chars chars - within budget and in voice."
+  exit 0
+fi
+say "${YEL}$viol rule violation(s)${RST} - fix before posting."
+exit 1

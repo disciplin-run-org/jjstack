@@ -11,20 +11,35 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
-- **`/review` is now the deepest review in the stack — on purpose.** It used to
-  be a light wrapper over gstack's review. It now deliberately trades time and
-  tokens for coverage: it runs *every* specialist (gstack normally skips them on
-  diffs under 50 lines and auto-retires ones that have been quiet), and it adds
-  eight passes the fast reviewers skip — git history, prior review comments,
-  code-comment and CLAUDE.md compliance, plus the security, test-coverage,
-  concurrency/resource-leak and error-handling sweeps that Anthropic's
-  `/code-review` drops by design. Casting that wide normally means noise, so
-  every finding must now survive a verification step: quote the line that
-  motivates it, name a concrete failure scenario (the input that triggers it and
-  the wrong result), and carry a 0–100 confidence score. Anything under 40 is
-  dropped, 40–59 lands in an appendix instead of vanishing silently, and the
-  main report is ranked by severity. Use it before a merge that matters; use
-  gstack's `/review` or the code-review plugin when you want fast and cheap.
+- **`/review` now finishes in under an hour, and gets shorter each round.** It
+  used to be tuned to catch everything: every specialist forced, no small-diff
+  skip, ten extra passes, nothing ever dropped. That version was slower than a
+  human reviewer and, pointed at a real change, generated more work than it
+  retired — several rounds in a row, each one finding defects in the machinery
+  the previous round had asked for. The rebuilt `/review` keeps the parts that
+  found real bugs and puts a budget on the rest: 60 minutes wall-clock, four
+  parallel passes, at most ten findings in the report and three in the PR
+  comment. gstack's own specialist gating applies again; `--deep` opts back
+  into the exhaustive sweep when a change deserves it.
+
+  What it does, in order: run your repo's real typechecker, linter and tests
+  first and treat what they cover as out of scope; map every caller **outside**
+  the diff of a definition the diff changed; read the change's stated intent
+  from the commits and PR; then four passes (context and intent fidelity;
+  correctness, concurrency and blast radius; security; test coverage and what
+  should have changed and didn't). Every finding carries a quoted line, a
+  concrete failure scenario, a confidence score, the simplest fix — deletion
+  considered first — and its size in lines. Verdicts are APPROVE, CAUTION or
+  REJECT; a report of nothing but P2s never rejects.
+
+  **Re-reviews converge by construction.** A second review verifies only the
+  previous P0s and P1s, never re-raises a P2 the author declined, does not
+  review the tests a fix added, and opens with the line delta since last round.
+  If the finding count did not fall, the verdict is `STOP` — the review is
+  making work rather than finishing it, and it says so instead of continuing.
+- **`/review` no longer edits your code.** gstack's auto-fix step is reported
+  instead of applied. A reviewer that edits the tree has to review its own
+  edits, and that loop does not terminate.
 - **gstack upgraded 1.58.5.0 → 1.81.0.0** for everyone on jjstack. Highlights:
   browsing skills are far more resilient (setup no longer aborts when the
   bundled browser fails to download), gstack no longer clobbers same-named
@@ -32,21 +47,39 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   backgrounded subagent, and the upgrade path itself can no longer delete your
   install on a failed swap.
 
+### Removed
+
+- **Thirteen `/review` helper tools and the cross-review memory stores are
+  gone.** The calibration store, the demotion ledger, the suppression baseline,
+  their shared vocabulary and migrator, the per-run triage report, the findings
+  normalizer, the dependency inventory and the post-fix sweep were built to
+  remember decisions between reviews. They cost more to maintain and review
+  than they ever saved: a re-review now reads the previous report in
+  `{repo}/jjstack/` and marks each finding new, still open, or fixed. gstack
+  already remembers findings you dismissed.
+
 ### Added
 
-- **Reviews now keep the rubric that produced them.** `/review` snapshots
-  gstack's durable review docs (the checklist, every specialist definition, the
-  Review Army and adversarial procedures) into your repo next to the findings,
-  stamped with the gstack version and commit they came from. Previously that
-  rubric lived only in the global gstack clone, which upgrades rebuild from
-  scratch — so a six-month-old review was uninterpretable, and nothing recorded
-  that the standard had shifted underneath it. Now the git diff on those files
-  is a visible record of when the review bar changed.
+- **Reviews are posted to the pull request, in Jesper's voice, under a hard
+  budget.** The full report is committed to `{repo}/jjstack/`; the PR gets a
+  doorbell — verdict, the blocking findings, a link — enforced by a linter, not
+  by asking a model to be brief. A clean approve is one line. The linter blocks
+  a comment carrying a credential outright and never echoes what it caught, so
+  the natural output of a good security finding cannot publish the key it just
+  found to a public thread.
 - **`references/code-review-best-practices.md`** — the sourced manual behind
   `/review`: how Anthropic's and gstack's reviewers are actually tuned, twelve
   ranked practices for high-recall/low-noise AI review, the dimension checklist,
   and the anti-patterns that make a reviewer untrustworthy.
+- **`references/review-preflight.md`** — what the deterministic pre-flight
+  establishes before any model judges anything, and how to read the three
+  statuses that are gaps rather than passes.
 
+- **Auto-capture now tells you whether semantic dedup actually ran.** The
+  near-duplicate lookup runs under a deadline, and a killed query returns
+  nothing — which reads exactly like "no duplicate found". Each capture now
+  reports `ran-clean`, `ran-timeout`, `ran-error`, or why it did not run, so a
+  hung index shows up instead of quietly costing you deduplication.
 - **A real cross-session memory that recalls, captures, and consolidates
   lessons.** jjstack now remembers what you've taught it and surfaces it when
   it matters. Every prompt quietly recalls the relevant notes — this project's

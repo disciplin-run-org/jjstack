@@ -91,8 +91,9 @@ have on a developer machine.
 |-------------|--------|---------|
 | Review quality target | 8/10 | **10/10** (configurable) |
 | Quality iterations | 3 max | 3 + fresh-reviewer adversarial passes |
-| `/review` coverage | Specialists gated by diff size + hit rate | **All specialists forced**, plus 8 passes gstack and Anthropic's `/code-review` skip |
-| `/review` noise control | Suppress low-confidence findings | Every finding self-verified: quoted line + concrete failure scenario + 0–100 confidence |
+| `/review` inputs | The diff | The diff **plus** your repo's real typechecker/linter/test results, the callers outside the diff, and the change's stated intent |
+| `/review` noise control | Suppress low-confidence findings | Quoted line + concrete failure scenario + 0–100 confidence, and a budget: 60 min, 4 passes, 10 findings |
+| `/review` on re-run | Reports everything again | Verifies only prior P0/P1; returns `STOP` if the finding count did not fall |
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
@@ -133,7 +134,7 @@ enhancements transparently.
 |-------|--------------|
 | `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | The deepest pre-landing review in the stack: runs every specialist (no gating), adds the passes Anthropic's `/code-review` and gstack skip, then self-verifies each finding. Slower and pricier on purpose. |
+| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR. Finishes in under an hour; `--deep` for the exhaustive sweep. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -185,6 +186,8 @@ loads. Read them directly or let skills load them for you.
 | `qa-philosophy.md` | Test type taxonomy, testing trophy, four-bucket failure triage, AI/MCP testing traps, production QA |
 | `unit-test-philosophy.md` | Adversarial thinking, boundary analysis, mutation testing, property-based testing |
 | `code-review-best-practices.md` | How the peer reviewers are tuned, 12 ranked practices, the dimension checklist, and the noise anti-patterns — the manual behind `/review` |
+| `review-preflight.md` | What `/review`'s deterministic pre-flight establishes before any model judges, and which of its statuses are gaps rather than passes |
+| `pr-comment-voice.md` | How a review sounds when it is posted to a PR: conclusion first, one line per finding, never a credential |
 | `product-identity.md` | The required `## Product Identity` preamble for design docs and CEO reviews |
 | `quality-loop.md` | Iteration protocol — fix AI-FIXABLE, escalate NEEDS-HUMAN, exit at score or convergence |
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
@@ -222,6 +225,16 @@ envelope, with a cross-project/PHI firewall.
 from the finished session (see [Memory](#memory)). It enqueues and detaches
 in milliseconds so it never blocks exit; a background worker extracts lessons
 and writes them PHI-gated and deduplicated. Disable with `JJSTACK_NO_CAPTURE=1`.
+Deduplication runs in two layers: an exact `pattern_key` match, then a semantic
+near-duplicate lookup against gbrain. The semantic layer merges the new lesson
+into the page it matched only at or above the merge threshold `0.85`; anything
+scoring below that becomes a new memory instead. `JJSTACK_CAPTURE_NO_GBRAIN=1`
+pins the semantic layer off, for offline use or a repeatable answer; exact-key
+dedup still runs. That lookup runs under a deadline, default 8 seconds, changed
+with `JJSTACK_CAPTURE_GBRAIN_TIMEOUT=<seconds>`. Every capture reports which
+state the layer reached — `ran-clean`, `ran-timeout`, `ran-error:<rc>`, or
+`not-run:<reason>` — because a killed query returns empty, which otherwise reads
+exactly like "no duplicate found". Only `ran-clean` means an answer was used.
 
 **`injection-guard.sh`** — A PreToolUse hook on `Write`/`Edit` that scans
 markdown headed for disk and blocks high-confidence prompt-injection
@@ -273,7 +286,13 @@ git-remote policy of `deny`/`read-only`); their memories stay in local native
 files only and never reach the shared index. This is enforced in one shared
 library that every memory tool uses.
 
-Regression coverage lives in `test/smoke.sh`.
+Regression coverage lives in `test/smoke.sh`. It is hermetic: every assertion
+runs against a throwaway home directory, a throwaway PATH with no ambient
+gbrain, and throwaway fixture projects, so it never reads or writes your real
+memory store, learnings or gbrain index, and gives the same verdict on any
+machine. The suite lints itself for that property, and it tests its own
+assertion harness first — a broken `check()` turns real assertions into silent
+passes.
 
 ---
 
