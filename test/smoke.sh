@@ -2395,6 +2395,10 @@ def body(name):
 
 
 FPASSIGN = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\[\s*fp\s*\]\s*(?:=[^=]|\+\+)")
+# The merge arm deliberately does NOT require an `[fp]` key: the tally the page
+# prints is keyed by disposition, and it was maintained by the merge for exactly
+# as long as nothing looked. Any array the merge writes needs a cross-check.
+ANYASSIGN = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\[[^]]*\]\s*(?:=[^=]|\+\+|--)")
 READ = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*\[")
 
 
@@ -2409,7 +2413,7 @@ render = names(READ, body("RENDER"))
 # it can disagree with the recompute; that is precisely what a cross-check is
 # for, and it is why this set is required to be cross-checked whether or not
 # the render happens to read it today.
-mergeowned = names(FPASSIGN, body("MERGE"))
+mergeowned = names(ANYASSIGN, body("MERGE"))
 
 misnamed = sorted(n for n in member if not n.startswith("M"))
 stray = sorted(n for n in (perrow | render) - member if n.startswith("M"))
