@@ -11,6 +11,45 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **`/review` can no longer publish a credential to a public pull request.**
+  The review's security lens is the thing that finds a leaked key, and the
+  comment style it writes findings in puts the evidence on the line: `**P0**
+  conf.py:12 AWS key committed: AKIA...`. That comment was posted. Deleting it
+  afterwards does not help - GitHub keeps every edit of a comment, and the
+  original body stays readable. The pre-post check now refuses outright on a
+  credential of any recognised shape (AWS, GitHub, OpenAI-style, Slack, Stripe,
+  Google, a JWT, a private-key block, a password inside a connection string).
+  It cannot be silenced with `--quiet`, it has its own exit code, and it never
+  prints the value it caught. The finding keeps its evidence in the committed
+  report; the comment cites `file:line` and nothing more.
+- **The comment budget no longer passes a comment it could not measure.**
+  Passing an empty or non-numeric `--max-lines` made the size check
+  unevaluatable, and an unevaluatable check counted as a pass: a 41-line comment
+  against a 12-line budget was reported clean. Bad budget values are now a usage
+  error before anything is measured. A check that cannot run is not a check that
+  passed.
+- **The three-finding cap now counts findings, not lines.** Five findings
+  written on one physical line counted as one, so the comment passed. It also
+  now recognises a severity however it is written - `**P0**`, `[P0]`, `(P0)`,
+  `"P0"`, `Critical:`, `[Major]` - instead of the handful of decorations it had
+  been taught. The same count decides whether a comment is a clean approve, so
+  an approve carrying unrecognised findings used to be waved through twice over.
+- **A link to a report that does not exist is no longer accepted as a link.**
+  The rule that stops "be brief" turning into "drop findings" was satisfied by
+  any URL inside a finding's own citation, and never checked that a named report
+  file was really there. It now looks for the report on disk.
+- **A review comment must now declare what it is not showing.** "N blocking, M
+  total" was a style suggestion in prose; a comment could show three findings,
+  declare no total, and pass. The count is now checked, including the
+  arithmetic: seven found and two shown has to say "5 more" and link the rest.
+- **`/review` no longer reads a GitHub outage as "this branch has no PR".** An
+  expired token, a rate limit or a DNS failure all produced the same silent "no
+  pull request" outcome as a branch that genuinely has none, so a review could
+  fail to post and tell nobody. The two are now reported separately. The PR is
+  also resolved once and the post is bound to that number and repository, rather
+  than re-derived from the branch - which is nothing at all in the detached-HEAD
+  worktree `/review` often runs in.
+
 - **"I disproved it" now has to show the document.** `/review` can retire a
   finding by checking it against the library's current official docs — the
   usual cure for a reviewer complaining about an API that changed years ago.

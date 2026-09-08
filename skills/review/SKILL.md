@@ -1067,26 +1067,50 @@ That reference is the voice. The jj in jjstack is Jesper Jurcenoks and a review
 posted under this name sounds like he wrote it: conclusion first, one line per
 finding, no selling. Read it before composing.
 
-Detect the PR. No PR is a legitimate outcome, not an error:
+Resolve the PR **once**, and keep the number. The first version resolved
+`number,url` into an `echo` nothing read, then let the post re-resolve from
+the branch with no number and no `--repo`. /review runs in a detached-HEAD
+worktree often enough that branch inference has nothing to bind to, and "posted
+to the wrong PR" is the same class of harm as "posted the secret".
 
 ```bash
-gh pr view --json number,url --jq '"PR #\(.number) \(.url)"' 2>/dev/null || echo "NO_PR"
+gh pr view --json number,url,headRepositoryOwner,headRepository --jq '"PR_NUM=\(.number)\nPR_URL=\(.url)\nPR_REPO=\(.headRepositoryOwner.login)/\(.headRepository.name)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err; echo "gh exit: $?"; cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
 
-If `NO_PR`: say so in the session output and stop here. Never invent a PR, and
-never post to a different one.
+Classify the outcome. `|| echo "NO_PR"` collapsed three different worlds into
+one, and only one of them is benign:
+
+- **exit 0** — the PR is resolved. `source {OUTPUT_DIR}/pr.env` and continue.
+- **non-zero, and `pr.err` says `no pull requests found`** — `NO_PR`. A branch
+  with no PR is a legitimate outcome, not an error. Say so in the session output
+  and stop here.
+- **non-zero, anything else** — `GH_ERROR`: an expired token, a rate limit, a
+  DNS failure, a network partition. Report the stderr verbatim and stop. Never
+  read a `GH_ERROR` as `NO_PR`: one means there is nothing to post to, the other
+  means the review silently did not post and nobody was told.
+
+Never invent a PR, and never post to a different one.
 
 Compose the comment to `{OUTPUT_DIR}/pr-comment.md` following the structure in
 the reference. **The comment is a doorbell, not the delivery** — verdict, the
 blocking findings only, and a link to the full report committed in 6.2.
 
-Then lint it. This is a **HARD GATE** per
-`references/hard-gate-convention.md`. Bold prose saying "do not post if it fails"
-is not a gate — a gate is one command where the post cannot run unless the check
-passed, so the lint and the post are chained and the shell enforces the order:
+Then lint it, under the literal gate `references/hard-gate-convention.md`
+specifies. Bold prose saying "do not post if it fails" is not a gate, and
+neither is bold prose calling itself one - the convention's whole point is a
+syntactic tag no rationalisation reaches past:
+
+<HARD-GATE>
+Do NOT run `gh pr comment` unless `jjstack-pr-comment-lint` exited 0 on
+{OUTPUT_DIR}/pr-comment.md in the SAME shell command as the post.
+This applies to EVERY invocation regardless of perceived simplicity.
+</HARD-GATE>
+
+One command, so the shell enforces the order and the resolved identity from
+above is what the post binds to:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment --body-file {OUTPUT_DIR}/pr-comment.md
+~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
 ```
 
 Never run the post as its own step. Two separate fenced blocks let a failed lint
@@ -1094,11 +1118,21 @@ be followed by a successful post, which is the exact failure the convention
 names. If the lint exits non-zero, fix the comment and run the chained command
 again.
 
-It enforces what a machine can decide: 12 lines / 900 chars, at most 3 findings
-inline, a mandatory link, no emdash, no superlatives, no meta-commentary, no
-softening qualifiers, no sentence over 180 chars. A prose instruction to "be
-brief" loses to the pull toward completeness on every run, so the budget is
-code.
+It enforces what a machine can decide: no credential literal anywhere in the
+body, 12 lines / 900 chars, at most 3 findings inline (counted as occurrences,
+so five on one line is still five), a link to a report that exists on disk, a
+declared "N blocking, M total" whose residual adds up, no emdash, no
+superlatives, no meta-commentary, no softening qualifiers, no sentence over 180
+chars. A prose instruction to "be brief" loses to the pull toward completeness
+on every run, so the budget is code.
+
+**Exit 4 is the credential stop, and it is not negotiable.** The security lens
+is what surfaces a key, and the one-line `file:line` shape is what renders it
+inline, so the natural output of a good review is a comment quoting the secret
+it just found. A PR comment is public and permanent: editing it afterwards does
+not remove the value from the API's edit history. When the lint reports
+`secret`, the finding stays in the committed report with its evidence and the
+comment cites `file:line` only.
 
 When it reports `too-long` or `too-many`, **move findings into the report, never
 delete them.** Cutting a finding to fit the budget is the one failure this whole

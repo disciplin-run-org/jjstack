@@ -1542,6 +1542,10 @@ echo "== 5i. pr-comment-lint (the wall-of-text gate) =="
 # prose loses to the pull toward completeness on every run, so the budget is
 # enforced by code. Every rule below is one a machine can decide.
 PCL="$(mktemp -d)"
+# The link rule now stat's the report it is pointed at, because "linked a report
+# that does not exist" is the same outcome as "linked nothing". The fixtures that
+# must pass therefore need the report to really be on disk.
+mkdir -p "$PCL/jjstack"; : > "$PCL/jjstack/review-2026-09-07.md"
 # In-voice comment: verdict, two blocking findings, a link. Must pass clean.
 cat > "$PCL/good.md" <<'PCLEOF'
 **CAUTION** - 2 blocking, 7 total.
@@ -1581,7 +1585,7 @@ out=$("$BIN/jjstack-pr-comment-lint" "$PCL/approve-verbose.md" 2>&1)
 check "an approve that dumps its evidence is rejected" "grep -q 'clean approve' <<<\"\$out\""
 # POSITIVE CONTROL — the same length must be LEGAL when there are findings, or
 # this is just a tighter global budget rather than a verdict-aware one.
-printf '**CAUTION** - 1 blocking.\n**P0** a.py:1 leaks a handle on the error path.\nRepro: revoke the token, run sync, exit 0.\nHave you considered asserting the exit code?\nGuardrail: holds while the path stays sync.\n`jjstack/review-2026-09-07.md`\n' > "$PCL/caution6.md"
+printf '**CAUTION** - 1 blocking, 1 total.\n**P0** a.py:1 leaks a handle on the error path.\nRepro: revoke the token, run sync, exit 0.\nHave you considered asserting the exit code?\nGuardrail: holds while the path stays sync.\n`jjstack/review-2026-09-07.md`\n' > "$PCL/caution6.md"
 "$BIN/jjstack-pr-comment-lint" "$PCL/caution6.md" >/dev/null 2>&1
 check "POSITIVE CONTROL: the same length passes when there are findings" "[ \$? -eq 0 ]"
 
@@ -1635,6 +1639,233 @@ check "POSITIVE CONTROL: the emdash fixture really contains one" \
 check "missing file exits 3" \
   "\"\$BIN/jjstack-pr-comment-lint\" '$PCL/nope.md' >/dev/null 2>&1; [ \$? -eq 3 ]"
 rm -rf "$PCL"
+
+echo "== 5j. pr-comment-lint round 2: the classes, not the instances =="
+# Round 1 fixed each defect exactly as wide as its fixture. Round 2's dominant
+# finding was that every one of those fixes was instance-shaped. So each block
+# below names the CLASS and covers a shape the round-1 fixture never had.
+PC2="$(mktemp -d)"
+mkdir -p "$PC2/jjstack"; : > "$PC2/jjstack/review-2026-09-07.md"
+LINT="$BIN/jjstack-pr-comment-lint"
+LINK='`jjstack/review-2026-09-07.md`'
+
+# --- P0: a credential must never reach a public PR -------------------------
+# The review's own security lens is what SURFACES credentials, and the voice
+# reference mandates the one-line `file:line` claim shape that renders the
+# evidence inline. SKILL.md chains `lint && gh pr comment`, so rc=0 posts it.
+# Editing a PR comment does not remove the value from the API's edit history:
+# the only place to stop this is before the post, and it must fail CLOSED.
+#
+# The class is "a credential literal", not "an AWS key". One fixture per shape.
+# Every value below is a vendor-published EXAMPLE or a structurally-valid dummy:
+# none is a live credential.
+#
+# They are ASSEMBLED at runtime rather than written out whole, and that is not
+# cosmetic. A file carrying contiguous credential-shaped strings is exactly what
+# a push-protection scanner blocks - so a test file written the obvious way
+# cannot be pushed, and the suite that proves the linter works would be the one
+# thing the linter's own lesson forbids committing. Splitting each across a
+# shell concatenation keeps the FIXTURE real and this FILE clean.
+S_AWS="AKIA""IOSFODNN7EXAMPLE"
+S_STS="ASIA""Y34FZKBOKMUTVV7A"
+S_GHC="ghp""_016C7869B1D18D4E9A9A5EEC1B8B1E3E4F5A6B7C8D"
+S_GHF="github""_pat_11ABCDEFG0aBcDeFgHiJkL_MnOpQrStUvWxYz0123456789AbCdEfGhIjKlMn"
+S_OAI="sk""-proj-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcdef"
+S_SLK="xoxb""-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+S_GGL="AIza""SyD-1234567890abcdefghijklmnopqrstuv"
+S_STR="sk""_live_4eC39HqLyjWDarjtT1zdp7dc"
+S_JWT="eyJhbGciOiJIUzI1NiJ9.""eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+S_DSN="postgres""://svc:hunter2hunter2@db.internal:5432/app"
+S_PEM="-----BEGIN"" RSA PRIVATE KEY-----"
+sec_fixture() {   # sec_fixture NAME BODY
+  printf '**REJECT** - 1 blocking, 1 total.\n**P0** `conf.py:12` credential committed: %s\n%s\n' \
+    "$2" "$LINK" > "$PC2/sec-$1.md"
+}
+sec_fixture aws        "$S_AWS"
+sec_fixture aws-sts    "$S_STS"
+sec_fixture gh-classic "$S_GHC"
+sec_fixture gh-fine    "$S_GHF"
+sec_fixture openai     "$S_OAI"
+sec_fixture slack      "$S_SLK"
+sec_fixture google     "$S_GGL"
+sec_fixture stripe     "$S_STR"
+sec_fixture jwt        "$S_JWT"
+sec_fixture dsn        "$S_DSN"
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `id_rsa:1` key committed:\n%s\n%s\n' \
+  "$S_PEM" "$LINK" > "$PC2/sec-pem.md"
+for s in aws aws-sts gh-classic gh-fine openai slack google stripe jwt dsn pem; do
+  out=$("$LINT" "$PC2/sec-$s.md" 2>&1); rc=$?
+  check "secret ($s) is caught before the post" "grep -q 'secret' <<<\"\$out\""
+  check "secret ($s) fails closed with a non-zero exit" "[ $rc -ne 0 ]"
+done
+# The linter must not re-print the value it just refused to publish: a linter
+# that echoes the key has moved the leak into the terminal and the run log.
+out=$("$LINT" "$PC2/sec-aws.md" 2>&1)
+check "the linter never echoes the secret it caught" "! grep -qF \"\$S_AWS\" <<<\"\$out\""
+# Fail CLOSED means --quiet cannot silence it either.
+out=$("$LINT" --quiet "$PC2/sec-aws.md" 2>&1)
+check "--quiet cannot silence the secret rule" "grep -q 'secret' <<<\"\$out\""
+# POSITIVE CONTROL - the fixtures really carry the literals, or these pass for
+# the wrong reason and the whole block is inert.
+check "POSITIVE CONTROL: the aws fixture really contains the key literal" \
+  "grep -qF \"\$S_AWS\" '$PC2/sec-aws.md'"
+check "POSITIVE CONTROL: the pem fixture really contains a key header" \
+  "grep -qF -- \"\$S_PEM\" '$PC2/sec-pem.md'"
+# POSITIVE CONTROL - the assembled values really are the full credential shapes,
+# so splitting them across the source line did not quietly shorten one into
+# something the linter would miss for the wrong reason.
+check "POSITIVE CONTROL: the assembled AWS key is a full 20-character key id" \
+  "[ \"\${#S_AWS}\" -eq 20 ]"
+check "POSITIVE CONTROL: no assembled credential appears whole in this test file" \
+  "! grep -qF \"\$S_AWS\" '$DIR/test/smoke.sh' && ! grep -qF \"\$S_GHC\" '$DIR/test/smoke.sh'"
+# POSITIVE CONTROL - the same comment WITHOUT the value passes, so the rule is
+# rejecting the credential and not the finding that reports it. This is also the
+# fix the rule teaches: cite file:line, leave the value in the report.
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `conf.py:12` an AWS access key id is committed.\n%s\n' \
+  "$LINK" > "$PC2/sec-redacted.md"
+"$LINT" "$PC2/sec-redacted.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same finding without the value passes clean" "[ \$? -eq 0 ]"
+
+# --- P1: a check that cannot be evaluated is not a pass --------------------
+# `${2:-}` accepted an empty value, `set -e` is off, and a failed `[` does not
+# increment viol - so 41 lines against a 12-line budget reported `clean`, rc=0.
+# The class is every numeric flag, and every non-numeric shape, not just "".
+{ echo "**CAUTION** - 0 blocking, 0 total."
+  for i in $(seq 1 40); do echo "filler line number $i"; done; echo "$LINK"; } > "$PC2/big.md"
+for bad_val in '' 'abc' '-5' '12x' ' '; do
+  for f in --max-lines --max-chars --max-findings; do
+    out=$("$LINT" "$f" "$bad_val" "$PC2/big.md" 2>&1); rc=$?
+    check "$f '$bad_val' is a usage error, not a silent pass" "[ $rc -eq 2 ]"
+    check "$f '$bad_val' never reports the file as clean" "! grep -q 'clean' <<<\"\$out\""
+  done
+done
+# An unevaluatable `[` used to leak bash's own diagnostic and carry on.
+out=$("$LINT" --max-lines '' --max-chars '' "$PC2/big.md" 2>&1)
+check "no 'integer expression expected' ever reaches the operator" \
+  "! grep -q 'integer expression expected' <<<\"\$out\""
+# POSITIVE CONTROL - a WIDE but VALID budget still parses and passes, so the
+# rejections above are about the value and not about the flag existing.
+"$LINT" --max-lines 60 --max-chars 4000 --max-findings 9 "$PC2/big.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: a valid wide budget parses and passes" "[ \$? -eq 0 ]"
+
+# --- P1: the cap counts FINDINGS, not physical lines -----------------------
+# `grep -c` overrides `-o` in GNU grep, so five findings on one physical line
+# counted as one and the comment passed clean. A ugrep shim counts occurrences,
+# which is why this survives a hand check.
+printf '**REJECT** - 5 blocking, 5 total.\n**P0** a:1 x. **P0** b:2 y. **P1** c:3 z. **P1** d:4 w. **P2** e:5 v.\n%s\n' \
+  "$LINK" > "$PC2/oneline.md"
+out=$("$LINT" "$PC2/oneline.md" 2>&1)
+check "five findings on ONE line cannot evade the cap" "grep -q 'too-many' <<<\"\$out\""
+# POSITIVE CONTROL - the fixture really is one physical line carrying five
+# markers, or "too-many" proves nothing about occurrence counting.
+check "POSITIVE CONTROL: the one-line fixture really holds 5 markers on 1 line" \
+  "[ \"\$(grep -c 'P0\*\* a' '$PC2/oneline.md')\" = 1 ] && [ \"\$(grep -o 'P[0-3]' '$PC2/oneline.md' | wc -l)\" -ge 5 ]"
+
+# --- P2: the severity token class, not the one decoration that was tested --
+# Round 1 widened the PREFIX class to list markers and blockquotes. `[` was not
+# in it, and a spelled-out severity has no P-token at all. Both evade the cap,
+# and because the SAME count feeds the verdict detector, the misclassification
+# is silent in both directions.
+sev_fixture() {   # sev_fixture NAME MARKER...
+  { printf '**REJECT** - 5 blocking, 5 total.\n'
+    local i=0; for m in "$@"; do i=$((i+1)); printf '%s a%s:%s x\n' "$m" "$i" "$i"; done
+    printf '%s\n' "$LINK"; } > "$PC2/sev-$1.md"
+}
+sev_fixture bracket   '[P0]' '[P0]' '[P1]' '[P2]'
+sev_fixture paren     '(P0)' '(P0)' '(P1)' '(P2)'
+sev_fixture quoted    '"P0"' '"P0"' '"P1"' '"P2"'
+sev_fixture spelled   'Critical:' 'Critical:' 'Major:' 'Minor:'
+sev_fixture boldword  '**Critical**' '**Critical**' '**Major**' '**Minor**'
+sev_fixture bracketwd '[Critical]' '[Critical]' '[Major]' '[Minor]'
+for s in bracket paren quoted spelled boldword bracketwd; do
+  out=$("$LINT" "$PC2/sev-$s.md" 2>&1)
+  check "severity shape ($s) cannot evade the cap" "grep -q 'too-many' <<<\"\$out\""
+done
+# The other half of the same count: the verdict detector. An APPROVE line that
+# carries findings in an unrecognised shape used to be given the 3-line approve
+# budget AND pass its cap, so the misclassification was invisible both ways.
+printf '**APPROVE** - 0 blocking, 4 total.\n[P0] a:1 x\n[P0] b:2 y\n[P1] c:3 z\n[P2] d:4 w\n%s\n' \
+  "$LINK" > "$PC2/approve-with-findings.md"
+out=$("$LINT" "$PC2/approve-with-findings.md" 2>&1)
+check "an APPROVE carrying findings is not classified as a clean approve" \
+  "! grep -q 'clean approve' <<<\"\$out\" && grep -q 'too-many' <<<\"\$out\""
+# POSITIVE CONTROL - prose must NOT be counted as a finding, or the widened
+# class is just a rejection of every comment containing an English word.
+printf '**APPROVE** - no findings. The critical path and the major refactor both look right.\n%s\n' \
+  "$LINK" > "$PC2/prose.md"
+"$LINT" "$PC2/prose.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: 'critical path' in prose is not a finding" "[ \$? -eq 0 ]"
+
+# --- P1: the link must point at a report that EXISTS -----------------------
+# Round 1 taught the rule the one shape its fixture had. A bare `https://`
+# inside a finding's own citation satisfied it, and a named report path was
+# never stat'd: `jjstack/does-not-exist-anywhere.md` returned clean.
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `docs/x.py:12` see https://example.com/spec for the contract.\n' \
+  > "$PC2/barehttp.md"
+out=$("$LINT" "$PC2/barehttp.md" 2>&1)
+check "a bare https:// in a finding citation is not a report link" "grep -q 'no-link' <<<\"\$out\""
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a.py:1` leaks a handle.\n`jjstack/does-not-exist-anywhere.md`\n' \
+  > "$PC2/ghost.md"
+out=$("$LINT" "$PC2/ghost.md" 2>&1)
+check "a named report path that does not exist is rejected" "grep -q 'no-report' <<<\"\$out\""
+# POSITIVE CONTROL - the SAME fixture passes the moment the report is really
+# there, so the rule is stat'ing the path and not rejecting the shape.
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a.py:1` leaks a handle.\n`jjstack/really-here.md`\n' \
+  > "$PC2/real.md"
+: > "$PC2/jjstack/really-here.md"
+"$LINT" "$PC2/real.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same link passes once the report exists" "[ \$? -eq 0 ]"
+check "POSITIVE CONTROL: the ghost path really is absent from disk" \
+  "[ ! -e '$PC2/jjstack/does-not-exist-anywhere.md' ]"
+
+# --- P1: the residual count, machine-checked ------------------------------
+# "N blocking, M total" existed only as prose in the voice reference. Three
+# findings shown, nothing declared, passed clean - which is exactly how "be
+# brief" degrades into "drop findings", the one failure this skill exists to
+# prevent. The arithmetic is checkable, so it is checked.
+printf '**REJECT**\n**P0** `a.py:1` x\n**P1** `b.py:2` y\n**P2** `c.py:3` z\n%s\n' "$LINK" > "$PC2/nototal.md"
+out=$("$LINT" "$PC2/nototal.md" 2>&1)
+check "a findings comment that declares no total is rejected" "grep -q 'residual' <<<\"\$out\""
+printf '**REJECT** - 3 blocking, 1 total.\n**P0** `a.py:1` x\n%s\n' "$LINK" > "$PC2/backwards.md"
+out=$("$LINT" "$PC2/backwards.md" 2>&1)
+check "a total smaller than the blocking count is rejected" "grep -q 'residual' <<<\"\$out\""
+printf '**REJECT** - 2 blocking, 7 total.\n**P0** `a.py:1` x\n**P1** `b.py:2` y\n%s\n' "$LINK" > "$PC2/noresid.md"
+out=$("$LINT" "$PC2/noresid.md" 2>&1)
+check "7 total with 2 shown and no 'N more' pointer is rejected" "grep -q 'residual' <<<\"\$out\""
+printf '**REJECT** - 2 blocking, 7 total.\n**P0** `a.py:1` x\n**P1** `b.py:2` y\n\n3 more: %s\n' "$LINK" > "$PC2/badmath.md"
+out=$("$LINT" "$PC2/badmath.md" 2>&1)
+check "a residual that does not equal total minus shown is rejected" "grep -q 'residual' <<<\"\$out\""
+# POSITIVE CONTROL - the shape the voice reference actually teaches must pass,
+# or this rule is a blanket rejection rather than an arithmetic check. The body
+# below is the literal "Right" example from references/pr-comment-voice.md.
+printf '**CAUTION** - 2 blocking, 7 total.\n\n**P0** `bin/loader.py:88` retry catches `Exception`: a revoked token exits 0.\n**P1** `api/routes.py:210` `OrderStatus` gained `CANCELLED`; handler still raises.\n\n5 more + repros: %s\n' \
+  "$LINK" > "$PC2/resid-ok.md"
+"$LINT" "$PC2/resid-ok.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: 7 total, 2 shown, '5 more' passes clean" "[ \$? -eq 0 ]"
+check "POSITIVE CONTROL: the reference really teaches this shape" \
+  "grep -q 'N blocking, M total' '$DIR/references/pr-comment-voice.md'"
+
+# --- P2: two rules that could not go red were not coverage -----------------
+# Neutralising the 900-char and the 180-char rules left the whole suite green:
+# no fixture reached either threshold, so both were inert. A rule no test can
+# redden is a defect, not a check.
+{ printf '**REJECT** - 1 blocking, 1 total.\n'
+  printf '**P0** `a.py:1` the handle leaks on the error path and the retry swallows it.\n'
+  for i in $(seq 1 8); do printf 'Line %s carries about a hundred and ten characters of padding to push the byte count over the budget.\n' "$i"; done
+  printf '%s\n' "$LINK"; } > "$PC2/fatchars.md"
+out=$("$LINT" "$PC2/fatchars.md" 2>&1)
+check "a comment inside the LINE budget but over the CHAR budget is rejected" \
+  "grep -q 'too-long' <<<\"\$out\" && grep -q 'chars' <<<\"\$out\""
+check "POSITIVE CONTROL: the char fixture really is inside the line budget" \
+  "[ \"\$(wc -l < '$PC2/fatchars.md')\" -le 12 ] && [ \"\$(wc -c < '$PC2/fatchars.md')\" -gt 900 ]"
+{ printf '**REJECT** - 1 blocking, 1 total.\n'
+  printf '**P0** `a.py:1` the retry path catches a bare Exception so a revoked token is indistinguishable from a transient network failure, which means the sync exits 0, writes nothing, and the operator sees a green run for a job that moved no data at all.\n'
+  printf '%s\n' "$LINK"; } > "$PC2/longsentence.md"
+out=$("$LINT" --max-chars 4000 "$PC2/longsentence.md" 2>&1)
+check "a sentence over 180 chars is rejected" "grep -q 'long-sentence' <<<\"\$out\""
+check "POSITIVE CONTROL: the sentence fixture really has a >180-char sentence" \
+  "[ \"\$(awk '{ if (length(\$0) > 180) n++ } END { print n+0 }' '$PC2/longsentence.md')\" -ge 1 ]"
+rm -rf "$PC2"
 
 echo "== 5h. review skill structural guards =="
 # Two five-line greps that would have caught two defects the parallel PR stack
@@ -1848,6 +2079,67 @@ printf 'gh pr comment --body-file x.md\n' > "$probe_gate"
 check "gate guard actually catches an unchained post" \
   "grep -E 'gh pr comment' '$probe_gate' | grep -qv 'pr-comment-lint'"
 rm -f "$probe_gate"
+
+# "Chained" was only half the gate. The convention names a LITERAL tag pair, and
+# the skill still said **HARD GATE** in bold prose - which is precisely the shape
+# hard-gate-convention.md exists to replace, in the one skill that cites it.
+check "the review skill carries the literal <HARD-GATE> tag pair" \
+  "grep -q '<HARD-GATE>' '$SK' && grep -q '</HARD-GATE>' '$SK'"
+check "no prose-only 'HARD GATE' claim survives in the review skill" \
+  "[ \"\$(grep -c 'HARD GATE' '$SK')\" = 0 ]"
+# POSITIVE CONTROL - the probe is the literal this repository really shipped,
+# recovered with `git show 8eb8664:skills/review/SKILL.md`, not a string invented
+# to match the grep. An invented control passes because it matches its own probe.
+probe_hg="$(mktemp)"
+git -C "$DIR" show 8eb8664:skills/review/SKILL.md 2>/dev/null | grep -F 'HARD GATE' > "$probe_hg"
+check "POSITIVE CONTROL: the shipped pre-fix skill really carried the prose claim" \
+  "[ -s '$probe_hg' ]"
+check "the prose-gate guard actually catches that shipped shape" \
+  "[ \"\$(grep -c 'HARD GATE' '$probe_hg')\" -ge 1 ]"
+check "POSITIVE CONTROL: the shipped pre-fix skill had no literal tag" \
+  "! git -C '$DIR' show 8eb8664:skills/review/SKILL.md 2>/dev/null | grep -q '<HARD-GATE>'"
+rm -f "$probe_hg"
+
+# The PR was resolved TWICE: once into an `echo` nothing consumed, then again by
+# the post with no number and no --repo. /review runs in a detached-HEAD worktree
+# often enough that branch inference has nothing to bind to, and "post to the
+# wrong PR" is the same class of harm as "post the secret".
+#
+# These scan INVOCATIONS, not prose: `gh pr comment` inside backticks names the
+# command, `gh pr comment "$PR_NUM"` calls it. The chaining guard above keeps
+# scanning every occurrence, so nothing is narrowed by this distinction.
+POST_RE='gh pr comment [^`]'
+n_post=$(grep -cE "$POST_RE" "$SK" 2>/dev/null)
+check "the review skill posts exactly once" "[ \"\$n_post\" = 1 ]"
+check "every gh pr comment invocation is bound to an explicit --repo" \
+  "[ \"\$(grep -E \"\$POST_RE\" '$SK' | grep -c -- '--repo')\" = \"\$n_post\" ]"
+check "every gh pr comment invocation names the PR number it resolved" \
+  "[ \"\$(grep -E \"\$POST_RE\" '$SK' | grep -c 'PR_NUM')\" = \"\$n_post\" ]"
+# A resolution whose output nothing reads is not a resolution.
+check "the resolved PR number is consumed, not echoed and dropped" \
+  "grep -q 'PR_NUM' '$SK' && ! grep -qF 'gh pr view --json number,url --jq' '$SK'"
+# POSITIVE CONTROL - built from the two lines this tree really shipped at
+# 8eb8664: the unbound post, and the resolution whose output went nowhere.
+probe_pr="$(mktemp)"
+git -C "$DIR" show 8eb8664:skills/review/SKILL.md 2>/dev/null \
+  | grep -F -e 'gh pr comment --body-file' -e 'gh pr view --json number,url --jq' > "$probe_pr"
+check "POSITIVE CONTROL: the shipped pre-fix skill really had both lines" \
+  "[ \"\$(wc -l < '$probe_pr')\" -ge 2 ]"
+check "POSITIVE CONTROL: the shipped post really reads as an invocation" \
+  "[ \"\$(grep -cE \"\$POST_RE\" '$probe_pr')\" -ge 1 ]"
+check "the --repo guard actually catches the shipped unbound post" \
+  "[ \"\$(grep -E \"\$POST_RE\" '$probe_pr' | grep -c -- '--repo')\" = 0 ]"
+rm -f "$probe_pr"
+
+# NO_PR absorbed everything: `|| echo "NO_PR"` cannot tell "this branch has no
+# PR" (a legitimate outcome) from an expired token, a rate limit, or DNS. The
+# first is a reason to stop quietly; the others are reasons to report a failure.
+check "a gh failure is classified apart from 'no PR for this branch'" \
+  "grep -q 'GH_ERROR' '$SK'"
+check "the NO_PR case is decided on gh's own message, not on any non-zero exit" \
+  "grep -q 'no pull requests found' '$SK'"
+check "POSITIVE CONTROL: the shipped pre-fix skill collapsed both into NO_PR" \
+  "! git -C '$DIR' show 8eb8664:skills/review/SKILL.md 2>/dev/null | grep -q 'GH_ERROR'"
 
 # POSITIVE CONTROL — every line below is a LITERAL that this repository really
 # shipped (recovered with `git grep -i appendix HEAD` at 754d63d), not a string
@@ -4222,6 +4514,19 @@ probe_flag jjstack-review-baseline apply --baseline
 probe_flag jjstack-review-baseline generate --reason
 probe_flag jjstack-review-baseline generate --code
 probe_flag jjstack-review-baseline generate -o
+# The one new tool in this PR was absent from the family loop, so 650 passes
+# stepped straight over it: --max-lines, --max-chars and --max-findings all
+# returned rc=124. The loop is the closure; a tool outside it is not covered.
+PCF="$(mktemp -d)"; printf '**APPROVE** - no findings.\n' > "$PCF/c.md"
+for f in --max-lines --max-chars --max-findings; do
+  probe_flag jjstack-pr-comment-lint "$PCF/c.md" "$f"
+done
+# POSITIVE CONTROL - the same flags WITH a value get past parsing, so "exit 2"
+# above is the guard firing and not the flag being rejected unconditionally.
+timeout 5 "$BIN/jjstack-pr-comment-lint" "$PCF/c.md" --max-lines 12 --max-chars 900 --max-findings 3 \
+  </dev/null >/dev/null 2>&1
+check "POSITIVE CONTROL: valued pr-comment-lint budget flags parse (exit != 2)" "[ \$? -ne 2 ]"
+rm -rf "$PCF"
 # POSITIVE CONTROL — the same flags WITH a value get past parsing, or "exit 2"
 # above would just mean every flag is rejected unconditionally.
 PB="$(mktemp -d)"
