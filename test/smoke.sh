@@ -2043,7 +2043,12 @@ check "vendor-path report emits an ADVISORY"       "grep -q 'ADVISORY' '$TRI/adv
 # false for a finding that WAS raised and then disproved, and `suppress` is
 # forbidden for a P0/P1 by invariant 3. So the one phase permitted to delete had
 # no accounting: the finding just left. `refuted` + `stale-api` is that row.
-row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is correct per current docs (https://example/docs)' > "$TRI/ref.tsv"
+# The URL is a real documentary reference — host with a registrable name, and a
+# page under it — because that is what invariant 5 now DEFINES as evidence. The
+# fixture previously cited `https://example/docs`, a bare label no third party
+# can resolve; it was accepted by a rule that only asked whether the string
+# looked like a URL.
+row P1 85 src/e.py:1 stale-api refuted stale-api 'API changed in 2.0; code is correct per current docs (https://docs.example.com/2.0/api)' > "$TRI/ref.tsv"
 "$BIN/jjstack-review-triage" "$TRI/ref.tsv" --out "$TRI/ref.md" > "$TRI/ref.out" 2> "$TRI/ref.err"
 rc=$?
 check "a refuted stale-API finding is a legal ledger row" "[ $rc -eq 0 ]"
@@ -3299,13 +3304,25 @@ r2reason() { case "$1" in
     report) echo '-' ;; unconfirmed) echo unverified ;; demoted) echo prior-decision ;;
     defer) echo pre-existing ;; suppress) echo baseline ;; out-of-scope) echo duplicate ;;
     refuted) echo stale-api ;; esac; }
+# The shared phrase is NINE words on purpose, and that is load-bearing.
+# fingerprint() keys on the first EIGHT normalised words, so the seven-word
+# phrase this fixture used to carry put `https` in eighth place for the
+# `refuted` variant and nowhere else: the refuted rows never shared a
+# fingerprint with anything, never merged, and no rank tie between `refuted`
+# and another disposition could be observed at all. Six of the 21 pairs — every
+# pair containing `refuted`, which is the disposition the whole section is
+# about — were proving nothing, and collapsing disprank("refuted") onto another
+# rank left the suite green. Nine shared words put the URL past the key, so
+# every pair merges. `r2_nomerge` below is the assertion that keeps it that way.
 r2claim() { case "$1" in
-    refuted) echo 'one shared opening phrase across every disposition https://docs.example/x' ;;
-    *) echo 'one shared opening phrase across every disposition' ;; esac; }
+    refuted) echo 'one shared opening phrase used across every single disposition https://docs.example.com/x' ;;
+    *) echo 'one shared opening phrase used across every single disposition' ;; esac; }
 # Every unordered PAIR of dispositions, fed in both orders at one location with
 # one fingerprint. If any two share a rank, one of these 21 pairs renders
-# differently by order. This is the totality proof, not a spot check.
-r2_orderfails=0; r2_pairs=0
+# differently by order. This is the totality proof, not a spot check — and it is
+# only a proof if the two rows actually COLLAPSE, so each pair is checked for
+# that first.
+r2_orderfails=0; r2_pairs=0; r2_nomerge=0
 for a in $r2disps; do for b in $r2disps; do
   [ "$a" \< "$b" ] || continue
   r2_pairs=$((r2_pairs+1))
@@ -3327,8 +3344,14 @@ for a in $r2disps; do for b in $r2disps; do
   # which differs between the two runs by construction.
   grep '^.*TALLY' "$R2/ab.out" > "$R2/ab.tally"; grep '^.*TALLY' "$R2/ba.out" > "$R2/ba.tally"
   cmp -s "$R2/ab.tally" "$R2/ba.tally" || { r2_orderfails=$((r2_orderfails+1)); echo "    order-dependent tally: $a / $b" >&2; }
+  # THE PAIR MUST MERGE, or it cannot exhibit a rank tie however the ranks are
+  # broken. Two rows in, one finding out: that is the precondition every
+  # assertion above depends on, so it is asserted rather than assumed.
+  grep -q 'unique=1 collapsed=1' "$R2/ab.tally" || { r2_nomerge=$((r2_nomerge+1)); echo "    pair did not merge: $a / $b" >&2; }
 done; done
 check "all 21 disposition pairs were exercised" "[ \"\$r2_pairs\" = 21 ]"
+check "every pair actually collapsed into one finding (or the tie is unobservable)" \
+      "[ \"\$r2_nomerge\" = 0 ]"
 check "no two dispositions tie: every pair renders identically in both orders" \
       "[ \"\$r2_orderfails\" = 0 ]"
 # The reviewer's own reproducer, spelled out, so the regression has a name.

@@ -20,13 +20,39 @@
 #      wrong" outcome is the one earned by external evidence (Phase 4.5b's
 #      documentation lookup). Binding the two stops it becoming a general delete
 #      hatch, and stops `stale-api` routing a P0/P1 past invariant 3.
-#   5. A DOCUMENTARY REFUTATION MUST CARRY ITS DOCUMENT — a `refuted` row whose
-#      claim holds no `http`/`https` URL is rejected. Invariant 4 bound the two
-#      LABELS and checked no evidence, so `refuted` + `stale-api` + a sentence
-#      of opinion bought exactly the disappearance invariant 3 denies to
-#      `suppress`, while the rendered page positively asserted that a
-#      documentation check had happened. §4.5b step 3 already says the doc URL
-#      goes in the claim column; this is that instruction, enforced.
+#   5. A DOCUMENTARY REFUTATION MUST CARRY A DOCUMENT — and "a document" is
+#      DEFINED, not spelled. The first attempt asked whether the claim held
+#      something URL-SHAPED (`https?://` followed by a non-space), which
+#      `http://x` satisfies: seven characters still deleted a P0 while the page
+#      asserted a documentation check had happened. A spelling test can only
+#      ever reject the spellings someone thought of.
+#
+#      So the rule is declared, here, once, and everything below is derived
+#      from it. §4.5b sends the reviewer to "the current official documentation
+#      for that version" of "the library in the inventory" — a PAGE, about a
+#      library THIS REPO DECLARES. Written out, that is:
+#
+#        DOCUMENTARY EVIDENCE = scheme "://" host "/" path
+#          scheme  `http` or `https`.
+#          host    two or more dot-separated labels — a registrable name.
+#                  A bare label (`x`, `localhost`, `example`) is a machine on
+#                  somebody's network; no third party can open it, so it can
+#                  settle nothing.
+#          path    at least one character past the host. An origin names a
+#                  SITE; §4.5b asks for the page that settles the question.
+#
+#      and, whenever the review passes `--deps` (the §4.5b inventory):
+#
+#          SUBJECT  the claim NAMES a dependency the inventory holds. §4.5b
+#                   step 5 is explicit that a library absent from the inventory
+#                   is capped at confidence 50 — never refuted — so a
+#                   refutation about one is out of contract.
+#          LINKAGE  the cited URL REFERENCES that same dependency. A real page
+#                   on an unrelated site is a document, but it is not THIS
+#                   library's document, and step 2 asks for that library's.
+#
+#      Each clause is a separate reason for rejection and names itself, so a
+#      ledger that fails one is told which.
 #
 # The invariants run on the MERGED record, never on the raw row. Dedup used to
 # keep the first-seen row and discard the rest, so a baseline-suppressed P3
@@ -76,6 +102,12 @@
 #
 # Usage:
 #   jjstack-review-triage <ledger.tsv> [--out FILE] [--reconcile ADJUDICATED]
+#                         [--deps INVENTORY.tsv]
+#
+#   --deps INVENTORY.tsv is `jjstack-review-dep-inventory --tsv` output. With
+#   it, invariant 5's SUBJECT and LINKAGE clauses are enforced; without it only
+#   the grammar is, and the page says which of the two it checked. The
+#   inventory is read for its `name` column only.
 #
 #   --reconcile ADJUDICATED turns the page's completeness claim into a checked
 #   fact instead of a sentence. ADJUDICATED is Phase 5d's
@@ -98,11 +130,13 @@ YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 SRC=""
 OUT=""
 RECON=""
+DEPS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:-}"; shift 2 ;;
     --reconcile) RECON="${2:-}"; shift 2 ;;
+    --deps) DEPS="${2:-}"; shift 2 ;;
     -h|--help)
       # Print the WHOLE leading comment block. A hardcoded line range silently
       # truncated the exit codes — including the exit 4 the design hinges on —
@@ -130,6 +164,13 @@ if [ -n "$RECON" ] && [ ! -f "$RECON" ]; then
   exit 3
 fi
 
+# A --deps path that does not exist must not degrade silently to "the SUBJECT
+# and LINKAGE clauses were not checked". The caller asked for them.
+if [ -n "$DEPS" ] && [ ! -f "$DEPS" ]; then
+  echo -e "${YEL}warn${RST}  dependency inventory not found: $DEPS" >&2
+  exit 3
+fi
+
 # Counted BEFORE the render, because the header has to know whether there was
 # anything to reconcile against. Non-blank lines is the right granularity: a
 # file with content but no valid findings is caught by the reconciler itself.
@@ -146,6 +187,7 @@ LOCS="$WORK/locations.txt"
 : > "$ERRS"
 : > "$LOCS"
 
+JJTRIAGE_DEPS="$DEPS" \
 awk -F'\t' -v today="$(date +%F)" -v src="$SRC" -v render="$RENDER" -v errfile="$ERRS" \
     -v locfile="$LOCS" -v recon="$RECON" -v reconn="$RECON_N" '
 function fail(n, msg) { errs++; print "  line " n ": " msg >> errfile }
@@ -179,7 +221,69 @@ function disprank(d) { return (d in DRANK) ? DRANK[d] : 9999 }
 # this code is correct" — and the only evidence that can settle it is the
 # document. Without one, `refuted` is an opinion wearing a disposition that
 # deletes P0s.
-function hasdoc(claim) { return (claim ~ /https?:\/\/[^[:space:]]/) }
+#
+# These three functions are the DOCUMENTARY EVIDENCE rule declared in the
+# header above, one function per clause; nothing else decides what counts.
+# The predicate that shipped before asked only whether the claim contained
+# something url-SHAPED, which is a spelling test: `http://x` passed it.
+
+# GRAMMAR clause. Returns the first substring of the claim that satisfies
+# scheme "://" host "/" path, or "" if the claim holds none. A candidate is
+# rejected — not the whole claim — so a bare origin early in a sentence cannot
+# hide the real citation later in it.
+function docurl(claim,   s, u, rest, host) {
+  s = claim
+  while (match(s, /https?:\/\/[^[:space:]]+/)) {
+    u = substr(s, RSTART, RLENGTH)
+    s = substr(s, RSTART + RLENGTH)
+    rest = u; sub(/^https?:\/\//, "", rest)
+    host = rest; sub(/\/.*$/, "", host); sub(/:[0-9]+$/, "", host)
+    # A registrable NAME: two or more dot-separated labels. `x`, `localhost`
+    # and `example` name a machine on some private network — no third party
+    # can open them, so they settle nothing.
+    if (host !~ /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/) continue
+    # A PAGE, not a site: at least one character past the host.
+    if (rest !~ /\/[^[:space:]]/) continue
+    return u
+  }
+  return ""
+}
+function hasdoc(claim) { return docurl(claim) != "" }
+
+# Normalised form used by both the SUBJECT and the LINKAGE clause: case folded,
+# every separator removed. `@types/node`, `types-node` and `Types_Node` are one
+# name; `docs.rs/serde` contains `serde`.
+function normdep(x) { x = tolower(x); gsub(/[^a-z0-9]/, "", x); return x }
+
+# SUBJECT clause. The inventory names this claim mentions, as a "|"-joined
+# list, or "" when it mentions none. A dependency is mentioned when one of its
+# claim TOKENS matches — the whole name or, for a scoped/namespaced name, its
+# last segment — so `requests` in `the requests library` counts and `go` inside
+# `going` does not.
+function claimdeps(claim,   n, w, i, t, out, seen) {
+  n = split(claim, w, /[^A-Za-z0-9@\/._-]+/)
+  out = ""
+  for (i = 1; i <= n; i++) {
+    t = normdep(w[i])
+    if (t == "") continue
+    if (t in DEPNORM) { if (!(t in seen)) { seen[t] = 1; out = out (out == "" ? "" : "|") DEPNORM[t] } }
+    else {
+      t = w[i]; sub(/^.*\//, "", t); t = normdep(t)
+      if (t != "" && (t in DEPNORM) && !(t in seen)) { seen[t] = 1; out = out (out == "" ? "" : "|") DEPNORM[t] }
+    }
+  }
+  return out
+}
+
+# LINKAGE clause. True when the cited document belongs to THIS library: the
+# normalised dependency name occurs in the normalised URL, which is what a
+# vendor doc host or path carries (`docs.rs/serde`, `docs.djangoproject.com`,
+# `requests.readthedocs.io`).
+function doclinked(url, deplist,   n, d, i) {
+  n = split(deplist, d, "|")
+  for (i = 1; i <= n; i++) if (index(normdep(url), normdep(d[i])) > 0) return 1
+  return 0
+}
 
 # Deterministic, order-independent lens list: two passes flagging one defect
 # must render the same however the rows arrived.
@@ -289,6 +393,21 @@ BEGIN {
   split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline stale-api", a, " ")
   for (i in a) REASON[a[i]] = 1
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0; nraised = 0
+
+  # The §4.5b inventory, read for its `name` column only. Its presence is what
+  # turns on the SUBJECT and LINKAGE clauses of invariant 5; the page then says
+  # which clauses ran, because "checked the grammar" and "checked that the
+  # library is one we depend on" are different assurances and must not read the
+  # same.
+  depsfile = ENVIRON["JJTRIAGE_DEPS"]; ndeps = 0
+  if (depsfile != "") {
+    while ((getline dline < depsfile) > 0) {
+      if (split(dline, dfld, "\t") < 2) continue
+      dn = normdep(dfld[2])
+      if (dn != "" && !(dn in DEPNORM)) { DEPNORM[dn] = dfld[2]; ndeps++ }
+    }
+    close(depsfile)
+  }
 }
 
 /^[[:space:]]*$/ { next }
@@ -342,8 +461,22 @@ BEGIN {
   # forbids suppressing, and the ledger then asserted a doc check that never
   # happened. The URL is not decoration: it is the whole reason `refuted` is
   # allowed to do what `suppress` may not.
-  if (disp == "refuted" && !hasdoc(claim)) {
-    fail(NR, "\"refuted\" needs the document it refutes with — put the current-docs http(s) URL in the claim column (§4.5b step 3)"); bad = 1
+  #
+  # One clause, one message: a ledger that fails is told WHICH part of the rule
+  # it failed, because "no URL at all" and "a URL to an unrelated site" are
+  # different mistakes with different fixes.
+  if (disp == "refuted") {
+    durl = docurl(claim)
+    if (durl == "") {
+      fail(NR, "\"refuted\" needs the document it refutes with — the claim column takes a current-docs http(s) URL naming a host and a page, e.g. https://docs.example.com/api/v2 (§4.5b step 3). A bare scheme, a bare host or an origin with no path names no document"); bad = 1
+    } else if (depsfile != "") {
+      cdeps = claimdeps(claim)
+      if (cdeps == "") {
+        fail(NR, "\"refuted\" names no library the inventory holds — §4.5b step 5 caps a finding about a library absent from the inventory at confidence 50; it may not be refuted"); bad = 1
+      } else if (!doclinked(durl, cdeps)) {
+        fail(NR, "the cited document " durl " does not reference " cdeps " — §4.5b step 2 asks for THAT library current official documentation, not a page on an unrelated site"); bad = 1
+      }
+    }
   }
 
   if (bad) next
@@ -418,14 +551,18 @@ BEGIN {
     # whether this collapse changed anything at all.
     if (sevrank(sev) > sevrank(SEVWORST[fp])) SEVWORST[fp] = sev
     if (disprank(disp) > disprank(DISPMOST[fp])) DISPMOST[fp] = disp
-    MEMBERS[fp]++
     next
   }
   SEEN[fp] = 1; order[++uniq] = fp
   SEV_[fp] = sev; CONF[fp] = conf; LOC[fp] = loc; DISP_[fp] = disp
   RSN[fp] = rsn; CLAIM[fp] = claim; CLS[fp] = cls
   LENSES[fp] = lens; LSEEN[fp SUBSEP lens] = 1; CORROB[fp] = 1
-  SEVWORST[fp] = sev; DISPMOST[fp] = disp; MEMBERS[fp] = 1
+  # Group size is MN[fp], the member ledger count, and ONLY that. A second
+  # counter beside the authoritative one is the hazard the disprank()
+  # consolidation was written to prevent: the old MEMBERS array was incremented
+  # in two places, read in none, and would have disagreed the first time
+  # anybody used it.
+  SEVWORST[fp] = sev; DISPMOST[fp] = disp
   TALLY[disp]++
 }
 
@@ -446,12 +583,28 @@ END {
     order[j+1] = keyfp
   }
 
-  # Re-running the SAME three invariants on the collapsed scalar was dead code
-  # and deleting all four checks changed nothing: RSN is only ever assigned
-  # alongside DISP_ from ONE row, so the merged pair always already passed the
-  # per-row check; and DISP_ is the MINIMUM disprank, so `suppress` implies
-  # every member was `suppress` — any P0/P1 member would have been rejected
-  # per-row first. The headline guard could not fire.
+  # WHICH per-row invariants are worth re-running on the collapsed record is a
+  # question with an answer, and the answer is four of them are not.
+  #
+  # DEAD, because the merge cannot produce a violation: RSN is only ever
+  # assigned alongside DISP_ from ONE row (and the equal-rank tiebreak means
+  # the identical disposition), so the merged (disposition, reason) pair is a
+  # pair that already passed per-row — invariants 1 and 2 cannot fire. And
+  # `refuted` is LAST in DISPORDER while the merge keeps the MINIMUM rank, so a
+  # merged `refuted` means every member was `refuted`, each of which carried
+  # its document past the per-row check — invariant 5 cannot fire either.
+  # Re-adding them because a mutation reddens nothing is how a check that can
+  # never fail gets mistaken for a check. Those implications are ASSERTED
+  # instead, behaviourally, over the whole disposition cross-product (smoke
+  # section 7s): the merged pair is always some member pair, and the merged
+  # disposition is always the minimum-rank member.
+  #
+  # LIVE, and the one that stays: top severity. `suppress` is rank 6 of 7, so a
+  # merged `suppress` does NOT imply every member was suppressed — a P0
+  # `refuted` (rank 7, legal per row: invariant 3 binds `suppress` only) merging
+  # with a P2 `suppress` yields a merged P0/suppress that no per-row check has
+  # ever seen. That is suppression by absorption arriving through the one
+  # disposition ranked above it, and only this check catches it.
   #
   # What a per-row check structurally cannot see is whether the COLLAPSE ITSELF
   # is faithful — which is the class of bug this script exists for. So the
@@ -459,16 +612,6 @@ END {
   # merge never touches, and the two must agree before anything renders.
   for (i = 1; i <= uniq; i++) {
     fp = order[i]
-    # INVARIANT 5 on the merged record: a refutation must not acquire its
-    # evidence by being merged with a differently-worded row, nor lose it.
-    if (DISP_[fp] == "refuted" && !hasdoc(CLAIM[fp]))
-      failmerged(LOC[fp], "merged disposition \"refuted\" carries no current-docs http(s) URL — a documentary refutation must carry its document")
-    if (DISP_[fp] != "report" && RSN[fp] == "-")
-      failmerged(LOC[fp], "merged disposition \"" DISP_[fp] "\" carries no reason code")
-    if (DISP_[fp] == "report" && RSN[fp] != "-")
-      failmerged(LOC[fp], "merged disposition \"report\" must carry reason \"-\", got \"" RSN[fp] "\"")
-    if (RSN[fp] == "not-reachable" && DISP_[fp] == "suppress")
-      failmerged(LOC[fp], "merged reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"demoted\"")
     if ((SEV_[fp] == "P0" || SEV_[fp] == "P1") && DISP_[fp] == "suppress")
       failmerged(LOC[fp], SEV_[fp] " may not be suppressed — a merge must not absorb top severity into a suppressed row")
 
@@ -569,6 +712,14 @@ END {
   print "- source ledger: `" src "`"                                          >> render
   print "- findings in: " rows "  |  unique after dedup: " uniq "  |  duplicates collapsed: " dupes >> render
   if (recon != "") print "- reconciled against: `" recon "`" (verified ? "" : " (empty — nothing to check against)") >> render
+  # Say which half of the refutation rule ran. "Every refutation cites a real
+  # document" and "every refutation cites the documentation of a library this
+  # repo declares" are different assurances, and a page that ran only the first
+  # must not read like it ran both.
+  if (depsfile != "")
+    print "- refutations checked against: `" depsfile "` (" ndeps " declared dependencies) — grammar, subject and linkage" >> render
+  else
+    print "- refutations checked for document GRAMMAR only — pass `--deps` (the §4.5b inventory) to also require that a refuted finding names a library this repo declares, and cites that library docs" >> render
   print ""                                                                    >> render
   if (verified) {
     print "Every finding this review raised is on this page, and that is a"    >> render
