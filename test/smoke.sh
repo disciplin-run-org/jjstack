@@ -3603,6 +3603,83 @@ check "the duplicate-heading guard actually catches a duplicate (control)" \
       "[ -n \"\$cl_probe_dupes\" ]"
 rm -f "$cl_probe"
 
+echo "== 7r. round-3: the render order is a function of the finding SET =="
+# `README.md` and `skills/review/SKILL.md` both advertise, in those words, that
+# "the rendered ledger is a function of the SET of findings, not of the order
+# they were written down". Round 3 deleted the whole insertion-sort block that
+# makes it true and the suite stayed green: the round-2 determinism fixture
+# emits exactly ONE row per disposition at seven distinct locations, so every
+# rendered section holds a single row and its order is fixed by the section
+# split, not by the sort. A property with no falsifiable test is a sentence.
+#
+# The fixture below is the smallest one that can falsify it: FOUR findings that
+# all land in the SAME section, arranged so that each component of the declared
+# sort key — severity, then location, then fingerprint — is the only thing
+# separating one adjacent pair. Then EVERY permutation of the four is rendered,
+# not just forward and reversed: 24 orders, and the claim is about all of them.
+R3="$(mktemp -d)"
+r3row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
+# 1 and 2 differ ONLY in location, and `src/a.py:1` vs `src/a.py:12` is chosen
+# on purpose: `:1` sorts before `:12` by location while its FINGERPRINT sorts
+# after (the fingerprint appends `|`, 0x7C, where the other has `2`, 0x32), so
+# dropping LOC from the key changes the page instead of leaving it alone.
+r3_1() { r3row P2 50 src/a.py:12 lens1 report - 'alpha finding at the later line in this file'; }
+r3_2() { r3row P2 50 src/a.py:1  lens2 report - 'bravo finding at the earlier line in this file'; }
+# 3 differs from 1 only in SEVERITY, and sits at the location that sorts LAST,
+# so severity has to win for it to render first.
+r3_3() { r3row P1 50 src/a.py:12 lens3 report - 'charlie finding at the later line in this file'; }
+# 4 shares location, severity and confidence with 2 and differs only in its
+# claim, so the FINGERPRINT tiebreak is the only thing that can order the pair.
+r3_4() { r3row P2 50 src/a.py:1  lens4 report - 'alfa finding at the earlier line in this file'; }
+
+# The declared key is (severity, location, fingerprint), so the only order that
+# satisfies it is 3, 4, 2, 1 — each adjacent pair decided by a different
+# component: 3 before 4 by severity, 4 before 2 by fingerprint, 2 before 1 by
+# location.
+r3_expected='charlie
+alfa
+bravo
+alpha'
+r3_perms=0; r3_diff=0; r3_order=0
+for perm in $(python3 -c "import itertools;print('\n'.join(''.join(p) for p in itertools.permutations('1234')))"); do
+  r3_perms=$((r3_perms+1))
+  : > "$R3/p.tsv"
+  for i in $(printf '%s\n' "$perm" | fold -w1); do "r3_$i" >> "$R3/p.tsv"; done
+  rm -f "$R3/p.md"
+  "$BIN/jjstack-review-triage" "$R3/p.tsv" --out "$R3/p.md" > /dev/null 2>&1
+  [ -f "$R3/p.md" ] || { r3_diff=$((r3_diff+1)); echo "    permutation rendered nothing: $perm" >&2; continue; }
+  sed 's#^- source ledger:.*##' "$R3/p.md" > "$R3/p.norm"
+  if [ "$perm" = 1234 ]; then cp "$R3/p.norm" "$R3/first.norm"; fi
+  cmp -s "$R3/first.norm" "$R3/p.norm" || { r3_diff=$((r3_diff+1)); echo "    order-dependent page: $perm" >&2; }
+  # The ORDER ITSELF, read off the rendered table rather than inferred from two
+  # pages agreeing. Page equality alone cannot tell a correct order from a
+  # consistently wrong one.
+  got=$(sed -n '/^## Reported/,/^## /p' "$R3/p.md" | awk -F'|' '/^\| P[0-9] \|/ { n = $8; sub(/^ */, "", n); sub(/ .*$/, "", n); print n }')
+  [ "$got" = "$r3_expected" ] || { r3_order=$((r3_order+1)); echo "    wrong render order for $perm: $(printf '%s' "$got" | tr '\n' ' ')" >&2; }
+done
+check "all 24 permutations of the fixture were rendered" "[ \"\$r3_perms\" = 24 ]"
+check "four findings in one section: the page is the same for every permutation" \
+      "[ \"\$r3_diff\" = 0 ]"
+check "and the rendered order is the declared key — severity, location, fingerprint" \
+      "[ \"\$r3_order\" = 0 ]"
+# POSITIVE CONTROL on the reader, not on the tool: the extractor above must be
+# able to report a DIFFERENT order, or "the order was right" would only mean it
+# never read anything. Feed it the same page with two rows transposed.
+r3_probe="$(mktemp)"
+sed -n '/^## Reported/,/^## /p' "$R3/p.md" | awk -F'|' '/^\| P[0-9] \|/ { n = $8; sub(/^ */, "", n); sub(/ .*$/, "", n); print n }' | tac > "$r3_probe"
+check "the order reader can see a different order (control)" \
+      "[ \"\$(cat '$r3_probe')\" != \"\$r3_expected\" ] && [ \"\$(wc -l < '$r3_probe')\" = 4 ]"
+rm -f "$r3_probe"
+# And the fixture must really be FOUR findings in ONE section — if any two of
+# them merged, or landed in different sections, the sort would have nothing to
+# order and this whole block would be vacuous the way the round-2 one was.
+"$BIN/jjstack-review-triage" "$R3/p.tsv" --out "$R3/p.md" > "$R3/p.out" 2>/dev/null
+check "the four findings stay four: nothing merged behind the sort" \
+      "grep -q 'unique=4 collapsed=0' '$R3/p.out'"
+check "and all four render in the one section the sort orders" \
+      "[ \"\$(grep -c '^## Reported.*(4)' '$R3/p.md')\" = 1 ]"
+rm -rf "$R3"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
