@@ -20,6 +20,13 @@
 #      wrong" outcome is the one earned by external evidence (Phase 4.5b's
 #      documentation lookup). Binding the two stops it becoming a general delete
 #      hatch, and stops `stale-api` routing a P0/P1 past invariant 3.
+#   5. A DOCUMENTARY REFUTATION MUST CARRY ITS DOCUMENT — a `refuted` row whose
+#      claim holds no `http`/`https` URL is rejected. Invariant 4 bound the two
+#      LABELS and checked no evidence, so `refuted` + `stale-api` + a sentence
+#      of opinion bought exactly the disappearance invariant 3 denies to
+#      `suppress`, while the rendered page positively asserted that a
+#      documentation check had happened. §4.5b step 3 already says the doc URL
+#      goes in the claim column; this is that instruction, enforced.
 #
 # The invariants run on the MERGED record, never on the raw row. Dedup used to
 # keep the first-seen row and discard the rest, so a baseline-suppressed P3
@@ -150,15 +157,38 @@ function failmerged(loc, msg) { errs++; print "  merged " loc ": " msg >> errfil
 # SMALLEST rank. Unknown severities never reach here (validated per row).
 function sevrank(s) { if (s == "P0") return 0; if (s == "P1") return 1; if (s == "P2") return 2; return 3 }
 
+# Total, order-independent sort key for the rendered page: severity first (a
+# reader scans top-down), then location, then the fingerprint so no two unique
+# findings can ever compare equal.
+function sortkey(fp) { return sevrank(SEV_[fp]) "\x01" LOC[fp] "\x01" fp }
+
 # How thoroughly a disposition hides a finding. Merging keeps the WEAKEST
 # (smallest) rank, so a suppressed row can never swallow a reported one.
-function disprank(d) {
-  if (d == "report")       return 0
-  if (d == "unconfirmed")  return 1
-  if (d == "demoted")      return 2
-  if (d == "defer")        return 3
-  if (d == "out-of-scope") return 4
-  return 5  # suppress — the only disposition that takes a finding off the active set
+#
+# The rank is READ OUT OF THE VOCABULARY LIST (DRANK, built in BEGIN from
+# DISPORDER), it is not a second hand-maintained ladder. It used to be a chain
+# of ifs ending in a bare `return 5`, and when `refuted` joined the vocabulary
+# nobody added it here — so it fell into the default bucket and TIED with
+# `suppress`. The merge test is a strict `<`, so the tie made row order decide
+# which disposition survived: the same input rendered under "Refuted" or under
+# "Suppressed by baseline" depending on which line came first. Deriving rank
+# from the vocabulary makes an unranked disposition impossible to write.
+function disprank(d) { return (d in DRANK) ? DRANK[d] : 9999 }
+
+# A refutation is a claim about the OUTSIDE world — "current official docs say
+# this code is correct" — and the only evidence that can settle it is the
+# document. Without one, `refuted` is an opinion wearing a disposition that
+# deletes P0s.
+function hasdoc(claim) { return (claim ~ /https?:\/\/[^[:space:]]/) }
+
+# Deterministic, order-independent lens list: two passes flagging one defect
+# must render the same however the rows arrived.
+function lenslist(fp,   n, parts, i, j, t, out) {
+  n = split(LENSES[fp], parts, "|")
+  for (i = 2; i <= n; i++) { t = parts[i]; for (j = i - 1; j >= 1 && parts[j] > t; j--) parts[j+1] = parts[j]; parts[j+1] = t }
+  out = parts[1]
+  for (i = 2; i <= n; i++) out = out ", " parts[i]
+  return out
 }
 
 # A raw `|` in free text opens a new markdown table cell, so a claim quoting
@@ -201,8 +231,6 @@ function fingerprint(loc, claim,   c, w, i, k, n) {
   for (i = 1; i <= n && i <= 8; i++) k = k w[i] " "
   return loc "|" k
 }
-
-function lenslist(fp,   s) { s = LENSES[fp]; gsub(/\|/, ", ", s); return s }
 
 # Two rows can describe ONE defect in different words ("missing authz check on
 # admin route" / "Missing authz check on admin route!"). Normalised equality is
@@ -250,7 +278,14 @@ BEGIN {
   # record itself — it was told to "drop the finding", the closed vocabulary had
   # no code for it, and `out-of-scope` means "never raised", which is false for a
   # finding that was raised and then disproved.
-  split("report unconfirmed demoted defer suppress out-of-scope refuted", a, " "); for (i in a) DISP[a[i]] = 1
+  # ONE ordered list is both the vocabulary and the ranking, so the two cannot
+  # drift. Order is weakest-hiding first: a merged group keeps the member
+  # earliest in this list, which is the one a reader is most likely to see.
+  # `refuted` sits last on purpose — it is the strongest removal there is (the
+  # finding is asserted WRONG), so a refutation may never swallow a member that
+  # is still merely suppressed, deferred or reported.
+  ndisp = split("report unconfirmed demoted defer out-of-scope suppress refuted", DISPORDER, " ")
+  for (i = 1; i <= ndisp; i++) { DISP[DISPORDER[i]] = 1; DRANK[DISPORDER[i]] = i }
   split("unverified prior-decision low-confidence pre-existing tool-covered style-only no-repro duplicate not-reachable accepted-risk baseline stale-api", a, " ")
   for (i in a) REASON[a[i]] = 1
   errs = 0; rows = 0; uniq = 0; dupes = 0; nadv = 0; nraised = 0
@@ -301,6 +336,15 @@ BEGIN {
   if ((disp == "refuted") != (rsn == "stale-api")) {
     fail(NR, "\"refuted\" and reason \"stale-api\" are only legal together — got disposition \"" disp "\" with reason \"" rsn "\""); bad = 1
   }
+  # INVARIANT 5 — a documentary refutation carries its document. Invariant 4
+  # binds the two LABELS; on its own it checks no evidence, so two tokens and an
+  # opinion ("I do not think this is real") deleted a P0 that Invariant 3
+  # forbids suppressing, and the ledger then asserted a doc check that never
+  # happened. The URL is not decoration: it is the whole reason `refuted` is
+  # allowed to do what `suppress` may not.
+  if (disp == "refuted" && !hasdoc(claim)) {
+    fail(NR, "\"refuted\" needs the document it refutes with — put the current-docs http(s) URL in the claim column (§4.5b step 3)"); bad = 1
+  }
 
   if (bad) next
 
@@ -339,35 +383,68 @@ BEGIN {
     # how a suppressed P3 absorbed a reported P0: same location, same opening
     # phrase, and row order decided which survived.
     #
-    # Severity was not the only thing at stake. An EQUAL-severity collision is
-    # a merge too: taking the higher confidence while leaving the other row
-    # sentence in place printed a number against a claim it did not come from,
-    # and the losing claim vanished from the report. So the primary is
-    # (highest severity, then highest confidence) and its severity, confidence
-    # and claim ALWAYS travel together; every other member claim is carried
-    # onto the same row by END rather than discarded.
-    if (sevrank(sev) < sevrank(SEV_[fp]) || \
-        (sevrank(sev) == sevrank(SEV_[fp]) && conf + 0 > CONF[fp] + 0)) {
-      SEV_[fp] = sev; CLAIM[fp] = claim; CONF[fp] = conf
+    # Every field kept below is the MINIMUM of a total order over the group, so
+    # the merged record is a function of the SET of rows and not of the order
+    # they arrived in. The earlier version was order-dependent in three separate
+    # places even where disprank differed: the surviving CLAIM was simply the
+    # first-seen one among equally severe members, the lens list was in arrival
+    # order, and — worst — the Merges section recorded a collapse only when a
+    # LATER row beat an earlier one, so the identical two rows reported
+    # `merges-raised=1` in one order and `merges-raised=0` in the other.
+    #
+    # Framing: (severity, -confidence, claim). The most severe member owns the
+    # framing; ties break on confidence, then lexically, so there is always
+    # exactly one winner.
+    better = 0
+    if (sevrank(sev) < sevrank(SEV_[fp])) better = 1
+    else if (sevrank(sev) == sevrank(SEV_[fp])) {
+      if (conf + 0 > CONF[fp] + 0) better = 1
+      else if (conf + 0 == CONF[fp] + 0 && claim < CLAIM[fp]) better = 1
     }
+    if (better) { SEV_[fp] = sev; CLAIM[fp] = claim; CONF[fp] = conf }
+    # The WEAKEST — most visible — disposition wins, and it brings its own
+    # reason with it, or invariant 1 would see `report` carrying `baseline`.
+    # Rank is total, so equal rank means the identical disposition; the reason
+    # is then broken lexically to keep even that corner deterministic.
     if (disprank(disp) < disprank(DISP_[fp])) {
-      # The weakest disposition wins, and it brings its own reason with it —
-      # otherwise invariant 1 would see `report` carrying `baseline`.
       TALLY[DISP_[fp]]--
       DISP_[fp] = disp; RSN[fp] = rsn
       TALLY[disp]++
+    } else if (disprank(disp) == disprank(DISP_[fp]) && rsn < RSN[fp]) {
+      RSN[fp] = rsn
     }
+    # The extremes of the group, tracked independently of arrival order. They
+    # are what the Merges section reports as the "from" side, and what decides
+    # whether this collapse changed anything at all.
+    if (sevrank(sev) > sevrank(SEVWORST[fp])) SEVWORST[fp] = sev
+    if (disprank(disp) > disprank(DISPMOST[fp])) DISPMOST[fp] = disp
+    MEMBERS[fp]++
     next
   }
   SEEN[fp] = 1; order[++uniq] = fp
   SEV_[fp] = sev; CONF[fp] = conf; LOC[fp] = loc; DISP_[fp] = disp
   RSN[fp] = rsn; CLAIM[fp] = claim; CLS[fp] = cls
   LENSES[fp] = lens; LSEEN[fp SUBSEP lens] = 1; CORROB[fp] = 1
+  SEVWORST[fp] = sev; DISPMOST[fp] = disp; MEMBERS[fp] = 1
   TALLY[disp]++
 }
 
 END {
   if (errs > 0) exit 4
+
+  # The invariants ran per row on the way in; run them AGAIN on the merged
+  # record, because merging is what changes the severity and disposition of a
+  # finding. A per-row-only check cannot see suppression by absorption.
+  # RENDER ORDER is part of the output, so it must be a function of the finding
+  # SET too. `order[]` is arrival order; sort it on a total key — severity, then
+  # location, then fingerprint — so two runs over the same rows in different
+  # orders produce byte-identical pages. Insertion sort: portable across awks,
+  # and `uniq` counts the findings in one review, not a data set.
+  for (i = 2; i <= uniq; i++) {
+    keyfp = order[i]; keysort = sortkey(keyfp)
+    for (j = i - 1; j >= 1 && sortkey(order[j]) > keysort; j--) order[j+1] = order[j]
+    order[j+1] = keyfp
+  }
 
   # Re-running the SAME three invariants on the collapsed scalar was dead code
   # and deleting all four checks changed nothing: RSN is only ever assigned
@@ -382,20 +459,43 @@ END {
   # merge never touches, and the two must agree before anything renders.
   for (i = 1; i <= uniq; i++) {
     fp = order[i]
+    # INVARIANT 5 on the merged record: a refutation must not acquire its
+    # evidence by being merged with a differently-worded row, nor lose it.
+    if (DISP_[fp] == "refuted" && !hasdoc(CLAIM[fp]))
+      failmerged(LOC[fp], "merged disposition \"refuted\" carries no current-docs http(s) URL — a documentary refutation must carry its document")
+    if (DISP_[fp] != "report" && RSN[fp] == "-")
+      failmerged(LOC[fp], "merged disposition \"" DISP_[fp] "\" carries no reason code")
+    if (DISP_[fp] == "report" && RSN[fp] != "-")
+      failmerged(LOC[fp], "merged disposition \"report\" must carry reason \"-\", got \"" RSN[fp] "\"")
+    if (RSN[fp] == "not-reachable" && DISP_[fp] == "suppress")
+      failmerged(LOC[fp], "merged reason \"not-reachable\" may not suppress — deprioritise with \"defer\" or \"demoted\"")
+    if ((SEV_[fp] == "P0" || SEV_[fp] == "P1") && DISP_[fp] == "suppress")
+      failmerged(LOC[fp], SEV_[fp] " may not be suppressed — a merge must not absorb top severity into a suppressed row")
 
-    # Ground truth: highest severity, then highest confidence, first wins ties.
-    wr = 99; wc = -1; bi = 0
+    # Ground truth: the SAME total order the merge uses — highest severity, then
+    # highest confidence, then the lexically first claim. "First row wins ties"
+    # is not a rule, it is arrival order, and recomputing against it made this
+    # very check the last order-dependent thing on the page: two P2/50 rows
+    # rendered fine in one order and failed the merge audit in the other.
+    wr = 99; wc = -1; bi = 0; wclaim = ""
     for (m = 1; m <= MN[fp]; m++) {
-      r = sevrank(MSEV[fp, m])
-      if (r < wr || (r == wr && MCONF[fp, m] + 0 > wc + 0)) { wr = r; wc = MCONF[fp, m]; bi = m }
+      r = sevrank(MSEV[fp, m]); bet = 0
+      if (bi == 0 || r < wr) bet = 1
+      else if (r == wr) {
+        if (MCONF[fp, m] + 0 > wc + 0) bet = 1
+        else if (MCONF[fp, m] + 0 == wc + 0 && MCLAIM[fp, m] < wclaim) bet = 1
+      }
+      if (bet) { wr = r; wc = MCONF[fp, m]; bi = m; wclaim = MCLAIM[fp, m] }
     }
     wsev = MSEV[fp, bi]; wconf = MCONF[fp, bi]; wclaim = MCLAIM[fp, bi]
 
-    # Ground truth: weakest — most visible — disposition, with ITS reason.
+    # Ground truth: weakest — most visible — disposition, with ITS reason. Equal
+    # rank means the identical disposition, so the reason breaks lexically, the
+    # same way the merge breaks it.
     dr = 99; di = 0
     for (m = 1; m <= MN[fp]; m++) {
       r = disprank(MDISP[fp, m])
-      if (r < dr) { dr = r; di = m }
+      if (di == 0 || r < dr || (r == dr && MRSN[fp, m] < MRSN[fp, di])) { dr = r; di = m }
     }
     wdisp = MDISP[fp, di]; wrsn = MRSN[fp, di]
 
@@ -439,12 +539,13 @@ END {
     }
 
     # A merge is worth auditing when it changed ANY of the three things a
-    # reader acts on: severity, disposition, or the finding text. Keying
-    # RAISED off severity and disposition alone hid every equal/equal claim
-    # merge — two P0s in, one out, and merges-raised=0 said nothing happened.
-    if (wsev != MSEV[fp, 1] || wdisp != MDISP[fp, 1] || nother > 0) RAISED[fp] = 1
+    # reader acts on: severity, disposition, or the finding text. Keying RAISED
+    # off severity and disposition alone hid every equal/equal claim merge — two
+    # P0s in, one out, and merges-raised=0 said nothing happened. And the
+    # comparison is against the SET extremes, never against the first-arrived
+    # row, or the same two rows are listed in one order and dropped in the other.
+    if (SEVWORST[fp] != wsev || DISPMOST[fp] != wdisp || nother > 0) RAISED[fp] = 1
     if (RAISED[fp]) nraised++
-
     # Exposure advisories are a property of the merged record too: a row that
     # only became `report` through a merge still deserves the vendor warning.
     if (DISP_[fp] == "report" && (CLS[fp] == "vendor" || CLS[fp] == "generated"))
@@ -492,8 +593,7 @@ END {
   print ""                                                                    >> render
   print "| disposition | count |"                                             >> render
   print "|---|---|"                                                           >> render
-  nd = split("report unconfirmed demoted defer suppress out-of-scope refuted", d, " ")
-  for (i = 1; i <= nd; i++) printf("| %s | %d |\n", d[i], TALLY[d[i]] + 0)     >> render
+  for (i = 1; i <= ndisp; i++) printf("| %s | %d |\n", DISPORDER[i], TALLY[DISPORDER[i]] + 0) >> render
 
   section("Reported — main report", "report")
   section("Unconfirmed — kept deliberately, nobody could verify at the source", "unconfirmed")
@@ -518,7 +618,7 @@ END {
       fp = order[i]
       if (!RAISED[fp]) continue
       printf("| `%s` | %d | %s → %s | %s → %s | %s |\n", cellsafe(LOC[fp]), MN[fp], \
-             MSEV[fp, 1], SEV_[fp], MDISP[fp, 1], DISP_[fp], cellsafe(TEXT[fp])) >> render
+             SEVWORST[fp], SEV_[fp], DISPMOST[fp], DISP_[fp], cellsafe(TEXT[fp])) >> render
     }
   }
 

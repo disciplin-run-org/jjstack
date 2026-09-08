@@ -11,6 +11,32 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **"I disproved it" now has to show the document.** `/review` can retire a
+  finding by checking it against the library's current official docs — the
+  usual cure for a reviewer complaining about an API that changed years ago.
+  That outcome used to need nothing but a label: two words, no link, and the
+  most serious class of finding vanished from the report, under a heading
+  that told you it had been "disproved against current official docs". The
+  documentation link is now required. Without one the run stops and prints
+  nothing, so a review can no longer quietly delete its own worst finding.
+- **The same review now produces the same report.** When two passes flagged
+  one defect and disagreed about what to do with it, which decision survived
+  depended on which line happened to be written first — the identical review
+  could file a finding as "refuted" or as "suppressed" on two different runs,
+  and in neither case did it mention that it had collapsed the two. Reviews
+  are now a function of what was found, not of the order it was found in, and
+  a collapse that changes a finding's severity or its outcome is always listed.
+- **The dependency inventory stopped losing most of your dependencies.** The
+  list `/review` reads to check library versions is parsed from your
+  manifests, and several very ordinary spellings were dropped in silence: a
+  Python extra like `celery[redis]` truncated the rest of the list at that
+  line, Poetry's dependency groups and its older `dev-dependencies` section
+  produced nothing at all, Rust dependencies written with their own
+  `[dependencies.<name>]` block disappeared, and a Maven dependency written
+  on one line was skipped entirely. All of them are read now, Ruby and Java
+  manifests have real coverage for the first time, and the output is checked
+  to be well-formed before anything consumes it — including for project paths
+  containing characters that used to corrupt it.
 - **The auto-fix review pass no longer reports your own scratch files back at
   you.** Post-pass 2 takes a marker before the review is allowed to change
   anything, so it can tell the reviewer's edits from work you already had open.
