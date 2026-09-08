@@ -21,6 +21,12 @@
 # The pack is always written, even when every pass had nothing to say, because
 # an absent artifact and an empty one mean very different things to the review.
 #
+# EVIDENCE-PACK.md must never claim more than the artifact it points at. Rows 1
+# and 5 therefore quote the sweep's per-tool `tooling-status.env` rather than
+# its single aggregate exit code: one rc cannot describe three tools, and
+# trying printed "baseline recorded (green)" over an artifact reading
+# "runner: none / NO baseline exists".
+#
 # Usage:
 #   jjstack-review-preflight --out DIR [--base REF] [--repo DIR]
 #                            [--skip-tests] [--dry-run]
@@ -44,7 +50,7 @@ while [ $# -gt 0 ]; do
     --base)       BASE="${2:-}"; shift 2 ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
     --dry-run)    DRY=1; shift ;;
-    -h|--help)    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,6 +58,14 @@ done
 [ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF] [--repo DIR]" >&2; exit 2; }
 
 if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
+
+# `declare -A` is bash 4+. Without `set -e` it fails SILENTLY on bash 3.2 and
+# degrades to an indexed array, where every string subscript collapses to index
+# 0 — all five rows would report the last pass's result. Refuse loudly.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo -e "${CYA}error${RST} bash 4+ required (associative arrays); found ${BASH_VERSION:-unknown}" >&2
+  exit 3
+fi
 
 declare -A RC
 run_pass() { # run_pass <label> <script> [args...]
@@ -95,6 +109,50 @@ verdict() { # verdict <rc> <ok-text>
   esac
 }
 
+# --- rows 1 and 5: read the sweep's per-tool facts, never its aggregate rc ---
+# One exit code cannot describe three tools. Deriving both rows from it printed
+# "ran — all detected tools passed" and "baseline recorded (green)" over a
+# `test-baseline.md` that read "runner: none / NO baseline exists", and turned a
+# green suite RED whenever the typechecker failed. The index must never claim
+# more than its artifacts support, so it quotes them instead.
+sweep_fact() { # sweep_fact <KEY> -> value, or "" when the sweep wrote no status
+  [ -f "$OUT/tooling-status.env" ] || return 0
+  sed -n "s/^$1=//p" "$OUT/tooling-status.env" | head -n1
+}
+
+TC_S="$(sweep_fact TYPECHECK_STATUS)"
+LINT_S="$(sweep_fact LINT_STATUS)"
+TEST_S="$(sweep_fact TEST_STATUS)"
+N_DETECTED="$(sweep_fact TOOLS_DETECTED)"
+N_FAILED="$(sweep_fact TOOLS_FAILED)"
+N_ERRORED="$(sweep_fact TOOLS_ERRORED)"
+
+row_tooling() {
+  # No status file at all: the sweep never got far enough to report anything.
+  if [ -z "$TC_S" ]; then verdict "${RC[tooling]:-9}" 'ran — but wrote no status; read `tooling-results.md`'; return; fi
+  local detail="typecheck: $TC_S · lint: $LINT_S · test: $TEST_S"
+  if [ "${N_DETECTED:-0}" = "0" ]; then
+    echo "skipped — structurally inapplicable: no typechecker, linter or test runner detected. NOTHING was checked"
+  elif [ "${N_FAILED:-0}" != "0" ]; then
+    echo "ran — **deterministic failures found** ($detail)"
+  elif [ "${N_ERRORED:-0}" != "0" ]; then
+    echo "ran — **$N_ERRORED tool(s) COULD NOT RUN**: a KNOWN GAP, not a pass ($detail)"
+  else
+    echo "ran — no failures ($detail)"
+  fi
+}
+
+row_baseline() {
+  case "$TEST_S" in
+    pass)    echo "ran — baseline recorded (green)" ;;
+    fail)    echo "ran — baseline recorded (**RED**: pre-existing failures)" ;;
+    skipped) echo "skipped — runner detected but NOT run (\`--skip-tests\` / re-entrancy guard). **NO baseline exists**" ;;
+    error)   echo "unavailable — runner could not execute. **NO baseline exists**" ;;
+    none)    echo "skipped — structurally inapplicable: no test runner detected. **NO baseline exists**" ;;
+    *)       verdict "${RC[tooling]:-9}" 'unknown — read `test-baseline.md`' ;;
+  esac
+}
+
 {
   echo "# /review pre-flight evidence pack"
   echo
@@ -107,18 +165,13 @@ verdict() { # verdict <rc> <ok-text>
   echo
   echo "| # | pre-pass | artifact | status |"
   echo "|---|----------|----------|--------|"
-  echo "| 1 | Deterministic tooling sweep | \`tooling-results.md\`, \`exclusions.md\` | $(verdict "${RC[tooling]:-9}" 'ran — all detected tools passed') |"
+  echo "| 1 | Deterministic tooling sweep | \`tooling-results.md\`, \`exclusions.md\` | $(row_tooling) |"
   echo "| 2 | Blast-radius map | \`blast-radius.md\` | $(verdict "${RC[blast]:-9}" 'ran — map built') |"
   echo "| 3 | Intent extraction | \`intent.md\` | $(verdict "${RC[intent]:-9}" 'ran — claim gathered') |"
   echo "| 4 | Prior-dismissal load | \`prior-dismissals.md\` | $(verdict "${RC[dismissed]:-9}" 'ran — dismissals loaded') |"
   # Row 5 shares row 1's execution but not its meaning: a red baseline is a
-  # recorded fact, not a broken pre-pass.
-  case "${RC[tooling]:-9}" in
-    0) b="ran — baseline recorded (green)" ;;
-    1) b="ran — baseline recorded (**RED**: pre-existing failures)" ;;
-    *) b="$(verdict "${RC[tooling]:-9}" 'ran — baseline recorded')" ;;
-  esac
-  echo "| 5 | Test baseline snapshot | \`test-baseline.md\` | $b |"
+  # recorded fact, not a broken pre-pass — and a MISSING baseline is neither.
+  echo "| 5 | Test baseline snapshot | \`test-baseline.md\` | $(row_baseline) |"
   echo
   echo "## Reading order for the review"
   echo
@@ -136,6 +189,19 @@ verdict() { # verdict <rc> <ok-text>
   echo "A pass marked *skipped — structurally inapplicable* is a legitimate"
   echo "outcome (no test runner, no PR, no review history). Say so in the report"
   echo "instead of implying the check passed."
+  echo
+  echo "Three statuses above are **KNOWN GAPS, never passes** — carry each into"
+  echo "the report as one:"
+  echo
+  echo "- *COULD NOT RUN* — the tool exists but never judged the code (missing"
+  echo "  binary, timeout, broken invocation). It produced no findings, so"
+  echo "  nothing from it may be reported as one, and its category stays IN"
+  echo "  SCOPE for the AI passes."
+  echo "- *NO baseline exists* — row 5 recorded nothing. No later pass may claim"
+  echo "  the change, or a gstack auto-fix, \"broke nothing\": there is no"
+  echo "  before-state to compare against."
+  echo "- *NOTHING was checked* — no tooling was detected at all. Absence of"
+  echo "  evidence, not evidence of health."
 } > "$OUT/EVIDENCE-PACK.md"
 
 echo -e "${GRN}evidence pack${RST} → $OUT/EVIDENCE-PACK.md"

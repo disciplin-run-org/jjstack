@@ -147,6 +147,19 @@ what would run. A pre-pass reported as *skipped — structurally inapplicable*
 (no test runner, no PR, no review history) is a legitimate outcome: carry it
 into the report as a **known gap**, never let its absence read as a pass.
 
+Read the index rows literally — they are rendered from per-tool facts, so they
+distinguish states a summary would blur. Three of them are gaps, not passes:
+*COULD NOT RUN* (the tool never judged the code), *NO baseline exists* (nothing
+recorded, so no later pass may claim the change broke nothing), and *NOTHING was
+checked* (no tooling detected at all). Each belongs in the report as a stated
+limit of this review.
+
+Phase 0 **executes the reviewed repo's own tooling** — its `npm run` scripts,
+`make` targets, `test/smoke.sh`. That is the point on a tree you trust, and it
+is not appropriate on one you do not. To review without executing anything, run
+the sweep with `--typecheck none --lint none --test none` and note in the report
+that all three categories are IN SCOPE.
+
 ---
 
 ## Phase 2: Delegate to gstack — recall-max
@@ -180,8 +193,15 @@ review toward coverage over speed:
   (expensively) or miss (silently) exactly what Phase 0 already established.
 - **Fold `tooling-results.md` failures straight into the findings** — they are
   facts from a compiler or test runner, not claims. They skip Phase 5 scoring.
+  This applies **only** to the `… FAILED — real findings` sections. A
+  `… COULD NOT RUN — a KNOWN GAP, NOT a finding` section is the opposite: the
+  tool never judged the code, so nothing in it may be reported as a finding.
+  Carry it as a gap and leave that category IN SCOPE.
 - **When gstack auto-applies a fix, re-check it against `test-baseline.md`**
   before accepting it. An auto-fix that turns a green baseline red is a P0.
+  First check that a baseline *exists*: if `EVIDENCE-PACK.md` row 5 says
+  **NO baseline exists**, there is nothing to compare against — say so, and do
+  not let an auto-fix through on an unmade comparison.
 
 ---
 
@@ -269,8 +289,10 @@ diff does not contain, and no diff-only pass can produce them):
    definition — arity, argument types, contract, constant's new value, and every
    enum member still handled at every switch/match/dispatch? A broken call site
    is a P0 even though it appears in no hunk. Report the map's own limits as a
-   known gap (tracked files in this repo only; blind to dynamic dispatch,
-   reflection, string-keyed lookup and serialized data).
+   known gap — quote its `diff scope:` line, and add: files under this repo root
+   only; blind to dynamic dispatch, reflection, string-keyed lookup and
+   serialized data; and if the header says `**TRUNCATED**`, the symbols past the
+   cut were never mapped.
 10. **Intent-fidelity pass** — compare the diff against the Phase 0 intent
     restatement in both directions: a stated case not implemented, and a
     behavior change the claim never mentions. If no claim was recoverable, this
