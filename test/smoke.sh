@@ -2186,6 +2186,25 @@ printf 'module m\nrequire github.com/x/y v1.0.0\n' > "$D2/many/go.mod"
 "$BIN/jjstack-review-dep-inventory" "$D2/many" --tsv > "$D2/many.tsv" 2>/dev/null
 check "the 4-field contract holds across every ecosystem in one run" \
       "[ \"\$(awk -F'\\t' '{print NF}' '$D2/many.tsv' | sort -u | tr -d '\\n')\" = 4 ]"
+# And the contract is a GUARD, not just an expectation. Sanitising the path
+# fixes the route that was reported; the field separator can also arrive from
+# inside the manifest, which the repo controls. A dependency name holding a raw
+# tab makes a parser emit a five-field row, and a consumer reading `--tsv` by
+# column would then take the version for a manifest. The run must refuse.
+mkdir -p "$D2/tabname"
+printf '{"dependencies":{"a\tb":"1.0.0"}}\n' > "$D2/tabname/package.json"
+"$BIN/jjstack-review-dep-inventory" "$D2/tabname" --tsv > "$D2/tab.out" 2> "$D2/tab.err"
+check "a manifest that injects a tab is refused, not shipped" "[ \$? -eq 4 ]"
+check "and nothing is emitted on stdout for a consumer to misread" "[ ! -s '$D2/tab.out' ]"
+check "the refusal names the contract it is protecting" \
+      "grep -q '4-field' '$D2/tab.err'"
+# CONTROL — the identical manifest without the tab parses cleanly, so the
+# refusal above is about the field count and not about package.json in general.
+mkdir -p "$D2/tabok"
+printf '{"dependencies":{"ab":"1.0.0"}}\n' > "$D2/tabok/package.json"
+"$BIN/jjstack-review-dep-inventory" "$D2/tabok" --tsv > "$D2/tabok.tsv" 2>/dev/null
+check "the same manifest without the tab is accepted (control)" \
+      "deprow '$D2/tabok.tsv' npm ab 1.0.0"
 
 # --- pyproject: extras truncate the list -----------------------------------
 # `if ($0 ~ /\]/) inarr = 0` closed the array on ANY `]`, including the one
