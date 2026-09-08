@@ -219,14 +219,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 - **`/review` remembers what you already decided — without ever going quiet on
   you.** Findings you adjudicate can be recorded in a ledger at
   `jjstack/review-ledger.md` in your repo, and future reviews check against it.
-  A finding you previously dismissed moves to the report's appendix with your own
-  note quoted as the reason — it is **demoted, never dropped**, so you can always
+  A finding you previously dismissed drops to the report's "Demoted (prior
+  decision)" section with your own note quoted as the reason, keeping its
+  severity and score — it is **demoted, never dropped**, so you can always
   see what was set aside and why. Security, correctness, concurrency,
   error-handling, resource-leak and test-coverage findings never demote at all,
   however many times they were waved off; those are the classes where a wrong
   suppression ships an incident. And unlike the hosted tools this idea came from,
   the memory is a plain file in git: a suppression is reviewable in a PR, and
   retiring one is a visible diff instead of a setting nobody can audit.
+  A dismissal has to name a *place* — `src/legacy/*`, not `*` — so one line can
+  never quietly go repo-wide; a note is quoted back to you whole, pipes and all;
+  and if the ledger file is missing or misspelt, `/review` tells you it did not
+  read one instead of reporting a confident "nothing was previously decided".
+- **`/review` says when it could not actually look.** On a shallow clone — what
+  CI gives you by default — there is no history to search, so the revert-history
+  pass now reports the window as truncated and tells you to treat the git-history
+  check as *not run*. It used to print "no revert or rollback history on any
+  changed file", which reads as a clean bill of health for a search that never
+  happened.
 - **`references/vendor-lessons-greptile.md`** — the homework behind the above.
   What Greptile's reviewer verifiably does, which of its claims are real
   mechanics and which are unfalsifiable marketing (their headline benchmark

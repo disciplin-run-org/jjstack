@@ -12,11 +12,13 @@
 # This is the same mechanic with the opacity removed. The ledger is a plain
 # markdown file inside the repo, so it is version controlled, reviewable in a
 # PR, and greppable. And it deliberately does NOT do what the vendors do: a
-# match here DEMOTES a finding to the report appendix with the prior decision
-# cited. It never drops one. jjstack /review is tuned for recall; silently
-# suppressing a whole class because someone once waved it off is exactly the
-# failure this stack exists to avoid. Only `dismissed` entries demote —
-# `fixed` and `confirmed` entries are history, not suppression.
+# match here DEMOTES a finding into 5f's `### Demoted (prior decision)` section
+# with the prior decision cited. It never drops one, and it never rescores one:
+# the finding keeps its severity and confidence and only moves down the page.
+# jjstack /review is tuned for recall; silently suppressing a whole class
+# because someone once waved it off is exactly the failure this stack exists to
+# avoid. Only `dismissed` entries demote — `fixed` and `confirmed` entries are
+# history, not suppression.
 #
 # Usage:
 #   jjstack-review-ledger --record --type TYPE --path PATTERN --category CAT
@@ -30,15 +32,24 @@
 #           | test-coverage | performance | api-contract | style | type-safety
 #           | dependency | other
 #   PATTERN is a shell glob matched against the finding's repo-relative path.
+#           It must contain at least one literal character: a glob made only of
+#           `*`, `?` and `/` matches the whole repo and is rejected, because a
+#           dismissal is a decision about a place in the code, not a blanket.
 #
 # Protected categories (security, correctness, concurrency, error-handling,
 # resource-leak, test-coverage) are recorded but NEVER demote — --match prints
-# PROTECTED and exits 1 for them.
+# PROTECTED and exits 1 for them. The path glob is still consulted first: a
+# record only speaks about a finding whose path it actually matches.
+#
+# A --match against a ledger that does not exist warns and exits 1. That is not
+# the same statement as "no prior decision applies", and it is never reported as
+# if it were.
 #
 # Default ledger: <repo-root>/jjstack/review-ledger.md
 #
-# Exit: 0 recorded / listed / a demotion matched, 1 --match found nothing,
-#       2 usage error or an invalid type or category, 3 repo root unresolvable.
+# Exit: 0 recorded / listed / a demotion matched, 1 --match found nothing or
+#       found no ledger, 2 usage error — an invalid type or category, a flag
+#       given with no value, or an unscoped path glob — 3 repo root unresolvable.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -67,19 +78,29 @@ set_mode() {
   MODE="$1"
 }
 
+# A flag given with no value used to hang this script for ever: `shift 2` is a
+# no-op when only one argument remains, `set -e` is off so the failure is
+# swallowed, and the loop re-reads the same $1 on the next pass. An unattended
+# /review step that spins instead of failing is worse than a crash — nothing
+# reports, nothing times out, and the caller waits on it. Call this before every
+# `shift 2` so a missing value is a clean usage error instead.
+need_val() {
+  [ $# -ge 2 ] || { echo -e "${CYA}error${RST} $1 requires a value" >&2; exit 2; }
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --record)   set_mode record; shift ;;
     --match)    set_mode match;  shift ;;
     --list)     set_mode list;   shift ;;
-    --type)     TYPE="${2:-}";     shift 2 ;;
-    --path)     PATH_ARG="${2:-}"; shift 2 ;;
-    --category) CATEGORY="${2:-}"; shift 2 ;;
-    --note)     NOTE="${2:-}";     shift 2 ;;
-    --ledger)   LEDGER="${2:-}";   shift 2 ;;
-    --repo)     REPO="${2:-}";     shift 2 ;;
+    --type)     need_val "$@"; TYPE="$2";     shift 2 ;;
+    --path)     need_val "$@"; PATH_ARG="$2"; shift 2 ;;
+    --category) need_val "$@"; CATEGORY="$2"; shift 2 ;;
+    --note)     need_val "$@"; NOTE="$2";     shift 2 ;;
+    --ledger)   need_val "$@"; LEDGER="$2";   shift 2 ;;
+    --repo)     need_val "$@"; REPO="$2";     shift 2 ;;
     -h|--help)
-      sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
@@ -112,6 +133,20 @@ if [ "$MODE" = "record" ]; then
     echo -e "${YEL}valid${RST} $VALID_TYPES" >&2
     exit 2
   fi
+  # The category and the path glob are the two halves of the key, and only one
+  # of them was checked. `--path '*'` records a dismissal that then demotes
+  # every finding in that category, repo-wide and permanently — the demoted
+  # section becomes the whole report, and the ledger line reads like any other
+  # in a PR diff. A glob with no literal character in it (`*`, `**`, `*/*`,
+  # `/*`) matches every path there is, so it is never a decision about a place
+  # in the repo; it is a blanket. Name a real prefix instead.
+  case "$(printf '%s' "$PATH_ARG" | tr -d '*?/')" in
+    '')
+      echo -e "${CYA}error${RST} --path '$PATH_ARG' matches every file in the repo" >&2
+      echo -e "${YEL}why${RST}   a dismissal is a decision about a place in the code, not a" >&2
+      echo -e "${YEL}why${RST}   blanket. Scope it: 'src/legacy/*', 'docs/*', 'tests/**'." >&2
+      exit 2 ;;
+  esac
 fi
 
 if [ -z "$LEDGER" ]; then
@@ -150,10 +185,10 @@ case "$MODE" in
         echo "<date> | <repo> | <dismissed|fixed|confirmed> | <path-glob> | <category> | <note>"
         echo '```'
         echo
-        echo "Only \`dismissed\` records suppress, and they DEMOTE a repeat finding to"
-        echo "the report appendix with this note cited — they never drop it. Delete a"
-        echo "line to retire a decision; the deletion shows up in the diff like any"
-        echo "other reviewed change."
+        echo "Only \`dismissed\` records suppress, and they DEMOTE a repeat finding into"
+        echo "the report's \`Demoted (prior decision)\` section with this note cited —"
+        echo "they never drop it. Delete a line to retire a decision; the deletion shows"
+        echo "up in the diff like any other reviewed change."
         echo
       } > "$LEDGER"
     fi
@@ -177,7 +212,15 @@ case "$MODE" in
     ;;
 
   match)
-    [ -f "$LEDGER" ] || exit 1
+    # A missing ledger used to exit 1 in silence, which is indistinguishable
+    # from "I read the ledger and no prior decision applies". A mistyped
+    # --ledger path therefore reported an authoritative all-clear for the whole
+    # review. --list already warns on exactly this condition; so does match now.
+    if [ ! -f "$LEDGER" ]; then
+      echo -e "${YEL}warn${RST}  no ledger at $LEDGER — no prior decisions were consulted" >&2
+      echo -e "${YEL}warn${RST}  (this is NOT 'no prior decision applies'; check --ledger/--repo)" >&2
+      exit 1
+    fi
     hits=0; protected=0
     while IFS= read -r line; do
       case "$line" in
@@ -188,20 +231,33 @@ case "$MODE" in
       l_type=$(printf '%s' "$line" | awk -F' *\\| *' '{print $3}')
       l_pat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $4}')
       l_cat=$(printf  '%s' "$line" | awk -F' *\\| *' '{print $5}')
-      l_note=$(printf '%s' "$line" | awk -F' *\\| *' '{print $6}')
+      # The note is the LAST field, not the sixth: a note may legitimately
+      # contain the delimiter ("safe today | revisit when we drop py38"), and
+      # taking $6 alone silently dropped the condition attached to the
+      # dismissal — which the skill then quotes as the whole reason. Rejoin
+      # every field from 6 on so the note survives intact.
+      l_note=$(printf '%s' "$line" \
+        | awk -F' *\\| *' '{ n=$6; for (i=7; i<=NF; i++) n = n " | " $i; print n }')
       [ "$l_type" = "dismissed" ] || continue
       [ "$l_cat" = "$CATEGORY" ]  || continue
+      # The path glob is part of the key, so it must be consulted BEFORE any
+      # announcement is made about this record. It used to be tested only after
+      # the PROTECTED branch had already printed and `continue`d, so a
+      # dismissal recorded against `docs/*` announced itself on a security
+      # finding in `src/payments.py`. The skill then tells the reviewer to cite
+      # that prior dismissal in the finding body — a fabricated precedent
+      # nudging the author to re-dismiss a live P0.
+      # shellcheck disable=SC2254  # the glob is the point
+      case "$PATH_ARG" in
+        $l_pat) ;;
+        *) continue ;;
+      esac
       if in_set "$l_cat" "$PROTECTED_CATS"; then
         printf 'PROTECTED %s [%s] — a prior dismissal exists but this category never demotes: %s\n' \
           "$l_pat" "$l_cat" "$l_note"
         protected=$((protected + 1))
         continue
       fi
-      # shellcheck disable=SC2254  # the glob is the point
-      case "$PATH_ARG" in
-        $l_pat) ;;
-        *) continue ;;
-      esac
       printf 'DEMOTE %s [%s] — dismissed previously: %s\n' "$l_pat" "$l_cat" "$l_note"
       hits=$((hits + 1))
     done < "$LEDGER"

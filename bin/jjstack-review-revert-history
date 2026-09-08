@@ -25,9 +25,14 @@
 #   --since      how far back to look (default "24 months ago")
 #   --limit      incidents listed per file (default 5)
 #
+# On a SHALLOW clone the report says so in its header and in place of the
+# "nothing found" line, because `git log --since` can only see the grafted
+# depth. A truncated search must never read as a clean one.
+#
 # Writes a markdown report to stdout; status and errors go to stderr.
-# Exit: 0 report produced (no history found is still a 0), 2 usage error,
-#       3 no usable repo or diff source.
+# Exit: 0 report produced (no history found is still a 0), 2 usage error —
+#       a bad --limit or a flag given with no value — 3 no usable repo or
+#       diff source.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -36,15 +41,25 @@ YEL="\033[33m"; CYA="\033[96m"; RST="\033[0m"
 
 REPO=""; BASE=""; DIFF_FILE=""; SINCE="24 months ago"; LIMIT=5
 
+# A flag given with no value used to hang this script for ever: `shift 2` is a
+# no-op when only one argument remains, `set -e` is off so the failure is
+# swallowed, and the loop re-reads the same $1 on the next pass. An unattended
+# /review step that spins instead of failing is worse than a crash — nothing
+# reports, nothing times out, and the caller waits on it. Call this before every
+# `shift 2` so a missing value is a clean usage error instead.
+need_val() {
+  [ $# -ge 2 ] || { echo -e "${CYA}error${RST} $1 requires a value" >&2; exit 2; }
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)      REPO="${2:-}";      shift 2 ;;
-    --base)      BASE="${2:-}";      shift 2 ;;
-    --diff-file) DIFF_FILE="${2:-}"; shift 2 ;;
-    --since)     SINCE="${2:-}";     shift 2 ;;
-    --limit)     LIMIT="${2:-}";     shift 2 ;;
+    --repo)      need_val "$@"; REPO="$2";      shift 2 ;;
+    --base)      need_val "$@"; BASE="$2";      shift 2 ;;
+    --diff-file) need_val "$@"; DIFF_FILE="$2"; shift 2 ;;
+    --since)     need_val "$@"; SINCE="$2";     shift 2 ;;
+    --limit)     need_val "$@"; LIMIT="$2";     shift 2 ;;
     -h|--help)
-      sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
     *)  echo -e "${CYA}error${RST} unexpected arg: $1" >&2; exit 2 ;;
@@ -63,6 +78,20 @@ REPO="${REPO%/}"
 if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
   echo -e "${YEL}warn${RST}  not a git repository: $REPO" >&2
   exit 3
+fi
+
+# The whole value of this script is the depth of the window it searches, and a
+# shallow clone silently has none. `actions/checkout` defaults to
+# `fetch-depth: 1`, so in CI `git log --since="24 months ago"` returns the
+# grafted tip and nothing else — and the report then states, in so many words,
+# that no changed file has ever been reverted. /review's git-history pass is
+# told to trust this file as a pre-computed input, so a truncated search read as
+# a clean bill of health is exactly the wrong failure. Detect it and say so.
+SHALLOW=0
+if [ "$(git -C "$REPO" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+  SHALLOW=1
+  echo -e "${YEL}warn${RST}  shallow clone: history is truncated, findings are not exhaustive" >&2
+  echo -e "${YEL}warn${RST}  run 'git fetch --unshallow' (or checkout with fetch-depth: 0)" >&2
 fi
 
 TMP="$(mktemp -d)"
@@ -103,7 +132,18 @@ echo
 N=$(wc -l < "$FILES" | tr -d ' ')
 echo "- repo: \`$REPO\`"
 echo "- changed files examined: $N"
-echo "- window: since $SINCE"
+if [ "$SHALLOW" -eq 1 ]; then
+  echo "- window: since $SINCE — **TRUNCATED: this is a shallow clone**"
+  echo
+  echo "> **This search was not run over the stated window.** The repository is a"
+  echo "> shallow clone, so \`git log\` can only see the commits that were fetched"
+  echo "> (\`actions/checkout\` fetches one by default). Any result below — including"
+  echo "> an empty one — is evidence about the fetched depth, not about the last"
+  echo "> $SINCE. Re-run after \`git fetch --unshallow\`, or check out with"
+  echo "> \`fetch-depth: 0\`, before treating this pass as having run."
+else
+  echo "- window: since $SINCE"
+fi
 echo
 
 if [ "$N" -eq 0 ]; then
@@ -126,6 +166,17 @@ while read -r f; do
 done < "$FILES"
 
 if [ "$found" -eq 0 ]; then
+  if [ "$SHALLOW" -eq 1 ]; then
+    # Never let a truncated search be read as a clean one. The caveat that used
+    # to follow named only the subject-line limitation, which told the reader
+    # the search was complete in the one dimension that had actually failed.
+    echo "No revert, rollback or hotfix history found — **but the history was not"
+    echo "searched**. This is a shallow clone, so there was almost nothing to search."
+    echo
+    echo "This is NOT evidence of safety. Treat the git-history pass as **not run**"
+    echo "until the repository is unshallowed."
+    exit 0
+  fi
   echo "No revert, rollback or hotfix history on any changed file in this window."
   echo
   echo "That is weak evidence of safety, not proof — the search is over commit"

@@ -925,6 +925,13 @@ should read the named commits rather than re-deriving them. A change that
 reintroduces the condition behind a listed revert, or removes the guard added to
 fix it, is a P0 finding.
 
+If the report's header says **TRUNCATED: this is a shallow clone**, the search
+did not run over the stated window — `git log` could only see the fetched depth
+(`actions/checkout` fetches one commit by default). An empty result there is
+evidence about the checkout, not about the code. Treat the git-history pass as
+**not run**, say so in 5f's Coverage line, and drop the verdict one step per the
+degradation rule rather than reading silence as a clean history.
+
 ### G.3 Ledger match — demote, never drop (end of Phase 5)
 
 After every finding has a confidence score, check each against the repo's
@@ -948,8 +955,13 @@ ledger of what past reviews decided:
   add up to a suppression. Only the committed baseline (5d), which requires an
   explicit human reason per entry, removes a finding from the active set.
 - **Exit 1** — no prior decision applies. Report normally. A `PROTECTED …` line
-  on exit 1 means a dismissal exists but the category never demotes; report the
-  finding at full weight and mention the prior dismissal in the finding body.
+  on exit 1 means a dismissal exists **whose path glob matches this finding**
+  but whose category never demotes; report the finding at full weight and
+  mention the prior dismissal in the finding body. A `PROTECTED` line always
+  refers to this path — never cite a dismissal the tool did not print.
+- **Exit 1 with a `no ledger at …` warning on stderr** — this is *not* the same
+  statement. Nothing was consulted, usually a mistyped `--ledger`/`--repo`.
+  Report every finding normally and do **not** describe the ledger as checked.
 
 Record outcomes only for findings the user actually adjudicates in this session:
 
@@ -960,6 +972,11 @@ Record outcomes only for findings the user actually adjudicates in this session:
 
 Never record a dismissal the user did not make. An invented dismissal is a
 permanent, self-inflicted blind spot in every future review of this repo.
+
+Scope `--path` to the place the decision was actually about (`src/legacy/*`,
+`docs/*`). A glob with no literal character in it (`*`, `*/*`) matches the whole
+repo and is rejected with exit 2: it would demote every future finding in that
+category repo-wide while reading like any other line in a diff.
 
 The ledger lives at `{repo_root}/jjstack/review-ledger.md` — in git, so a
 suppression is reviewable in a PR and retiring one is a visible diff. Commit it
