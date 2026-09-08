@@ -1867,6 +1867,427 @@ check "POSITIVE CONTROL: the sentence fixture really has a >180-char sentence" \
   "[ \"\$(awk '{ if (length(\$0) > 180) n++ } END { print n+0 }' '$PC2/longsentence.md')\" -ge 1 ]"
 rm -rf "$PC2"
 
+echo "== 5k. pr-comment-lint round 3: derived from a source of truth, not enumerated =="
+# Rounds 1 and 2 each fixed the defect exactly as wide as its fixture, and round
+# 3 said the fixture list IS the blind spot: eight of ten guards in this tool
+# were an enumeration that mirrored its own test data. Adding the next member is
+# not a fix. Every block below asserts that a guard DERIVES its vocabulary from
+# a declared source of truth, by feeding it a member that exists in no source
+# file — if the list were still written in the code, the assertion cannot pass.
+PC3="$(mktemp -d)"
+mkdir -p "$PC3/jjstack"
+LINT3="$BIN/jjstack-pr-comment-lint"
+LINK3='`jjstack/review-2026-09-07.md`'
+: > "$PC3/jjstack/review-2026-09-07.md"
+VOCAB3="$BIN/jjstack-review-vocab.tsv"
+SK3="$DIR/skills/review/SKILL.md"
+
+# --- P0 (round 3): the rule matched the KEY ID, not the SECRET ---------------
+# `AKIA...` (a 20-char public identifier) was blocked; `AWS_SECRET_ACCESS_KEY=
+# wJalr...` (the 40-char half that IS the secret) linted clean and posted. The
+# rule was literally named `aws key id`. Eleven rows, eleven fixtures, and the
+# twelfth shape was the other half of the FIRST one.
+#
+# Assembled at runtime for the same reason section 5j assembles its fixtures: a
+# file carrying contiguous credential-shaped strings is what push protection
+# blocks, so the suite proving the linter works would be unpushable.
+S3_AWSSEC="wJalrXUtnFEMI""/K7MDENG/bPxRfiCYEXAMPLEKEY"
+sec3() {   # sec3 NAME BODY-LINE...
+  local name="$1"; shift
+  { printf '**REJECT** - 1 blocking, 1 total.\n'
+    printf '%s\n' "$@"
+    printf '%s\n' "$LINK3"; } > "$PC3/s3-$name.md"
+}
+sec3 awssecret "**P0** \`conf.py:13\` AWS_SECRET_ACCESS_KEY=$S3_AWSSEC"
+out=$("$LINT3" "$PC3/s3-awssecret.md" 2>&1); rc=$?
+check "the AWS SECRET (not the key id) is caught before the post" "grep -q 'secret' <<<\"\$out\""
+check "the AWS secret fails closed with the credential exit code" "[ $rc -eq 4 ]"
+check "the linter never echoes the AWS secret it caught" "! grep -qF \"\$S3_AWSSEC\" <<<\"\$out\""
+check "POSITIVE CONTROL: the fixture really carries the 40-char secret" \
+  "grep -qF \"\$S3_AWSSEC\" '$PC3/s3-awssecret.md' && [ \"\${#S3_AWSSEC}\" -eq 40 ]"
+
+# THE DERIVATION TEST. This value belongs to no vendor and matches no rule in
+# the file: a random-looking token assigned to a secret-ish name. If the
+# credential check were still a list of issued-token prefixes, nothing here can
+# match it. It passes only because the rule keys on the SHAPE of a secret
+# assignment - three character classes in a 20+ character value - which is a
+# property a format invented next week also has.
+S3_NOVENDOR="zzq9""_Xk3Lm8Qw2Ee7Rt5Yu1Io4Pa6Sd0Fg"
+sec3 novendor "**P0** \`app.py:4\` SERVICE_API_KEY=$S3_NOVENDOR"
+out=$("$LINT3" "$PC3/s3-novendor.md" 2>&1); rc=$?
+check "a token format NO rule names is still caught (the class, not the list)" "[ $rc -eq 4 ]"
+check "the unknown-vendor stop names the variable, never the value" \
+  "grep -q 'SERVICE_API_KEY' <<<\"\$out\" && ! grep -qF \"\$S3_NOVENDOR\" <<<\"\$out\""
+check "POSITIVE CONTROL: that token prefix appears in no rule in the linter" \
+  "! grep -qF 'zzq9' '$LINT3'"
+
+# NEW SHAPE 1 - a key split across two lines. Every rule is a single-line grep,
+# so a hard wrap walked between them untouched.
+S3_W1="AKIA""IOSFODNN7EX"; S3_W2="AMPLE"
+sec3 wrapped "**P0** \`conf.py:12\` key committed: $S3_W1" "$S3_W2"
+out=$("$LINT3" "$PC3/s3-wrapped.md" 2>&1); rc=$?
+check "a credential split across two lines is caught" "[ $rc -eq 4 ]"
+check "the wrapped stop says the value spans a line break" \
+  "grep -q 'line break' <<<\"\$out\""
+check "POSITIVE CONTROL: neither half alone is a credential" \
+  "[ \"\$(printf '%s\n' \"\$S3_W1\" | grep -cE '(AKIA)[0-9A-Z]{16}')\" = 0 ]"
+
+# NEW SHAPE 2 - base64. That is how a Kubernetes Secret stores a value, so a
+# review quoting `data.password` from a manifest is quoting a credential no
+# plaintext rule can see.
+S3_B64=$(printf '%s' "AKIA""IOSFODNN7EXAMPLE" | base64)
+sec3 base64 "**P0** \`secret.yaml:7\` the manifest stores $S3_B64 inline"
+out=$("$LINT3" "$PC3/s3-base64.md" 2>&1); rc=$?
+check "a base64-encoded credential is decoded and caught" "[ $rc -eq 4 ]"
+check "the base64 stop says it decoded the value" "grep -q 'base64' <<<\"\$out\""
+check "POSITIVE CONTROL: the encoded form matches no plaintext rule" \
+  "! grep -qE '(AKIA|ASIA)[0-9A-Z]{16}' <<<\"\$S3_B64\""
+
+# NEW SHAPE 3 - a digest-shaped secret: 32+ hex characters carries only two
+# character classes, so the three-class test alone would miss it.
+S3_HEX="d41d8cd98f00b204e9800998ecf8427e5a1b2c3d"
+sec3 hexdigest "**P0** \`conf.py:9\` signing_key=$S3_HEX"
+out=$("$LINT3" "$PC3/s3-hexdigest.md" 2>&1); rc=$?
+check "a hex-digest secret is caught by the length+alphabet test" "[ $rc -eq 4 ]"
+check "POSITIVE CONTROL: the hex secret really has only two character classes" \
+  "grep -qE '^[0-9a-f]+\$' <<<\"\$S3_HEX\" && [ \"\${#S3_HEX}\" -ge 32 ]"
+
+# FALSE-POSITIVE CONTROLS. A credential check that rejects every comment is not
+# a check, it is an outage: the gate is chained to the post, so a false positive
+# means the review never publishes. These three must stay CLEAN.
+printf '**CAUTION** - 1 blocking, 1 total.\n**P0** `a.py:1` the auth token check is missing.\nauth: docs/authentication-guide-for-services.md\n%s\n' \
+  "$LINK3" > "$PC3/s3-path.md"
+"$LINT3" "$PC3/s3-path.md" >/dev/null 2>&1
+check "CONTROL: a long lowercase file path assigned to auth: is not a secret" "[ \$? -eq 0 ]"
+printf '**CAUTION** - 1 blocking, 1 total.\n**P0** `bin/loader.py:88` retry catches `Exception`: a revoked token exits 0.\n%s\n' \
+  "$LINK3" > "$PC3/s3-prose.md"
+"$LINT3" "$PC3/s3-prose.md" >/dev/null 2>&1
+check "CONTROL: a finding that TALKS about a token is not a secret" "[ \$? -eq 0 ]"
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `conf.py:12` an AWS secret access key is committed.\n%s\n' \
+  "$LINK3" > "$PC3/s3-redacted.md"
+"$LINT3" "$PC3/s3-redacted.md" >/dev/null 2>&1
+check "CONTROL: the same finding with the value removed passes clean" "[ \$? -eq 0 ]"
+
+# --- P1: the severity list is DERIVED from the declaration, not hand-copied --
+# skills/review/SKILL.md's finding-struct table has declared CRITICAL/HIGH/
+# MEDIUM/LOW all along. The cap carried six spelled words, none of them those
+# three, so six findings written `**HIGH**` posted under a cap of three. The
+# declaration and the cap were two lists that could disagree in silence.
+#
+# There is now ONE list, in bin/jjstack-review-vocab.tsv, and both sides derive
+# from it. Both extractions below are mechanical: neither test hard-codes a
+# severity word.
+sev_from_tsv() {   # the machine-readable declaration
+  awk -F'\t' '$1 == "severity" { print $2 }' "$VOCAB3" | sort -u
+}
+sev_from_skill() { # the prose declaration, parsed out of the finding-struct row
+  local row lo hi
+  row=$(grep -m1 '^| `severity` |' "$SK3")
+  # the range endpoints: `P0`-`P3`
+  lo=$(printf '%s\n' "$row" | grep -oE '`P[0-9]`' | head -1 | tr -d '`')
+  hi=$(printf '%s\n' "$row" | grep -oE '`P[0-9]`' | sed -n 2p | tr -d '`')
+  if [ -n "$lo" ] && [ -n "$hi" ]; then
+    seq "${lo#P}" "${hi#P}" | sed 's/^/P/'
+  fi
+  # the spelled alternates: "(or A/B/C, normalized)"
+  printf '%s\n' "$row" | sed -n 's/.*(or \([A-Z/]\{2,\}\), normalized).*/\1/p' | tr '/' '\n'
+}
+sev_from_tsv   > "$PC3/sev.tsv"
+sev_from_skill | sort -u > "$PC3/sev.skill"
+check "POSITIVE CONTROL: the skill's severity row really parses to a list" \
+  "[ \"\$(wc -l < '$PC3/sev.skill')\" -ge 8 ]"
+check "POSITIVE CONTROL: the vocabulary really declares severity rows" \
+  "[ \"\$(wc -l < '$PC3/sev.tsv')\" -ge 8 ]"
+check "the skill's declared severities and the vocabulary are the SAME list" \
+  "diff -q '$PC3/sev.skill' '$PC3/sev.tsv' >/dev/null"
+# The guard has to be able to see a disagreement, or "they agree" is a tautology.
+sed 's/^HIGH$/HIGH\nEXTREME/' "$PC3/sev.skill" > "$PC3/sev.skew"
+check "POSITIVE CONTROL: the comparison catches a one-word drift" \
+  "! diff -q '$PC3/sev.skew' '$PC3/sev.tsv' >/dev/null"
+
+# The normalizer reads the same list. Behavioural, not a grep: every declared
+# token must normalize, and a token the list does NOT declare must be rejected.
+nfind() {   # nfind SEVERITY -> a valid finding carrying that severity
+  printf '{"lens":"security","file":"a.py","start_line":1,"severity":"%s","confidence":50,"message":"m","quote":"q","explanation":"e","remediation":"r"}\n' "$1"
+}
+n_sev_ok=0; n_sev_tok=0
+while read -r tok; do
+  [ -n "$tok" ] || continue
+  n_sev_tok=$((n_sev_tok + 1))
+  nfind "$tok" | "$BIN/jjstack-review-normalize" - >/dev/null 2>&1 && n_sev_ok=$((n_sev_ok + 1))
+done < "$PC3/sev.tsv"
+check "every severity the vocabulary declares is accepted by the normalizer" \
+  "[ \"\$n_sev_ok\" -eq \"\$n_sev_tok\" ] && [ \"\$n_sev_tok\" -ge 8 ]"
+nfind "EXTREME" | "$BIN/jjstack-review-normalize" - >/dev/null 2>&1
+check "CONTROL: a severity the vocabulary does not declare is rejected" "[ \$? -ne 0 ]"
+
+# The cap reads the same list too — including the `sevalias` spellings, which a
+# comment may be WRITTEN with even though the schema does not take them as input.
+# One fixture per declared token, generated FROM the declaration: a row added to
+# the vocabulary brings its own test with it.
+sev_cap_fixture() {   # sev_cap_fixture TOKEN
+  { printf '**REJECT** - 4 blocking, 4 total.\n'
+    printf '**%s** a1:1 x\n**%s** a2:2 y\n**%s** a3:3 z\n**%s** a4:4 w\n' "$1" "$1" "$1" "$1"
+    printf '%s\n' "$LINK3"; } > "$PC3/sevcap.md"
+}
+n_cap_ok=0; n_cap_tok=0
+while read -r tok; do
+  [ -n "$tok" ] || continue
+  n_cap_tok=$((n_cap_tok + 1))
+  sev_cap_fixture "$tok"
+  # Capture, then match. `set -o pipefail` is on for this suite and the linter
+  # exits 1 on a violation, so `lint | grep -q` carries the LINTER's status and
+  # the `&&` below would never fire — the counter would stay 0 and read as "the
+  # cap recognises nothing", which is the same shape as a broken cap.
+  cap_out=$("$LINT3" "$PC3/sevcap.md" 2>&1)
+  grep -q 'too-many' <<<"$cap_out" && n_cap_ok=$((n_cap_ok + 1))
+done < <(awk -F'\t' '$1 == "severity" || $1 == "sevalias" { print $2 }' "$VOCAB3")
+check "EVERY severity spelling the vocabulary declares is counted by the cap" \
+  "[ \"\$n_cap_ok\" -eq \"\$n_cap_tok\" ] && [ \"\$n_cap_tok\" -ge 12 ]"
+
+# THE DERIVATION TEST for the cap. This word is in no source file in the repo.
+# Point the tool at a vocabulary that declares it and the cap must recognise it
+# with no edit to any script. An enumeration cannot pass this.
+grep -v '^sevalias	KATASTROFE' "$VOCAB3" > "$PC3/vocab-plus.tsv"
+printf 'sevalias\tKATASTROFE\tP0\tinvented for this test; exists in no source file\n' >> "$PC3/vocab-plus.tsv"
+sev_cap_fixture KATASTROFE
+out=$("$LINT3" "$PC3/sevcap.md" 2>&1)
+check "CONTROL: the invented severity is NOT counted under the shipped vocabulary" \
+  "! grep -q 'too-many' <<<\"\$out\""
+out=$(JJSTACK_REVIEW_VOCAB="$PC3/vocab-plus.tsv" "$LINT3" "$PC3/sevcap.md" 2>&1)
+check "a severity added to the VOCABULARY widens the cap with no code change" \
+  "grep -q 'too-many' <<<\"\$out\""
+check "POSITIVE CONTROL: the invented severity appears in no shipped file" \
+  "! grep -rqF 'KATASTROFE' '$BIN' '$SK3'"
+
+# Lowercase evaded outright: the P-branch was case-sensitive while the spelled
+# branch was -i, so `p0` was not a finding and `Critical:` was.
+printf '**REJECT** - 4 blocking, 4 total.\np0 a:1 x\np0 b:2 y\np1 c:3 z\np2 d:4 w\n\n0 more: %s\n' \
+  "$LINK3" > "$PC3/sev-lower.md"
+out=$("$LINT3" "$PC3/sev-lower.md" 2>&1)
+check "lowercase severities cannot evade the cap" "grep -q 'too-many' <<<\"\$out\""
+# CONTROL - the spelled words are ordinary English, so they count only in LABEL
+# position. A comment that mentions one mid-sentence is not four findings.
+printf '**CAUTION** - 1 blocking, 1 total.\n**P0** `a.py:1` the retry is wrong (confidence: low).\nThe critical path is fine and the impact is medium.\n%s\n' \
+  "$LINK3" > "$PC3/sev-prose.md"
+"$LINT3" "$PC3/sev-prose.md" >/dev/null 2>&1
+check "CONTROL: severity words in prose and in parentheses are not findings" "[ \$? -eq 0 ]"
+
+# --- P1: the URL branch stats its report, exactly like the path branch -------
+# The file-path branch resolved and stat'd its candidate; the URL branch beside
+# it accepted any https URL whose path ended `.md`, unstat'd. So a finding
+# citing its own subject as a forge URL linted clean with no report linked.
+# There is one resolver now, so the test is the SYMMETRY, not two cases.
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `docs/setup.md:12` the install step is wrong: https://github.com/o/r/blob/main/docs/setup.md#L12\n' \
+  > "$PC3/url-subject.md"
+out=$("$LINT3" "$PC3/url-subject.md" 2>&1)
+check "a forge URL to a finding's own subject is not a report link" "grep -q 'no-link' <<<\"\$out\""
+link_verdict() {   # link_verdict REFERENCE -> the rule name, or "clean"
+  printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a.py:1` leaks a handle.\n%s\n' "$1" > "$PC3/linkcase.md"
+  local o; o=$("$LINT3" "$PC3/linkcase.md" 2>&1)
+  if   grep -q 'no-link'   <<<"$o"; then echo no-link
+  elif grep -q 'no-report' <<<"$o"; then echo no-report
+  else echo clean; fi
+}
+GHOST3='jjstack/review-2026-01-01.md'
+REAL3='jjstack/review-2026-09-07.md'
+v_path_ghost=$(link_verdict "\`$GHOST3\`")
+v_url_ghost=$(link_verdict "https://github.com/o/r/blob/main/$GHOST3")
+v_path_real=$(link_verdict "\`$REAL3\`")
+v_url_real=$(link_verdict "https://github.com/o/r/blob/main/$REAL3")
+check "a URL naming a report that does not exist is rejected" "[ '$v_url_ghost' = 'no-report' ]"
+check "a URL naming a report that DOES exist passes" "[ '$v_url_real' = 'clean' ]"
+check "the URL branch and the path branch reach the SAME verdict (absent)" \
+  "[ '$v_url_ghost' = '$v_path_ghost' ]"
+check "the URL branch and the path branch reach the SAME verdict (present)" \
+  "[ '$v_url_real' = '$v_path_real' ]"
+check "POSITIVE CONTROL: the ghost report really is absent and the real one present" \
+  "[ ! -e '$PC3/$GHOST3' ] && [ -f '$PC3/$REAL3' ]"
+
+# --- P2: the residual is cross-checked against the report it links -----------
+# The linter stat'd the report and never opened it, so "1 blocking, 1 total"
+# linking a report holding 40 findings linted clean: every count in the comment
+# agreed with every other count in the comment. Phase 5f DECLARES the report's
+# `**Posture:**` header line, so the number is there to be read.
+printf '## /review: x\n\n**Verdict:** REJECT - blocking defects\n**Posture:** balanced - 40 active, 0 suppressed, 0 unconfirmed, 0 disproven\n' \
+  > "$PC3/jjstack/review-2026-09-07.md"
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a.py:1` leaks a handle.\n%s\n' "$LINK3" > "$PC3/understated.md"
+out=$("$LINT3" "$PC3/understated.md" 2>&1)
+check "a comment understating the report it links is rejected" \
+  "grep -q 'residual-mismatch' <<<\"\$out\""
+check "the mismatch names both numbers" \
+  "grep -q '1 total' <<<\"\$out\" && grep -q '40 active' <<<\"\$out\""
+# POSITIVE CONTROL - the SAME comment passes once its total matches the report,
+# so the rule is reading the report and not rejecting the shape.
+printf '**REJECT** - 1 blocking, 40 total.\n**P0** `a.py:1` leaks a handle.\n\n39 more: %s\n' \
+  "$LINK3" > "$PC3/agrees.md"
+"$LINT3" "$PC3/agrees.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same comment passes when the counts agree" "[ \$? -eq 0 ]"
+check "POSITIVE CONTROL: the report really declares 40 active" \
+  "grep -q '40 active' '$PC3/jjstack/review-2026-09-07.md'"
+: > "$PC3/jjstack/review-2026-09-07.md"
+
+# --- P2: the residual formula the voice reference teaches ---------------------
+# pr-comment-voice.md taught `M-N more` (total minus BLOCKING) and the linter
+# computes total minus SHOWN. They agree only when shown == blocking, which is
+# true in every fixture in this file - so a comment written exactly as the
+# reference taught was rejected the moment it showed one non-blocking finding.
+VOICE3="$DIR/references/pr-comment-voice.md"
+check "the voice reference no longer teaches the blocking-based residual" \
+  "! grep -q 'M-N' '$VOICE3'"
+check "the voice reference states the residual is total minus SHOWN" \
+  "grep -qi 'minus the number of findings SHOWN' '$VOICE3'"
+# Behavioural: one blocking finding, three shown, five total. Under the
+# reference's old formula the comment says "4 more"; under the linter's it says
+# "2 more". Exactly one of them can be right, and the docs now name that one.
+printf '**CAUTION** - 1 blocking, 5 total.\n**P0** `a.py:1` x\n**P2** `b.py:2` y\n**P3** `c.py:3` z\n\n2 more: %s\n' \
+  "$LINK3" > "$PC3/resid-shown.md"
+"$LINT3" "$PC3/resid-shown.md" >/dev/null 2>&1
+check "total minus SHOWN is what the linter accepts" "[ \$? -eq 0 ]"
+printf '**CAUTION** - 1 blocking, 5 total.\n**P0** `a.py:1` x\n**P2** `b.py:2` y\n**P3** `c.py:3` z\n\n4 more: %s\n' \
+  "$LINK3" > "$PC3/resid-blocking.md"
+out=$("$LINT3" "$PC3/resid-blocking.md" 2>&1)
+check "total minus BLOCKING is rejected, so the two artifacts cannot both be right" \
+  "grep -q 'residual' <<<\"\$out\""
+
+# --- P2: the two rules that could not go red ---------------------------------
+# Neutralising either left ALL of this suite green. The 12-line budget is the
+# FLAGSHIP rule of the whole tool and its only fixture also tripped no-link and
+# no-residual, while the assertion read `rc -eq 1` - which stays 1 without it.
+# A rule no test can redden is a defect, not a check. Each fixture below trips
+# EXACTLY ONE rule, and the assertion names that rule's message.
+{ printf '**CAUTION** - 1 blocking, 1 total.\n'
+  printf '**P0** `a.py:1` the handle leaks on the error path.\n'
+  for i in $(seq 1 12); do printf 'Context line %s.\n' "$i"; done
+  printf '%s\n' "$LINK3"; } > "$PC3/lines-only.md"
+out=$("$LINT3" --max-chars 9000 "$PC3/lines-only.md" 2>&1)
+check "the 12-line findings budget rejects a comment that trips nothing else" \
+  "grep -q 'lines (budget 12)' <<<\"\$out\""
+check "and it is the ONLY violation, so neutralising the rule reddens this" \
+  "grep -q '^1 rule violation' <<<\"\$(sed 's/\x1b\[[0-9;]*m//g' <<<\"\$out\")\""
+check "POSITIVE CONTROL: the fixture is over 12 lines and links a real report" \
+  "[ \"\$(wc -l < '$PC3/lines-only.md')\" -gt 12 ] && [ -f '$PC3/jjstack/review-2026-09-07.md' ]"
+# POSITIVE CONTROL - the same comment cut to the budget passes, so the rejection
+# is about the length and not about anything else in the fixture.
+{ printf '**CAUTION** - 1 blocking, 1 total.\n'
+  printf '**P0** `a.py:1` the handle leaks on the error path.\n'
+  printf '%s\n' "$LINK3"; } > "$PC3/lines-ok.md"
+"$LINT3" "$PC3/lines-ok.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same comment inside the budget passes" "[ \$? -eq 0 ]"
+
+# The approve no-residual branch: every APPROVE fixture in this file already
+# contained the words "no findings", so the grep it guards always matched and
+# deleting the rule changed nothing.
+printf '**APPROVE** - looks right to me. %s\n' "$LINK3" > "$PC3/approve-noresid.md"
+out=$("$LINT3" "$PC3/approve-noresid.md" 2>&1)
+check "an approve that declares no count is rejected" "grep -q 'no-residual' <<<\"\$out\""
+check "and it is the ONLY violation, so neutralising that branch reddens this" \
+  "grep -q '^1 rule violation' <<<\"\$(sed 's/\x1b\[[0-9;]*m//g' <<<\"\$out\")\""
+# POSITIVE CONTROL - the same one-liner with the count present passes, so the
+# rule is the missing declaration and not the wording of the verdict.
+printf '**APPROVE** - no findings. %s\n' "$LINK3" > "$PC3/approve-resid.md"
+"$LINT3" "$PC3/approve-resid.md" >/dev/null 2>&1
+check "POSITIVE CONTROL: the same approve with its count passes" "[ \$? -eq 0 ]"
+rm -rf "$PC3"
+
+echo "== 5m. the PR identity has to bind at RUNTIME, not in the prose =="
+# The round-2 fix resolved the PR into {OUTPUT_DIR}/pr.env and the round-2 guard
+# grepped the skill for `PR_NUM` and `--repo`. Both passed while the binding did
+# not exist: `source pr.env` sat in a DIFFERENT Bash call from the post, Claude
+# Code does not persist shell state between calls, and `gh pr view 24 --repo ""`
+# silently ignores an empty repo and falls back to the git remote. A text grep
+# cannot see that. So this section EXTRACTS the shipped commands and RUNS them,
+# each in its own fresh shell, against a stub `gh` that records its argv.
+PRB="$(mktemp -d)"
+SKP="$DIR/skills/review/SKILL.md"
+mkdir -p "$PRB/bin" "$PRB/out"
+# The stub. It answers `pr view` with a CROSS-REPOSITORY PR - head on a fork,
+# base on the upstream - and records any `pr comment` invocation verbatim.
+cat > "$PRB/bin/gh" <<'GHEOF'
+#!/bin/bash
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  jqx=""; for a in "$@"; do [ "$prev" = "--jq" ] && jqx="$a"; prev="$a"; done
+  printf '%s' '{"number":24,"url":"https://github.com/upstream-org/jjstack/pull/24","isCrossRepository":true,"headRepositoryOwner":{"login":"contributor"},"headRepository":{"name":"jjstack"}}' \
+    | jq -r "$jqx"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  printf '%s\n' "$*" >> "$GH_STUB_LOG"
+  exit 0
+fi
+exit 9
+GHEOF
+chmod +x "$PRB/bin/gh"
+# Both commands come out of the skill, so this section cannot drift from what
+# ships. Substituting the two placeholders is the only edit.
+grep -m1 -F 'gh pr view --json number,url,isCrossRepository' "$SKP" \
+  | sed "s#{OUTPUT_DIR}#$PRB/out#g" > "$PRB/resolve.cmd"
+grep -m1 -F 'gh pr comment "$PR_NUM"' "$SKP" \
+  | sed "s#{OUTPUT_DIR}#$PRB/out#g; s#~/.claude/skills/jjstack/bin#$BIN#g" > "$PRB/post.cmd"
+check "POSITIVE CONTROL: the resolve command was recovered from the skill" \
+  "[ -s '$PRB/resolve.cmd' ] && grep -q 'pr.env' '$PRB/resolve.cmd'"
+check "POSITIVE CONTROL: the post command was recovered from the skill" \
+  "[ -s '$PRB/post.cmd' ] && grep -q 'gh pr comment' '$PRB/post.cmd'"
+
+# 1. The resolution names the BASE repo, not the fork. `headRepositoryOwner/
+#    headRepository` is where the BRANCH lives; a PR number belongs to the base
+#    repo, and forks keep their own numbering. The stub is deliberately a
+#    cross-repository PR, which is the only case where the two differ.
+PATH="$PRB/bin:$PATH" bash "$PRB/resolve.cmd" > "$PRB/resolve.log" 2>&1
+check "the resolution writes a pr.env" "[ -s '$PRB/out/pr.env' ]"
+check "PR_REPO is the BASE repo, read off the PR's own url" \
+  "grep -qx 'PR_REPO=upstream-org/jjstack' '$PRB/out/pr.env'"
+check "PR_REPO is NOT the fork the branch lives in" \
+  "! grep -q 'PR_REPO=contributor/' '$PRB/out/pr.env'"
+check "isCrossRepository is queried and recorded, not ignored" \
+  "grep -qx 'PR_CROSS=true' '$PRB/out/pr.env'"
+check "POSITIVE CONTROL: the stub really describes a cross-repository PR" \
+  "grep -q 'contributor' '$PRB/bin/gh' && grep -q 'upstream-org' '$PRB/bin/gh'"
+
+# 2. The post binds that identity IN ITS OWN SHELL. This runs in a fresh bash,
+#    with no variables carried over from step 1 — exactly the way Claude Code
+#    executes two fenced blocks. If the `.` were in the other block, PR_NUM and
+#    PR_REPO expand empty here and gh falls back to inference.
+mkdir -p "$PRB/out/jjstack"; : > "$PRB/out/jjstack/review-2026-09-07.md"
+printf '**APPROVE** - no findings. `jjstack/review-2026-09-07.md`\n' > "$PRB/out/pr-comment.md"
+export GH_STUB_LOG="$PRB/posted.log"; : > "$GH_STUB_LOG"
+PATH="$PRB/bin:$PATH" bash "$PRB/post.cmd" > "$PRB/post.log" 2>&1
+check "the post reaches gh with the resolved PR number" \
+  "grep -q 'pr comment 24' '$PRB/posted.log'"
+check "the post reaches gh with the resolved BASE repo" \
+  "grep -q -- '--repo upstream-org/jjstack' '$PRB/posted.log'"
+
+# 3. An identity that did not bind must REFUSE, not fall back. gh treats an
+#    empty --repo as absent and infers from the git remote; an empty selector
+#    infers from the branch. Both are the behaviours this section removed.
+printf 'PR_NUM=\nPR_REPO=\n' > "$PRB/out/pr.env"
+: > "$GH_STUB_LOG"
+PATH="$PRB/bin:$PATH" bash "$PRB/post.cmd" > "$PRB/empty.log" 2>&1
+check "an empty PR identity posts NOTHING" "[ ! -s '$PRB/posted.log' ]"
+check "an empty PR identity says so out loud" "grep -qi 'refusing to post' '$PRB/empty.log'"
+rm -f "$PRB/out/pr.env"
+: > "$GH_STUB_LOG"
+PATH="$PRB/bin:$PATH" bash "$PRB/post.cmd" > "$PRB/missing.log" 2>&1
+check "a MISSING pr.env posts nothing either" "[ ! -s '$PRB/posted.log' ]"
+
+# 4. POSITIVE CONTROL for the whole harness: the stub really does record a post
+#    when the identity IS bound, or every "posts nothing" check above passes on
+#    a stub that never writes at all.
+printf 'PR_NUM=24\nPR_REPO=upstream-org/jjstack\n' > "$PRB/out/pr.env"
+: > "$GH_STUB_LOG"
+PATH="$PRB/bin:$PATH" bash "$PRB/post.cmd" > "$PRB/ok.log" 2>&1
+check "POSITIVE CONTROL: the stub records a post when the identity binds" \
+  "[ -s '$PRB/posted.log' ]"
+# 5. And the lint is still the gate: a comment that fails the lint must not post,
+#    even with a perfectly bound identity.
+printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a.py:1` x\n' > "$PRB/out/pr-comment.md"
+: > "$GH_STUB_LOG"
+PATH="$PRB/bin:$PATH" bash "$PRB/post.cmd" > "$PRB/gate.log" 2>&1
+check "a bound identity still cannot post a comment the lint rejected" \
+  "[ ! -s '$PRB/posted.log' ]"
+unset GH_STUB_LOG
+rm -rf "$PRB"
+
 echo "== 5h. review skill structural guards =="
 # Two five-line greps that would have caught two defects the parallel PR stack
 # actually produced, both invisible to a per-PR review against main:

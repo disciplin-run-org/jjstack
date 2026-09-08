@@ -16,6 +16,17 @@
 #                                   the stronger the verdict it may emit
 #   reason  <code>  <max-effect>    the closed reason-code vocabulary, and the
 #                                   strongest verdict each code may carry
+#   severity <token> <canonical>   the DECLARED severity vocabulary. skills/review/
+#                                   SKILL.md's finding-struct table is the prose
+#                                   half of this list; test/smoke.sh asserts the
+#                                   two agree, and jjstack-review-normalize and
+#                                   jjstack-pr-comment-lint both DERIVE from here
+#                                   rather than carrying a second copy.
+#   sevalias <token> <canonical>   a spelling the PR-comment cap must still COUNT
+#                                   as a finding, that the normalizer does not
+#                                   accept as input. Counting is a wider job than
+#                                   normalizing: the cap has to recognise how a
+#                                   model wrote it, not only what the schema takes.
 #
 # The ladder is enforced structurally, not by convention: every store validates
 # effect_ordinal(row) <= effect_ordinal(scope_max) AND <= effect_ordinal(
@@ -43,3 +54,20 @@ reason	not-reachable	demote	unreachable today is reachable after the next refact
 reason	accepted-risk	suppress	a human accepted the risk on the record
 reason	baseline	suppress	retired by the committed baseline with its own stated reason
 reason	stale-api	none	disproved against current official documentation (Phase 4.5b) — bound exclusively to the `refuted` disposition, which is the only "this finding is WRONG" outcome. Ceiling `none` because it is EARNED BY EVIDENCE IN ONE RUN and is not a thing a memory store may hold: with a `suppress` ceiling the binding was enforced only by run-report's Invariant 4, and `baseline generate --code stale-api` retired a P0 with no doc URL and nothing having consulted any documentation.
+severity	P0	P0	the canonical form. Every other token below normalizes to one of P0-P3.
+severity	P1	P1	the canonical form.
+severity	P2	P2	the canonical form.
+severity	P3	P3	the canonical form.
+severity	CRITICAL	P0	the spelled vocabulary SKILL.md declares alongside P0-P3.
+severity	HIGH	P1	the spelled vocabulary SKILL.md declares alongside P0-P3.
+severity	MEDIUM	P2	the spelled vocabulary SKILL.md declares alongside P0-P3.
+severity	LOW	P3	the spelled vocabulary SKILL.md declares alongside P0-P3.
+severity	NIT	P3	the spelled vocabulary SKILL.md declares alongside P0-P3.
+sevalias	BLOCKER	P0	a spelling models reach for; the cap counts it, the schema does not take it.
+sevalias	SEVERE	P0	a spelling models reach for; the cap counts it, the schema does not take it.
+sevalias	MAJOR	P1	a spelling models reach for; the cap counts it, the schema does not take it.
+sevalias	MINOR	P3	a spelling models reach for; the cap counts it, the schema does not take it.
+sevalias	SEV0	P0	numeric-severity spelling; the cap counts it, the schema does not take it.
+sevalias	SEV1	P1	numeric-severity spelling; the cap counts it, the schema does not take it.
+sevalias	SEV2	P2	numeric-severity spelling; the cap counts it, the schema does not take it.
+sevalias	SEV3	P3	numeric-severity spelling; the cap counts it, the schema does not take it.

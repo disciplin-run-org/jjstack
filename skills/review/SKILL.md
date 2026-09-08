@@ -458,7 +458,7 @@ Each pass emits findings as JSON Lines with **all** of these fields:
 |---|---|
 | `lens` | which pass found it — the baseline's rule glob keys on this |
 | `file`, `start_line` | grounded location (5a) |
-| `severity` | `P0`–`P3` (or CRITICAL/HIGH/MEDIUM/LOW, normalized) |
+| `severity` | `P0`–`P3` (or CRITICAL/HIGH/MEDIUM/LOW/NIT, normalized). This row is the prose half of the `severity` rows in `bin/jjstack-review-vocab.tsv`; the normalizer and the PR-comment cap both derive from the TSV, and `test/smoke.sh` asserts this line and the TSV list the same tokens. Adding a word here without a TSV row is a red test, not a silent widening. |
 | `confidence` | 0–100 or 0.0–1.0; normalized deterministically, not by eye |
 | `message` | the one-line claim |
 | `quote` | the verbatim motivating line — unquotable means unverified |
@@ -1073,14 +1073,25 @@ the branch with no number and no `--repo`. /review runs in a detached-HEAD
 worktree often enough that branch inference has nothing to bind to, and "posted
 to the wrong PR" is the same class of harm as "posted the secret".
 
+**The repo is the BASE repo, and it is read off the PR's own URL.** The second
+version resolved `headRepositoryOwner/headRepository`, which is the repo the
+BRANCH lives in. On a fork that is `contributor/jjstack`, and a PR number
+belongs to the base repo, not the head one: forks keep their own numbering, so a
+post aimed at the head slug with the base repo's number either 404s or lands the
+review on an unrelated public thread in someone else's fork. `.url` already carries the base `owner/repo` — it
+was being captured and thrown away — so the slug is split out of it rather than
+assembled from the head fields. `isCrossRepository` is recorded alongside so the
+two-repo case is visible in the run log instead of silent.
+
 ```bash
-gh pr view --json number,url,headRepositoryOwner,headRepository --jq '"PR_NUM=\(.number)\nPR_URL=\(.url)\nPR_REPO=\(.headRepositoryOwner.login)/\(.headRepository.name)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err; echo "gh exit: $?"; cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
+gh pr view --json number,url,isCrossRepository,headRepositoryOwner,headRepository --jq '"PR_NUM=\(.number)\nPR_URL=\(.url)\nPR_REPO=\(.url | split("/") | .[3] + "/" + .[4])\nPR_HEAD_REPO=\(.headRepositoryOwner.login)/\(.headRepository.name)\nPR_CROSS=\(.isCrossRepository)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err; echo "gh exit: $?"; cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
 
 Classify the outcome. `|| echo "NO_PR"` collapsed three different worlds into
 one, and only one of them is benign:
 
-- **exit 0** — the PR is resolved. `source {OUTPUT_DIR}/pr.env` and continue.
+- **exit 0** — the PR is resolved. Continue; the post below sources `pr.env`
+  itself, in its own command.
 - **non-zero, and `pr.err` says `no pull requests found`** — `NO_PR`. A branch
   with no PR is a legitimate outcome, not an error. Say so in the session output
   and stop here.
@@ -1107,10 +1118,18 @@ This applies to EVERY invocation regardless of perceived simplicity.
 </HARD-GATE>
 
 One command, so the shell enforces the order and the resolved identity from
-above is what the post binds to:
+above is what the post binds to. **The `.` is inside this command on purpose.**
+Claude Code does not persist shell state between Bash calls: a `source pr.env`
+run in an earlier block is gone by the time this one runs, `$PR_NUM` and
+`$PR_REPO` expand to empty, and `gh` treats both as absent — `gh pr view 24
+--repo ""` silently falls back to the git remote, and an empty PR selector falls
+back to branch inference. Both behaviours this section removed come straight
+back, silently, on a run that looks identical. Sourcing the file in the same
+command as the post is what makes the binding real, and the emptiness test is
+what makes a failed binding LOUD instead of a wrong post:
 
 ```bash
-~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
+. {OUTPUT_DIR}/pr.env && { [ -n "${PR_NUM:-}" ] && [ -n "${PR_REPO:-}" ] || { echo "REFUSING TO POST: PR identity did not bind (PR_NUM='${PR_NUM:-}' PR_REPO='${PR_REPO:-}')" >&2; false; }; } && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
 ```
 
 Never run the post as its own step. Two separate fenced blocks let a failed lint

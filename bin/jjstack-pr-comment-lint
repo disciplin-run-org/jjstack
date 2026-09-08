@@ -99,22 +99,44 @@ n_lines=$(wc -l < "$SRC" | tr -d ' ')
 n_chars=$(wc -c < "$SRC" | tr -d ' ')
 
 # --- SAFETY: no credential literal reaches a public PR ------------------------
-# The class is "a credential literal", not "an AWS key". Each entry is one
-# vendor's issued-token shape; the last is a connection string with the password
-# inline, which is the same leak wearing a URL.
+# The class is "a credential literal", not "a vendor whose token shape someone
+# added a row for". Three rounds of review added the next vendor each time and
+# the round after found the next one: an eleven-row list matched by eleven
+# fixtures is an enumeration of its own test data. The round that broke it was
+# the smallest possible step - the rule was named `aws key id` and matched the
+# 20-character IDENTIFIER, while `AWS_SECRET_ACCESS_KEY=wJalr...`, the half that
+# actually is secret, had no row and posted clean.
 #
-# The message names the RULE and the LINE, never the match. A linter that echoes
-# the key has moved the leak into the terminal and the run log instead of
-# stopping it. The fix the message teaches is the one the voice already wants:
-# cite `file:line`, leave the value in the committed report.
+# So the rules are now a fast path, and the CLASS is closed by three property
+# scans that do not know any vendor's name:
+#
+#   1. an ASSIGNMENT of a high-entropy value to a secret-ish name. The property
+#      is structural - `<name containing key|token|secret|password|...> = <20+
+#      characters that do not look like English or a path>` - so a vendor
+#      nobody has heard of is caught on the day they launch. "Does not look like
+#      English" is decided arithmetically: three character classes, or a long
+#      hex run, or Shannon entropy over 4.5 bits/char. A 40-character lowercase
+#      file path scores about 4.0 and is not flagged; a 40-character base64
+#      secret scores about 5.0 and is;
+#   2. the same scans over the body with line breaks and spaces REMOVED, because
+#      every rule here is a single-line grep and a key wrapped across two lines
+#      walked between them;
+#   3. the same scans over the base64-DECODED content of every base64-looking
+#      token, because that is how a Kubernetes Secret stores one, and a review
+#      quoting `data.password` from a manifest is quoting a credential.
+#
+# The message names the RULE, the LINE and at most the VARIABLE NAME, never the
+# match. A linter that echoes the key has moved the leak into the terminal and
+# the run log instead of stopping it. The fix the message teaches is the one the
+# voice already wants: cite `file:line`, leave the value in the committed report.
 #
 # `grep -E --` because a PEM header STARTS with dashes: without the terminator
 # grep reads the pattern as its own options and that rule silently never fires.
-while IFS='|' read -r label pat; do
-  [ -n "$label" ] || continue
-  hits=$(grep -nE -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
-  [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
-done <<'SECRETS'
+SCRATCH=$(mktemp -d) || { echo -e "${CYA}error${RST} cannot create a scratch dir" >&2; exit 3; }
+trap 'rm -rf "$SCRATCH"' EXIT
+
+secret_rules() {
+  cat <<'SECRETS'
 aws key id|(AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)[0-9A-Z]{16}
 github token|gh[pousr]_[A-Za-z0-9]{36,}
 github fine-grained pat|github_pat_[A-Za-z0-9_]{22,}
@@ -126,25 +148,200 @@ stripe key|[srp]k_(live|test)_[A-Za-z0-9]{16,}
 json web token|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}
 credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]+:[^/@[:space:]]{6,}@
 SECRETS
+}
+
+# The structural rule. Deliberately NOT a vendor pattern: it keys on the SHAPE
+# of a secret assignment, so it fires on a token format that does not exist yet.
+#
+# The scan is a LOOP inside awk rather than a `grep -o`, and that is not a
+# style choice. grep's leftmost-longest match swallows the whole tail of
+# `... committed: AWS_SECRET_ACCESS_KEY=wJalr...` into one match keyed on
+# `committed`, and the real assignment inside it is never offered to the filter.
+# Advancing past the SEPARATOR instead of past the value means every assignment
+# on a line is examined, including the ones nested inside another one's value.
+#
+# No `{20,}` interval anywhere in the pattern: length is tested in code. An awk
+# without interval support would treat the braces literally and the rule would
+# match nothing, which is the silent-inert failure this file keeps re-learning.
+#
+# The arithmetic half. A long value is not a secret; a long value with no
+# structure a human would write is. Three independent tests, any one of which
+# is enough, so a shape none of them was written for still has two more chances:
+#   * three character classes (lower + upper + digit) - the shape almost every
+#     issued token has and almost no English phrase or file path has;
+#   * 32+ characters of pure hex - a digest-shaped secret, only two classes;
+#   * Shannon entropy over 4.5 bits/char - the catch-all for anything else.
+IFS='' read -r -d '' GEN_AWK <<'AWKEOF'
+function classes(v,   i, c, lo, up, di) {
+  lo = 0; up = 0; di = 0
+  for (i = 1; i <= length(v); i++) {
+    c = substr(v, i, 1)
+    if (c ~ /[a-z]/) lo = 1
+    else if (c ~ /[A-Z]/) up = 1
+    else if (c ~ /[0-9]/) di = 1
+  }
+  return lo + up + di
+}
+function entropy(v,   i, c, n, e, p) {
+  n = length(v); if (n == 0) return 0
+  delete FQ
+  for (i = 1; i <= n; i++) { c = substr(v, i, 1); FQ[c]++ }
+  e = 0
+  for (c in FQ) { p = FQ[c] / n; e -= p * log(p) / log(2) }
+  return e
+}
+function credentialish(v) {
+  if (classes(v) >= 3) return 1
+  if (length(v) >= 32 && v ~ /^[0-9a-fA-F]+$/) return 1
+  if (entropy(v) > 4.5) return 1
+  return 0
+}
+{
+  line = $0
+  while (match(line, /[A-Za-z_][A-Za-z0-9_.-]*[ \t]*["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9+\/_=~.-]+/)) {
+    start = RSTART
+    mtch = substr(line, RSTART, RLENGTH)
+    if (!match(mtch, /[:=]/)) { line = substr(line, start + 1); continue }
+    sep = RSTART
+    key = substr(mtch, 1, sep - 1)
+    val = substr(mtch, sep + 1)
+    # Advance past the SEPARATOR, not past the value: an assignment nested
+    # inside another one's value is the exact shape that reopened this rule.
+    line = substr(line, start + sep)
+    gsub(/^[ \t]+/, "", key); gsub(/[ \t"]+$/, "", key)
+    sub(/^[ \t]*/, "", val); sub(/^["]/, "", val); sub(/^[ \t]*/, "", val)
+    if (length(val) < 20) continue
+    if (tolower(key) !~ /(secret|token|password|passwd|pwd|key|credential|cred|auth|bearer|session|signature|salt|nonce|cert)/) continue
+    if (!credentialish(val)) continue
+    print FNR "\t" key
+  }
+}
+AWKEOF
+
+# One announcement per rule and per variable name, however many of the three
+# scans found it. The same key reported three times reads as three leaks.
+declare -A _SEC_SEEN=()
+
+scan_text() {   # scan_text FILE MODE   (MODE: line | joined | b64)
+  local f="$1" mode="$2" label pat hits ln key where
+  while IFS='|' read -r label pat; do
+    [ -n "$label" ] || continue
+    hits=$(grep -nE -- "$pat" "$f" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
+    [ -n "$hits" ] || continue
+    [ -n "${_SEC_SEEN[rule:$label]:-}" ] && continue
+    _SEC_SEEN[rule:$label]=1
+    case "$mode" in
+      line)   where="on line(s) $hits" ;;
+      joined) where="split across a line break - the unwrapped body matches" ;;
+      b64)    where="inside a base64-encoded value, decoded and rescanned" ;;
+    esac
+    hard "secret" "$label $where. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
+  done < <(secret_rules)
+  while IFS=$'\t' read -r ln key; do
+    [ -n "$key" ] || continue
+    [ -n "${_SEC_SEEN[key:$key]:-}" ] && continue
+    _SEC_SEEN[key:$key]=1
+    case "$mode" in
+      line)   where="on line $ln" ;;
+      joined) where="split across a line break" ;;
+      b64)    where="inside a base64-encoded value, decoded and rescanned" ;;
+    esac
+    hard "secret" "a high-entropy value is assigned to \`$key\` $where. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
+  done < <(LC_ALL=C awk "$GEN_AWK" "$f" 2>/dev/null)
+}
+
+scan_text "$SRC" line
+
+# Scans 2 and 3 run only when scan 1 found nothing. They exist to catch what a
+# per-line plaintext read cannot see, and once the comment is already blocked a
+# second announcement of the same value under a fused variable name (the join
+# glues `credential committed` into one token) is noise on top of a stop. The
+# operator redacts and re-runs; the next scan then has its turn.
+if [ "$secrets" -eq 0 ]; then
+# 2. the wrapped key. Every rule above is a single-line grep, so a value broken
+#    over two lines - by a hard wrap, by a markdown table, by an editor - walked
+#    between them untouched.
+  LC_ALL=C tr -d '\n' < "$SRC" | LC_ALL=C tr -d ' \t' > "$SCRATCH/joined"
+  printf '\n' >> "$SCRATCH/joined"
+  scan_text "$SCRATCH/joined" joined
+
+# 3. the encoded key. A Kubernetes Secret stores its values base64-encoded, so a
+#    review quoting `data.password` from a manifest is quoting a credential that
+#    no plaintext rule can see. Decode every base64-looking token and rescan.
+#    Padding is restored first: an unpadded token is the common way one arrives.
+  : > "$SCRATCH/b64"
+  grep -oE '[A-Za-z0-9+/]{16,}={0,2}' "$SRC" 2>/dev/null | head -200 | while IFS= read -r tok; do
+    case $(( ${#tok} % 4 )) in
+      2) tok="$tok==" ;;
+      3) tok="$tok=" ;;
+    esac
+    printf '%s' "$tok" | base64 -d 2>/dev/null | LC_ALL=C tr -c '[:print:]' ' '
+    printf '\n'
+  done >> "$SCRATCH/b64"
+  scan_text "$SCRATCH/b64" b64
+fi
 
 # --- how many findings this comment shows -------------------------------------
 # Counted as OCCURRENCES, not lines. `grep -c` OVERRIDES `-o` in GNU grep, so
 # five findings on one physical line counted as one and the comment passed clean.
 # (A ugrep shim counts occurrences, which is why this survives a hand check.)
 #
-# And the token class is the SEVERITY, not the one decoration that had a fixture.
-# Round 1 widened the prefix class to list markers and blockquotes; `[` was not
-# in it, and a spelled-out severity carries no P-token at all. Both evaded the
-# cap. Strip the decorations first, then match the token: that covers `**P0**`,
-# `[P0]`, `(P0)`, `"P0"`, `- P0`, `1. P0` and `| P0 |` without enumerating them.
+# THE TOKEN LIST IS NOT WRITTEN HERE. It is read from bin/jjstack-review-vocab.tsv,
+# the same file jjstack-review-normalize now reads and the same list
+# skills/review/SKILL.md's finding-struct table declares in prose - and
+# test/smoke.sh asserts the TSV and that declaration name the same tokens. Three
+# rounds of review each handed this function the next severity spelling it did
+# not know; the third round found HIGH/MEDIUM/LOW, which the skill had DECLARED
+# all along while the cap had never been told. A hand-copied list drifts from
+# the declaration it copies, silently, in the direction of letting findings
+# through. Adding a word to the declaration without a TSV row is now a red test;
+# adding a TSV row widens the cap here with no edit to this file at all.
 #
-# Spelled-out severities are matched on the UNstripped text and must carry a
-# label marker (a colon, a closing bracket, a bold close). "the critical path" in
-# prose is not a finding; "Critical:" is.
+# Two shapes, because a severity is written two ways:
+#   * P-tokens (P0..P3) - matched on the DECORATION-STRIPPED text, so `**P0**`,
+#     `[P0]`, `(P0)`, `"P0"`, `- P0`, `1. P0` and `| P0 |` all count without
+#     enumerating them. Case-insensitive: `p0` is the same claim as `P0`, and
+#     the case-sensitive match let a lowercase comment past the cap entirely.
+#   * spelled words (CRITICAL, HIGH, MEDIUM, LOW ...) - these are ordinary
+#     English, so they count only in LABEL POSITION: at the head of a line
+#     (after any list or quote decoration) followed by a label marker, or
+#     wrapped in a strong marker anywhere on the line (`**HIGH**`, `[Major]`).
+#     "the critical path" in prose is not a finding; "(confidence: low)" is not
+#     a finding; "**HIGH** `a.py:1` ..." is.
+if ! sev_all=$(vocab_severity_tokens); then
+  echo -e "${CYA}error${RST} the review vocabulary would not load; the finding cap cannot be built" >&2
+  exit 3
+fi
+SEV_P=""; SEV_WORD=""
+for _t in $sev_all; do
+  case "$_t" in
+    P[0-9]) SEV_P="${SEV_P:+$SEV_P|}$_t" ;;
+    *)      SEV_WORD="${SEV_WORD:+$SEV_WORD|}$(printf '%s' "$_t" | tr 'A-Z' 'a-z')" ;;
+  esac
+done
+# An empty alternation would silently match nothing, which reads exactly like a
+# comment with no findings — the failure mode this whole rule exists to stop.
+[ -n "$SEV_P" ] || { echo -e "${CYA}error${RST} the vocabulary declares no P-token severities" >&2; exit 3; }
+
+IFS='' read -r -d '' SEV_AWK <<'AWKEOF'
+{
+  line = tolower($0)
+  # strip one leading list marker / blockquote / ordinal, so `- **High**` and
+  # `2. Critical:` are read the same way as a bare label.
+  sub(/^[ \t]*([-*>+]+[ \t]*|[0-9]+[.)][ \t]*)?/, "", line)
+  head = "^(\\*\\*|__|\\[|\\(|\")?(" words ")(\\*\\*|__|\\]|\\)|\"|:)"
+  if (match(line, head)) { c++; line = substr(line, RSTART + RLENGTH) }
+  strong = "(\\*\\*(" words ")\\*\\*|__(" words ")__|\\[(" words ")\\])"
+  while (match(line, strong)) { c++; line = substr(line, RSTART + RLENGTH) }
+}
+END { print c + 0 }
+AWKEOF
+
 count_findings() {   # count_findings FILE
   local f="$1" a b
-  a=$(sed 's/[][*_`(){}<>"]/ /g' "$f" | grep -owE 'P[0-3]' 2>/dev/null | wc -l | tr -d ' ')
-  b=$(grep -oiE '(\*\*|__|\[|\()?(CRITICAL|BLOCKER|SEVERE|MAJOR|MINOR|SEV[0-3])(\*\*|__|\]|\)|:)' "$f" 2>/dev/null | wc -l | tr -d ' ')
+  a=$(sed 's/[][*_`(){}<>"]/ /g' "$f" | grep -owiE "$SEV_P" 2>/dev/null | wc -l | tr -d ' ')
+  b=0
+  [ -n "$SEV_WORD" ] && b=$(LC_ALL=C awk -v words="$SEV_WORD" "$SEV_AWK" "$f" 2>/dev/null)
   echo $(( ${a:-0} + ${b:-0} ))
 }
 n_find=$(count_findings "$SRC")
@@ -188,29 +385,52 @@ fi
 # Without this, "be brief" degrades into "drop findings", which is the one
 # failure this whole skill exists to prevent.
 #
-# Two rounds of this rule were satisfiable without a report. First any ".md"
-# substring counted, so a finding whose own subject was `docs/setup.md:12`
-# passed. Then a bare `https://` counted, so a finding citing any URL passed.
-# And a named report path was never stat'd: `jjstack/does-not-exist-anywhere.md`
-# returned clean. So: the reference must LOOK like a report, and if it names a
-# path it must BE there. A link to nothing is the same as no link.
-report_ref=$(grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' "$SRC" 2>/dev/null | head -1)
-url_ref=$(grep -oE 'https?://[^)>[:space:]`"'"'"']+' "$SRC" 2>/dev/null \
-  | grep -E '(\.md([?#].*)?$|/jjstack/|review-[0-9]{4}-[0-9]{2}-[0-9]{2})' | head -1)
+# THREE rounds of this rule were satisfiable without a report, each time through
+# a branch the previous round had not touched. First any ".md" substring counted,
+# so a finding whose own subject was `docs/setup.md:12` passed. Then a bare
+# `https://` counted. Then a named PATH was stat'd - and the URL branch beside it
+# still was not, so `https://github.com/o/r/blob/main/docs/setup.md#L12` linted
+# clean with no report linked at all. Two branches, one of them checked.
+#
+# So there are no longer two branches. Every reference in the comment - bare
+# path or URL - is reduced to a repo-relative path by ONE function, tested
+# against ONE report shape, and resolved by ONE stat. A URL cannot be treated
+# more leniently than a path because there is no separate code path in which to
+# be lenient.
+report_path_of() {   # report_path_of REF -> a repo-relative report path, or empty
+  local r="$1"
+  case "$r" in
+    http://*|https://*)
+      r="${r#*://}"; r="${r#*/}"          # drop scheme and host
+      r="${r%%#*}"; r="${r%%\?*}"         # drop fragment and query
+      # a forge blob/raw URL carries owner/repo/<view>/<ref>/ before the repo path
+      r=$(printf '%s\n' "$r" | sed -E 's#^[^/]+/[^/]+/(-/)?(blob|blame|raw|tree|src)/[^/]+/##')
+      ;;
+  esac
+  printf '%s\n' "$r" \
+    | grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' | head -1
+}
 
-if [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
-  fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a bare URL inside a citation: brevity moves evidence, it never deletes it."
-elif [ -n "$report_ref" ]; then
+report_ref=""
+while IFS= read -r ref; do
+  [ -n "$ref" ] || continue
+  cand_ref=$(report_path_of "$ref")
+  [ -n "$cand_ref" ] && { report_ref="$cand_ref"; break; }
+done < <(grep -oE '(https?://[^)>[:space:]`"'"'"']+|[A-Za-z0-9_./-]+\.md)' "$SRC" 2>/dev/null)
+
+report_file=""
+if [ -z "$report_ref" ]; then
+  fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a URL that merely ends in .md: brevity moves evidence, it never deletes it."
+else
   # Resolve against the repo the comment lives in, then against the comment's own
   # directory, then one level up: {OUTPUT_DIR} is normally {repo}/jjstack, so
   # both "jjstack/review-DATE.md" and a bare "review-DATE.md" have to land.
   src_dir=$(cd "$(dirname "$SRC")" && pwd)
   root=$(git -C "$src_dir" rev-parse --show-toplevel 2>/dev/null || true)
-  found=0
   for cand in "${root:+$root/$report_ref}" "$src_dir/$report_ref" "$src_dir/../$report_ref" "$src_dir/$(basename "$report_ref")"; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { found=1; break; }
+    [ -n "$cand" ] && [ -f "$cand" ] && { report_file="$cand"; break; }
   done
-  [ "$found" -eq 1 ] || \
+  [ -n "$report_file" ] || \
     fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 6.2), then link it: a link to nothing is the same as no link."
 fi
 
@@ -236,6 +456,24 @@ else
       got=$(grep -oiE '[0-9]+ more\b' "$SRC" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
       [ "${got:-x}" = "$want" ] || \
         fail "bad-residual" "$n_total total, $n_find shown: say \"$want more\" and link the report. Findings move into the report, they never disappear."
+    fi
+    # --- and the declared total is checked against the REPORT, not just itself.
+    # The linter already resolved the report path and then never opened the file.
+    # So "1 blocking, 1 total" linking a report holding 40 findings linted clean:
+    # every count in the comment agreed with every other count in the comment,
+    # which is what a self-consistent lie looks like. Phase 5f DECLARES the
+    # report's header line - "**Posture:** <profile> - <active count> active, ..."
+    # - so the number is there to be read, and the comment's M has to equal it.
+    if [ -n "$report_file" ] && [ -s "$report_file" ]; then
+      posture=$(grep -m1 -oiE '\*\*Posture:\*\*.*' "$report_file" 2>/dev/null)
+      if [ -z "$posture" ]; then
+        say "  ${YEL}advisory${RST}  the linked report has no \`**Posture:**\` line, so \"$n_total total\" could not be checked against it (Phase 5f defines that line)."
+      else
+        n_report=$(printf '%s\n' "$posture" | grep -oiE '[0-9]+ active' | grep -oE '^[0-9]+')
+        if [ -n "$n_report" ] && [ "$n_report" != "$n_total" ]; then
+          fail "residual-mismatch" "the comment declares $n_total total; the report it links declares $n_report active. The comment's count is a claim about the report, so the two are one number, not two."
+        fi
+      fi
     fi
   fi
 fi

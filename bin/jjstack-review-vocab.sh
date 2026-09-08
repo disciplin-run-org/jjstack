@@ -25,6 +25,12 @@
 #   vocab_reason_codes             every reason code, space separated
 #   vocab_effects                  every effect name, space separated
 #   vocab_scopes                   every scope name, space separated
+#   vocab_severity_canon           the severity tokens the SCHEMA accepts
+#   vocab_severity_tokens          every severity token a COMMENT may be written
+#                                  with — the canon plus the `sevalias` spellings.
+#                                  Counting is a wider job than normalizing: the
+#                                  PR-comment cap has to recognise how a model
+#                                  wrote a finding, not only what the schema takes.
 #   vocab_effect_ordinal NAME      integer ordinal, or empty for an unknown effect
 #   vocab_scope_max SCOPE          the strongest effect that scope may emit
 #   vocab_reason_max CODE          the strongest effect that reason code may carry
@@ -67,10 +73,13 @@ review_need_value() {   # review_need_value FLAG REMAINING_ARGC
 VOCAB_REASONS=""
 VOCAB_EFFECTS=""
 VOCAB_SCOPES=""
+VOCAB_SEVERITY_CANON=""
+VOCAB_SEVERITY_ALIASES=""
 _VOCAB_LOADED=0
 declare -A VOCAB_EFFECT_ORD=()
 declare -A VOCAB_SCOPE_MAX=()
 declare -A VOCAB_REASON_MAX=()
+declare -A VOCAB_SEVERITY=()
 
 vocab_path() {
   if [ -n "${JJSTACK_REVIEW_VOCAB:-}" ]; then
@@ -97,12 +106,20 @@ vocab_load() {
       effect) VOCAB_EFFECT_ORD["$name"]="$value"; VOCAB_EFFECTS="$VOCAB_EFFECTS $name" ;;
       scope)  VOCAB_SCOPE_MAX["$name"]="$value";  VOCAB_SCOPES="$VOCAB_SCOPES $name" ;;
       reason) VOCAB_REASON_MAX["$name"]="$value"; VOCAB_REASONS="$VOCAB_REASONS $name" ;;
+      severity)  VOCAB_SEVERITY["$name"]="$value"; VOCAB_SEVERITY_CANON="$VOCAB_SEVERITY_CANON $name" ;;
+      sevalias)  VOCAB_SEVERITY["$name"]="$value"; VOCAB_SEVERITY_ALIASES="$VOCAB_SEVERITY_ALIASES $name" ;;
     esac
   done < "$f"
   VOCAB_EFFECTS="${VOCAB_EFFECTS# }"
   VOCAB_SCOPES="${VOCAB_SCOPES# }"
   VOCAB_REASONS="${VOCAB_REASONS# }"
-  if [ -z "$VOCAB_REASONS" ] || [ -z "$VOCAB_EFFECTS" ] || [ -z "$VOCAB_SCOPES" ]; then
+  VOCAB_SEVERITY_CANON="${VOCAB_SEVERITY_CANON# }"
+  VOCAB_SEVERITY_ALIASES="${VOCAB_SEVERITY_ALIASES# }"
+  # A severity list that loaded empty would build an EMPTY finding-count pattern
+  # in jjstack-pr-comment-lint, and an empty pattern makes the cap unfireable
+  # while the run still looks clean. Fail closed with the rest of the vocabulary.
+  if [ -z "$VOCAB_REASONS" ] || [ -z "$VOCAB_EFFECTS" ] || [ -z "$VOCAB_SCOPES" ] \
+     || [ -z "$VOCAB_SEVERITY_CANON" ]; then
     echo -e "${_VOCAB_CYA}error${_VOCAB_RST} review vocabulary is empty or malformed: $f" >&2
     return 3
   fi
@@ -111,6 +128,11 @@ vocab_load() {
 }
 
 vocab_reason_codes() { vocab_load || return 3; printf '%s\n' "$VOCAB_REASONS"; }
+vocab_severity_canon()  { vocab_load || return 3; printf '%s\n' "$VOCAB_SEVERITY_CANON"; }
+vocab_severity_tokens() {
+  vocab_load || return 3
+  printf '%s\n' "${VOCAB_SEVERITY_CANON}${VOCAB_SEVERITY_ALIASES:+ $VOCAB_SEVERITY_ALIASES}"
+}
 vocab_effects()      { vocab_load || return 3; printf '%s\n' "$VOCAB_EFFECTS"; }
 vocab_scopes()       { vocab_load || return 3; printf '%s\n' "$VOCAB_SCOPES"; }
 

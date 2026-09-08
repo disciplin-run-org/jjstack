@@ -25,8 +25,11 @@ Two normalizations, both deterministic and both defensive:
     ambiguity band is real and unresolvable (a bare "1" could mean 1% or
     100%); the convention resolves it toward 1.0, which is the fail-closed
     direction for a review tool.
-  * severity — accepted as P0-P3 or CRITICAL/HIGH/MEDIUM/LOW, emitted as
-    P0-P3 so ranking is a plain sort.
+  * severity — the accepted tokens and their canonical P-level are READ from
+    bin/jjstack-review-vocab.tsv (`severity` rows), not listed here. Emitted as
+    P0-P3 so ranking is a plain sort. One definition, four consumers: this
+    script, jjstack-pr-comment-lint's finding cap, and the declaration in
+    skills/review/SKILL.md that test/smoke.sh asserts against the TSV.
 
 An invalid finding is NEVER silently dropped: it is echoed to the invalid
 stream with the reason, counted, and the exit code says so. Silent deletion is
@@ -57,6 +60,7 @@ No color red anywhere — unreadable on the target terminal.
 """
 
 import json
+import os
 import sys
 
 YEL = "\033[33m"
@@ -76,17 +80,42 @@ REQUIRED = (
     "remediation",
 )
 
-SEVERITY_ALIASES = {
-    "CRITICAL": "P0",
-    "HIGH": "P1",
-    "MEDIUM": "P2",
-    "LOW": "P3",
-    "NIT": "P3",
-    "P0": "P0",
-    "P1": "P1",
-    "P2": "P2",
-    "P3": "P3",
-}
+def load_severity_aliases():
+    """The severity vocabulary, READ from bin/jjstack-review-vocab.tsv.
+
+    It used to live here as a dict literal, which made this file a second
+    definition of a list three other places also carry: the TSV, the PR-comment
+    cap, and skills/review/SKILL.md's finding-struct table. A second copy drifts
+    silently — the cap was missing HIGH/MEDIUM/LOW for exactly as long as nobody
+    diffed it against this dict. Now there is one definition and the rest derive.
+
+    Fails LOUDLY. A normalizer that quietly accepts nothing, or quietly accepts
+    everything, when its vocabulary file is unreadable is worse than one that
+    stops: both outcomes look like a clean run.
+    """
+    path = os.environ.get("JJSTACK_REVIEW_VOCAB") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "jjstack-review-vocab.tsv"
+    )
+    aliases = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) < 3 or cols[0] != "severity":
+                    continue
+                aliases[cols[1].strip().upper()] = cols[2].strip()
+    except OSError as exc:
+        err(f"review vocabulary unreadable ({path}): {exc}")
+        sys.exit(2)
+    if not aliases:
+        err(f"review vocabulary declares no severity rows: {path}")
+        sys.exit(2)
+    return aliases
+
+
+SEVERITY_ALIASES = None
 
 
 def err(msg):
@@ -144,6 +173,9 @@ def normalize_confidence(value):
 
 
 def normalize_severity(value):
+    global SEVERITY_ALIASES
+    if SEVERITY_ALIASES is None:
+        SEVERITY_ALIASES = load_severity_aliases()
     key = str(value).strip().upper()
     if key not in SEVERITY_ALIASES:
         raise ValueError(f"unknown severity {value!r}")

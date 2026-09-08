@@ -55,7 +55,7 @@ sentence setting the stage, the voice is lost.
 **P0** `file:line` claim: the specific consequence.
 **P1** `file:line` claim: the specific consequence.
 
-M-N more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
+<M minus the number of findings SHOWN above> more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
 Guardrail: the condition under which this verdict holds.
 ```
 
@@ -64,10 +64,21 @@ finding actionable without a second round trip.
 
 The counts are not decoration either, and they are checked. `N blocking, M
 total` must be there, `M` cannot be smaller than `N`, and when `M` exceeds the
-findings shown the comment has to say `M-N more` and link the rest. That
-arithmetic is what proves a short comment is a moved finding rather than a
+findings shown the comment has to say how many more there are and link the rest.
+
+The residual is **M minus the number of findings SHOWN**, never M minus N. The
+two are the same number only while every finding you show is a blocking one, and
+that is exactly the case every example here happens to be - so the difference
+stayed invisible until a comment showed one non-blocking finding and the linter
+rejected a comment written precisely as this page taught. Shown, not blocking:
+the residual answers "what is not in this comment", and a non-blocking finding
+printed in the comment is not missing from it.
+
+That arithmetic is what proves a short comment is a moved finding rather than a
 dropped one. The linked report has to exist on disk before the comment goes out:
-a link to nothing reads exactly like no link at all.
+a link to nothing reads exactly like no link at all - and the total the comment
+declares has to match the `**Posture:**` count in the report it links, because
+the comment's count is a claim about that report.
 
 ## A clean approve is one line
 
