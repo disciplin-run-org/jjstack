@@ -32,24 +32,40 @@
 #           | test-coverage | performance | api-contract | style | type-safety
 #           | dependency | other
 #   PATTERN is a shell glob matched against the finding's repo-relative path.
-#           It must name a PLACE. Breadth is judged on what the glob actually
-#           matches, not on how it is spelled: the pattern is run against a
-#           fixed corpus of unrelated probe paths, and a pattern that reaches
-#           across three or more unrelated top-level names is rejected as a
-#           blanket. Spelling-based rules do not survive contact — stripping
-#           `*?/` and rejecting the empty remainder catches `*` and `*/*` and
-#           waves through `*[a-z]*`, `[a-z]*`, `*.*`, `[!q]*` and every other
-#           spelling nobody happened to list. The same test is applied to
-#           patterns READ from the ledger, because the ledger is meant to be
-#           hand-edited in git and a merged blanket row is the same blanket.
+#           It must name a PLACE, and breadth is judged on what the glob
+#           actually matches IN THIS REPOSITORY — never on how it is spelled,
+#           and never against a fixture. The corpus is `git ls-files` of the
+#           repo the ledger belongs to, and a pattern is refused when it lands
+#           in three or more distinct top-level names, or on a MAJORITY of
+#           everything the repo tracks. Half the tree is not a place, however
+#           few directories it is spread over. Ten synthetic probe paths are
+#           applied as well, as the check that still fires when the ledger has
+#           no repository behind it yet.
+#
+#           Every earlier version of this rule was as wide as its fixture:
+#           stripping `*?/` waved through `*[a-z]*` and `[a-z]*`; measuring
+#           reach against ten fictional paths waved through `*.md`, which
+#           demotes 99 of this repo's 148 tracked files. Asking the repository
+#           is the only form of the question that cannot be out-guessed by a
+#           spelling nobody listed. The same test is applied to patterns READ
+#           from the ledger, because it is meant to be hand-edited in git and a
+#           merged blanket row is the same blanket.
+#
+#           PATTERN is also a POSITIONAL field in the record, so it carries the
+#           record grammar's alphabet: printable characters only, and never the
+#           `|` delimiter. A `--path` holding a newline used to write a whole
+#           second, forged record — an attacker-chosen `dismissed` row out of
+#           an invocation that asked for `--type fixed`.
 #
 #   NOTE    is stored in the printable alphabet, and that is defined by what is
 #           ALLOWED, not by a list of characters to strip. A record is one
 #           physical line, so any character outside the printable set (a
 #           newline first of all, but equally a CR, a tab, an ESC) is escaped
-#           into that alphabet using the standard `printf %b` sequences, which
-#           makes the encoding reversible: the note round-trips byte for byte
-#           and can never forge a field boundary or a second ledger row.
+#           into that alphabet using the standard `printf %b` sequences. The
+#           encoding is reversible — `printf '%b'` gives back the original
+#           bytes exactly — and the note is quoted back in that stored form, on
+#           one line, so that a note can never forge a field boundary, a second
+#           ledger row, or a line of this tool's own output.
 #
 # Protected categories (security, correctness, concurrency, error-handling,
 # resource-leak, test-coverage) are recorded but NEVER demote — --match prints
@@ -101,38 +117,113 @@ show_help() {
 }
 
 # ---------------------------------------------------------------------------
-# Breadth: judged on what a glob MATCHES, never on how it is spelled.
+# Breadth: judged on what a glob MATCHES in the REAL repository.
 #
-# The first guard stripped `*`, `?` and `/` and rejected whatever came out
-# empty. That is a rule shaped exactly like the two spellings its fixture
-# contained: `*[a-z]*`, `[a-z]*`, `*.*` and `[!q]*` all walked through it and
-# all demote effectively every path in the repo. Adding those four to the strip
-# set only moves the hole one spelling further along.
+# Round 1 stripped `*`, `?` and `/` and rejected whatever came out empty — a
+# rule shaped exactly like the two spellings its fixture contained. Round 2
+# replaced it with a measurement, which was the right idea and the wrong corpus:
+# reach was measured against TEN HARD-CODED FICTIONAL PATHS that share three
+# top-level names with this repo. `*.md` reaches two of those ten, passes, and
+# demotes 99 of this repo's 148 tracked files. A longer fixture is the same bug
+# with more paths in it.
 #
-# So breadth is measured instead. These probes are deliberately unrelated —
-# eight top-level directories that share nothing, plus three root files — and a
-# pattern that reaches across THREE OR MORE of those top-level names is not
-# naming a place, whatever it is written with. `src/legacy/*`, `docs/*`,
-# `tests/**` and `bin/jjstack-review-*` each reach one or none.
+# So the corpus is the repository. `git ls-files` of the repo the ledger belongs
+# to IS the source of truth for "what does this glob actually reach", and two
+# properties of that reach make a pattern a blanket rather than a place:
+#
+#   * it lands in BREADTH_LIMIT or more distinct top-level names, or
+#   * it lands on a MAJORITY of everything the repo tracks. Half the tree is not
+#     a place, however few directories it happens to be spread over — that is
+#     what catches `[bs]*` (two top levels, 100 of 148 files).
+#
+# The ten synthetic probes stay as a SECONDARY check, applied as well as the
+# real corpus and never instead of it. They are what still fires when the ledger
+# has no repository behind it yet, and they cost nothing when it does.
 BREADTH_PROBES="src/payments.py lib/util.go docs/guide.md tests/test_api.rb
 .github/workflows/ci.yml vendor/thirdparty/lib.c deep/nested/tree/Widget.java
 Makefile README.md go.mod"
 BREADTH_LIMIT=3
 
-# true when the glob reaches across BREADTH_LIMIT or more unrelated top levels.
-too_broad() {
-  local pat="$1" p top seen=" " n=0
-  for p in $BREADTH_PROBES; do
+# Which repo's files are the corpus: the same precedence the ledger path itself
+# uses — an explicit --repo, else the ledger's own location, else the cwd. The
+# walk up to the nearest EXISTING ancestor matters: on the first record the
+# ledger's directory (<repo>/jjstack/) does not exist yet, and a corpus that
+# comes back empty is a guard that has silently switched itself off.
+corpus_ctx() {
+  local d
+  if [ -n "$REPO" ]; then printf '%s' "$REPO"; return; fi
+  if [ -n "$LEDGER" ]; then d="$(dirname "$LEDGER")"; else d="$PWD"; fi
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ] && [ ! -d "$d" ]; do
+    d="$(dirname "$d")"
+  done
+  printf '%s' "$d"
+}
+
+# Read once per process: --match calls too_broad() for every row in the file.
+_CORPUS=""; _CORPUS_READ=""
+real_corpus() {
+  if [ -z "$_CORPUS_READ" ]; then
+    _CORPUS_READ=1
+    _CORPUS="$(git -C "$(corpus_ctx)" ls-files 2>/dev/null)"
+  fi
+  printf '%s' "$_CORPUS"
+}
+
+# reach of a glob over a newline-separated corpus on stdin:
+#   "<files matched> <distinct top-level names matched>"
+reach_over() {
+  local pat="$1" p top seen=" " tops=0 files=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
     # shellcheck disable=SC2254  # the glob is the point
     case "$p" in
-      $pat) top="${p%%/*}"
+      $pat) files=$((files + 1)); top="${p%%/*}"
             case "$seen" in
               *" $top "*) ;;
-              *) seen="$seen$top "; n=$((n + 1)) ;;
+              *) seen="$seen$top "; tops=$((tops + 1)) ;;
             esac ;;
     esac
   done
-  [ "$n" -ge "$BREADTH_LIMIT" ]
+  printf '%s %s' "$files" "$tops"
+}
+
+# true when the glob is a blanket rather than a place.
+too_broad() {
+  local pat="$1" corpus total files tops
+  corpus="$(real_corpus)"
+  if [ -n "$corpus" ]; then
+    total=$(printf '%s\n' "$corpus" | grep -c .)
+    read -r files tops < <(printf '%s\n' "$corpus" | reach_over "$pat")
+    [ "$tops" -ge "$BREADTH_LIMIT" ] && return 0
+    [ "$total" -gt 0 ] && [ $((files * 2)) -gt "$total" ] && return 0
+  fi
+  # shellcheck disable=SC2086  # the probe list is a deliberate word list
+  read -r files tops < <(printf '%s\n' $BREADTH_PROBES | reach_over "$pat")
+  [ "$tops" -ge "$BREADTH_LIMIT" ]
+}
+
+# ---------------------------------------------------------------------------
+# The record's field alphabet.
+#
+# A record is ONE physical line of `|`-separated fields, so every field written
+# into it has exactly two hard constraints: no line terminator, and no
+# delimiter. `--note` is the LAST field and is escaped into the printable
+# alphabet, which is why a pipe survives there and a newline cannot break out.
+# Every OTHER free-text field is positional, so escaping cannot save it — a `|`
+# would still split the row at the wrong place — and those are REFUSED instead,
+# by the same positive rule: printable characters only, and not the delimiter.
+#
+# `--path` was the one free-text field with no rule at all. It is validated by
+# too_broad(), which is a glob-match test, not a character test, so a `--path`
+# carrying a newline plus tabs wrote a COMPLETE SECOND RECORD with an
+# attacker-chosen date, repo, type, glob, category and note — a `dismissed` row
+# that demotes, out of an invocation that asked for `--type fixed`.
+field_clean() {   # 0 when $1 is safe to write as a positional field
+  case "$1" in
+    *[![:print:]]*) return 1 ;;
+    *"|"*)          return 1 ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -214,6 +305,16 @@ in_set() {
 # suppression that fires on the wrong class.
 if [ "$MODE" = "record" ] || [ "$MODE" = "match" ]; then
   [ -n "$PATH_ARG" ] || { echo -e "${CYA}error${RST} --path is required for --$MODE" >&2; exit 2; }
+  # --path is written into a POSITIONAL field, so it gets the record grammar's
+  # alphabet, not a list of characters someone reported. A newline here forged a
+  # whole second record; a `|` splits the row at the wrong place.
+  if ! field_clean "$PATH_ARG"; then
+    echo -e "${CYA}error${RST} --path may hold printable characters only, and no '|'" >&2
+    echo -e "${YEL}why${RST}   a record is ONE line of '|'-separated fields. A path carrying a" >&2
+    echo -e "${YEL}why${RST}   newline, a tab, a control character or the delimiter would write" >&2
+    echo -e "${YEL}why${RST}   a second, forged record instead of naming a place." >&2
+    exit 2
+  fi
   [ -n "$CATEGORY" ] || { echo -e "${CYA}error${RST} --category is required for --$MODE" >&2; exit 2; }
   if ! in_set "$CATEGORY" "$VALID_CATS"; then
     echo -e "${CYA}error${RST} unknown category '$CATEGORY'" >&2
@@ -272,6 +373,17 @@ slug() {
   basename "${top:-$ctx}"
 }
 
+# The slug is derived from a git remote URL or a directory name, which is data
+# too: it lands in field 2 and gets the same positional-field alphabet as
+# --path. Nothing outside it has ever been seen here, which is exactly why the
+# rule is stated once and applied to every field rather than to the field that
+# was reported.
+safe_slug() {
+  local s; s="$(slug)"
+  if field_clean "$s"; then printf '%s' "$s"
+  else printf '%s' "$s" | tr -c '[:print:]' '_' | tr '|' '_'; fi
+}
+
 case "$MODE" in
   record)
     mkdir -p "$(dirname "$LEDGER")" || exit 3
@@ -294,7 +406,7 @@ case "$MODE" in
       } > "$LEDGER"
     fi
     printf '%s | %s | %s | %s | %s | %s\n' \
-      "$(date +%F)" "$(slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" \
+      "$(date +%F)" "$(safe_slug)" "$TYPE" "$PATH_ARG" "$CATEGORY" \
       "$(encode_note "${NOTE:-(no note)}")" >> "$LEDGER"
     echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] → $LEDGER"
     if [ "$TYPE" = "dismissed" ] && in_set "$CATEGORY" "$PROTECTED_CATS"; then

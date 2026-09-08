@@ -1005,13 +1005,18 @@ Never record a dismissal the user did not make. An invented dismissal is a
 permanent, self-inflicted blind spot in every future review of this repo.
 
 Scope `--path` to the place the decision was actually about (`src/legacy/*`,
-`docs/*`). Breadth is judged on what the glob **matches**, not on how it is
-spelled: the tool runs the pattern against a corpus of unrelated probe paths and
-rejects it with exit 2 if it reaches across three or more unrelated top-level
-names. `*`, `*/*`, `*[a-z]*`, `[a-z]*`, `*.*` and every other spelling of "the
-whole repo" fail the same test, because the test is on the semantics. Such a
-glob would demote every future finding in that category repo-wide while reading
-like any other line in a diff.
+`docs/*`). Breadth is judged on what the glob **matches in this repository** —
+not on how it is spelled, and not against a fixture. The corpus is
+`git ls-files` of the repo the ledger belongs to, and the tool exits 2 when the
+pattern lands in three or more distinct top-level names, or on a **majority** of
+everything the repo tracks. So `*`, `*/*`, `*[a-z]*`, `*.md` and every other
+spelling of "the whole repo" fail the same test, and they fail it for the reason
+that matters: the files they really reach. A glob that passes in one repo may be
+refused in another, which is correct — `*.md` names a place in a repo with five
+markdown files and is a blanket in a repo that is mostly markdown.
+
+`--path` is also a positional field in the record, so it may hold printable
+characters only and never the `|` delimiter; anything else is a usage error.
 
 The same test is applied to patterns **read from** the ledger. This file is
 meant to be hand-edited and merged in git, so a blanket row can arrive without
@@ -1022,8 +1027,11 @@ suppresses anything. If you see that warning, scope the row or delete it.
 `--note` is stored in the printable alphabet: anything outside it (a newline
 first of all, but equally a tab or a control character) is escaped with the
 standard `printf %b` sequences, so the note is always exactly one field on
-exactly one line and always decodes back to what you typed. A multi-line note is
-therefore safe to pass and comes back whole.
+exactly one line. A multi-line note is therefore safe to pass and comes back
+whole — quoted in that stored form, which `printf '%b'` turns back into the
+exact bytes you typed. It is deliberately **not** decoded on the read path: a
+decoded note could plant a line that looks like the tool's own `DEMOTE` output,
+which is the same forgery the encoding exists to prevent.
 
 The `<repo>` column names the repo the **ledger** belongs to, resolved from the
 ledger's own location — not from wherever your shell happens to be — so a ledger

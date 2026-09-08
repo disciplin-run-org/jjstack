@@ -82,6 +82,41 @@ for f in "$BIN"/jjstack-review-normalize "$BIN"/jjstack-review-baseline; do
     "python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' '$f' 2>/dev/null"
 done
 
+# Every tool that is meant to be RUN must be runnable. This file lost its
+# executable bit in the change that introduced the review ledger (100755 ->
+# 100644) while its own header still read `Usage: test/smoke.sh`, and because
+# nothing asserted the mode the broken bit rode through every later link in the
+# stack — each one a state someone could bisect to. The rule is DERIVED, not a
+# list of files: a tracked file carrying a `#!` line is an executable UNLESS
+# another tracked file sources it, in which case it is a library. Both halves
+# come off the tree, so a tool added tomorrow is covered without editing this.
+exec_bad=""
+while IFS= read -r f; do
+  head -c2 "$DIR/$f" 2>/dev/null | grep -q '#!' || continue
+  b=$(basename "$f"); be="${b//./\\.}"
+  git -C "$DIR" grep -qE "(^|[[:space:]])(source|\.)[[:space:]]+[^[:space:]]*/?$be([[:space:]]|\"|\$)" -- . \
+    && continue
+  [ -x "$DIR/$f" ] || exec_bad="$exec_bad $f(worktree)"
+  [ "$(git -C "$DIR" ls-files -s -- "$f" | awk '{print $1}')" = 100755 ] \
+    || exec_bad="$exec_bad $f(git-mode)"
+done < <(git -C "$DIR" ls-files)
+check "every runnable tool is executable, in the worktree and in git${exec_bad:+ —$exec_bad}" \
+  "[ -z \"\$exec_bad\" ]"
+# POSITIVE CONTROL — the mode probe must be able to SAY NO, or "all executable"
+# would only mean it never looks. A throwaway file with a shebang and mode 644,
+# read through the same two tests.
+XM="$(mktemp -d)"; printf '#!/usr/bin/env bash\necho hi\n' > "$XM/tool"; chmod 644 "$XM/tool"
+check "positive control: the executable probe rejects a 644 shebang file" "[ ! -x '$XM/tool' ]"
+chmod 755 "$XM/tool"
+check "positive control: and accepts it once it is 755" "[ -x '$XM/tool' ]"
+rm -rf "$XM"
+# POSITIVE CONTROL — the library exemption must be narrow. The one sourced
+# library in this tree is exempt; the file you are reading is not.
+check "positive control: the sourced-library exemption covers the phi lib" \
+  "git -C '$DIR' grep -qE '(^|[[:space:]])(source|\.)[[:space:]]+[^[:space:]]*/?jjstack-gbrain-phi-lib\\.sh([[:space:]]|\"|\$)' -- ."
+check "positive control: and does NOT cover this test file" \
+  "! git -C '$DIR' grep -qE '(^|[[:space:]])(source|\.)[[:space:]]+[^[:space:]]*/?smoke\\.sh([[:space:]]|\"|\$)' -- ."
+
 echo "== 2. PHI lib (pure functions) =="
 # reconstruct_cwd against a FIXTURE tree, asserted by equality. The old version
 # fed it the developer's own dashed key and accepted `[ -d "$cwd" ]`, which is
@@ -2413,6 +2448,203 @@ done
 check "positive control: every scoped glob a reviewer would write is accepted" \
   "[ $scoped_rejects -eq 0 ]"
 
+# Rule 5b2 — THE CORPUS IS THE REPOSITORY, and this test's ORACLE IS NOT THE
+# IMPLEMENTATION.
+#
+# Round 2's guard measured reach against ten hard-coded fictional paths, and the
+# block above measured reach against a BYTE-IDENTICAL copy of that same list.
+# `too_broad()` accepts a pattern exactly when it reaches fewer than three of
+# those ten; the test then asked how many of those ten it reaches. `leaks=0` was
+# therefore true BY CONSTRUCTION, for every string in the universe — and `*.md`
+# scored a clean 0 while demoting 99 of this repo's 148 tracked files. A longer
+# fixture would have rebuilt the same tautology with more paths in it.
+#
+# Two things change, and both must, because either alone leaves it standing:
+#
+#   1. SOURCE OF TRUTH — the tool's corpus is now `git ls-files` of the repo the
+#      ledger belongs to. Not a bigger fixture: the actual tracked files, so the
+#      question "does this glob name a place in THIS repo" is asked of the repo.
+#   2. ORACLE — the reach asserted below is computed HERE, from `git ls-files`
+#      of this repo, with the shell's own matcher. It never reads
+#      BREADTH_PROBES, never calls too_broad(), and never asks --match what it
+#      thinks. It is a fact about the repository, which exists whether or not
+#      this code does; if the implementation's corpus went short, wrong or
+#      fictional again, this oracle would still count all 148 real files and
+#      name the leaking spelling in the failure line.
+#
+# The candidate spellings are derived too, because "add the next member" is how
+# rounds 1 and 2 both went. The source of truth for "a spelling nobody thought
+# of" is the glob GRAMMAR — the closed set of pattern operators the shell
+# defines (`*`, `?`, `[range]`, `[!negated]`, `[[:class:]]`) — crossed with the
+# shapes a repo path can take, plus one `*.<ext>` per file extension that really
+# occurs in this tree. `*.md` is not written down here; it falls out of what git
+# reports.
+mapfile -t LEDGER_CORPUS < <(git -C "$DIR" ls-files)
+LEDGER_CORPUS_N=${#LEDGER_CORPUS[@]}
+oracle_reach() {   # $1 = glob -> "<matched files> <distinct top-level names>"
+  local pat="$1" f t seen=" " nf=0 nt=0
+  for f in "${LEDGER_CORPUS[@]}"; do
+    # shellcheck disable=SC2254  # the glob is the point
+    case "$f" in
+      $pat) nf=$((nf + 1)); t="${f%%/*}"
+            case "$seen" in
+              *" $t "*) ;;
+              *) seen="$seen$t "; nt=$((nt + 1)) ;;
+            esac ;;
+    esac
+  done
+  printf '%s %s' "$nf" "$nt"
+}
+# POSITIVE CONTROLS for the oracle itself. An oracle that returns a constant is
+# the failure this whole block exists to end, so it is pinned at three points:
+# the widest glob must reach everything, a scoped one must reach exactly one
+# top-level name, and the corpus must be repo-sized rather than fixture-sized.
+LEDGER_CORPUS_TOPS=$(printf '%s\n' "${LEDGER_CORPUS[@]}" | awk -F/ '{print $1}' | sort -u | grep -c .)
+check "positive control: the oracle is derived from git, not a fixture (100+ files)" \
+  "[ $LEDGER_CORPUS_N -ge 100 ]"
+read -r ALL_FILES ALL_TOPS < <(oracle_reach '*')
+check "positive control: the oracle scores '*' at the whole tracked tree" \
+  "[ \"\$ALL_FILES\" = \"$LEDGER_CORPUS_N\" ] && [ \"\$ALL_TOPS\" = \"\$LEDGER_CORPUS_TOPS\" ]"
+read -r DOC_FILES DOC_TOPS < <(oracle_reach 'docs/*')
+check "positive control: the oracle scores 'docs/*' at exactly one top level" \
+  "[ \"\$DOC_TOPS\" = 1 ] && [ \"\$DOC_FILES\" -ge 1 ]"
+read -r MD_FILES MD_TOPS < <(oracle_reach '*.md')
+check "positive control: the oracle SEES '*.md' reaching most of this repo" \
+  "[ \"\$MD_FILES\" -ge 90 ] && [ \"\$MD_TOPS\" -ge 5 ]"
+# META-CONTROL — the same measurement over the ten synthetic paths round 2 used.
+# It scores '*.md' at 2 top-level names, below the threshold, which is exactly
+# how a glob that demotes 99 real files was accepted and then certified. This
+# list appears here ONLY as the blind spot being retired; if this control ever
+# stops showing the discrepancy, the oracle above has quietly become a fixture.
+OLD_BLIND_PROBE=(src/payments.py lib/util.go docs/guide.md tests/test_api.rb
+                 .github/workflows/ci.yml vendor/thirdparty/lib.c
+                 deep/nested/tree/Widget.java Makefile README.md go.mod)
+old_blind_tops() {
+  local pat="$1" f t seen=" " nt=0
+  for f in "${OLD_BLIND_PROBE[@]}"; do
+    # shellcheck disable=SC2254
+    case "$f" in
+      $pat) t="${f%%/*}"
+            case "$seen" in *" $t "*) ;; *) seen="$seen$t "; nt=$((nt + 1)) ;; esac ;;
+    esac
+  done
+  printf '%s' "$nt"
+}
+check "meta-control: the retired fixture scores '*.md' below the threshold" \
+  "[ \"\$(old_blind_tops '*.md')\" -lt 3 ]"
+check "meta-control: the real corpus scores the same glob well above it" \
+  "[ \"\$MD_TOPS\" -ge 3 ]"
+
+# The property, over derived spellings.
+LEDGER_OPS=('*' '?' '[a-z]' '[!q]' '[[:alpha:]]' '[A-Za-z0-9]' '[abChjLruVT]')
+LEDGER_TAILS=('' '*' '?' '.*' '/*' '*/*' '/*.md' '*/*')
+LEDGER_GLOBS=()
+for op in "${LEDGER_OPS[@]}"; do
+  for tail in "${LEDGER_TAILS[@]}"; do LEDGER_GLOBS+=("$op$tail"); done
+done
+while IFS= read -r ext; do
+  [ -n "$ext" ] && LEDGER_GLOBS+=("*.$ext" "*/*.$ext" "[a-z]*.$ext")
+done < <(printf '%s\n' "${LEDGER_CORPUS[@]}" | sed -n 's|.*/||; s|^.*\.\([A-Za-z0-9][A-Za-z0-9]*\)$|\1|p' | sort -u)
+check "positive control: the spelling set is generated, not listed (40+ globs)" \
+  "[ \"\${#LEDGER_GLOBS[@]}\" -ge 40 ]"
+check "positive control: the generator produces the '*.md' case unprompted" \
+  "printf '%s\n' \"\${LEDGER_GLOBS[@]}\" | grep -qx '\\*\\.md'"
+# ONE MORE DERIVED SPELLING, and it is the only one that exercises the OTHER arm
+# of the rule. Reaching three unrelated top-level names is not the whole of
+# "blanket": a glob can sit in TWO directories and still be most of the repo.
+# So walk this repo's top-level names biggest first, take them until they cover
+# a majority of tracked files, and build the bracket glob that names exactly
+# those. Here that is bin + skills — two top levels, 99 of 148 files. Nothing is
+# hardcoded: the names, the order and the cut-off all come out of git.
+maj_first=""; maj_second=""; maj_have=0
+while read -r _cnt _top; do
+  [ $((maj_have * 2)) -gt "$LEDGER_CORPUS_N" ] && break
+  case "$maj_first"  in *"${_top:0:1}"*) ;; *) maj_first="$maj_first${_top:0:1}" ;; esac
+  case "$maj_second" in *"${_top:1:1}"*) ;; *) maj_second="$maj_second${_top:1:1}" ;; esac
+  maj_have=$((maj_have + _cnt))
+done < <(printf '%s\n' "${LEDGER_CORPUS[@]}" | awk -F/ '{print $1}' | sort | uniq -c | sort -rn)
+MAJ_GLOB="[$maj_first][$maj_second]*"
+LEDGER_GLOBS+=("$MAJ_GLOB")
+read -r MAJ_F MAJ_T < <(oracle_reach "$MAJ_GLOB")
+check "positive control: the derived glob '$MAJ_GLOB' is a majority inside 3 top levels ($MAJ_F/$LEDGER_CORPUS_N files, $MAJ_T tops)" \
+  "[ $((MAJ_F * 2)) -gt $LEDGER_CORPUS_N ] && [ $MAJ_T -lt 3 ]"
+
+lg_leaks=""
+for pat in "${LEDGER_GLOBS[@]}"; do
+  LGD="$(mktemp -d)"
+  if "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" \
+       --category style --note 'derived probe' --ledger "$LGD/l.md" --repo "$DIR" \
+       >/dev/null 2>&1; then
+    read -r _nf _nt < <(oracle_reach "$pat")
+    if [ "$_nt" -ge 3 ] || [ $((_nf * 2)) -gt "$LEDGER_CORPUS_N" ]; then
+      lg_leaks="$lg_leaks $pat(${_nf}f/${_nt}t)"
+    fi
+  fi
+  rm -rf "$LGD"
+done
+check "no accepted glob demotes 3+ real top levels or most of the tracked tree${lg_leaks:+ — leaked:$lg_leaks}" \
+  "[ -z \"\$lg_leaks\" ]"
+# POSITIVE CONTROL — and the guard must not have become "refuse everything".
+# These are real subtrees of THIS repo, which is the only place the question
+# means anything.
+lg_scoped=""
+for pat in 'docs/*' 'references/*' 'bin/jjstack-review-*' 'skills/review/*' 'hooks/*' 'architrix/*'; do
+  LGS="$(mktemp -d)"
+  "$BIN/jjstack-review-ledger" --record --type dismissed --path "$pat" --category style \
+    --ledger "$LGS/l.md" --repo "$DIR" >/dev/null 2>&1 || lg_scoped="$lg_scoped $pat"
+  rm -rf "$LGS"
+done
+check "positive control: real scoped subtrees of this repo are still accepted${lg_scoped:+ — refused:$lg_scoped}" \
+  "[ -z \"\$lg_scoped\" ]"
+
+# DERIVATION CONTROL — the same glob, two repositories, opposite verdicts.
+# Nothing differs but the tracked file list, so this pair cannot pass unless the
+# corpus really is read from the repo. (A throwaway repo, `git add` only: the
+# index is what `git ls-files` reads, so no commit and no git identity needed.)
+LGT="$(mktemp -d)/tiny"
+mkdir -p "$LGT/docs" "$LGT/src"
+: > "$LGT/docs/a.md"; : > "$LGT/docs/b.md"
+: > "$LGT/src/x.py"; : > "$LGT/src/y.py"; : > "$LGT/src/z.py"
+git -C "$LGT" init -q >/dev/null 2>&1
+git -C "$LGT" add -A >/dev/null 2>&1
+check "positive control: the throwaway repo really tracks 5 files" \
+  "[ \"\$(git -C '$LGT' ls-files | grep -c .)\" = 5 ]"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '*.md' --category style \
+  --ledger "$LGT/l.md" --repo "$LGT" >/dev/null 2>&1
+check "derivation: '*.md' IS accepted in a repo where it names a place" "[ \$? -eq 0 ]"
+LGX="$(mktemp -d)"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path '*.md' --category style \
+  --ledger "$LGX/l.md" --repo "$DIR" >/dev/null 2>&1
+check "derivation: the SAME '*.md' is refused here, where it is 99 of 148 files" "[ \$? -eq 2 ]"
+rm -rf "$LGX" "$(dirname "$LGT")"
+
+# THE READ PATH, measured behaviourally. The paths probed are real tracked
+# files and the measurement is the tool's own stdout: this half knows nothing
+# about the implementation at all, not even its thresholds.
+LGH="$(mktemp -d)/l.md"
+printf '2026-01-01 | acme/x | dismissed | *.md | style | hand written blanket\n' > "$LGH"
+md_demoted=0; md_probed=0
+while IFS= read -r f; do
+  md_probed=$((md_probed + 1))
+  grep -q '^DEMOTE ' <<< "$("$BIN/jjstack-review-ledger" --match --path "$f" \
+      --category style --ledger "$LGH" --repo "$DIR" 2>/dev/null)" \
+    && md_demoted=$((md_demoted + 1))
+done < <(printf '%s\n' "${LEDGER_CORPUS[@]}" | grep '\.md$' | head -25)
+check "a hand-written '*.md' row demotes none of 25 real markdown files (got $md_demoted)" \
+  "[ $md_demoted -eq 0 ] && [ $md_probed -eq 25 ]"
+# POSITIVE CONTROL — the same probe against a row that names a real place must
+# demote, or "0" only means the probe never sees a demotion.
+printf '2026-01-01 | acme/x | dismissed | references/*.md | style | scoped\n' > "$LGH"
+ref_demoted=0
+while IFS= read -r f; do
+  grep -q '^DEMOTE ' <<< "$("$BIN/jjstack-review-ledger" --match --path "$f" \
+      --category style --ledger "$LGH" --repo "$DIR" 2>/dev/null)" \
+    && ref_demoted=$((ref_demoted + 1))
+done < <(printf '%s\n' "${LEDGER_CORPUS[@]}" | grep '^references/.*\.md$' | head -5)
+check "positive control: a scoped 'references/*.md' row still demotes (got $ref_demoted)" \
+  "[ $ref_demoted -ge 3 ]"
+rm -rf "$(dirname "$LGH")"
+
 # Rule 5c — the ledger is designed to be hand-edited in git, so --record is only
 # half the door. --match read the pattern straight out of the file, so one
 # merged or hand-typed '*' row demoted repo-wide with no check at all.
@@ -2525,6 +2757,71 @@ back=$("$BIN/jjstack-review-ledger" --match --path 'src/a.py' --category style \
 check "positive control: a printable note round-trips byte for byte" \
   "[ \"\$(printf '%b' \"\$back\")\" = \"\$plain\" ]"
 rm -rf "$(dirname "$LDN")" "$(dirname "$LDF")" "$(dirname "$LDA")"
+
+# Rule 6d — the SAME class, on the OTHER free-text field. The note got a
+# positive alphabet in round 2 and the loop above walks the control characters
+# through `--note` only; `--path` was validated by too_broad(), which is a
+# glob-match test and not a character test at all. So a `--path` carrying a
+# newline wrote a COMPLETE SECOND RECORD — attacker-chosen date, repo, type,
+# glob, category and note — out of an invocation that asked for `--type fixed`.
+# A `dismissed` row forged that way demotes; a protected-category one fabricates
+# a precedent against a live security finding, which is precisely what the
+# round-2 protected-category fix exists to prevent.
+#
+# The assertion is over the WHOLE byte range, not over the seven characters the
+# note loop happens to name, because "the next character nobody listed" is how
+# this field got missed in the first place. For every byte 1..127: whatever the
+# tool does with it, the ledger afterwards holds at most the one record that was
+# asked for, and not one row it was not.
+path_forge=0; path_forge_bytes=""
+for b in $(seq 1 127); do
+  printf -v pfch "\\$(printf '%03o' "$b")"
+  LDPX="$(mktemp -d)"
+  "$BIN/jjstack-review-ledger" --record --type fixed \
+    --path "docs/x*${pfch}2099-01-01 | forged/repo | dismissed | src/* | style | injected" \
+    --category style --note ok --ledger "$LDPX/l.md" >/dev/null 2>&1
+  rows=$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LDPX/l.md" 2>/dev/null)
+  fake=$(awk -F' *\\| *' '/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ && $3 == "dismissed"' \
+           "$LDPX/l.md" 2>/dev/null | grep -c .)
+  if [ "${rows:-0}" -gt 1 ] || [ "${fake:-0}" -gt 0 ]; then
+    path_forge=$((path_forge + 1)); path_forge_bytes="$path_forge_bytes $b"
+  fi
+  rm -rf "$LDPX"
+done
+check "no byte in --path can forge a ledger row${path_forge_bytes:+ — bytes:$path_forge_bytes}" \
+  "[ $path_forge -eq 0 ]"
+# POSITIVE CONTROL — the probe must be able to SEE a forgery, or "0" only means
+# it never looks. This specimen is not invented: it is byte-for-byte what the
+# shipped tool wrote when handed `--path $'docs/x/*\n2026-01-01 | evil/repo |
+# dismissed | src/auth/* | style | forged'`, reproduced before the fix.
+LDPC="$(mktemp -d)/l.md"
+printf '2026-09-08 | tmp.XnkEz3pixz | fixed | docs/x/*\n' > "$LDPC"
+printf '2026-01-01 | evil/repo | dismissed | src/auth/* | style | forged | style | ok\n' >> "$LDPC"
+pc_rows=$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|' "$LDPC")
+pc_fake=$(awk -F' *\\| *' '/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] \|/ && $3 == "dismissed"' \
+            "$LDPC" | grep -c .)
+check "positive control: the forgery probe sees the row the defect really wrote" \
+  "[ \"\$pc_rows\" = 2 ] && [ \"\$pc_fake\" = 1 ]"
+# And the forged row really did demote a finding it was never recorded against.
+pc_out=$("$BIN/jjstack-review-ledger" --match --path 'src/auth/login.py' --category style \
+  --ledger "$LDPC" 2>/dev/null)
+check "positive control: that forged row demotes, so the class is not cosmetic" \
+  "grep -q '^DEMOTE src/auth/\\*' <<< \"\$pc_out\""
+rm -rf "$(dirname "$LDPC")"
+# The delimiter is the other half of the same grammar: a `|` cannot break the
+# line but it does split the row at the wrong place, so field 5 stops being the
+# category. Refused by the same rule, not by a second one.
+LDPP="$(mktemp -d)"
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'docs/* | security' \
+  --category style --ledger "$LDPP/l.md" >/dev/null 2>&1
+check "a '|' in --path is refused by the same field rule" "[ \$? -eq 2 ]"
+check "and nothing was written" "[ ! -f '$LDPP/l.md' ]"
+# POSITIVE CONTROL — an ordinary glob must still record, or "refused" would just
+# mean --path is broken.
+"$BIN/jjstack-review-ledger" --record --type dismissed --path 'docs/*' \
+  --category style --ledger "$LDPP/l.md" >/dev/null 2>&1
+check "positive control: an ordinary --path still records" "[ \$? -eq 0 ]"
+rm -rf "$LDPP"
 
 # Rule 6c — the repo slug is the field that lets a ledger survive being copied
 # or merged between repos, so it has to describe the LEDGER's repo. slug() ran
@@ -2695,8 +2992,27 @@ echo "== 7i. --help is derived from the header, not a hand-kept line range =="
 # stopped mid-sentence and dropped the Usage and Exit sections that usage() sends
 # the reader to find, while its two siblings leaked `set -uo pipefail` and the
 # raw colour definitions into their own help output.
-for tool in jjstack-review-sweep jjstack-review-autofix-diff jjstack-review-calibration \
-            jjstack-review-ledger; do
+#
+# ROUND 3: this guard's SUBJECT LIST was itself a hand-typed four, and
+# jjstack-review-revert-history — added in the same PR as the rule — was not on
+# it. It shipped `sed -n '2,35p'` against a 37-line header and truncated its own
+# last two lines on the day it was written. An allow-list that has to be edited
+# whenever a tool is added is a guard that decays by default, which is the same
+# finding as §5b's. So the list is DERIVED off the filesystem: every bash tool
+# in bin/ that carries the review family's name, whatever it is called and
+# whenever it was added. And the assertion is on the MECHANISM as well as the
+# output — a hand-kept numeric range is refused outright, so a tool cannot pass
+# by having a range that happens to be correct today.
+mapfile -t HELP_TOOLS < <(cd "$DIR/bin" && grep -l '^#!/usr/bin/env bash' jjstack-review-* 2>/dev/null | sort)
+check "positive control: the help corpus is derived, not enumerated (8+ tools)" \
+  "[ \"\${#HELP_TOOLS[@]}\" -ge 8 ]"
+check "positive control: it reaches the tool the round-2 list omitted" \
+  "printf '%s\n' \"\${HELP_TOOLS[@]}\" | grep -qx jjstack-review-revert-history"
+check "positive control: it reaches the four the old list named" \
+  "[ \"\$(printf '%s\n' \"\${HELP_TOOLS[@]}\" | grep -cE '^jjstack-review-(sweep|autofix-diff|calibration|ledger)$')\" = 4 ]"
+for tool in "${HELP_TOOLS[@]}"; do
+  check "$tool derives --help from the header, not a hand-kept line range" \
+    "! grep -qE \"sed -n '[0-9]+,[0-9]+p'\" '$DIR/bin/$tool'"
   hout=$("$BIN/$tool" --help 2>&1)
   check "$tool --help leaks no shell source" \
     "! printf '%s' \"\$hout\" | grep -qE 'set -uo pipefail|\\\\033\\['"

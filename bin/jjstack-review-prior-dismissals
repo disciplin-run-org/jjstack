@@ -33,6 +33,16 @@
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
 
+# The header IS the help. A hand-kept `sed -n 'A,Bp'` range drifts the instant a
+# line is added above it — this tool's own range stopped short of the end of its
+# header, so the last lines never reached the reader — therefore read comment
+# lines until the first non-comment line instead.
+show_help() {
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/                { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
 YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
 
 OUT=""; INPUT=""; REPO=""; READER="$HOME/.claude/skills/gstack/bin/gstack-review-read"; DRY=0
@@ -44,7 +54,7 @@ while [ $# -gt 0 ]; do
     --input)   INPUT="${2:-}"; shift 2 ;;
     --reader)  READER="${2:-}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) show_help; exit 0 ;;
     *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
   esac
 done
