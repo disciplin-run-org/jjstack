@@ -35,6 +35,25 @@ three things gstack does not do (run the repo's real tooling first, map the
 callers outside the diff, post a short verdict to the PR) and one thing every
 recall-max reviewer forgets: a budget.
 
+## Do not run this skill on a prose document
+
+**This skill reviews code. Pointing it at a prompt, a skill, a policy or a
+README does not terminate.** Code has a compiler and a test suite that define
+correct, so a review of it converges. Prose has neither: a rule can always be
+read one more way, a sentence can always be found that qualifies another, and a
+model asked to look adversarially will always succeed. "No reading of this text
+suppresses a P0" is not a condition anything can satisfy.
+
+Measured, on this skill's own PR: eight rounds, one P1 each after the second,
+every one of them in material the review engagement itself had just caused to
+be written — three siblings of a single commit, then the guard written to fix
+them, then the audit of that guard. +389 insertions against 26 deletions. Each
+finding was real. None was in anything a user of the skill would touch.
+
+For a prose artifact the acceptance test is **behavioural and declared before
+the first round**: the defect set it must catch, the runs it must complete, the
+verdicts it must produce. Run that, once. Then ship it or do not.
+
 ## Budgets — these are rules, not targets
 
 | Budget | Value | When it is hit |

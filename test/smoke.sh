@@ -765,9 +765,10 @@ check "the shim really does reject -P (control)" \
 PATH="$NOP:/usr/bin:/bin" "$BIN/jjstack-pr-comment-lint" "$PCL/sec_slash.md" >/dev/null 2>&1
 check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$? -eq 2 ]"
 # Exit 2 is what stops the `&&` chain before `gh pr comment`: the failure mode
-# has to be "will not post", never "posts your key".
-check "…and 2 is not the success code the post chain would continue past" \
-      "[ 2 -ne 0 ]"
+# has to be "will not post", never "posts your key". That is asserted by the
+# check above, which pins the code to 2. A second check comparing two literals
+# (`[ 2 -ne 0 ]`) stood here and could not fail — one inflated count guarding
+# nothing. Deleted rather than reworded: the adjacent assertion already holds it.
 
 # ATTRIBUTION. The comment posts under a human's GitHub account, so it has to
 # say a machine wrote it - every comment this skill posted before this rule
@@ -892,6 +893,10 @@ check "the verdict table's rows are exactly the five severity conditions" \
       "diff -q '$SANDBOX/posture-rows.txt' '$SANDBOX/posture-want.txt' >/dev/null"
 check "…and none of them is location-scoped, in any vocabulary" \
       "! grep -qiE 'changed|untouched|diff edited|did not touch' '$SANDBOX/posture-rows.txt'"
+check "the skill refuses to be run on a prose document" \
+      "grep -q 'Do not run this skill on a prose document' '$SK'"
+check "…and requires a behavioural acceptance test declared up front" \
+      "grep -q 'behavioural and declared before' '$SK'"
 check "the skill requires an anti-vacuity floor on self-scoping guards" \
       "grep -q \"guard's title is a claim\" '$SK'"
 check "…and says so, so it is not re-added" \
