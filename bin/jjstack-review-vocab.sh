@@ -31,11 +31,38 @@
 #   vocab_is_reason CODE           0 if CODE is in the closed vocabulary
 #   vocab_check SCOPE CODE EFFECT  0 if legal; otherwise prints why to stderr and returns 1
 #
+# It also carries the ONE argument-parsing guard this family shares
+# (review_need_value), for the same reason it carries the vocabulary: the bug it
+# prevents was identical in every script, so the fix must be too.
+#
 # No color red anywhere — unreadable on the target terminal.
 
 # shellcheck shell=bash
 
 _VOCAB_YEL="\033[33m"; _VOCAB_CYA="\033[96m"; _VOCAB_RST="\033[0m"
+
+# --- the shared argument guard ------------------------------------------------
+# Call as the FIRST thing in a value-taking case arm, before the `shift 2`:
+#
+#   --repo) review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
+#
+# `$#` there is the count still on the line INCLUDING the flag itself, so a lone
+# trailing `--repo` gives 1 and is refused.
+#
+# Why this exists rather than `"${2:-}"; shift 2`: bash's `shift n` FAILS when
+# n > $# instead of shifting what it can, so `shift 2` on a lone trailing flag
+# moves nothing at all. With `set -e` deliberately off across this family — these
+# tools must reach their own exit codes, not die on the first non-zero — the
+# enclosing `while [ $# -gt 0 ]` then re-reads the same flag forever. A hung tool
+# in a review chain is worse than a failed one: the run never reports, and the
+# operator cannot see which tool stalled. Guard the value BEFORE shifting.
+review_need_value() {   # review_need_value FLAG REMAINING_ARGC
+  if [ "${2:-0}" -lt 2 ]; then
+    echo -e "${_VOCAB_CYA}error${_VOCAB_RST} $1 needs a value" >&2
+    return 1
+  fi
+  return 0
+}
 
 VOCAB_REASONS=""
 VOCAB_EFFECTS=""

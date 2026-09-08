@@ -125,11 +125,9 @@ show_help() {
 # no-op when only one argument remains, `set -e` is off so the failure is
 # swallowed, and the loop re-reads the same $1 on the next pass. An unattended
 # /review step that spins instead of failing is worse than a crash — nothing
-# reports, nothing times out, and the caller waits on it. Call this before every
-# `shift 2` so a missing value is a clean usage error instead.
-need_val() {
-  [ $# -ge 2 ] || { echo -e "${CYA}error${RST} $1 requires a value" >&2; exit 2; }
-}
+# reports, nothing times out, and the caller waits on it. The guard is
+# `review_need_value`, sourced from jjstack-review-vocab.sh below: the bug was
+# identical in every script in this family, so the fix lives in one place too.
 
 HERE="${BASH_SOURCE[0]%/*}"
 # shellcheck source=/dev/null
@@ -216,15 +214,6 @@ too_broad() {
 # `printf %b` sequences, so the mapping is reversible and a control character
 # nobody has thought of is covered by the same sentence as the one that was
 # reported. Backslash is escaped first, which is what makes decoding exact.
-# --path is free text too, and it is not note-escaped: a tab or a newline in it
-# forges an additional row the same way a note used to. Tabs, newlines and
-# carriage returns become spaces and the result is trimmed, so an all-whitespace
-# --path fails the required-field check below instead of landing as an empty
-# column that matches nothing.
-tsv_clean() {
-  printf '%s' "${1:-}" | tr '\t\n\r' '   ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
-}
-
 encode_note() {
   local s="$1" out="" c i n=${#1} code
   for (( i = 0; i < n; i++ )); do
@@ -256,13 +245,13 @@ while [ $# -gt 0 ]; do
     --match)    set_mode match;  shift ;;
     --list)     set_mode list;   shift ;;
     --validate) set_mode validate; shift ;;
-    --type)     need_val "$@"; TYPE="$2";     shift 2 ;;
-    --path)     need_val "$@"; PATH_ARG="$2"; shift 2 ;;
-    --category) need_val "$@"; CATEGORY="$2"; shift 2 ;;
-    --code)     need_val "$@"; CODE="$2";     shift 2 ;;
-    --note)     need_val "$@"; NOTE="$2";     shift 2 ;;
-    --ledger)   need_val "$@"; LEDGER="$2";   shift 2 ;;
-    --repo)     need_val "$@"; REPO="$2";     shift 2 ;;
+    --type)     review_need_value "$1" $# || exit 2; TYPE="$2";     shift 2 ;;
+    --path)     review_need_value "$1" $# || exit 2; PATH_ARG="$2"; shift 2 ;;
+    --category) review_need_value "$1" $# || exit 2; CATEGORY="$2"; shift 2 ;;
+    --code)     review_need_value "$1" $# || exit 2; CODE="$2";     shift 2 ;;
+    --note)     review_need_value "$1" $# || exit 2; NOTE="$2";     shift 2 ;;
+    --ledger)   review_need_value "$1" $# || exit 2; LEDGER="$2";   shift 2 ;;
+    --repo)     review_need_value "$1" $# || exit 2; REPO="$2";     shift 2 ;;
     -h|--help)
       show_help
       exit 0 ;;
@@ -278,8 +267,26 @@ in_set() {
   return 1
 }
 
+# A row is eight tab-separated fields on one line, and free text arrives from a
+# human at the command line. Left unsanitized, a value carrying a newline plus
+# tabs does not corrupt its own row — it FORGES AN ENTIRE ADDITIONAL ONE, which
+# then validates clean and can claim a `*` glob. A per-file dismissal silently
+# becomes a repo-wide demotion: the widest escalation this store can express,
+# reached from the narrowest-looking command.
+#
+# --note goes through encode_note() instead, which is the stronger form of the
+# same rule: the note is stored in the printable alphabet and everything outside
+# it is escaped REVERSIBLY, so the note cannot leave its row AND still decodes
+# back to exactly what the reviewer typed. Every other free-text field takes the
+# lossy form, since none of them is quoted back to a human verbatim.
+tsv_clean() {
+  printf '%s' "${1:-}" | tr '\t\n\r' '   ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Sanitize before validating, not after writing: --path is also the glob --match
-# compares against, so both modes must see the same value.
+# compares against, so both modes must see the same value, and an all-whitespace
+# path must fail the required-field check below rather than land as an empty
+# column that matches nothing.
 PATH_ARG="$(tsv_clean "$PATH_ARG")"
 
 # Validate BEFORE touching the store: a typo'd category silently written is a
@@ -376,7 +383,7 @@ slug() {
 }
 
 # --- validate the store's ladder compliance ----------------------------------
-# Runs before every read and after every write. A hand-edited row claiming a
+# Runs before every read AND before every write. A hand-edited row claiming a
 # stronger effect than this scope allows is the exact failure the ladder exists
 # to stop, so it is caught by arithmetic on the shared vocabulary, not by trust.
 validate_store() {
@@ -393,7 +400,12 @@ validate_store() {
     echo -e "${YEL}why${RST}   the three stores are rungs of a ladder, not interchangeable files." >&2
     return 4
   fi
-  while IFS= read -r line; do
+  # `|| [ -n "$line" ]` catches a final line with NO trailing newline. Without it
+  # `read` returns non-zero on that line and the loop drops it — so a store whose
+  # LAST row violates the ladder validated clean, while grep and awk, which every
+  # other consumer of this file uses, saw the row perfectly well. A validator
+  # that reads less of the file than its consumers certifies what it never read.
+  while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     case "$line" in ''|'#'*) continue ;; esac
     f_type="$(printf '%s' "$line" | cut -f3)"
@@ -422,8 +434,10 @@ case "$MODE" in
       printf '%s\n%s\n' "$STORE_HEADER" "$COL_HEADER" > "$LEDGER" || exit 3
     fi
     validate_store "$LEDGER" || exit 4
+    # The slug is derived from a git remote URL, which is also outside this
+    # tool's control, so it goes through the same filter as the free text.
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(date +%F)" "$(slug)" "$TYPE" "$EFFECT" "$CODE" \
+      "$(date +%F)" "$(tsv_clean "$(slug)")" "$TYPE" "$EFFECT" "$CODE" \
       "$PATH_ARG" "$CATEGORY" "$(encode_note "${NOTE:-(no note)}")" >> "$LEDGER"
     echo -e "${GRN}recorded${RST} $TYPE $PATH_ARG [$CATEGORY] effect=$EFFECT → $LEDGER"
     if [ "$TYPE" = "dismissed" ] && in_set "$CATEGORY" "$PROTECTED_CATS"; then
@@ -465,7 +479,9 @@ case "$MODE" in
     fi
     validate_store "$LEDGER" || exit 4
     hits=0; protected=0
-    while IFS= read -r line; do
+    # Same reason as validate_store: the matcher must see every row the
+    # validator does, or the two disagree about what the store says.
+    while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"$TAB"*) ;;
         *) continue ;;
