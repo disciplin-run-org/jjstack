@@ -110,7 +110,8 @@ parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-alternation  $4=display pa
   # take the text up to its FIRST closing brace instead: dependency objects are
   # flat maps, so the first `}` is this group's end, and undershooting can only
   # miss entries, never invent them.
-  awk -v eco="$2" -v file="$4" -v keys="$3" '
+  JJDEP_MANIFEST="$4" awk -v eco="$2" -v keys="$3" '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
     function emit(chunk,   pair, n, v) {
       while (match(chunk, /"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
         pair  = substr(chunk, RSTART, RLENGTH)
@@ -140,7 +141,8 @@ parse_json_deps() {   # $1=file  $2=ecosystem  $3=key-alternation  $4=display pa
 }
 
 parse_requirements() {
-  awk -v file="$2" '
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
     /^[[:space:]]*($|#|-)/ { next }
     {
       line = $0
@@ -158,26 +160,46 @@ parse_requirements() {
 }
 
 parse_pyproject() {
-  awk -v file="$2" '
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
+    # An array closes on a `]` that is not inside a string. Testing the RAW line
+    # closed `dependencies = [` on the bracket inside an extras spec, so
+    # `"celery[redis]>=5.0"` on the first line silently discarded every entry
+    # after it — exit 0, no warning, and the stale-API phase then read the
+    # dropped libraries as "absent from the inventory". Extras are ubiquitous
+    # and conventionally sort early, so this truncated real projects at line one.
+    function nostr(l) { gsub(/"[^"]*"/, "", l); return l }
+    function emitspec(spec,   n, v) {
+      n = spec; v = "*"
+      if (match(spec, /[=><~!]+/)) { n = substr(spec, 1, RSTART - 1); v = substr(spec, RSTART + RLENGTH) }
+      sub(/\[.*\]/, "", n); gsub(/[[:space:]]/, "", n); gsub(/[[:space:]]/, "", v)
+      if (n != "" && n !~ /^(dependencies|requires)$/) print "pypi\t" n "\t" (v == "" ? "*" : v) "\t" file
+    }
     # PEP 621 / setuptools:  dependencies = [ "fastapi>=0.1", ... ]
     /^[[:space:]]*(dependencies|requires)[[:space:]]*=[[:space:]]*\[/ { inarr = 1 }
+    # PEP 621 extras:  [project.optional-dependencies] then  test = [ "pytest" ]
+    /^\[project\.optional-dependencies\]/ { inopt = 1; next }
+    /^\[/ { inopt = 0 }
+    inopt && /=[[:space:]]*\[/ { inarr = 1 }
     inarr {
-      if ($0 ~ /\]/) inarr = 0
       line = $0
+      # RSTART/RLENGTH are GLOBAL in awk, and emitspec() runs its own match(),
+      # so the cursor must be captured before the call. Advancing `line` with
+      # the post-call values leaves it unchanged and the loop never terminates.
       while (match(line, /"[^"]+"/)) {
-        spec = substr(line, RSTART + 1, RLENGTH - 2)
-        line = substr(line, RSTART + RLENGTH)
-        n = spec; v = "*"
-        if (match(spec, /[=><~!]+/)) {
-          n = substr(spec, 1, RSTART - 1); v = substr(spec, RSTART + RLENGTH)
-        }
-        sub(/\[.*\]/, "", n); gsub(/[[:space:]]/, "", n); gsub(/[[:space:]]/, "", v)
-        if (n != "" && n !~ /^(dependencies|requires)$/) print "pypi\t" n "\t" (v == "" ? "*" : v) "\t" file
+        st = RSTART; ln = RLENGTH
+        emitspec(substr(line, st + 1, ln - 2))
+        line = substr(line, st + ln)
       }
+      if (nostr($0) ~ /\]/) inarr = 0
       next
     }
-    # Poetry:  [tool.poetry.dependencies]  fastapi = "^0.1"
-    /^\[tool\.poetry(\.[a-z-]+)?\.dependencies\]/ { inpoetry = 1; next }
+    # Poetry.  The old regex allowed ONE optional lowercase segment, which
+    # matched `[tool.poetry.dependencies]` and nothing else people actually
+    # write: `[tool.poetry.group.dev.dependencies]` has been the standard group
+    # syntax since Poetry 1.2, and `[tool.poetry.dev-dependencies]` is the
+    # legacy spelling still in every older project. Both parsed to zero rows.
+    /^\[tool\.poetry(\.[A-Za-z0-9_-]+)*\.(dependencies|dev-dependencies)\][[:space:]]*$/ { inpoetry = 1; next }
     /^\[/ { inpoetry = 0 }
     inpoetry && /=/ {
       n = $0; sub(/[[:space:]]*=.*/, "", n); gsub(/[[:space:]"]/, "", n)
@@ -191,7 +213,8 @@ parse_pyproject() {
 }
 
 parse_gomod() {
-  awk -v file="$2" '
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
     /^require[[:space:]]*\(/ { inreq = 1; next }
     inreq && /^\)/          { inreq = 0; next }
     inreq && NF >= 2 && $1 !~ /^\/\// { print "go\t" $1 "\t" $2 "\t" file; next }
@@ -200,9 +223,26 @@ parse_gomod() {
 }
 
 parse_cargo() {
-  awk -v file="$2" '
-    /^\[(dependencies|dev-dependencies|build-dependencies)\]/ { indep = 1; next }
-    /^\[/ { indep = 0 }
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
+    # `[dependencies.tokio]` is how every dependency that needs features or a
+    # git source is written, and the generic `/^\[/ { indep = 0 }` closed the
+    # section on it and dropped the entry entirely. Flushing on the NEXT header
+    # (and at END) keeps the version that follows on its own line.
+    function flushsub() {
+      if (insub && subname != "") print "cargo\t" subname "\t" (subver == "" ? "*" : subver) "\t" file
+      insub = 0; subname = ""; subver = "*"
+    }
+    /^\[(dependencies|dev-dependencies|build-dependencies)\.[A-Za-z0-9_-]+\][[:space:]]*$/ {
+      flushsub()
+      subname = $0; sub(/^\[[a-z-]+\./, "", subname); sub(/\].*$/, "", subname)
+      insub = 1; subver = "*"; indep = 0; next
+    }
+    /^\[(dependencies|dev-dependencies|build-dependencies)\]/ { flushsub(); indep = 1; next }
+    /^\[/ { flushsub(); indep = 0 }
+    insub && /^[[:space:]]*version[[:space:]]*=[[:space:]]*"/ {
+      subver = $0; sub(/^[^"]*"/, "", subver); sub(/".*$/, "", subver); next
+    }
     indep && /=/ {
       n = $0; sub(/[[:space:]]*=.*/, "", n); gsub(/[[:space:]"]/, "", n)
       v = "*"
@@ -213,11 +253,13 @@ parse_cargo() {
       }
       if (n != "") print "cargo\t" n "\t" (v == "" ? "*" : v) "\t" file
     }
+    END { flushsub() }
   ' "$1"
 }
 
 parse_gemfile() {
-  awk -v file="$2" '
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
     /^[[:space:]]*gem[[:space:]]+["'"'"']/ {
       line = $0; n = ""; v = "*"; i = 0
       while (match(line, /["'"'"'][^"'"'"']*["'"'"']/)) {
@@ -233,22 +275,54 @@ parse_gemfile() {
 }
 
 parse_pom() {
-  awk -v file="$2" '
-    /<dependency>/  { indep = 1; a = ""; v = "*"; next }
-    indep && /<artifactId>/ { a = $0; sub(/^.*<artifactId>/, "", a); sub(/<\/artifactId>.*$/, "", a) }
-    indep && /<version>/    { v = $0; sub(/^.*<version>/, "", v);    sub(/<\/version>.*$/, "", v) }
-    /<\/dependency>/ { if (indep && a != "") print "maven\t" a "\t" v "\t" file; indep = 0 }
+  JJDEP_MANIFEST="$2" awk '
+    BEGIN { file = ENVIRON["JJDEP_MANIFEST"] }
+    # SLURPED, for the same reason package.json is: the line-oriented version
+    # set a flag on `<dependency>` and `next`ed, so a dependency written on ONE
+    # line — the ordinary generated/minified shape — had its artifactId and
+    # version skipped and produced no row at all. That is the identical failure
+    # class the npm parser was fixed for; the fix had been applied only where
+    # the fixture looked. Scan the buffer for each `<dependency>…</dependency>`
+    # span instead, which is form-independent.
+    { buf = buf $0 "\n" }
+    END {
+      s = buf
+      while ((i = index(s, "<dependency>")) > 0) {
+        s = substr(s, i + 12)
+        e = index(s, "</dependency>")
+        if (e == 0) { chunk = s; s = "" } else { chunk = substr(s, 1, e - 1); s = substr(s, e + 13) }
+        a = ""; v = "*"
+        if (match(chunk, /<artifactId>[^<]*<\/artifactId>/)) a = substr(chunk, RSTART + 12, RLENGTH - 25)
+        if (match(chunk, /<version>[^<]*<\/version>/))       v = substr(chunk, RSTART + 9,  RLENGTH - 19)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", a)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+        if (a != "") print "maven\t" a "\t" (v == "" ? "*" : v) "\t" file
+      }
+    }
   ' "$1"
 }
 
-# The relative path is passed INTO each parser as an awk variable, never
-# substituted back afterwards. The old `sed "s#\t$m\$#\t$rel#"` interpolated a
-# raw `find` path into an s-command delimited by `#`: any `#` in the path
-# terminated the command (`sed: unknown option to 's'`, zero rows, exit 3) and
-# regex metacharacters — `[`, `*`, `.` — were interpreted instead of matched.
-# Paths like `build#42` are ordinary in CI checkouts. awk -v needs no quoting.
+# The relative path is passed INTO each parser through the ENVIRONMENT, never
+# substituted back afterwards and never through `awk -v`.
+#
+# Two mechanisms have now failed here, each for the metacharacters the other
+# handled. The original `sed "s#\t$m\$#\t$rel#"` interpolated a raw `find` path
+# into an s-command delimited by `#`: any `#` in the path terminated the command
+# (`sed: unknown option to 's'`, zero rows, exit 3) and `[`, `*`, `.` were
+# interpreted rather than matched. Its replacement, `awk -v file="$rel"`, fixed
+# that and introduced its own: **awk -v performs escape-sequence processing on
+# the value**, so a directory named `x\ty` reached the parser as `x<TAB>y` and
+# emitted a FIVE-field row against a documented four-field contract, while a
+# path holding a backslash was silently mangled.
+#
+# ENVIRON is the one channel that does neither: no quoting, no globbing, no
+# escape processing. The remaining hazard is a path holding a REAL tab or
+# newline, which no transport can carry through a line-oriented TSV — so those
+# are folded to spaces here, in pure parameter expansion, before the value ever
+# leaves the shell.
 while read -r m; do
   rel="${m#"$REPO"/}"
+  rel="${rel//$'\t'/ }"; rel="${rel//$'\n'/ }"; rel="${rel//$'\r'/ }"
   case "$(basename "$m")" in
     package.json)     parse_json_deps "$m" npm 'dependencies|devDependencies|peerDependencies|optionalDependencies' "$rel" ;;
     requirements*.txt) parse_requirements "$m" "$rel" ;;
@@ -269,6 +343,20 @@ sort -u -o "$ROWS" "$ROWS"
 # unsupported dialect — and the stale-API phase is about to run blind while
 # reading a positive safety claim. Conflating them turned every parse failure
 # into a green light.
+# The 4-field TSV contract, checked rather than promised. `--tsv` is documented
+# as `ecosystem<TAB>name<TAB>version<TAB>manifest`, and a consumer reading it by
+# column gets a version where it expects a manifest the moment any parser emits
+# a row of the wrong width. This has already happened twice by two different
+# routes (a `#` in a path, then a `\t` through `awk -v`), so it is asserted for
+# EVERY row of every run, not guarded per known-bad character: any future parser
+# bug of this class fails loudly here instead of shipping a corrupt inventory.
+if ! awk -F'\t' 'NF != 4 { bad++ } END { exit (bad > 0) }' "$ROWS"; then
+  echo -e "${YEL}warn${RST}  inventory rows violate the 4-field TSV contract (ecosystem/name/version/manifest):" >&2
+  awk -F'\t' 'NF != 4 { printf "        %d field(s): %s\n", NF, $0 }' "$ROWS" | head -5 >&2
+  echo -e "${YEL}    ${RST}  this is a parser bug; the inventory is not safe to read by column" >&2
+  exit 4
+fi
+
 if [ ! -s "$ROWS" ]; then
   echo -e "${YEL}warn${RST}  $(wc -l < "$MANIFESTS") manifest(s) found under $REPO but NO declared dependencies parsed —" >&2
   echo -e "${YEL}    ${RST}  this is a parse failure, not an empty repo; do not read it as 'no dependencies'" >&2

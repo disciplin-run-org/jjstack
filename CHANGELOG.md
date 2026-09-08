@@ -11,6 +11,33 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **"I disproved it" now has to show the document.** `/review` can retire a
+  finding by checking it against the library's current official docs — the
+  usual cure for a reviewer complaining about an API that changed years ago.
+  That outcome used to need nothing but a label: two words, no link, and the
+  most serious class of finding vanished from the report, under a heading
+  that told you it had been "disproved against current official docs". The
+  documentation link is now required. Without one the run stops and prints
+  nothing, so a review can no longer quietly delete its own worst finding.
+- **The same review now produces the same report.** When two passes flagged
+  one defect and disagreed about what to do with it, which decision survived
+  depended on which line happened to be written first — the identical review
+  could file a finding as "refuted" or as "suppressed" on two different runs,
+  and in neither case did it mention that it had collapsed the two. Reviews
+  are now a function of what was found, not of the order it was found in, and
+  a collapse that changes a finding's severity or its outcome is always listed.
+- **The dependency inventory stopped losing most of your dependencies.** The
+  list `/review` reads to check library versions is parsed from your
+  manifests, and several very ordinary spellings were dropped in silence: a
+  Python extra like `celery[redis]` truncated the rest of the list at that
+  line, Poetry's dependency groups and its older `dev-dependencies` section
+  produced nothing at all, Rust dependencies written with their own
+  `[dependencies.<name>]` block disappeared, and a Maven dependency written
+  on one line was skipped entirely. All of them are read now, Ruby and Java
+  manifests have real coverage for the first time, and the output is checked
+  to be well-formed before anything consumes it — including for project paths
+  containing characters that used to corrupt it.
+
 - **A `/review` run can no longer lose every finding it made.** One field the
   model got wrong — a `confidence` of `null` instead of a number — used to crash
   the step that checks findings before they reach the report. The crash happened
@@ -290,44 +317,6 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   updating the change log with an end-user summary (this file) and keeping
   the README reflecting the product's current state — extending the
   checklist from 8 rungs to 10.
-
-### Changed
-
-- **`/review` is now the deepest review in the stack — on purpose.** It used to
-  be a light wrapper over gstack's review. It now deliberately trades time and
-  tokens for coverage: it runs *every* specialist (gstack normally skips them on
-  diffs under 50 lines and auto-retires ones that have been quiet), and it adds
-  eight passes the fast reviewers skip — git history, prior review comments,
-  code-comment and CLAUDE.md compliance, plus the security, test-coverage,
-  concurrency/resource-leak and error-handling sweeps that Anthropic's
-  `/code-review` drops by design. Casting that wide normally means noise, so
-  every finding must now survive a verification step: quote the line that
-  motivates it, name a concrete failure scenario (the input that triggers it and
-  the wrong result), and say what to do about it. Use it before a merge that
-  matters; use gstack's `/review` or the code-review plugin when you want fast
-  and cheap.
-- **`/review` no longer throws findings away.** The verification step used to
-  score each finding out of 100 and silently delete anything under 40 — inside
-  the one skill built to catch what everything else misses. It now works the
-  other way round: verification may add evidence, add a fix, or raise its
-  confidence in a finding, and it may mark one *unconfirmed* — but it can never
-  remove one. Low-confidence and unconfirmed items move to a clearly labelled
-  section further down the report instead of disappearing. If the verification
-  step itself fails, every finding passes through untouched and the report says
-  so, rather than quietly showing you a shorter list.
-- **`/review` now ends in a verdict you can act on.** Reports close with
-  `APPROVE`, `CAUTION`, or `REJECT` — `CAUTION` exists so a real concern never
-  has to be rounded down to "fine" — plus a per-finding *review judgment* saying
-  why each one is acceptable, suspicious, or blocking, and a **Guardrails**
-  section listing the conditions under which the verdict holds. If a review pass
-  could not run, the report states which one and lowers its own confidence
-  instead of presenting a partial review as a complete one.
-- **gstack upgraded 1.58.5.0 → 1.81.0.0** for everyone on jjstack. Highlights:
-  browsing skills are far more resilient (setup no longer aborts when the
-  bundled browser fails to download), gstack no longer clobbers same-named
-  skills you own during an upgrade, `/ship` can no longer hang forever on a
-  backgrounded subagent, and the upgrade path itself can no longer delete your
-  install on a failed swap.
 
 ### Changed
 

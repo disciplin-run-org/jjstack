@@ -865,11 +865,24 @@ check "exactly one '## Phase 5: ' heading in the review skill" "[ \"\$n_phase5\"
 n_blast=$(ls -1 "$BIN" 2>/dev/null | grep -c '^jjstack-review-blast-radius')
 check "exactly one blast-radius implementation in bin/" "[ \"\$n_blast\" = 1 ]"
 
-# Positive controls — a grep that can never fire looks exactly like a clean tree.
+# Positive controls — a grep that can never fire looks exactly like a clean
+# tree. The probe is built from the SHIPPED heading, extracted from the skill
+# itself, and the pattern is the SAME shell variable the guard above used. The
+# earlier version printed an invented `## Phase 5: one` and grepped it with a
+# pattern typed a second time in the test: that pair only ever proved the regex
+# matches a string written to match it, and it would keep passing after the
+# skill renamed the heading out from under both.
+PH5_PAT='^## Phase 5: '
+n_phase5=$(grep -c "$PH5_PAT" "$SK" 2>/dev/null)
+check "exactly one '## Phase 5: ' heading in the review skill (re-checked via the shared pattern)" \
+  "[ \"\$n_phase5\" = 1 ]"
 probe_sk="$(mktemp)"
-printf '## Phase 5: one\nbody\n## Phase 5: two\n' > "$probe_sk"
+grep "$PH5_PAT" "$SK" > "$probe_sk"
+grep "$PH5_PAT" "$SK" >> "$probe_sk"
+check "the phase-5 probe was seeded from the shipped heading, not an invented one" \
+  "[ -s '$probe_sk' ] && grep -q 'Phase 5' '$probe_sk'"
 check "phase-5 guard actually catches a duplicate" \
-  "[ \"\$(grep -c '^## Phase 5: ' '$probe_sk')\" = 2 ]"
+  "[ \"\$(grep -c \"\$PH5_PAT\" '$probe_sk')\" = 2 ]"
 rm -f "$probe_sk"
 probe_bin="$(mktemp -d)"
 : > "$probe_bin/jjstack-review-blast-radius"; : > "$probe_bin/jjstack-review-blast-radius-census"
@@ -888,16 +901,52 @@ n_blast_calls=$(grep -c 'jjstack-review-blast-radius' "$SK" 2>/dev/null)
 check "the review skill invokes blast-radius exactly once" "[ \"\$n_blast_calls\" = 1 ]"
 check "that one invocation is the Phase 0 pre-flight" \
   "grep -q 'jjstack-review-preflight' '$SK' && ! grep -q 'jjstack-review-blast-radius >' '$SK'"
-# Positive control — the guard must catch the exact shape that regressed.
+# Positive control — seeded from the REAL invocation line in the skill, and
+# counted with the same pattern the guard uses. Inventing a probe line and
+# hardcoding a second copy of the pattern proves only that a regex matches a
+# string authored to satisfy it.
+BR_PAT='jjstack-review-blast-radius'
+n_blast_calls=$(grep -c "$BR_PAT" "$SK" 2>/dev/null)
+check "the review skill invokes blast-radius exactly once (re-checked via the shared pattern)" \
+  "[ \"\$n_blast_calls\" = 1 ]"
 probe_two="$(mktemp)"
-printf 'a\n~/x/jjstack-review-blast-radius > {OUTPUT_DIR}/blast-radius.md\nb\n~/x/jjstack-review-blast-radius --out y\n' > "$probe_two"
+grep "$BR_PAT" "$SK" > "$probe_two"
+grep "$BR_PAT" "$SK" >> "$probe_two"
+check "the blast-radius probe was seeded from the shipped invocation" \
+  "[ \"\$(grep -c . '$probe_two')\" = 2 ] && grep -q -- 'jjstack-review-blast-radius' '$probe_two'"
 check "the single-invocation guard actually catches a second run" \
-  "[ \"\$(grep -c 'jjstack-review-blast-radius' '$probe_two')\" = 2 ]"
+  "[ \"\$(grep -c \"\$BR_PAT\" '$probe_two')\" = 2 ]"
 rm -f "$probe_two"
-# The widening flag has to exist where the skill now sends people, or the
-# consolidation traded a duplicate scan for an impossible instruction.
+# The widening flag has to REACH the scan, not merely appear in the file.
+# `grep -q -- '--also-repo' preflight` matched the header, the usage line and
+# the arg-parsing branch, so deleting the actual `"${ALSO[@]+...}"` forwarding
+# from the `run_pass blast` line left the assertion green — an inert guard on
+# the one route Module G.1 leaves for widening the scan. Drive it end to end
+# instead: a caller that lives ONLY in the sibling repo must appear in the
+# blast-radius report the pre-flight produced.
+ALSO_T="$(mktemp -d)"
+mkdir -p "$ALSO_T/repo/src" "$ALSO_T/sib"
+git -C "$ALSO_T/repo" init -q
+printf 'def build_token(user, ttl):\n    return "t"\n' > "$ALSO_T/repo/src/auth.py"
+git -C "$ALSO_T/repo" add -A >/dev/null 2>&1
+git -C "$ALSO_T/repo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1
+printf 'def build_token(user, ttl, scope):\n    return "t"\n' > "$ALSO_T/repo/src/auth.py"
+printf 'from auth import build_token\nhandler = build_token("u", 60, "read")\n' > "$ALSO_T/repo/src/api.py"
+printf 'from auth import build_token\n' > "$ALSO_T/sib/consumer.py"
+"$BIN/jjstack-review-preflight" --out "$ALSO_T/out" --repo "$ALSO_T/repo" \
+  --base HEAD --also-repo "$ALSO_T/sib" --skip-tests > "$ALSO_T/pf.log" 2>&1
 check "pre-flight forwards --also-repo to the one blast-radius run" \
-  "grep -q -- '--also-repo' '$BIN/jjstack-review-preflight'"
+  "grep -q '(sib) consumer.py' '$ALSO_T/out/blast-radius.md'"
+# POSITIVE CONTROL for the flag, not for the scanner: the same pre-flight
+# WITHOUT --also-repo must not find the sibling caller, or the check above would
+# pass on a scan that always reads everything.
+"$BIN/jjstack-review-preflight" --out "$ALSO_T/out2" --repo "$ALSO_T/repo" \
+  --base HEAD --skip-tests > "$ALSO_T/pf2.log" 2>&1
+check "the sibling caller is absent when --also-repo is not passed (control)" \
+  "! grep -q 'consumer.py' '$ALSO_T/out2/blast-radius.md'"
+check "the in-repo caller is found either way (control)" \
+  "grep -q 'src/api.py' '$ALSO_T/out2/blast-radius.md'"
+rm -rf "$ALSO_T"
 
 # The stale-API phase's own marketing filter must not leak around its output:
 # references/vendor-lessons-macroscope.md calls the 55% figure "a vendor-adjacent
@@ -1132,7 +1181,18 @@ rc=$?
 check "review-triage exits 0 on a valid ledger" "[ $rc -eq 0 ]"
 check "renders a ledger to --out"               "[ -f '$TRI/good.md' ]"
 check "dedups two lenses on one defect"         "grep -q 'unique=4 collapsed=1' '$TRI/good.out'"
-check "counts corroborating lenses"             "grep -q 'security, correctness' '$TRI/good.md'"
+# The lens list is SORTED, not in arrival order. This assertion used to pin
+# `security, correctness` — the order the two rows happen to sit in the fixture
+# — which meant the rendered page was a function of row order. Both lenses must
+# still be named; they are now named in a fixed order, and the check below
+# proves reversing the rows does not change the rendering.
+check "counts corroborating lenses"             "grep -q 'correctness, security' '$TRI/good.md'"
+check "both corroborating lenses are still named" \
+      "grep -q 'src/auth.py:42' '$TRI/good.md' && grep -q 'correctness' '$TRI/good.md' && grep -q 'security' '$TRI/good.md'"
+tac "$TRI/good.tsv" > "$TRI/good.rev.tsv"
+"$BIN/jjstack-review-triage" "$TRI/good.rev.tsv" --out "$TRI/good.rev.md" > /dev/null 2>&1
+check "the lens list does not depend on which row came first" \
+      "grep -q 'correctness, security' '$TRI/good.rev.md'"
 check "classifies a src path as prod exposure"  "grep -q 'src/auth.py:42\` | prod' '$TRI/good.md'"
 check "classifies a tests/ path as test"        "grep -q 'tests/test_x.py:5\` | test' '$TRI/good.md'"
 check "classifies node_modules-style vendor"    "grep -q 'vendor/lib/x.js:100\` | vendor' '$TRI/good.md'"
@@ -1771,9 +1831,14 @@ for tok in report unconfirmed demoted defer suppress out-of-scope refuted; do
   check "skill disposition \`$tok\` exists in the script" \
         "grep -m1 -o 'split(\"report[^\"]*\"' '$BIN/jjstack-review-triage' | grep -qw -- '$tok'"
 done
-for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate stale-api; do
+# Scoped to the REASON vocabulary line, exactly as the disposition loop above
+# is. Grepping the WHOLE FILE made this inert: every reason code is also named
+# in the header comment block and in the invariant comments, so `stale-api`
+# passed the guard even when deleted from the `REASON` split — the sibling loop
+# was hardened in this same hunk and this one was left behind.
+for tok in unverified prior-decision baseline pre-existing not-reachable accepted-risk tool-covered style-only no-repro duplicate stale-api low-confidence; do
   check "skill reason \`$tok\` exists in the script vocabulary" \
-        "grep -q '\\b$tok\\b' '$BIN/jjstack-review-triage'"
+        "grep -m1 -o 'split(\"unverified[^\"]*\"' '$BIN/jjstack-review-triage' | grep -qw -- '$tok'"
 done
 rm -rf "$RH" "$NOGIT"
 echo "== 7k. review-dep-inventory (manifest parsing + vendored-tree exclusion) =="
@@ -1923,6 +1988,340 @@ check "dep-inventory leaves no temp files behind (control)" \
 
 rm -rf "$DEP" "$DEPEMPTY" "$DEPOUT" "$DEPC" "$DEPCOUT" "$DEPH" "$DEPHOUT" \
        "$DEPM" "$DEPMOUT" "$DEPN" "$DEPTMP" "$_dep_probe"
+
+
+echo "== 7m. round-2: refuted needs its document, and disposition rank must be total =="
+# Round 2 found the `refuted`/`stale-api` pair — added during a merge-conflict
+# resolution — enforcing almost nothing. Two separate defects, both fixed here
+# at the level of the CLASS rather than the reported instance.
+R2="$(mktemp -d)"
+r2row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7"; }
+
+# --- INVARIANT 5: a documentary refutation must carry its document -----------
+# The reviewer's exact reproducer. `refuted` is the ONLY disposition that takes
+# a finding off the report for being WRONG, and SKILL.md justifies letting it
+# do that to a P0/P1 — which Invariant 3 forbids `suppress` — solely because it
+# "carries external evidence". §4.5b step 3 says the doc URL goes in the claim
+# column. Nothing checked. Two tokens and a sentence of opinion bought the same
+# effect Invariant 3 exists to deny, and the rendered page then ASSERTED that a
+# documentation check happened.
+r2row P0 95 src/a.py:7 security refuted stale-api 'I do not think this is real' > "$R2/nourl.tsv"
+"$BIN/jjstack-review-triage" "$R2/nourl.tsv" > "$R2/nourl.out" 2> "$R2/nourl.err"
+rc=$?
+check "a refuted row with no doc URL is rejected" "[ $rc -eq 4 ]"
+check "nothing is rendered for an unevidenced refutation" \
+      "! grep -q 'Refuted' '$R2/nourl.out'"
+check "the error names the missing evidence" \
+      "grep -q 'http' '$R2/nourl.err'"
+# CLASS, not instance: the defect is not about P0, or about the security lens.
+# A P3 from any lens buys the same unearned deletion, so the guard may not be
+# written against the severity or the lens that happened to be reported.
+r2row P3 10 docs/x.md:1 style refuted stale-api 'the docs say otherwise, trust me' > "$R2/nourl3.tsv"
+"$BIN/jjstack-review-triage" "$R2/nourl3.tsv" > /dev/null 2> "$R2/nourl3.err"
+check "the evidence rule binds every severity, not just P0" "[ \$? -eq 4 ]"
+r2row P2 50 src/b.py:2 perf refuted stale-api 'no link here either' > "$R2/nourl2.tsv"
+"$BIN/jjstack-review-triage" "$R2/nourl2.tsv" > /dev/null 2>&1
+check "the evidence rule binds every lens, not just security" "[ \$? -eq 4 ]"
+# Both URL schemes are documentation; neither is special.
+r2row P1 85 src/c.py:3 api refuted stale-api 'correct per https://docs.example/v2/api' > "$R2/https.tsv"
+"$BIN/jjstack-review-triage" "$R2/https.tsv" --out "$R2/https.md" > /dev/null 2>&1
+check "a refuted row carrying an https doc URL is accepted" "[ \$? -eq 0 ]"
+r2row P1 85 src/c.py:3 api refuted stale-api 'correct per http://docs.example/v2/api' > "$R2/http.tsv"
+"$BIN/jjstack-review-triage" "$R2/http.tsv" --out "$R2/http.md" > /dev/null 2>&1
+check "a refuted row carrying an http doc URL is accepted" "[ \$? -eq 0 ]"
+# NEGATIVE CONTROL — the new rule must bind `refuted` and nothing else. If it
+# leaked onto the other dispositions it would demand a URL from every ordinary
+# suppression, and the loop would have no way out.
+r2row P2 40 src/d.py:4 sec suppress baseline 'a baselined nit with no link at all' > "$R2/sup.tsv"
+"$BIN/jjstack-review-triage" "$R2/sup.tsv" --out "$R2/sup.md" > /dev/null 2>&1
+check "a non-refuted row still needs no URL (negative control)" "[ \$? -eq 0 ]"
+# And the same claim text that was REJECTED as a refutation is ACCEPTED as a
+# report — proving the rejection is about the disposition's evidence burden,
+# not about some incidental property of the string.
+r2row P0 95 src/a.py:7 security report - 'I do not think this is real' > "$R2/rep.tsv"
+"$BIN/jjstack-review-triage" "$R2/rep.tsv" --out "$R2/rep.md" > /dev/null 2>&1
+check "the identical claim is legal as a report (negative control)" "[ \$? -eq 0 ]"
+# The merged record is where the invariants actually bite: a refutation must
+# not acquire its evidence by being merged with a differently-worded row.
+{ r2row P2 50 src/m.py:1 lensA report - 'shared opening phrase for the merge test here'
+  r2row P2 50 src/m.py:1 lensB refuted stale-api 'shared opening phrase for the merge test here'
+} > "$R2/mergenourl.tsv"
+"$BIN/jjstack-review-triage" "$R2/mergenourl.tsv" > /dev/null 2> "$R2/mergenourl.err"
+check "an unevidenced refutation is caught on the merged record too" "[ \$? -eq 4 ]"
+
+# --- disprank must be TOTAL: no ties, and no order dependence ---------------
+# `refuted` was never enumerated in disprank(), so it fell into the `return 5`
+# bucket it shares with `suppress`. The merge test is a strict `<`, so first-seen
+# won and the SAME input rendered differently depending on row order — with
+# `merges-raised=0` in both, so the collapse was invisible. The fix is not "rank
+# refuted"; it is that vocabulary and rank come from ONE ordered list, so a
+# disposition cannot be added to one and forgotten in the other.
+r2disps="report unconfirmed demoted defer suppress out-of-scope refuted"
+r2reason() { case "$1" in
+    report) echo '-' ;; unconfirmed) echo unverified ;; demoted) echo prior-decision ;;
+    defer) echo pre-existing ;; suppress) echo baseline ;; out-of-scope) echo duplicate ;;
+    refuted) echo stale-api ;; esac; }
+r2claim() { case "$1" in
+    refuted) echo 'one shared opening phrase across every disposition https://docs.example/x' ;;
+    *) echo 'one shared opening phrase across every disposition' ;; esac; }
+# Every unordered PAIR of dispositions, fed in both orders at one location with
+# one fingerprint. If any two share a rank, one of these 21 pairs renders
+# differently by order. This is the totality proof, not a spot check.
+r2_orderfails=0; r2_pairs=0
+for a in $r2disps; do for b in $r2disps; do
+  [ "$a" \< "$b" ] || continue
+  r2_pairs=$((r2_pairs+1))
+  { r2row P2 50 src/p.py:1 lensA "$a" "$(r2reason "$a")" "$(r2claim "$a")"
+    r2row P2 50 src/p.py:1 lensB "$b" "$(r2reason "$b")" "$(r2claim "$b")"; } > "$R2/ab.tsv"
+  { r2row P2 50 src/p.py:1 lensB "$b" "$(r2reason "$b")" "$(r2claim "$b")"
+    r2row P2 50 src/p.py:1 lensA "$a" "$(r2reason "$a")" "$(r2claim "$a")"; } > "$R2/ba.tsv"
+  # Delete the artifacts first: a run that exits 4 writes nothing, and a stale
+  # file from the previous pair would then be compared instead — the comparison
+  # would pass on output neither run produced.
+  rm -f "$R2/ab.md" "$R2/ba.md" "$R2/ab.out" "$R2/ba.out"
+  "$BIN/jjstack-review-triage" "$R2/ab.tsv" --out "$R2/ab.md" > "$R2/ab.out" 2>/dev/null
+  "$BIN/jjstack-review-triage" "$R2/ba.tsv" --out "$R2/ba.md" > "$R2/ba.out" 2>/dev/null
+  [ -f "$R2/ab.md" ] && [ -f "$R2/ba.md" ] || { r2_orderfails=$((r2_orderfails+1)); echo "    pair rendered nothing: $a / $b" >&2; continue; }
+  sed 's#^- source ledger:.*##' "$R2/ab.md" > "$R2/ab.norm"
+  sed 's#^- source ledger:.*##' "$R2/ba.md" > "$R2/ba.norm"
+  cmp -s "$R2/ab.norm" "$R2/ba.norm" || { r2_orderfails=$((r2_orderfails+1)); echo "    order-dependent pair: $a / $b" >&2; }
+  # Compare the TALLY line only: the surrounding stdout names the --out path,
+  # which differs between the two runs by construction.
+  grep '^.*TALLY' "$R2/ab.out" > "$R2/ab.tally"; grep '^.*TALLY' "$R2/ba.out" > "$R2/ba.tally"
+  cmp -s "$R2/ab.tally" "$R2/ba.tally" || { r2_orderfails=$((r2_orderfails+1)); echo "    order-dependent tally: $a / $b" >&2; }
+done; done
+check "all 21 disposition pairs were exercised" "[ \"\$r2_pairs\" = 21 ]"
+check "no two dispositions tie: every pair renders identically in both orders" \
+      "[ \"\$r2_orderfails\" = 0 ]"
+# The reviewer's own reproducer, spelled out, so the regression has a name.
+{ r2row P2 50 src/b.py:3 lensA suppress baseline 'the same defect described the same way here'
+  r2row P2 50 src/b.py:3 lensB refuted stale-api 'the same defect described the same way here https://docs.example/y'
+} > "$R2/o1.tsv"
+{ r2row P2 50 src/b.py:3 lensB refuted stale-api 'the same defect described the same way here https://docs.example/y'
+  r2row P2 50 src/b.py:3 lensA suppress baseline 'the same defect described the same way here'
+} > "$R2/o2.tsv"
+"$BIN/jjstack-review-triage" "$R2/o1.tsv" --out "$R2/o1.md" > "$R2/o1.out" 2>/dev/null
+"$BIN/jjstack-review-triage" "$R2/o2.tsv" --out "$R2/o2.md" > "$R2/o2.out" 2>/dev/null
+check "refuted vs suppress lands in the same section in both orders" \
+      "[ \"\$(grep -c '^## Refuted.*(1)' '$R2/o1.md')\" = \"\$(grep -c '^## Refuted.*(1)' '$R2/o2.md')\" ]"
+check "refuted vs suppress reports the same tally in both orders" \
+      "[ \"\$(grep -o 'TALLY.*' '$R2/o1.out')\" = \"\$(grep -o 'TALLY.*' '$R2/o2.out')\" ]"
+# A collapse that changed the disposition is a decision about what the reader
+# sees, so it belongs in Merges. Both runs reported merges-raised=0 while
+# silently discarding one member's disposition.
+check "a disposition-changing collapse is listed in Merges" \
+      "! grep -q 'merges-raised=0' '$R2/o1.out'"
+check "and is listed in Merges whichever order it arrives in" \
+      "! grep -q 'merges-raised=0' '$R2/o2.out'"
+
+# Determinism is a property of the WHOLE page, not just of merges: the same SET
+# of findings must render byte-identically however the rows are ordered. Seven
+# findings at seven locations, forward and reversed.
+: > "$R2/fwd.tsv"
+for d in $r2disps; do
+  r2row P2 50 "src/z_$d.py:1" "lens_$d" "$d" "$(r2reason "$d")" "$d finding text $( [ "$d" = refuted ] && echo 'https://docs.example/z' )" >> "$R2/fwd.tsv"
+done
+tac "$R2/fwd.tsv" > "$R2/rev.tsv"
+"$BIN/jjstack-review-triage" "$R2/fwd.tsv" --out "$R2/fwd.md" > "$R2/fwd.out" 2>/dev/null
+"$BIN/jjstack-review-triage" "$R2/rev.tsv" --out "$R2/rev.md" > "$R2/rev.out" 2>/dev/null
+sed 's#^- source ledger:.*##' "$R2/fwd.md" > "$R2/fwd.norm"
+sed 's#^- source ledger:.*##' "$R2/rev.md" > "$R2/rev.norm"
+check "the rendered ledger is a function of the finding SET, not the row order" \
+      "cmp -s '$R2/fwd.norm' '$R2/rev.norm'"
+check "and so is the tally line" \
+      "[ \"\$(grep -o 'TALLY.*' '$R2/fwd.out')\" = \"\$(grep -o 'TALLY.*' '$R2/rev.out')\" ]"
+# POSITIVE CONTROL on the determinism check itself: it must be able to fail.
+# Two DIFFERENT sets must not compare equal, or `cmp -s` above proves nothing.
+sed 's/z_report/z_reportX/' "$R2/fwd.tsv" > "$R2/other.tsv"
+"$BIN/jjstack-review-triage" "$R2/other.tsv" --out "$R2/other.md" > /dev/null 2>/dev/null
+sed 's#^- source ledger:.*##' "$R2/other.md" > "$R2/other.norm"
+check "the determinism comparison can distinguish two different sets (control)" \
+      "! cmp -s '$R2/fwd.norm' '$R2/other.norm'"
+
+# STRUCTURAL: one ordered list is both the vocabulary and the rank, so the two
+# physically cannot drift again. A disposition added to the vocabulary without a
+# rank is what produced the tie in the first place.
+check "the script derives disposition rank from the vocabulary list" \
+      "grep -q 'DRANK\[' '$BIN/jjstack-review-triage'"
+check "no disposition falls into an unranked default bucket" \
+      "! grep -qE 'return 5[[:space:]]*# suppress' '$BIN/jjstack-review-triage'"
+rm -rf "$R2"
+
+
+echo "== 7n. round-2: dep-inventory — the TSV contract, and the dialects it advertises =="
+# Round 1 replaced a sed-based path substitution with `awk -v`, which fixed the
+# `#`-in-path crash and traded it for a different metacharacter bug: awk -v
+# performs ESCAPE-SEQUENCE PROCESSING on its value. The fixtures covered `#` and
+# `a.b[1]` — the shapes the OLD mechanism was sensitive to — and none covered
+# the shape the NEW one is.
+D2="$(mktemp -d)"
+# Field-aware row lookup. `grep '^pypi\tname\t'` does NOT mean a tab in a BRE,
+# so a pattern like that silently matches nothing and every assertion built on
+# it passes or fails for the wrong reason. Compare the actual TSV fields.
+deprow() { # deprow <tsv> <eco> <name> [version]
+  awk -F'\t' -v e="$2" -v n="$3" -v v="${4:-}" \
+      '$1 == e && $2 == n && (v == "" || $3 == v) { found = 1 } END { exit !found }' "$1"
+}
+
+# --- the 4-field TSV contract, against a path that fights back --------------
+# A directory literally named `x\ty` (backslash, t) is a legal path. Passed
+# through `awk -v`, the two characters become a TAB, so the manifest column
+# splits and the row carries FIVE fields against a documented four. Anything
+# consuming `--tsv` by column then reads a truncated path, or a version where
+# it expects a manifest.
+mkdir -p "$D2/repo/x\\ty"
+printf 'module m\n\nrequire (\n\tgithub.com/foo/bar v1.2.3\n)\n' > "$D2/repo/x\\ty/go.mod"
+"$BIN/jjstack-review-dep-inventory" "$D2/repo" --tsv > "$D2/bs.tsv" 2>/dev/null
+check "a backslash-t path still yields a row" "[ -s '$D2/bs.tsv' ]"
+check "every --tsv row has exactly 4 fields, whatever the path holds" \
+      "[ \"\$(awk -F'\\t' '{print NF}' '$D2/bs.tsv' | sort -u | tr -d '\\n')\" = 4 ]"
+check "the manifest column is the real path, not an escape-processed one" \
+      "awk -F'\\t' '{print \$4}' '$D2/bs.tsv' | grep -qF 'x\\ty/go.mod'"
+# CLASS: the field count is a contract, so it is asserted for EVERY row of a
+# mixed-ecosystem run, not only for the path that happened to be reported.
+mkdir -p "$D2/many"
+printf '{"dependencies":{"react":"18.2.0"}}\n' > "$D2/many/package.json"
+printf 'fastapi==0.110.1\n' > "$D2/many/requirements.txt"
+printf 'module m\nrequire github.com/x/y v1.0.0\n' > "$D2/many/go.mod"
+"$BIN/jjstack-review-dep-inventory" "$D2/many" --tsv > "$D2/many.tsv" 2>/dev/null
+check "the 4-field contract holds across every ecosystem in one run" \
+      "[ \"\$(awk -F'\\t' '{print NF}' '$D2/many.tsv' | sort -u | tr -d '\\n')\" = 4 ]"
+
+# --- pyproject: extras truncate the list -----------------------------------
+# `if ($0 ~ /\]/) inarr = 0` closed the array on ANY `]`, including the one
+# inside an extras spec. Extras are ubiquitous and usually appear early, so
+# `"celery[redis]>=5.0"` on the first line silently discarded the whole rest of
+# the dependency list — exit 0, no warning, and every stale-API finding about
+# the dropped libraries then read as "absent from the inventory".
+mkdir -p "$D2/py"
+cat > "$D2/py/pyproject.toml" <<'EOF'
+[project]
+name = "demo"
+dependencies = [
+  "celery[redis]>=5.0",
+  "fastapi>=0.100",
+  "httpx",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.5"
+
+[tool.poetry.dev-dependencies]
+black = "^24.1"
+EOF
+"$BIN/jjstack-review-dep-inventory" "$D2/py" --tsv > "$D2/py.tsv" 2>/dev/null
+check "an extras spec does not close the dependency array"  "deprow '$D2/py.tsv' pypi celery" 
+check "the entry AFTER an extras spec survives"             "deprow '$D2/py.tsv' pypi fastapi" 
+check "and so does an unpinned entry after it"              "deprow '$D2/py.tsv' pypi httpx" 
+check "extras are stripped from the package name"           "! grep -q 'celery\\[' '$D2/py.tsv'"
+# NEGATIVE CONTROL on deprow itself — a lookup for a package the fixture does
+# not declare must FAIL, or every assertion above passes on a broken helper.
+check "deprow does not match a package that is absent (control)" \
+      "! deprow '$D2/py.tsv' pypi definitely-not-declared"
+# Dialect gaps: both of these are standard Poetry and neither matched the
+# one-optional-segment regex.
+check "poetry group dependencies are parsed (Poetry 1.2+)"  "deprow '$D2/py.tsv' pypi ruff" 
+check "legacy poetry dev-dependencies are parsed"           "deprow '$D2/py.tsv' pypi black" 
+check "PEP 621 optional-dependencies are parsed"            "deprow '$D2/py.tsv' pypi pytest" 
+
+# --- Cargo: [dependencies.<name>] subtables --------------------------------
+# The dotted-subtable form is how every dependency with features is written.
+# `/^\[/ { indep = 0 }` closed the section on it, so the dependency vanished.
+mkdir -p "$D2/rs"
+cat > "$D2/rs/Cargo.toml" <<'EOF'
+[package]
+name = "demo"
+
+[dependencies]
+serde = "1.0"
+
+[dependencies.tokio]
+version = "1.35"
+features = ["full"]
+EOF
+"$BIN/jjstack-review-dep-inventory" "$D2/rs" --tsv > "$D2/rs.tsv" 2>/dev/null
+check "a plain cargo dependency is still parsed"    "deprow '$D2/rs.tsv' cargo serde 1.0" 
+check "a [dependencies.<name>] subtable is parsed"  "deprow '$D2/rs.tsv' cargo tokio 1.35" 
+
+# --- pom.xml and Gemfile: advertised in the header, never fixtured ---------
+# The compact one-line form is the SAME class the package.json parser was fixed
+# for in round 1 — and the fix was applied only to package.json, because that is
+# the only place the fixture looked.
+mkdir -p "$D2/jv"
+cat > "$D2/jv/pom.xml" <<'EOF'
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.0</version>
+    </dependency>
+    <dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>33.0.0-jre</version></dependency>
+  </dependencies>
+</project>
+EOF
+"$BIN/jjstack-review-dep-inventory" "$D2/jv" --tsv > "$D2/jv.tsv" 2>/dev/null
+check "a pretty-printed pom dependency is parsed"   "deprow '$D2/jv.tsv' maven junit-jupiter 5.10.0" 
+check "a compact one-line pom dependency is parsed" "deprow '$D2/jv.tsv' maven guava 33.0.0-jre" 
+mkdir -p "$D2/rb"
+cat > "$D2/rb/Gemfile" <<'EOF'
+source "https://rubygems.org"
+gem "rails", "~> 7.1"
+gem "puma"
+gem "pg", require: false
+EOF
+"$BIN/jjstack-review-dep-inventory" "$D2/rb" --tsv > "$D2/rb.tsv" 2>/dev/null
+check "a pinned gem is parsed"        "deprow '$D2/rb.tsv' rubygems rails '~> 7.1'" 
+check "an unpinned gem is parsed"     "deprow '$D2/rb.tsv' rubygems puma '*'" 
+check "a gem with options is parsed"  "deprow '$D2/rb.tsv' rubygems pg" 
+rm -rf "$D2"
+
+
+echo "== 7o. round-2: the change log has no duplicated section =="
+# The PR whose own commit message reads "merge the duplicate changelog section"
+# shipped `### Changed` twice, verbatim, inside `## [Unreleased]` — lines
+# 294-330 and 332-368 byte-identical. A promise in a commit message is not a
+# check; this is the check. It is written against the CLASS — no `###` heading
+# may repeat inside any `##` section, in any release, ever — not against the
+# one heading that regressed.
+CL="$DIR/CHANGELOG.md"
+check "CHANGELOG.md exists to be checked" "[ -f '$CL' ]"
+cl_dupes=$(awk '
+  /^## / { section = $0; delete seen; next }
+  /^### / { if (seen[$0]++) print section " :: " $0 }
+' "$CL")
+check "no '###' heading repeats within a CHANGELOG section" "[ -z \"\$cl_dupes\" ]"
+[ -n "$cl_dupes" ] && printf '    duplicate: %s\n' "$cl_dupes" >&2
+# And no two blocks of it are byte-identical: a merge can reproduce the body
+# under two DIFFERENT headings, which the check above would not see.
+cl_dupbody=$(awk '
+  /^### / { if (n > 0) { b = ""; for (i = 1; i <= n; i++) b = b lines[i] "\n"; if (body[b]++ && b != "\n") print "duplicate body under " head } head = $0; n = 0; next }
+  /^## /  { n = 0; head = ""; next }
+  head != "" { lines[++n] = $0 }
+' "$CL")
+check "no CHANGELOG section body is duplicated verbatim" "[ -z \"\$cl_dupbody\" ]"
+# POSITIVE CONTROL — the probe is the REAL file with one of its own `###`
+# sections appended a second time. Nothing here is invented: the heading and the
+# body are the shipped literals, and the guard is the same awk program.
+cl_probe="$(mktemp)"
+cat "$CL" > "$cl_probe"
+awk '
+  /^### / { if (grab) exit; grab = 1; print; next }
+  grab && /^#/ { exit }
+  grab { print }
+' "$CL" >> "$cl_probe"
+check "the changelog probe was seeded from the shipped file" \
+      "[ \"\$(wc -l < '$cl_probe')\" -gt \"\$(wc -l < '$CL')\" ]"
+cl_probe_dupes=$(awk '
+  /^## / { section = $0; delete seen; next }
+  /^### / { if (seen[$0]++) print section " :: " $0 }
+' "$cl_probe")
+check "the duplicate-heading guard actually catches a duplicate (control)" \
+      "[ -n \"\$cl_probe_dupes\" ]"
+rm -f "$cl_probe"
 
 
 echo

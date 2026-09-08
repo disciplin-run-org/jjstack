@@ -385,10 +385,14 @@ finding that asserts a third-party library/framework/API is used incorrectly:
    review.
 3. If current docs show the code is correct as written, **drop the finding** and
    record it in the Phase 5.11 ledger with disposition `refuted` and reason
-   `stale-api`, carrying the doc URL in the claim column. "Drop" here means
-   *removed from the report*, never *removed from the record* — a refuted
-   finding stays inspectable like every other, so a later reader can see that
-   this reviewer looked and disproved it rather than never looking.
+   `stale-api`, **carrying the doc URL in the claim column**. That URL is now
+   ENFORCED — `jjstack-review-triage` rejects a `refuted` row whose claim holds
+   no `http`/`https` link and renders nothing (exit 4). Without it the two
+   tokens bought exactly the disappearance Invariant 3 denies to `suppress`,
+   while the page asserted a documentation check that never happened. "Drop"
+   here means *removed from the report*, never *removed from the record* — a
+   refuted finding stays inspectable like every other, so a later reader can
+   see that this reviewer looked and disproved it rather than never looking.
 4. If docs confirm the misuse, cite the doc URL in the finding — it raises the
    Phase 5 confidence score with real evidence.
 5. If the library is absent from the inventory, or docs cannot settle it, keep
@@ -853,6 +857,34 @@ refuted P1 is legal precisely because it carries external evidence. The pairing
 is exclusive in both directions — `refuted` takes only `stale-api`, and
 `stale-api` only `refuted` — so it cannot become a general delete hatch, nor be
 smuggled onto `suppress` to dodge Invariant 3.
+
+**That external evidence is checked, not assumed (Invariant 5).** Binding the
+two LABELS is not the same as requiring the document, and for one round it was
+all this rule did: a P0 from the `security` lens, claim text "I do not think
+this is real", `refuted` + `stale-api`, exited 0 and rendered under *Refuted —
+raised, then disproved against current official docs*. The sentence above
+justifies letting `refuted` delete a P1 solely because it "carries external
+evidence", so the claim column must actually hold the `http`/`https` URL from
+step 3 of §4.5b. It does now: a `refuted` row without one is a validation
+failure and nothing is rendered.
+
+**Dispositions are totally ordered, and the page does not depend on row order.**
+The merge keeps the weakest — most visible — disposition, ranked
+
+    report < unconfirmed < demoted < defer < out-of-scope < suppress < refuted
+
+`refuted` sits last because it is the strongest removal there is: it asserts
+the finding is WRONG, so it may never swallow a member still reported,
+deferred or suppressed. That ladder and the closed vocabulary are now the SAME
+list inside the script, because they drifted once — `refuted` was added to the
+vocabulary and not to the ranking, fell into a shared default bucket, tied with
+`suppress`, and the identical two rows rendered under *Refuted* or under
+*Suppressed by baseline* depending on which line came first. Every field of a
+merged record is now the minimum of a total order over the group, the lens list
+is sorted, findings render in a fixed (severity, location) order, and a collapse
+is listed in **Merges** whenever the group held more than one severity or
+disposition — so the rendered ledger is a function of the SET of findings, not
+of the order they were written down.
 
 Then render the ledger. This is deterministic — dedup, merge, corroboration
 counting, path-exposure classification, vocabulary validation, reconciliation
