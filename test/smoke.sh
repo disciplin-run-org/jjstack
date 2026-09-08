@@ -238,8 +238,12 @@ check "blast-radius ignores symbols declared in comments" \
       "! grep -q 'CommentOnlySymbol' '$PF/br/blast-radius.md'"
 # Positive control — both guards would also 'pass' if the decoys were never in
 # the diff, or had no outside reference to be reported against.
+# Materialised, never piped into `grep -q`: under `set -o pipefail` grep exits
+# on its first match, git takes SIGPIPE, and the pipeline reports 141. Green or
+# red by timing — and on a negated check a dead upstream reads as a pass.
+git -C "$FX" diff HEAD~1 > "$PF/fx.diff"
 check "decoy symbols really are in the diff" \
-      "git -C '$FX' diff HEAD~1 | grep -q 'class DocOnlySymbol' && git -C '$FX' diff HEAD~1 | grep -q 'type CommentOnlySymbol'"
+      "grep -q 'class DocOnlySymbol' '$PF/fx.diff' && grep -q 'type CommentOnlySymbol' '$PF/fx.diff'"
 check "decoy symbols really are referenced outside the diff" \
       "grep -q 'DocOnlySymbol CommentOnlySymbol' '$FX/consumer.sh'"
 # --- the enclosing-definition case (gstack's "enum completeness") ---
@@ -263,10 +267,11 @@ check "blast-radius names the out-of-diff user of that class" \
       "grep -q 'reporting.py' '$ENC/out/blast-radius.md'"
 # Positive control — the enclosing definition line must genuinely be UNCHANGED,
 # or the test passes for the wrong reason (an ordinary added-definition case).
+git -C "$ENC" diff HEAD~1 > "$ENC/enc.diff"
 check "the class definition line is untouched in the diff" \
-      "! git -C '$ENC' diff HEAD~1 | grep -qE '^[+-]class OrderStatus'"
+      "! grep -qE '^[+-]class OrderStatus' '$ENC/enc.diff'"
 check "the changed line really is inside the class body" \
-      "git -C '$ENC' diff HEAD~1 | grep -qE '^\\+    CLOSED'"
+      "grep -qE '^\\+    CLOSED' '$ENC/enc.diff'"
 rm -rf "$ENC"
 
 "$BIN/jjstack-review-blast-radius" --out "$PF/br2" --repo "$FX" --base HEAD --dry-run >/dev/null 2>&1
@@ -320,7 +325,11 @@ check "tooling-sweep --dry-run writes nothing" "[ ! -d '$PF/sw3' ]"
 check "intent exits 0" "[ \$? -eq 0 ]"
 check "intent captures the commit message" \
       "grep -q 'rename compute_total' '$PF/it/intent.md'"
-check "intent extracts the referenced issue" "grep -q '#42' '$PF/it/intent.md'"
+# `#42` also appears verbatim in the commit dump this artifact ALWAYS emits, so
+# grepping the whole file passes against a completely dead extractor. Scope the
+# assertion to the section the extractor is the only thing that populates.
+awk '/^## Referenced issues$/{s=1;next} /^## /{s=0} s' "$PF/it/intent.md" > "$PF/it-issues.md"
+check "intent extracts the referenced issue" "grep -q '#42' '$PF/it-issues.md'"
 # No PR here — that must read as 'structurally inapplicable', never as a pass.
 check "intent reports a missing PR as inapplicable" \
       "grep -qi 'structurally inapplicable' '$PF/it/intent.md'"
@@ -533,6 +542,274 @@ check "the report states which diff scope it used" \
 # disguise.
 check "the change really is uncommitted (control)" \
       "[ -z \"\$(git -C '$UNC' diff main...HEAD)\" ] && [ -n \"\$(git -C '$UNC' diff main)\" ]"
+
+echo "== 5d. round 2: no row may claim more than the artifact under it =="
+# Round 1 fixed the false-green in rows 1 and 5 — exactly as wide as the
+# fixture that found it. Rows 2, 3 and 4 still read a bare exit code, so an
+# unresolvable --base printed "ran — map built" and "ran — claim gathered"
+# over an empty map and an intent.md calling a fully committed change
+# uncommitted. The class, not the instance: every row is rendered from a fact
+# the pass wrote down, and no pass accepts a base it could not resolve.
+
+# --- an unresolvable --base is a named error, never a silent empty diff -----
+"$BIN/jjstack-review-preflight" --out "$PF/badbase" --repo "$FX" --base orgin/main \
+  > "$PF/badbase.out" 2>&1; rc=$?
+check "an unresolvable --base fails the pre-flight" "[ $rc -ne 0 ]"
+check "the error names the ref that could not be resolved" \
+      "grep -q 'orgin/main' '$PF/badbase.out'"
+check "no evidence pack is written from an unresolvable base" \
+      "[ ! -f '$PF/badbase/EVIDENCE-PACK.md' ]"
+# Each sub-pass refuses on its own — the orchestrator is not the only guard.
+"$BIN/jjstack-review-blast-radius" --out "$PF/bb2" --repo "$FX" --base orgin/main \
+  > "$PF/bb2.out" 2>&1; rc=$?
+check "blast-radius refuses an unresolvable --base" "[ $rc -ne 0 ]"
+check "blast-radius writes no map from an unresolvable base" \
+      "! grep -q 'Empty diff' '$PF/bb2/blast-radius.md' 2>/dev/null"
+# The error must name the BASE as the problem. Letting a downstream `git diff`
+# failure surface instead still exits non-zero, but sends the reader hunting a
+# symptom rather than the typo they made.
+check "blast-radius diagnoses the ref, not a downstream symptom" \
+      "grep -q 'does not resolve to a commit' '$PF/bb2.out'"
+"$BIN/jjstack-review-intent" --out "$PF/bb3" --repo "$FX" --base orgin/main \
+  > "$PF/bb3.out" 2>&1; rc=$?
+check "intent refuses an unresolvable --base" "[ $rc -ne 0 ]"
+check "intent never calls a committed change uncommitted" \
+      "! grep -q 'the intent is uncommitted' '$PF/bb3/intent.md' 2>/dev/null"
+check "intent diagnoses the ref, not a downstream symptom" \
+      "grep -q 'does not resolve to a commit' '$PF/bb3.out'"
+# Positive control — the identical invocation with a REAL base does build a
+# pack, so the assertions above are about the bad ref and not about the fixture.
+check "the same invocation with a valid base does build a pack (control)" \
+      "[ -f '$PF/pack/EVIDENCE-PACK.md' ]"
+
+# --- rows 2/3/4 are rendered from facts, exactly like rows 1 and 5 ---------
+# Base == HEAD: a legitimately empty scope. The passes ran and exited 0, so an
+# rc-derived row says "map built" / "claim gathered" over nothing at all.
+"$BIN/jjstack-review-preflight" --out "$PF/empty" --repo "$FX" --base HEAD >/dev/null 2>&1
+check "row 2 does not claim a map was built over an empty diff" \
+      "! grep -qE '^\| 2 .*ran — map built' '$PF/empty/EVIDENCE-PACK.md'"
+check "row 2 agrees with blast-radius.md" \
+      "grep -q 'Empty diff' '$PF/empty/blast-radius.md'"
+check "row 3 does not claim a claim was gathered when none was found" \
+      "! grep -qE '^\| 3 .*ran — claim gathered' '$PF/empty/EVIDENCE-PACK.md'"
+check "row 3 agrees with intent.md" \
+      "grep -q 'the intent is uncommitted' '$PF/empty/intent.md'"
+# Positive controls — both rows CAN say it, on the fixture where it is true.
+check "row 2 says a map was built when symbols really were mapped (control)" \
+      "grep -qE '^\| 2 .*map built' '$PF/pack/EVIDENCE-PACK.md'"
+check "row 3 says a claim was gathered when commits really were read (control)" \
+      "grep -qE '^\| 3 .*claim gathered' '$PF/pack/EVIDENCE-PACK.md'"
+
+# --- row 1 must read TOOLS_PASSED, not just DETECTED/FAILED/ERRORED --------
+# A detected-but-skipped runner falls to the else arm: "ran — no failures" over
+# TOOLS_PASSED=0, one row above row 5 saying NO baseline exists.
+NOR="$PF/nothing-ran"; mkdir -p "$NOR"
+git -C "$NOR" init -q -b main 2>/dev/null
+git -C "$NOR" config user.email t@t; git -C "$NOR" config user.name T
+printf 'test:\n\t@true\n' > "$NOR/Makefile"
+git -C "$NOR" add -A >/dev/null 2>&1; git -C "$NOR" commit -qm seed >/dev/null 2>&1
+"$BIN/jjstack-review-preflight" --out "$NOR/pack" --repo "$NOR" --base HEAD --skip-tests >/dev/null 2>&1
+check "the no-tools-ran fixture really detects exactly one tool (control)" \
+      "grep -q '^TOOLS_DETECTED=1' '$NOR/pack/tooling-status.env' && grep -q '^TOOLS_PASSED=0' '$NOR/pack/tooling-status.env'"
+check "row 1 does not say 'no failures' when nothing ran" \
+      "! grep -qE '^\| 1 .*ran — no failures' '$NOR/pack/EVIDENCE-PACK.md'"
+check "row 1 and row 5 agree that nothing was proven" \
+      "grep -qE '^\| 5 .*NO baseline exists' '$NOR/pack/EVIDENCE-PACK.md'"
+# Positive control — "ran — no failures" is a real shipped string that DOES
+# fire when tools really passed, so the assertion above is not vacuous.
+check "row 1 says 'ran — no failures' when tools really passed (control)" \
+      "grep -qE '^\| 1 .*ran — no failures' '$PF/pack/EVIDENCE-PACK.md'"
+
+# --- the results table must not invent a runner that was never detected ----
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/noskip" --repo "$BARE" --skip-tests >/dev/null 2>&1
+check "a runner-less repo never renders a skipped test runner" \
+      "! grep -q 'skipped (--skip-tests)' '$PF/noskip/tooling-results.md'"
+check "the results table agrees with TEST_STATUS=none" \
+      "grep -q '^TEST_STATUS=none' '$PF/noskip/tooling-status.env'"
+# Positive control — with a real runner the same flag DOES render skipped.
+check "with a real runner --skip-tests really does render skipped (control)" \
+      "grep -q 'skipped (--skip-tests)' '$PF/pack3/tooling-results.md'"
+check "and names the runner it did not run" \
+      "grep -qF 'test/smoke.sh' '$PF/pack3/tooling-results.md'"
+
+# --- every interpolation site, not just the two that were reported --------
+# Round 1 removed raw interpolation from the `node -e` probe and left a
+# `sed "s|^$REPO/||"` in the same file. A repo path holding a sed metacharacter
+# makes the strip abort for every symbol, refs drops to 0, and the report
+# AFFIRMATIVELY prints "Contained — no out-of-diff references" for a symbol
+# with a live stale caller. Worse than no map: containment as evidence.
+BRK="$PF/br[ack|et"; mkdir -p "$BRK/lib"
+git -C "$BRK" init -q -b main 2>/dev/null
+git -C "$BRK" config user.email t@t; git -C "$BRK" config user.name T
+printf '#!/usr/bin/env bash\ncompute_total() { echo 1; }\n' > "$BRK/lib/core.sh"
+printf '#!/usr/bin/env bash\n. lib/core.sh\ncompute_total\n' > "$BRK/consumer.sh"
+git -C "$BRK" add -A >/dev/null 2>&1; git -C "$BRK" commit -qm seed >/dev/null 2>&1
+printf '#!/usr/bin/env bash\ncompute_grand_total() { echo 1; }\n' > "$BRK/lib/core.sh"
+git -C "$BRK" add -A >/dev/null 2>&1; git -C "$BRK" commit -qm rename >/dev/null 2>&1
+"$BIN/jjstack-review-blast-radius" --out "$BRK/out" --repo "$BRK" --base HEAD~1 >/dev/null 2>&1
+check "a sed-metacharacter repo path still finds the stale caller" \
+      "grep -q 'consumer.sh' '$BRK/out/blast-radius.md'"
+sed -n '/^## Contained/,/^---$/p' "$BRK/out/blast-radius.md" > "$PF/brk-contained.md"
+check "and never affirms containment over a live caller" \
+      "! grep -q 'compute_total' '$PF/brk-contained.md'"
+# Positive control, recovered from git rather than invented: the exact
+# expression this file shipped -- sed "s|^$REPO/||" -- genuinely aborts on
+# this path, so the two assertions above are about the fix and not the fixture.
+REPO="$BRK"
+printf '%s/consumer.sh:2:x\n' "$BRK" | sed "s|^$REPO/||" > "$PF/oldsed.out" 2>/dev/null
+unset REPO
+check "the shipped raw interpolation genuinely breaks on this path (control)" \
+      "! grep -q '^consumer.sh' '$PF/oldsed.out'"
+# The SAME class at the --also-repo site: prefix AND replacement are spliced.
+SIB="$PF/si|bling"; mkdir -p "$SIB"
+printf '#!/usr/bin/env bash\ncompute_total\n' > "$SIB/caller.sh"
+"$BIN/jjstack-review-blast-radius" --out "$PF/sibout" --repo "$FX" --base HEAD~1 \
+   --also-repo "$SIB" >/dev/null 2>&1
+check "--also-repo with a metacharacter path still lists the sibling caller" \
+      "grep -q 'caller.sh' '$PF/sibout/blast-radius.md'"
+check "the sibling site is labelled with its repo name" \
+      "grep -qF '(si|bling)' '$PF/sibout/blast-radius.md'"
+# Positive control — a plain sibling path is listed too, so the assertions
+# above test the metacharacter and not --also-repo being wired up at all.
+PLAINSIB="$PF/plainsib"; mkdir -p "$PLAINSIB"
+printf '#!/usr/bin/env bash\ncompute_total\n' > "$PLAINSIB/caller.sh"
+"$BIN/jjstack-review-blast-radius" --out "$PF/plainsibout" --repo "$FX" --base HEAD~1 \
+   --also-repo "$PLAINSIB" >/dev/null 2>&1
+check "a plain --also-repo path is listed (control)" \
+      "grep -qF '(plainsib)' '$PF/plainsibout/blast-radius.md'"
+
+# --- the comment filter the reference doc claims, in a real language -------
+# The shell decoy above passes for the wrong reason: shell files have keyword
+# extraction disabled outright, so nothing there exercises a comment filter.
+# references/review-preflight.md states comment lines are never mined; test the
+# claim where the keywords are actually live.
+CMT="$PF/cmt"; mkdir -p "$CMT"
+git -C "$CMT" init -q -b main 2>/dev/null
+git -C "$CMT" config user.email t@t; git -C "$CMT" config user.name T
+printf 'def alpha():\n    return 1\n' > "$CMT/core.py"
+printf 'class Widget {}\n' > "$CMT/mod.js"
+printf 'from core import alpha\nprint(alpha())\nprint("PyCommentDecoy")\nprint("JsCommentDecoy")\nprint("RealPySymbol")\n' > "$CMT/user.py"
+git -C "$CMT" add -A >/dev/null 2>&1; git -C "$CMT" commit -qm seed >/dev/null 2>&1
+printf 'def alpha():\n    return 2\n# class PyCommentDecoy\ndef RealPySymbol():\n    return 3\n' > "$CMT/core.py"
+printf 'class Widget {}\n// class JsCommentDecoy\n' > "$CMT/mod.js"
+git -C "$CMT" add -A >/dev/null 2>&1; git -C "$CMT" commit -qm change >/dev/null 2>&1
+"$BIN/jjstack-review-blast-radius" --out "$CMT/out" --repo "$CMT" --base HEAD~1 >/dev/null 2>&1
+check "a whole-line # comment in a .py diff declares no symbol" \
+      "! grep -q 'PyCommentDecoy' '$CMT/out/blast-radius.md'"
+check "a whole-line // comment in a .js diff declares no symbol" \
+      "! grep -q 'JsCommentDecoy' '$CMT/out/blast-radius.md'"
+# Positive controls — a filter that deletes everything would also pass those.
+check "a real definition on a real code line IS still mined (control)" \
+      "grep -q 'RealPySymbol' '$CMT/out/blast-radius.md'"
+git -C "$CMT" diff HEAD~1 > "$CMT/cmt.diff"
+check "both decoys really are in the diff (control)" \
+      "grep -q '# class PyCommentDecoy' '$CMT/cmt.diff' && grep -q '// class JsCommentDecoy' '$CMT/cmt.diff'"
+check "both decoys really are referenced outside the diff (control)" \
+      "grep -q 'PyCommentDecoy' '$CMT/user.py' && grep -q 'JsCommentDecoy' '$CMT/user.py'"
+
+# --- the re-entrancy guard must SUPPRESS, not just print a banner ----------
+# Deleting `TEST=""` from the guard left the old assertion fully green: it only
+# grepped the --dry-run banner, never that the suite did not run. Assert the
+# side effect instead — the command's own sentinel file.
+RNT="$PF/reent"; mkdir -p "$RNT"
+git -C "$RNT" init -q -b main 2>/dev/null
+git -C "$RNT" config user.email t@t; git -C "$RNT" config user.name T
+printf 'seed\n' > "$RNT/f.txt"
+git -C "$RNT" add -A >/dev/null 2>&1; git -C "$RNT" commit -qm seed >/dev/null 2>&1
+JJSTACK_REVIEW_PREFLIGHT=1 "$BIN/jjstack-review-tooling-sweep" --out "$PF/rg1" \
+  --repo "$RNT" --typecheck none --lint none --test "touch $PF/test-ran-guarded" >/dev/null 2>&1
+check "the re-entrancy guard does not execute the test command" \
+      "[ ! -f '$PF/test-ran-guarded' ]"
+check "and records the suite as skipped, not passed" \
+      "grep -q '^TEST_STATUS=skipped' '$PF/rg1/tooling-status.env'"
+# The guard covers only $TEST today; `make lint` re-enters just as readily.
+JJSTACK_REVIEW_PREFLIGHT=1 "$BIN/jjstack-review-tooling-sweep" --out "$PF/rg2" \
+  --repo "$RNT" --typecheck none --lint "touch $PF/lint-ran-guarded" --test none >/dev/null 2>&1
+check "the re-entrancy guard suppresses the linter too" \
+      "[ ! -f '$PF/lint-ran-guarded' ]"
+check "and records the linter as skipped" \
+      "grep -q '^LINT_STATUS=skipped' '$PF/rg2/tooling-status.env'"
+# "we chose not to run it" and "the guard stopped it" are different facts, and
+# a row that hardcodes one reason prints the wrong one for the other.
+check "a guard-skipped row names the guard, not --skip-tests" \
+      "grep -q 'skipped (re-entrancy guard)' '$PF/rg1/tooling-results.md'"
+check "and still names the command it did not run" \
+      "! grep -qE '^\| test \| .n/a. \|' '$PF/rg1/tooling-results.md'"
+# Positive controls — the identical commands DO run without the guard, so the
+# assertions above prove suppression rather than a broken invocation.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/rg3" --repo "$RNT" \
+  --typecheck none --lint none --test "touch $PF/test-ran-free" >/dev/null 2>&1
+check "the same test command really runs without the guard (control)" \
+      "[ -f '$PF/test-ran-free' ]"
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/rg4" --repo "$RNT" \
+  --typecheck none --lint "touch $PF/lint-ran-free" --test none >/dev/null 2>&1
+check "the same lint command really runs without the guard (control)" \
+      "[ -f '$PF/lint-ran-free' ]"
+
+# --- --max-symbols was added for a round-1 finding with no test at all -----
+MS="$PF/maxsym"; mkdir -p "$MS"
+git -C "$MS" init -q -b main 2>/dev/null
+git -C "$MS" config user.email t@t; git -C "$MS" config user.name T
+printf 'def s_one():\n    pass\n' > "$MS/core.py"
+printf 'import core\ncore.s_one(); core.s_two(); core.s_three(); core.s_four(); core.s_five()\n' > "$MS/user.py"
+git -C "$MS" add -A >/dev/null 2>&1; git -C "$MS" commit -qm seed >/dev/null 2>&1
+printf 'def s_one():\n    pass\ndef s_two():\n    pass\ndef s_three():\n    pass\ndef s_four():\n    pass\ndef s_five():\n    pass\n' > "$MS/core.py"
+git -C "$MS" add -A >/dev/null 2>&1; git -C "$MS" commit -qm more >/dev/null 2>&1
+"$BIN/jjstack-review-blast-radius" --out "$MS/cap" --repo "$MS" --base HEAD~1 --max-symbols 2 >/dev/null 2>&1
+check "--max-symbols announces the truncation" \
+      "grep -q 'TRUNCATED' '$MS/cap/blast-radius.md'"
+check "--max-symbols names how many of how many were mapped" \
+      "grep -q 'only the first 2 of' '$MS/cap/blast-radius.md'"
+check "--max-symbols really stops after N symbols" \
+      "[ \$(grep -c '^### .' '$MS/cap/blast-radius.md') -eq 2 ]"
+# Positive control — the same fixture without the cap maps them all, so the
+# assertions above are about the flag and not about a small diff.
+"$BIN/jjstack-review-blast-radius" --out "$MS/all" --repo "$MS" --base HEAD~1 >/dev/null 2>&1
+check "without --max-symbols the same fixture maps every symbol (control)" \
+      "! grep -q 'TRUNCATED' '$MS/all/blast-radius.md' && [ \$(grep -c '^### .' '$MS/all/blast-radius.md') -eq 5 ]"
+
+# --- the documented non-executing path must exist at the documented entry --
+# SKILL.md tells the reader to run the sweep with --typecheck/--lint/--test
+# none on a tree they do not trust; the orchestrator it tells them to run
+# rejected all three as unknown args.
+"$BIN/jjstack-review-preflight" --out "$PF/notrust" --repo "$FX" --base HEAD~1 \
+  --typecheck none --lint none --test none > "$PF/notrust.out" 2>&1; rc=$?
+check "preflight accepts the documented non-executing flags" "[ $rc -ne 2 ]"
+check "the non-executing path detects no tooling to run" \
+      "grep -q '^TOOLS_DETECTED=0' '$PF/notrust/tooling-status.env'"
+check "and leaves all three categories IN SCOPE" \
+      "[ \$(grep -c '^## IN SCOPE' '$PF/notrust/exclusions.md') -eq 3 ]"
+check "and the index says NOTHING was checked" \
+      "grep -qE '^\| 1 .*NOTHING was checked' '$PF/notrust/EVIDENCE-PACK.md'"
+# Positive control, recovered from the shipped doc rather than invented.
+check "SKILL.md really documents this exact flag set (control)" \
+      "grep -qF -- '--typecheck none --lint none --test none' '$DIR/skills/review/SKILL.md'"
+
+# --- the sweep's exit contract -------------------------------------------
+# Header: "0 at least one detected tool ran and none reported failures". When
+# the only detected tool COULD NOT RUN, nothing ran — 0 contradicts the file's
+# own documented contract and reads as a clean sweep to any caller.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/onlyerr" --repo "$FX" \
+   --typecheck none --lint none --test 'jjstack-no-such-binary-xyz' >/dev/null 2>&1; rc=$?
+check "the sweep does not exit 0 when its only tool COULD NOT RUN" "[ $rc -ne 0 ]"
+check "and the artifact says so" \
+      "grep -q 'test COULD NOT RUN' '$PF/onlyerr/tooling-results.md'"
+# Positive control — a sweep where a tool really ran and passed still exits 0.
+"$BIN/jjstack-review-tooling-sweep" --out "$PF/okexit" --repo "$FX" \
+   --typecheck none --lint none --test 'true' >/dev/null 2>&1; rc=$?
+check "the sweep still exits 0 when a tool really ran and passed (control)" "[ $rc -eq 0 ]"
+
+# --- the changelog is for readers, so its sections must mean what they say -
+UNREL="$(awk '/^## \[Unreleased\]/{u=1;next} /^## \[/{u=0} u' "$DIR/CHANGELOG.md")"
+printf '%s\n' "$UNREL" > "$PF/unreleased.md"
+awk '/^### Fixed$/{f=1;next} /^### /{f=0} f' "$PF/unreleased.md" > "$PF/unrel-fixed.md"
+awk '/^### Added$/{f=1;next} /^### /{f=0} f' "$PF/unreleased.md" > "$PF/unrel-added.md"
+check "the Unreleased section declares each heading once" \
+      "[ \$(grep -c '^### Added$' '$PF/unreleased.md') -le 1 ] && [ \$(grep -c '^### Fixed$' '$PF/unreleased.md') -le 1 ]"
+check "the gbrain ran-clean fix is still filed under Fixed" \
+      "grep -q 'no longer claims it ran clean' '$PF/unrel-fixed.md'"
+check "the pre-flight feature is filed under Added" \
+      "grep -q 'gathers evidence before it starts thinking' '$PF/unrel-added.md'"
 
 rm -rf "$PF"
 

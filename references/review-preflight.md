@@ -67,8 +67,22 @@ sweep, for instance, is reported as covering parse errors and explicitly *not*
 covering style.
 
 Guard: the sweep exports `JJSTACK_REVIEW_PREFLIGHT=1`; if that is already set on
-entry it refuses to run the test suite, so a project whose test command invokes
-`/review` cannot recurse.
+entry it refuses to run **every** detected tool except its own internal shell
+parse sweep — `make lint` re-enters exactly as readily as `make test`, so a
+guard that covered only the test command was covering half the hazard. Each
+suppressed tool is recorded as `skipped` with its reason, never as a pass.
+
+Exit contract: `0` only when at least one detected tool RAN and none failed.
+"Detected, but nothing reached a verdict" — the only tool timed out, was
+missing, or was suppressed — exits `3` alongside "nothing detected at all".
+Neither is a pass, and a caller that reads only the exit code must not be able
+to mistake one for one.
+
+Reviewing a tree you do not trust: Phase 0 executes the repo's own `npm run`
+scripts and `make` targets, which is appropriate on a tree you trust and not on
+one you do not. `jjstack-review-preflight --typecheck none --lint none --test
+none` forwards straight through to the sweep and executes nothing from the repo;
+all three categories then read IN SCOPE, and the index says NOTHING was checked.
 
 ## Pre-pass 2 — Blast-radius map
 
@@ -89,6 +103,14 @@ git-ignored files too, minus a fixed exclusion list (`.git`, `node_modules`,
 `vendor`, build and cache dirs, lockfiles, minified bundles) — to find each
 one's references **outside** the changed files.
 
+`--base` must resolve. A ref this script cannot `rev-parse --verify` is a named
+error and a non-zero exit, never an empty diff: a typo like `orgin/main` used to
+make `merge-base` fail, `git diff` fail with its stderr discarded and its rc
+ignored, and the report render "Empty diff — nothing to map" at exit 0 — the
+index then printing "ran — map built" over a map that was never built. The same
+check runs in `jjstack-review-intent` and up front in the orchestrator, so one
+typo cannot produce four misleading artifacts.
+
 The diff it reads runs from the **merge base to the working tree**, so staged
 and unstaged edits are mapped, not only committed ones. That matters twice: it
 is the ordinary pre-landing moment, and pre-pass 1 sweeps the working tree, so
@@ -99,9 +121,19 @@ quote that line rather than implying the map covered more.
 
 Extraction is regex-based and deliberately over-collects: a spurious symbol
 costs one empty grep, a missed one costs a bug. Two filters keep that from
-tipping into noise — documentation files and comment lines are never mined,
-because neither declares anything, and mining them turns ordinary English into
-a "symbol" that matches half the repo and buries the real call sites.
+tipping into noise, because neither declares anything and mining them turns
+ordinary English into a "symbol" that matches half the repo and buries the real
+call sites:
+
+- **Documentation and data files are never mined** (`.md`, `.txt`, `.rst`,
+  `.json`, `.ya?ml`, `.toml`, …). Their references still are.
+- **Whole-line comments are never mined**, per language: `#` for Python, Ruby
+  and shell; `//` and block-comment lines for the C family, JS/TS, Go and Rust;
+  `--` for SQL and Lua. Deliberately whole-line only — stripping a *trailing*
+  comment marker would cut into shell strings and URLs, and over-collecting one
+  symbol costs an empty grep while dropping one costs a bug. A changed comment
+  inside a definition still counts as a change *inside* that definition; it just
+  never declares a symbol of its own.
 
 Every downstream pass must then ask, per listed call site: does it still hold
 against the NEW definition — arity, contract, constant value, exhaustive
@@ -186,13 +218,29 @@ any later "nothing broke".
 ## The index may not claim more than its artifacts support
 
 `EVIDENCE-PACK.md` is the first thing the review reads, so a summary that
-overstates its artifacts poisons everything downstream. Rows 1 and 5 are
-therefore rendered from the sweep's per-tool `tooling-status.env`
-(`none|skipped|pass|fail|error` for each of typecheck, lint, test), never from
-its aggregate exit code — one exit code cannot describe three tools, and
-deriving both rows from it printed "baseline recorded (green)" directly above an
-artifact reading "runner: none / NO baseline exists", and repainted a green
-suite RED whenever the typechecker happened to fail.
+overstates its artifacts poisons everything downstream. **Every** row is
+therefore rendered from facts the pass itself wrote down, never from an exit
+code — because `rc=0` means "the pass completed", and never "the pass found
+something":
+
+| row | facts read from | written by |
+|---|---|---|
+| 1 tooling sweep · 5 test baseline | `tooling-status.env` | `…-tooling-sweep` |
+| 2 blast-radius map | `blast-status.env` | `…-blast-radius` |
+| 3 intent extraction | `intent-status.env` | `…-intent` |
+| 4 prior dismissals | `dismissals-status.env` | `…-prior-dismissals` |
+
+Fixing this for rows 1 and 5 alone was fixing it exactly as wide as the fixture
+that caught it. Deriving rows 1 and 5 from one aggregate rc printed "baseline
+recorded (green)" directly above an artifact reading "runner: none / NO baseline
+exists", and repainted a green suite RED whenever the typechecker failed.
+Deriving rows 2 and 3 from an rc printed "ran — map built" and "ran — claim
+gathered" over an empty map and an `intent.md` asserting a fully committed
+change was uncommitted. Same defect, one pair over.
+
+Row 1 also reads `TOOLS_PASSED`, not only detected/failed/errored: a
+detected-but-skipped runner otherwise fell through to "ran — no failures" one
+line above row 5 correctly reporting **NO baseline exists**.
 
 Three index statuses are **known gaps, never passes**. Carry each into the
 report as one:
@@ -213,7 +261,8 @@ report as one:
 | `prior-dismissals.md` | Phase 2 + Phase 4 | fingerprints not to regenerate |
 | `tooling-results.md` | Phase 5 / the report | facts, merged in without a confidence score — except the COULD NOT RUN sections, which are gaps |
 | `test-baseline.md` | Phase 5 / the report | the before-state that makes "nothing broke" a comparison |
-| `tooling-status.env` | `EVIDENCE-PACK.md` | per-tool status, so the index never overstates the artifacts |
+| `tooling-status.env` | `EVIDENCE-PACK.md` | per-tool status, so rows 1 and 5 never overstate the artifacts |
+| `blast-status.env`, `intent-status.env`, `dismissals-status.env` | `EVIDENCE-PACK.md` | per-pass facts, so rows 2, 3 and 4 never overstate theirs either |
 
 ## Degradation contract
 

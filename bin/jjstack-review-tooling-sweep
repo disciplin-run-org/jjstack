@@ -53,12 +53,15 @@
 #                      Makefile — read-only probes that execute no repo code.
 #
 # Exit: 0 at least one detected tool ran and none reported failures, 1 at least
-#       one tool reported failures, 2 usage error, 3 environment error (no repo)
-#       or nothing detected at all — "nothing to check" is not a pass.
+#       one tool reported failures, 2 usage error, 3 environment error (no repo),
+#       nothing detected at all, or nothing that WAS detected reached a verdict
+#       — neither "nothing to check" nor "nothing ran" is a pass.
 #
 # Re-entrancy: exports JJSTACK_REVIEW_PREFLIGHT=1 while running. If that is
-# already set on entry the test suite is NOT run — a project whose test command
-# invokes /review would otherwise recurse forever.
+# already set on entry, every detected tool is suppressed except the internal
+# shell parse sweep — a project whose `make test` OR `make lint` invokes
+# /review would otherwise recurse forever. Each suppressed tool is recorded as
+# `skipped` with its reason, never as a pass.
 #
 # No color red anywhere — unreadable on the target terminal.
 set -uo pipefail
@@ -185,20 +188,45 @@ TEST="${TEST_OVERRIDE:-$(detect_test || true)}"
 [ "$LINT" = "none" ] && LINT=""
 [ "$TEST" = "none" ] && TEST=""
 
-# Count what was DETECTED before any guard clears it, so "nothing here to run"
-# and "something here we chose not to run" stay distinguishable downstream.
+# Remember what was DETECTED before any guard clears it, so "nothing here to
+# run" and "something here we chose not to run" stay distinguishable
+# downstream. Every later question about a tool — the results table, kind_of,
+# the baseline artifact — is answered from these two arrays, so the table and
+# tooling-status.env cannot drift apart: a runner-less repo used to render
+# `| test | n/a | skipped (--skip-tests) |` beside TEST_STATUS=none, printing
+# "we chose not to run it" over "there is no runner".
+declare -A DETCMD SKIPWHY
+DETCMD[typecheck]="$TC"; DETCMD[lint]="$LINT"; DETCMD[test]="$TEST"
 DETECTED=0
-[ -n "$TC" ]   && DETECTED=$((DETECTED + 1))
-[ -n "$LINT" ] && DETECTED=$((DETECTED + 1))
-[ -n "$TEST" ] && DETECTED=$((DETECTED + 1))
+for _s in typecheck lint test; do
+  [ -n "${DETCMD[$_s]}" ] && DETECTED=$((DETECTED + 1))
+done
 TEST_DETECTED="$TEST"
 
-# Re-entrancy guard: never let a project's own test command re-enter the review.
+# Re-entrancy guard: never let a project's own tooling re-enter the review.
+#
+# This covered $TEST alone, which was never the whole hazard: `make lint` and an
+# `npm run typecheck` that shells out re-enter exactly as readily as `make
+# test`. Under re-entry EVERY detected tool is suppressed except the internal
+# parse sweep, which is this script's own code and cannot recurse. Blunt on
+# purpose — each suppressed tool is recorded as `skipped` with its reason, so
+# nothing over-claims, and a nested review's outer sweep already ran them all.
 REENTRY_NOTE=""
-if [ -n "${JJSTACK_REVIEW_PREFLIGHT:-}" ] && [ -n "$TEST" ]; then
-  REENTRY_NOTE="test suite NOT run: JJSTACK_REVIEW_PREFLIGHT already set (re-entrancy guard)"
-  TEST=""
+if [ -n "${JJSTACK_REVIEW_PREFLIGHT:-}" ]; then
+  for _s in typecheck lint test; do
+    [ -n "${DETCMD[$_s]}" ] || continue
+    [ "${DETCMD[$_s]}" = "__shell_parse_sweep__" ] && continue
+    SKIPWHY[$_s]="re-entrancy guard"
+  done
+  if [ -n "${SKIPWHY[typecheck]:-}${SKIPWHY[lint]:-}${SKIPWHY[test]:-}" ]; then
+    REENTRY_NOTE="detected tooling NOT run: JJSTACK_REVIEW_PREFLIGHT already set (re-entrancy guard)"
+  fi
+  [ -n "${SKIPWHY[typecheck]:-}" ] && TC=""
+  [ -n "${SKIPWHY[lint]:-}" ]      && LINT=""
+  [ -n "${SKIPWHY[test]:-}" ]      && TEST=""
 fi
+# --skip-tests only means anything when a runner was actually detected.
+[ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 1 ] && SKIPWHY[test]="--skip-tests"
 
 label() { # human name for a command, incl. the internal shell-sweep token
   case "${1:-}" in
@@ -256,10 +284,9 @@ classify() { # classify <slug> <rc>
 kind_of() { # kind_of <slug> -> none|skipped|pass|fail|error
   local slug="$1"
   if [ -n "${KIND[$slug]:-}" ]; then printf '%s\n' "${KIND[$slug]}"; return 0; fi
-  if [ "$slug" = "test" ]; then
-    if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 1 ]; then echo skipped; return 0; fi
-    if [ -n "$REENTRY_NOTE" ]; then echo skipped; return 0; fi
-  fi
+  # `skipped` requires BOTH a detected tool and a recorded reason for not
+  # running it. Either alone is `none` — there was nothing there to skip.
+  if [ -n "${DETCMD[$slug]}" ] && [ -n "${SKIPWHY[$slug]:-}" ]; then echo skipped; return 0; fi
   echo none
 }
 
@@ -325,14 +352,14 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   echo
   echo "| tool | command | result |"
   echo "|------|---------|--------|"
+  # Rendered from kind_of, the same function tooling-status.env is built from,
+  # so the human table and the machine facts cannot disagree.
   for slug in typecheck lint test; do
-    if [ -n "${STATUS[$slug]:-}" ]; then
-      echo "| $slug | \`${CMDS[$slug]}\` | ${STATUS[$slug]} |"
-    elif [ "$slug" = "test" ] && [ "$SKIP_TESTS" -eq 1 ]; then
-      echo "| test | \`${TEST:-n/a}\` | skipped (--skip-tests) |"
-    else
-      echo "| $slug | — | none detected (structurally inapplicable) |"
-    fi
+    case "$(kind_of "$slug")" in
+      none)    echo "| $slug | — | none detected (structurally inapplicable) |" ;;
+      skipped) echo "| $slug | \`$(label "${DETCMD[$slug]}")\` | skipped (${SKIPWHY[$slug]}) |" ;;
+      *)       echo "| $slug | \`${CMDS[$slug]}\` | ${STATUS[$slug]} |" ;;
+    esac
   done
   echo
   for slug in typecheck lint test; do
@@ -497,15 +524,10 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   else
     echo "- runner: none"
     echo
-    if [ -n "$TEST_DETECTED" ] && [ "$SKIP_TESTS" -eq 1 ]; then
-      echo "Detected \`$TEST_DETECTED\` but skipped by \`--skip-tests\`. **NO"
+    if [ -n "$TEST_DETECTED" ] && [ -n "${SKIPWHY[test]:-}" ]; then
+      echo "Detected \`$TEST_DETECTED\` but skipped (${SKIPWHY[test]}). **NO"
       echo "baseline exists**, so no later pass may claim the change \"broke"
       echo "nothing\" — that claim is unsupported here."
-    elif [ -n "$REENTRY_NOTE" ]; then
-      echo "$REENTRY_NOTE"
-      echo
-      echo "**NO baseline exists**, so no later pass may claim the change"
-      echo "\"broke nothing\" — that claim is unsupported here."
     else
       echo "No test runner detected. NO baseline exists, so no later pass may"
       echo "claim the change \"broke nothing\" — that claim is unsupported here."
@@ -519,6 +541,10 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
 # (green)" came to be printed above an artifact reading "runner: none / NO
 # baseline exists". The index must never claim more than its artifacts
 # support, so it reads per-tool facts from here instead of guessing from an rc.
+skippedn=0
+for _s in typecheck lint test; do
+  [ "$(kind_of "$_s")" = "skipped" ] && skippedn=$((skippedn + 1))
+done
 {
   echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
   echo "TYPECHECK_STATUS=$(kind_of typecheck)"
@@ -526,6 +552,7 @@ if [ -n "$TEST" ] && [ "$SKIP_TESTS" -eq 0 ]; then run_tool test "$TEST"; fi
   echo "TEST_STATUS=$(kind_of test)"
   echo "TOOLS_DETECTED=$DETECTED"
   echo "TOOLS_PASSED=$passed"
+  echo "TOOLS_SKIPPED=$skippedn"
   echo "TOOLS_FAILED=$failures"
   echo "TOOLS_ERRORED=$errors"
 } > "$OUT/tooling-status.env"
@@ -538,6 +565,14 @@ echo -e "${GRN}sweep${RST} → $OUT (typecheck: $(kind_of typecheck), lint: $(ki
 # the artifacts and tooling-status.env carry the detail either way.
 if [ "$DETECTED" -eq 0 ]; then
   echo -e "${YEL}warn${RST}  no typechecker, linter or test runner detected — NOTHING was checked" >&2
+  exit 3
+fi
+# Neither is "detected, but nothing reached a verdict". The header promises 0
+# means at least one detected tool RAN and none failed; when the only detected
+# tool timed out, was missing, or was suppressed, nothing ran and 0 would read
+# as a clean sweep to any caller that only checks the exit code.
+if [ "$passed" -eq 0 ]; then
+  echo -e "${YEL}warn${RST}  $DETECTED tool(s) detected but NONE ran to a verdict — NOTHING was proven" >&2
   exit 3
 fi
 exit 0

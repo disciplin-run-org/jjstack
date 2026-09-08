@@ -48,6 +48,21 @@ if [ -z "$REPO" ] || ! git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1;
   exit 3
 fi
 
+# An explicitly named --base MUST resolve, and it is checked before anything is
+# written. A typo like `orgin/main` otherwise made `git log orgin/main..HEAD`
+# fail silently into an empty range, and intent.md then ASSERTED "the intent is
+# uncommitted — treat the working tree itself as the only statement of intent"
+# about a fully committed change. That is not a gap in the evidence, it is the
+# evidence stating the opposite of the truth.
+if [ -n "$BASE" ]; then
+  if ! git -C "$REPO" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
+    echo -e "${CYA}error${RST} --base '$BASE' does not resolve to a commit in $REPO" >&2
+    echo -e "${YEL}hint${RST}  check the spelling and that the ref is fetched:" >&2
+    echo -e "${YEL}hint${RST}    git -C '$REPO' rev-parse --verify '$BASE'" >&2
+    exit 2
+  fi
+fi
+
 if [ -z "$BASE" ]; then
   for cand in main master; do
     if git -C "$REPO" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
@@ -164,5 +179,21 @@ PY
 } > "$OUT/intent.md"
 
 NCOMMITS=$(grep -c '^---$' "$TMP/commits" 2>/dev/null); NCOMMITS="${NCOMMITS:-0}"
-echo -e "${GRN}intent${RST} commits: $NCOMMITS, PR: $([ "$PR_OK" -eq 1 ] && echo yes || echo no), issues: $(wc -l < "$TMP/issues") → $OUT/intent.md"
+NISSUES=$(wc -l < "$TMP/issues" | tr -d ' ')
+
+# Machine-readable, for the same reason rows 1 and 5 of the evidence-pack index
+# already read facts instead of an exit code: gathering nothing exits 0 too, so
+# a row rendered from the rc printed "ran — claim gathered" over an intent.md
+# that recovered no claim at all. No row may claim more than its artifact.
+INTENT_STATUS=none
+{ [ "$NCOMMITS" -gt 0 ] || [ "$PR_OK" -eq 1 ] || [ "$NISSUES" -gt 0 ]; } && INTENT_STATUS=gathered
+{
+  echo "# machine-readable; consumed by jjstack-review-preflight. Do not edit."
+  echo "INTENT_STATUS=$INTENT_STATUS"
+  echo "INTENT_COMMITS=$NCOMMITS"
+  echo "INTENT_PR=$([ "$PR_OK" -eq 1 ] && echo yes || echo no)"
+  echo "INTENT_ISSUES=$NISSUES"
+} > "$OUT/intent-status.env"
+
+echo -e "${GRN}intent${RST} commits: $NCOMMITS, PR: $([ "$PR_OK" -eq 1 ] && echo yes || echo no), issues: $NISSUES → $OUT/intent.md"
 exit 0
