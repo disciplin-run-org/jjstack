@@ -13,7 +13,41 @@ BIN="$DIR/bin"; HOOKS="$DIR/hooks"
 pass=0; fail=0
 ok()   { printf '  \033[92mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[95mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
-check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+check(){
+  # pipefail is suspended for the duration of an assertion. Dozens of checks in
+  # this file are `printf … | grep -q X`, and grep -q exits on its first match,
+  # which sends SIGPIPE upstream — so under pipefail a MATCH is reported as a
+  # failed check, at random. `$?` is captured and re-established first, because
+  # the spelling `check "…" "[ $? -eq 4 ]"` reads the status of the command the
+  # CALLER ran a line earlier, and anything run inside check before the eval
+  # resets it to 0.
+  local _rc=$?
+  set +o pipefail
+  ( exit "$_rc" )
+  if eval "$2"; then set -o pipefail; ok "$1"; else set -o pipefail; bad "$1"; fi
+}
+
+echo "== 0. the harness tests itself =="
+# `check` is the ONE function every assertion in this file passes through, so a
+# bug in it does not fail a test — it turns tests into silent passes and makes
+# the assertion count go UP, which is the worst outcome a suite can have. Both
+# of its contracts are asserted here, before anything else runs. Each probe runs
+# in a subshell with its own counters, so the deliberate failure never reaches
+# the suite's tally.
+h_false=$( pass=0; fail=0; check "probe" "false" >/dev/null; echo "$fail" )
+check "HARNESS: a false assertion really fails" "[ \"$h_false\" = 1 ]"
+h_true=$( pass=0; fail=0; check "probe" "true" >/dev/null; echo "$pass" )
+check "HARNESS: ...and a true one really passes" "[ \"$h_true\" = 1 ]"
+h_rc7=$( pass=0; fail=0; (exit 7); check "probe" "[ \$? -eq 7 ]" >/dev/null; echo "$pass" )
+check "HARNESS: a deferred \$? reaches the assertion intact" "[ \"$h_rc7\" = 1 ]"
+h_rc0=$( pass=0; fail=0; (exit 0); check "probe" "[ \$? -eq 7 ]" >/dev/null; echo "$pass" )
+check "HARNESS: ...and is read, not assumed" "[ \"$h_rc0\" = 0 ]"
+# The pipefail probe must be an UNBOUNDED producer. `printf 'a\nb\nc\n' | grep -q a`
+# looks equivalent but cannot observe the bug: three lines fit the pipe buffer, so
+# printf finishes before grep exits and never takes SIGPIPE — it returns 0 whether
+# or not the guard is present. `yes` never finishes, so it always takes the signal.
+h_pipe=$( pass=0; fail=0; check "probe" "yes | grep -q y" >/dev/null; echo "$pass" )
+check "HARNESS: a 'cmd | grep -q' assertion reports grep's verdict" "[ \"$h_pipe\" = 1 ]"
 
 echo "== 1. syntax =="
 for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
