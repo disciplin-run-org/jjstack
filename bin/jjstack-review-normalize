@@ -33,14 +33,19 @@ stream with the reason, counted, and the exit code says so. Silent deletion is
 the defect this whole change set exists to remove. Three mechanisms make that
 claim true rather than aspirational:
 
-  * every per-finding failure is caught as (ValueError, TypeError). A model
-    emitting `"confidence": null` used to raise an UNCAUGHT TypeError out of
-    float(), aborting the run and taking every valid finding with it;
-  * valid findings are STREAMED to stdout as they normalize, not buffered
-    until the end, so nothing already validated can be lost by a later line;
+  * NO exception raised while normalizing ONE finding may cost you the others.
+    The per-finding handler catches the whole Exception class, not a list of
+    types: round 1 caught (ValueError, TypeError) because the fixture was
+    `"confidence": null`, and a 400-digit integer then raised OverflowError and
+    aborted the run exactly as before. The failing line is recorded either way;
+  * valid findings are STREAMED to stdout as they normalize (see emit()), not
+    buffered until the end, so nothing already validated can be lost by a
+    later line — or by a later failure of any kind;
   * an internal error gets its own exit code (3), so "the tool crashed" can
-    never be misread by a caller as "some findings were malformed" (1). The
-    invalid stream is still written on that path.
+    never be misread by a caller as "some findings were malformed" (1), and it
+    names the line that caused it;
+  * --invalid-out is written on EVERY run, including a clean one. A file that
+    keeps the last run's malformed records is worse than no file at all.
 
 Usage:
   jjstack-review-normalize <findings.jsonl|-> [--invalid-out FILE]
@@ -121,8 +126,14 @@ def normalize_confidence(value):
         raise ValueError(f"confidence is not a number: {value!r}")
     try:
         conf = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"confidence is not a number: {value!r}")
+    except Exception as exc:
+        # The whole class, not an enumeration. Round 1 added TypeError because
+        # the fixture was `null`; a 400-digit integer then raised OverflowError
+        # — an ArithmeticError no guard named — and took the rest of the run
+        # with it. Whatever float() refuses is simply not a confidence.
+        raise ValueError(
+            f"confidence is not a usable number ({type(exc).__name__}): {value!r}"
+        )
     if conf != conf:  # NaN
         raise ValueError("confidence is NaN")
     if conf in (float("inf"), float("-inf")):
@@ -160,6 +171,18 @@ def normalize_finding(obj):
     except (TypeError, ValueError):
         raise ValueError(f"start_line is not an integer: {obj['start_line']!r}")
     return out
+
+
+def emit(record, stream=sys.stdout):
+    """Write ONE validated finding immediately.
+
+    Streaming, not buffering: a finding that has already passed the schema gate
+    must be on stdout before the next line is even read, so no later failure —
+    of any kind, at any point in the run — can take it back. The pre-fix code
+    appended to a list and printed after the loop, which is why one bad line
+    emptied the whole run's output.
+    """
+    stream.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def main(argv):
@@ -200,7 +223,7 @@ def main(argv):
     # STREAM the valid ones. Buffering them until after the loop meant a single
     # bad line could take the whole run's output with it.
     n_valid, invalid = 0, []
-    internal = None
+    internal, internal_line = None, None
     try:
         for lineno, line in enumerate(raw.splitlines(), 1):
             if not line.strip():
@@ -219,10 +242,31 @@ def main(argv):
                 # list where a scalar belongs is malformed INPUT, not a crash.
                 invalid.append({"line": lineno, "reason": str(exc), "raw": line})
                 continue
-            print(json.dumps(out, sort_keys=True))
+            except Exception as exc:
+                # THE CLASS, not the instance. Round 1 fixed `null` (TypeError)
+                # and round 2 found the same P0 one exception type over
+                # (OverflowError). Whatever goes wrong while normalizing ONE
+                # finding, the other findings are not its to lose: record this
+                # line, keep going, and let the exit code say the tool — not
+                # the emitter — is what misbehaved.
+                invalid.append(
+                    {
+                        "line": lineno,
+                        "reason": (
+                            "internal error normalizing this finding: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        "raw": line,
+                    }
+                )
+                if internal is None:
+                    internal, internal_line = exc, lineno
+                continue
+            emit(out)
             n_valid += 1
     except Exception as exc:  # last-resort guard: never exit 1 on a crash
-        internal = exc
+        if internal is None:
+            internal = exc
     finally:
         try:
             sys.stdout.flush()
@@ -230,30 +274,39 @@ def main(argv):
             pass
 
     if internal is not None:
-        # The invalid stream is still written below, then exit 3 — a code no
-        # caller can confuse with "some findings were malformed".
-        err(f"internal error after {n_valid} valid finding(s): {internal!r}")
+        where = f"line {internal_line}" if internal_line else "the run"
+        # Name the poisoning line: "something failed somewhere" is not a
+        # diagnosis. The invalid stream is still written below, then exit 3 —
+        # a code no caller can confuse with "some findings were malformed".
+        err(
+            f"internal error at {where} after {n_valid} valid finding(s): "
+            f"{internal!r}"
+        )
+
+    payload = "".join(json.dumps(r, sort_keys=True) + "\n" for r in invalid)
+    if invalid_out:
+        # ALWAYS written, including the empty case. The skill points a fixed
+        # path at this file; leaving the previous run's malformed records on
+        # disk after a clean run makes it lie about the run that just finished.
+        try:
+            with open(invalid_out, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+        except OSError as exc:
+            err(f"cannot write {invalid_out}: {exc}")
+            return 2
+    elif invalid:
+        sys.stderr.write(payload)
 
     if invalid:
-        payload = "".join(json.dumps(r, sort_keys=True) + "\n" for r in invalid)
-        if invalid_out:
-            try:
-                with open(invalid_out, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-            except OSError as exc:
-                err(f"cannot write {invalid_out}: {exc}")
-                return 2
-        else:
-            sys.stderr.write(payload)
         warn(
             f"{len(invalid)} malformed finding(s) NOT emitted — fix the emitter, "
             "do not delete the findings"
         )
-        print(f"{GRN}normalized{RST} {n_valid} finding(s)", file=sys.stderr)
-        return 3 if internal is not None else 1
 
     print(f"{GRN}normalized{RST} {n_valid} finding(s)", file=sys.stderr)
-    return 3 if internal is not None else 0
+    if internal is not None:
+        return 3
+    return 1 if invalid else 0
 
 
 if __name__ == "__main__":

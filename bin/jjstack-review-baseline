@@ -90,10 +90,38 @@ def jjstack_version():
         return "unknown"
 
 
-# Every key `rule_matches` below will actually read. The guard MUST inspect the
-# same set: checking only id/path/message let `{"file": "*"}` — an alias
-# `rule_matches` honours — walk straight past it.
-RULE_MATCH_KEYS = ("id", "rule_id", "path", "file", "message")
+# The alias GROUPS `rule_matches` resolves, in the order it resolves them: the
+# first truthy alias in a group wins and the rest are ignored. Guard and matcher
+# must read a rule through the SAME resolution or they drift apart — checking
+# the five keys independently let `{"id": "*", "rule_id": "security"}` look
+# scoped while `*` was the pattern actually applied, muting the whole repo at a
+# clean exit. One helper, used by both, is the only way that cannot recur.
+RULE_MATCH_GROUPS = (("id", "rule_id"), ("path", "file"), ("message",))
+RULE_MATCH_KEYS = tuple(k for group in RULE_MATCH_GROUPS for k in group)
+
+
+def resolve_rule_pattern(rule, group):
+    """Return (winning_key, pattern) exactly as `rule_matches` reads the group.
+
+    Mirrors `rule.get(a) or rule.get(b) or ""` then `.strip()` — including the
+    case where a whitespace-only value wins and strips to nothing, which leaves
+    the whole group UNSTATED for matching and must therefore read as unstated
+    to the guard too.
+    """
+    for key in group:
+        if rule.get(key):
+            return key, str(rule.get(key)).strip()
+    return None, ""
+
+
+def stated_patterns(rule):
+    """{winning_key: pattern} for every group the rule actually constrains."""
+    out = {}
+    for group in RULE_MATCH_GROUPS:
+        key, pattern = resolve_rule_pattern(rule, group)
+        if pattern:
+            out[key] = pattern
+    return out
 
 
 def is_universal_glob(pattern):
@@ -176,11 +204,9 @@ def load_baseline(path):
         if not str(r.get("reason", "")).strip():
             err(f"rules[{i}] has no reason — every suppression must be explained")
             return None
-        named = {
-            k: str(r.get(k, "")).strip()
-            for k in RULE_MATCH_KEYS
-            if str(r.get(k, "")).strip()
-        }
+        # Resolved, not per-key: a `*` that WINS its alias group is the
+        # pattern this rule will really apply, whatever its losing sibling says.
+        named = stated_patterns(r)
         if not named:
             err(
                 f"rules[{i}] names none of id/path/message — a rule that matches "
@@ -189,9 +215,15 @@ def load_baseline(path):
             return None
         if all(is_universal_glob(v) for v in named.values()):
             shown = ", ".join(f"{k}={v!r}" for k, v in sorted(named.items()))
+            ignored = sorted((set(RULE_MATCH_KEYS) & set(r)) - set(named))
+            extra = (
+                f". {', '.join(ignored)} never applies: the alias shown wins"
+                if ignored
+                else ""
+            )
             err(
                 f"rules[{i}] states only universal glob(s) ({shown}) — a rule "
-                "that matches every finding is never what you meant"
+                f"that matches every finding is never what you meant{extra}"
             )
             return None
 
@@ -221,14 +253,19 @@ def load_baseline(path):
 
 
 def rule_matches(rule, finding):
-    """Every field the rule states must match; unstated fields match anything."""
-    rid = str(rule.get("id") or rule.get("rule_id") or "").strip()
+    """Every field the rule states must match; unstated fields match anything.
+
+    Reads the rule through `resolve_rule_pattern` — the same helper the load
+    guard uses — so the pattern that is CHECKED is always the pattern that is
+    APPLIED.
+    """
+    _, rid = resolve_rule_pattern(rule, ("id", "rule_id"))
     if rid and not fnmatch.fnmatchcase(str(finding.get("lens", "")), rid):
         return False
-    path = str(rule.get("path") or rule.get("file") or "").strip()
+    _, path = resolve_rule_pattern(rule, ("path", "file"))
     if path and not fnmatch.fnmatchcase(str(finding.get("file", "")), path):
         return False
-    msg = str(rule.get("message") or "").strip()
+    _, msg = resolve_rule_pattern(rule, ("message",))
     if msg:
         pat = msg.lower()
         haystacks = (
@@ -425,8 +462,10 @@ def cmd_apply(argv):
                     hit = {
                         "by": "rule",
                         "reason": r["reason"],
+                        # The RESOLVED patterns. Printing every key present
+                        # let a losing alias read to a human as a scoped rule.
                         "matched": json.dumps(
-                            {k: r[k] for k in ("id", "rule_id", "path", "file", "message") if k in r},
+                            stated_patterns(r),
                             sort_keys=True,
                         ),
                     }
