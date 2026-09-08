@@ -35,14 +35,32 @@ def load_rows(path):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 3:
-            print("row %d is malformed (want 3 tab-separated fields)" % lineno)
+        if len(parts) == 3:
+            parts.append("LOW")
+        if len(parts) != 4:
+            print("row %d is malformed (want 3 or 4 tab-separated fields)" % lineno)
             sys.exit(2)
-        expect, command, purpose = parts
+        expect, command, purpose, force = parts
+        # The forced rating says WHICH path the row is testing, and it matters.
+        # LOW  — the rater would approve, so only the deterministic FLOOR can
+        #        refuse. Proves the floor beats a permissive rating.
+        # HIGH — the rater would refuse, so only the deterministic ALLOWLIST
+        #        can approve. Proves the allowlist is not a bypass.
+        # A row tested at the wrong rating passes for the wrong reason: the
+        # allowlist-bypass rows all "passed" at LOW simply by reaching the
+        # rater, which is exactly the mistake this column exists to prevent.
+        if force not in ("LOW", "HIGH"):
+            print("row %d has an unknown forced rating %r" % (lineno, force))
+            sys.exit(2)
+        # The table is newline-delimited, so a multi-line command cannot be
+        # written literally. Without decoding, the entire "first line looks
+        # benign, second line is destructive" bypass class is structurally
+        # unrepresentable — untestable rather than untested.
+        command = command.replace("\\t", "\t").replace("\\n", "\n")
         if expect not in ("allow", "defer"):
             print("row %d has an unknown expectation %r" % (lineno, expect))
             sys.exit(2)
-        rows.append((lineno, expect, command, purpose))
+        rows.append((lineno, expect, command, purpose, force))
     return rows
 
 
@@ -81,13 +99,13 @@ def main():
     if not floor:
         print("no 'defer' fixtures — the table cannot detect a broken floor")
         return 2
-    if ask(floor[0][2], floor[0][3]) != "defer":
+    if ask(floor[0][2], floor[0][3], floor[0][4]) != "defer":
         print("SELF-CHECK FAILED: a floor case was allowed at a forced LOW rating")
         return 2
 
     mismatches = []
-    for lineno, expect, command, purpose in rows:
-        got = ask(command, purpose)
+    for lineno, expect, command, purpose, force in rows:
+        got = ask(command, purpose, force)
         if got != expect:
             mismatches.append(
                 "  line %d: expected %s, got %s :: %s" % (lineno, expect, got, command)

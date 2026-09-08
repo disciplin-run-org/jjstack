@@ -317,10 +317,22 @@ check "policy table actually ran its rows" "[ \"${n_cases:-0}\" -ge 20 ]"
 # --- the rater is told both criteria ------------------------------------------
 prompt=$(printf '{"tool_name":"Bash","tool_input":{"command":"make widget","description":"build the widget"}}' \
          | JJSTACK_HOOK_LOG=/dev/null JJSTACK_HOOK_PRINT_PROMPT=1 bash "$HK" 2>/dev/null)
+# These must match the CRITERIA, not the labels. `grep -qi 'stated purpose'`
+# was provably vacuous: "Stated purpose:" is a fixed label the hook always
+# prints, so deleting BOTH criteria from the rater's system prompt left this
+# green while its sibling correctly went red. Assert the sentences that carry
+# the rule, which only exist if the rule is stated.
 check "rater prompt states the specificity criterion" \
-  "printf '%s' \"\$prompt\" | grep -qi 'specific'"
+  "printf '%s' \"\$prompt\" | grep -q 'SPECIFIC: it names a definite target'"
 check "rater prompt states the goal-alignment criterion" \
-  "printf '%s' \"\$prompt\" | grep -qi 'stated purpose'"
+  "printf '%s' \"\$prompt\" | grep -q 'ALIGNED with the stated purpose'"
+# ...and the caller's text must be fenced as data, not spliced in as prose.
+check "rater prompt fences untrusted caller text" \
+  "printf '%s' \"\$prompt\" | grep -q 'UNTRUSTED DATA supplied by'"
+check "rater prompt fences the stated purpose" \
+  "printf '%s' \"\$prompt\" | grep -q '<<<STATED-PURPOSE'"
+check "rater prompt fences the command" \
+  "printf '%s' \"\$prompt\" | grep -q '<<<COMMAND'"
 
 # --- the diagnostic log is opt-in, not a hardcoded /tmp path ------------------
 check "log path is configurable, not hardcoded" \
