@@ -750,6 +750,24 @@ check "a .md in a finding is not a report link" "[ \$(lint '$PCL/nolink.md') = 1
 body ghost '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`jjstack/does-not-exist-anywhere.md`\n'
 check "a link to a report that does not exist fails" "[ \$(lint '$PCL/ghost.md') = 1 ]"
 
+# A credential gate may not DEGRADE. Every fixture above runs on a grep with
+# PCRE, so a rule that silently stops working without one is invisible to all
+# of them - and that is exactly what happened: an inverted probe plus a no-op
+# substitution sent PCRE syntax to `grep -E`, the shape rule vanished, and an
+# AWS secret access key linted clean while the eleven vendor rows kept working.
+NOP="$SANDBOX/nopcre"; mkdir -p "$NOP"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in -*P*) exit 2;; esac; done\nexec %s "$@"\n' \
+  "$(command -v grep)" > "$NOP/grep"
+chmod +x "$NOP/grep"
+check "the shim really does reject -P (control)" \
+      "! PATH='$NOP:/usr/bin:/bin' grep -qP x /dev/null 2>/dev/null"
+PATH="$NOP:/usr/bin:/bin" "$BIN/jjstack-pr-comment-lint" "$PCL/sec_slash.md" >/dev/null 2>&1
+check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$? -eq 2 ]"
+# Exit 2 is what stops the `&&` chain before `gh pr comment`: the failure mode
+# has to be "will not post", never "posts your key".
+check "…and 2 is not the success code the post chain would continue past" \
+      "[ 2 -ne 0 ]"
+
 echo "== 9. the review skill says what it does =="
 SK="$DIR/skills/review/SKILL.md"
 check "the skill declares its wall-clock budget" "grep -q '60 min' '$SK'"
@@ -757,6 +775,14 @@ check "the skill caps the parallel agents" "grep -qE '\*\*4\*\*, one message' '$
 check "recall-max is opt-in, not the default" "grep -q -- '--deep' '$SK'"
 check "a P2-only posture never REJECTs" "grep -q 'never .REJECT' '$SK'"
 check "a re-review that does not shrink returns STOP" "grep -q 'the verdict is .STOP' '$SK'"
+# The ratchet the post-mortem measured: barring only RE-RAISED nits still lets
+# a round invent unlimited NEW ones about the fix it just asked for.
+check "a re-review raises nothing below P1 at all, new or listed"       "grep -q 'Raise nothing below P1 at all' '$SK'"
+check "…and says so rather than only barring what was already listed"       "! grep -q 'Raise nothing below P1 that the previous report already listed' '$SK'"
+# The lint and the post must share a shell or the gate is decorative, and the
+# skill must say so where a reader would otherwise split them for CLAUDE.md.
+check "the post chain is named as the sanctioned one-command exception"       "grep -q 'one sanctioned exception to one-command' '$SK'"
+check "the evidence pack the skill reads includes the test baseline"       "grep -q 'preflight/test-baseline.md' '$SK'"
 # The post and its lint must be ONE command: Claude Code does not persist shell
 # state, so a sourced PR identity in a separate call expands empty.
 check "the PR post is chained to the lint in one command" \

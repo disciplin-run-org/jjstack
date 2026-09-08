@@ -88,7 +88,7 @@ cat ~/.claude/skills/jjstack/references/review-preflight.md
 ```
 
 ```bash
-cat {OUTPUT_DIR}/preflight/EVIDENCE-PACK.md {OUTPUT_DIR}/preflight/intent.md {OUTPUT_DIR}/preflight/exclusions.md {OUTPUT_DIR}/preflight/blast-radius.md {OUTPUT_DIR}/preflight/tooling-results.md
+cat {OUTPUT_DIR}/preflight/EVIDENCE-PACK.md {OUTPUT_DIR}/preflight/intent.md {OUTPUT_DIR}/preflight/exclusions.md {OUTPUT_DIR}/preflight/blast-radius.md {OUTPUT_DIR}/preflight/tooling-results.md {OUTPUT_DIR}/preflight/test-baseline.md
 ```
 
 Options: `--base REF` (validated; a typo is refused), `--skip-tests` when the
@@ -200,8 +200,13 @@ CI, diff size, and the overall posture do not.
   against the commit the last report names) and the previous finding count.
 - Verify only the prior P0/P1: does the reproduction still reproduce? Mark
   each *fixed / still open / regressed*.
-- Raise nothing below P1 that the previous report already listed. The author
-  may answer "won't fix" on P2/P3 and it is not re-argued.
+- **Raise nothing below P1 at all — new or previously listed.** Not "nothing
+  already listed": that weaker rule is the measured failure. Across the stack
+  this skill replaces, P0/P1 fell 29 → 13 → 15 while P2/P3 ROSE 46 → 58 → 69,
+  and almost none of those were re-raised — they were fresh nits about
+  machinery the previous round had caused to be written. A new low-severity
+  observation goes in one line under Coverage notes, uncounted.
+- The author may answer "won't fix" on any P2/P3 and it is not re-argued.
 - Do not mutation-test or re-review the tests a fix added.
 - **If the finding count did not fall, the verdict is `STOP`**: the review is
   generating work faster than it retires it. Say so and hand back to the human.
@@ -247,9 +252,7 @@ Resolve the PR once, into a file — the **base** repo, not a fork:
 gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
 ```
 
-Read the outcome in a second call — one command per Bash call, per CLAUDE.md;
-a compound command fires the permission prompt and an unattended run stalls on
-it rather than posting:
+Read the outcome in a second call:
 
 ```bash
 cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
@@ -276,8 +279,13 @@ PR identity sourced in that same command. This applies to EVERY invocation.
 . {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
 ```
 
-Claude Code does not persist shell state between Bash calls, so the `source`
-and the post must share one command. Lint exit 4 is a credential in the
+**This chain is the one sanctioned exception to one-command-per-Bash-call.**
+Claude Code does not persist shell state, so `$PR_NUM` set in an earlier call
+expands empty here, and a lint run as its own call cannot gate anything — a
+non-zero exit is simply the previous command's, and the post goes out anyway.
+The gate only exists while the three share a shell. Never split it to satisfy
+the general rule; the general rule is about avoiding permission prompts, and
+this is the one place where obeying it disables a credential gate. Lint exit 4 is a credential in the
 comment: cite `file:line` only and re-run; the value stays in the report.
 Exit 1 is budget or link: move findings into the report, never delete them.
 

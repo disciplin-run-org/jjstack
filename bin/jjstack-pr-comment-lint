@@ -86,6 +86,37 @@ done
 [ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N]" >&2; exit 2; }
 [ -f "$SRC" ] || { echo -e "${CYA}error${RST} no such file: $SRC" >&2; exit 3; }
 
+# PCRE is a HARD REQUIREMENT, checked once, before anything is read.
+#
+# The shape rule needs lookaheads (the digit-and-uppercase entropy gate) and
+# lookbehinds (the "not a .md path" exclusion); neither exists in ERE, and the
+# rule cannot be rewritten without losing the property that keeps
+# `architrix/adr/AR-1.md` from reading as a credential.
+#
+# The first attempt at this degraded to `grep -E` instead, and degraded WRONG in
+# both halves: `grep -qP "" /dev/null` returns 1 on a machine WITH full PCRE
+# (an empty file has no line to match), so the fallback fired on every platform;
+# and the substitution that was supposed to strip the lookahead searched for a
+# character class without `/` while the pattern contains one, so it changed
+# nothing and handed PCRE syntax to `grep -E`, which errored into /dev/null.
+# Measured consequence under a grep that rejects -P: an AWS secret access key
+# lints CLEAN and the `&&` chain posts it. The eleven vendor rows kept working,
+# so the failure was invisible - it silently reverted to "we catch only the
+# vendors we listed", which is the round-3 defect this rule exists to fix.
+#
+# A credential gate may not degrade. Exit 2 here stops the `&&` chain before
+# `gh pr comment`, so an unsupported grep means "will not post", never "posts
+# your key".
+# The probe must MATCH something, and must exercise a lookahead. `grep -qP ''`
+# against empty input returns 1 on a machine with full PCRE - no line to match -
+# so it reports "no PCRE" everywhere. Give it a line, and a construct that only
+# PCRE can parse.
+if ! printf 'a1\n' | grep -qP '(?=.*[0-9])a' 2>/dev/null; then
+  echo -e "${CYA}error${RST} this lint requires a grep with -P (PCRE); refusing to run" >&2
+  echo -e "${YEL}why${RST}   the credential rules use lookaround and cannot degrade safely" >&2
+  exit 2
+fi
+
 viol=0
 secrets=0
 say() { [ "$QUIET" -eq 1 ] || echo -e "$1"; }
@@ -140,11 +171,7 @@ n_chars=$(wc -c < "$SRC" | tr -d ' ')
 # grep reads the pattern as its own options and that rule silently never fires.
 while IFS='|' read -r label pat; do
   [ -n "$label" ] || continue
-  # -P for the digit lookahead in the shape rule; -E where PCRE is unavailable
-  # (the rule then over-matches slightly, which fails in the SAFE direction).
   hits=$(grep -nPi -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
-  [ -z "$hits" ] && ! grep -qP '' /dev/null 2>&1 && \
-    hits=$(grep -nEi -- "${pat//(?=[A-Za-z0-9+_.~-]*[0-9])/}" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
   [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
 done <<'SECRETS'
 assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
@@ -252,7 +279,7 @@ elif [ -n "$report_ref" ]; then
     [ -n "$cand" ] && [ -f "$cand" ] && { found=1; break; }
   done
   [ "$found" -eq 1 ] || \
-    fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 6.2), then link it: a link to nothing is the same as no link."
+    fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 5), then link it: a link to nothing is the same as no link."
 fi
 
 # --- the residual: the count that proves nothing was dropped ---
