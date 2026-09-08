@@ -207,10 +207,23 @@ stays.
 jjstack ships six optional hooks that ride along with every Claude Code
 session.
 
-**`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
-pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
-classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
-Fail-closed when the API is unreachable.
+**`auto-approve-safe.sh`** — A smart permission gate, layered strictest
+first. Read-only tools always pass. A deterministic denylist refuses the
+things a model should never get a vote on — `rm -rf $HOME`, force-pushes,
+hard resets, curl piped to a shell — and it overrides any risk rating. What
+survives that goes to Claude Haiku for LOW/MEDIUM/HIGH classification, and
+the rater is given context: your working directory, the tool's own stated
+purpose, and the fact that scratch directories under `/tmp`, `mktemp` dirs
+and throwaway worktrees are ordinary workspace. Without that context a rater
+sees `rm -rf $SP/mut` and says MEDIUM, so mutation-testing and review runs
+turned into a prompt every few seconds. LOW auto-approves; anything else,
+including a missing key or a failed call, defers to you.
+
+In a tubemail worker the hook also hands its approval to the session's
+forwarder socket, which is the only component that knows the request_id —
+without that, an approved tool left a permission stuck pending hub-side. The
+local decision stays authoritative: a forwarder running the older
+context-free policy cannot veto an allow this hook already reasoned about.
 
 **`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
 into every prompt (see [Memory](#memory)): deterministic always-rules,

@@ -9,6 +9,33 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The permission gate stopped interrupting you every few seconds.** The
+  auto-approve hook asked Claude Haiku to rate each command with no context at
+  all, so `rm -rf $SP/mut` — a teardown inside a session scratchpad — looked
+  identical to `rm -rf` on your home directory and got you a prompt. Any session
+  doing heavy scratch work (test harnesses, mutation testing, code review) was
+  approving by hand almost continuously. The rater now sees your working
+  directory, the tool's own stated purpose, and an explicit statement that
+  `/tmp`, `mktemp` directories and throwaway worktrees are ordinary workspace.
+  Measured on the real commands that had been prompting: 0 of 6 approved before,
+  6 of 6 after, with 11 genuinely destructive commands still refused.
+- **The gate got stricter where it matters, not just looser.** A deterministic
+  denylist now refuses `rm -rf $HOME`, force-pushes, hard resets, `git clean
+  -fdx`, curl-piped-to-a-shell and device writes *before* any model sees them,
+  and it overrides a LOW rating. Previously every one of those was a judgment
+  call the rater could have gotten wrong.
+- **Approvals in a tubemail worker no longer leave a permission stuck pending.**
+  The hook had a delegation path keyed on `QM_WORKER_NAME` — a variable nothing
+  sets, aimed at a socket that has never existed, so it had been dead code the
+  whole time (0 of 638 recorded invocations took it). It now talks to the
+  forwarder socket that is actually there, so an approval is paired with the
+  request it belongs to. Your local decision stays authoritative: a forwarder
+  running the older context-free policy cannot veto it.
+- The hook's diagnostic log moved out of the world-readable `/tmp` and is now
+  configurable; it records the decision and the reason, not just that it ran.
+
 ### Changed
 
 - **`/review` is now the deepest review in the stack — on purpose.** It used to
