@@ -413,6 +413,19 @@ localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$
 # invisible to every fixture, because a fixture of flat bullets carries one
 # token per finding and the two counts coincide.
 n_rep=$(sed -n '/^### Findings/,/^### /p' "$REP" 2>/dev/null | grep -cE '^\|[[:space:]]*P[0-3][[:space:]]*\|')
+# ANTI-VACUITY FLOOR. The range above is anchored on a literal heading, so a
+# report that lists its findings anywhere else yields an empty range, n_rep=0,
+# and every declared total clears a floor of nothing - five findings declared
+# as one, clean, posted. The repo's own rule names the class: an assertion that
+# scopes its own input needs a floor beside it, or empty input passes
+# unconditionally. So count the lines that OPEN with a severity, which is what
+# one finding looks like in EITHER shape, and take the larger.
+#
+# Anchored, deliberately. A Guardrails sentence reading "while no P0 is added"
+# mentions a severity mid-line and is not a finding; counting those is the
+# over-count the table rule replaced.
+n_anch=$(grep -cE '^([-*+][[:space:]]+|[0-9]+\.[[:space:]]+)?(\*\*|__|\[|\()?P[0-3]\b' "$REP" 2>/dev/null)
+[ "${n_anch:-0}" -gt "${n_rep:-0}" ] && n_rep="$n_anch"
 if [ "$VERDICT" = "approve" ]; then
   # A resolved or clean verdict may not sit on a report that still blocks.
   if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(REJECT|CAUTION|STOP)' "$REP" 2>/dev/null; then

@@ -817,6 +817,29 @@ check "a template-shaped report declaring its TRUE total lints clean" \
 printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
 check "…and one declaring fewer than its table shows is bad-residual" \
       "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
+# ANTI-VACUITY. The row count is scoped by a `sed` range anchored on a literal
+# heading, so a report that lists findings under ANY other heading yielded an
+# empty range, a floor of zero, and five findings declared as one lint clean.
+# Every fixture above either uses the table or has no findings at all, so none
+# of them could see it. This one has findings and no table.
+bulletrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### What I found\n\n- **P1** `a:1` one\n- **P2** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n- **P3** `e:5` five\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead.md"
+check "findings listed under another heading still floor the declared total" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_nohead.md')\""
+# ...and the same report declaring its true total passes, so the floor counts
+# five and not the Guardrails line that merely mentions P0.
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 5 total.\n\n**P1** `a:1` one\n\n4 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead_ok.md"
+check "…and the same report declaring five lints clean, so P0 in prose is not a finding" \
+      "[ \$(lint '$PCL/fold_nohead_ok.md') = 0 ]"
+# EACH COUNTER EARNS ITS PLACE. The two are a max, and until this fixture the
+# table count could be deleted with the suite still green: every template
+# report also expands each finding beneath the table, and an expansion line
+# opens with its severity, so the anchor count reached the same answer. A table
+# with no expansions is where they differ, and it is a legal short report.
+tableonly=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n| P2 | 70 | `c:3` | three |\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tableonly" > "$PCL/fold_tableonly.md"
+check "a table with no expansions is counted by its rows, not missed" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_tableonly.md')\""
 # ...and the approve path has the same hole in its own vocabulary: one visible
 # line saying approved, over a report that rejects.
 body att_contra "Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved\n$RPT"
