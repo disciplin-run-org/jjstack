@@ -1120,8 +1120,12 @@ check "…and the posted state is read back rather than assumed" \
 # word survives deleting the call that does it. Pin the endpoint invocation.
 check "the reviewer-request trap is recorded with the working call" \
       "grep -q 'requested_reviewers --input -' '$SK'"
-check "…and names the broken one so it is not reached for again" \
-      "grep -q -- 'gh pr edit --add-reviewer' '$SK'"
+# Named as the CLASS, not the one flag it was first met on: `gh pr edit` dies
+# on the Projects-classic read whatever it was asked to do, verified on
+# --add-reviewer and on a title/body edit. Pinning the flag would have let the
+# skill keep recommending `gh pr edit` for everything else.
+check "…and names the broken subcommand as wholly broken, not one flag" \
+      "grep -q 'gh pr edit. does not work' '$SK'"
 # GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
 # and no lens asked for it; complexity, naming and why-not-what comments had
 # no owner either, so a correct implementation of the wrong shape passed.

@@ -526,11 +526,15 @@ and re-run — the value goes nowhere public, and the report is inside the
 comment now. Exit 1 is budget or shape: move findings from the visible part
 into the report, never delete them.
 
-3. **Requesting a reviewer** is the author's move, not this skill's, and it
-   carries one trap worth recording here because the fix belongs with the
-   other `gh` mechanics: `gh pr edit --add-reviewer` fails outright on a
-   GraphQL Projects-classic deprecation error and never reaches the request.
-   The REST endpoint works:
+3. **`gh pr edit` does not work on this account at all.** Every invocation,
+   whatever the flag, dies on a GraphQL Projects-classic deprecation error
+   raised while reading `projectCards`, and nothing is written — verified on
+   `--add-reviewer` and again on a title and body edit. Use the REST endpoint
+   for anything you would have reached for it: `PATCH /repos/<PR_REPO>/pulls/<PR_NUM>`
+   with a JSON body edits the title and body.
+
+   **Requesting a reviewer** is the author's move, not this skill's, and it
+   is the same story with one extra trap:
 
 ```bash
 echo '{"reviewers":["<login>"]}' | gh api -X POST repos/<PR_REPO>/pulls/<PR_NUM>/requested_reviewers --input -
