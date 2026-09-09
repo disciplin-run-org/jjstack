@@ -1,6 +1,6 @@
 ---
 name: review
-version: 0.3.0
+version: 0.4.0
 description: |
   Pre-landing code review that finishes in under an hour and converges on
   re-review. Wraps gstack's /review with a deterministic pre-flight (run the
@@ -9,7 +9,8 @@ description: |
   security, coverage+absence), per-finding verification with a confidence
   gate, a three-valued APPROVE/CAUTION/REJECT verdict, and a short PR comment
   in jj's voice. Hard budgets: 60 min, 4 agents, 10 findings. Re-reviews
-  report only regressions and new P0/P1. Saves the report to {repo}/jjstack/.
+  report only regressions and new P0/P1. Posts the full report inside the
+  PR comment, collapsed under the verdict.
   Trigger on: "review my changes", "pre-landing review", "review the diff",
   "review before merge", "review this PR", "code review", "thorough review".
   Do NOT trigger for: security-only review (use /security-review), two-stage
@@ -78,7 +79,7 @@ qualifier that already existed elsewhere in the file. +389 insertions against
 | jjstack agents | **4**, one message, in parallel | Never add a fifth |
 | Findings per agent | 8, highest severity first | The agent drops the rest and says "N more not shown" |
 | Findings in the report | **10** | The rest go in one line: "N low-confidence findings dropped" |
-| Findings in the PR comment | 3 (enforced by the lint) | Link the report |
+| Findings visible in the PR comment | 3 (enforced by the lint) | The rest stay in the collapsed report beneath |
 | Failing-test proofs | 3, P0/P1 only | Everything else is a claim with a quoted line |
 
 Recall-max (force every gstack specialist, ignore the small-diff skip) is
@@ -160,12 +161,42 @@ cat ~/.claude/skills/jjstack/jjstack.config.yaml
 Store `OUTPUT_DIR` (default `{repo}/jjstack`) and the DNA paths. `mkdir -p`
 the output dir. Note the start time — the 60-minute clock runs from here.
 
-Then decide **first review or re-review**: if `{OUTPUT_DIR}/review-*.md`
-exists for this branch, read the newest one now, before anything else. A
-re-review still runs Phases 0–3 in full — a second commit can introduce a
-fresh P0, and a pass that only re-checks the old findings would return
-APPROVE over it. What the previous report changes is Phase 4's *filter*, not
-which phases run.
+Resolve the PR once, into a file — the **base** repo, not a fork:
+
+```bash
+gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+```
+
+Read the outcome in a second call:
+
+```bash
+cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
+```
+
+The PR URL names the base repo — the one the number belongs to — even on a
+cross-repository PR; `headRepository` would name the fork. With no argument
+`gh pr view` reads the checked-out branch; from a detached worktree, pass the
+PR number.
+
+- exit 0 → continue. `no pull requests found` → **NO_PR**: there is nowhere
+  to post; note it for Phase 5. Anything else → **GH_ERROR**: report stderr
+  verbatim and stop. Never read an auth or network failure as "no PR".
+
+Then decide **first review or re-review**. The previous round is on the PR:
+every comment this skill posts opens with its attribution line and carries
+its full report collapsed beneath the verdict, so the thread is the record —
+on every machine, in every session. Read the newest one now, before anything
+else, substituting the two values `pr.env` just printed:
+
+```bash
+gh pr view <PR_NUM> --repo <PR_REPO> --json comments --jq '[.comments[] | select(.body | startswith("Claude jjstack/skills/review/SKILL.md"))] | last | .body'
+```
+
+`null` → first review. Under NO_PR the newest `{OUTPUT_DIR}/review-*.md` for
+this branch stands in, if one exists. A re-review still runs Phases 0–3 in
+full — a second commit can introduce a fresh P0, and a pass that only
+re-checks the old findings would return APPROVE over it. What the previous
+round changes is Phase 4's *filter*, not which phases run.
 
 ---
 
@@ -310,7 +341,7 @@ fired at once — `REJECT` and `APPROVE, one line, and stop` — with no precede
 stated between them. It is deleted rather than re-worded; "nothing above P3"
 already covers a clean re-review, and Idempotence rule 1 already says stop.
 
-**Re-review rules** (a `review-*.md` for this branch already existed):
+**Re-review rules** (the preamble found a previous round on the PR thread):
 
 - Open with `Δ since last review: +N / −M lines` (`git diff --shortstat`
   against the commit the last report names) and the previous finding count.
@@ -337,80 +368,96 @@ already covers a clean re-review, and Idempotence rule 1 already says stop.
 - **If the finding count did not fall, the verdict is `STOP`**: the review is
   generating work faster than it retires it. Say so and hand back to the human.
 
-Write `{OUTPUT_DIR}/review-YYYY-MM-DD.md`:
+Write `{OUTPUT_DIR}/review-YYYY-MM-DD.md`, a working file that is never
+committed:
 
 ```text
 ## /review: <target>            (commit <sha>, <minutes> min)
 
-**Verdict:** APPROVE | CAUTION | REJECT | STOP — one line why
+**Verdict:** APPROVE | CAUTION | REJECT | STOP - one line why
 **Coverage:** <lenses run>/<applicable> · <n> findings, <n> unconfirmed, <n> dropped
 
 ### Bottom line
-2–3 sentences: land it or not, the main risk.
+2-3 sentences: land it or not, the main risk.
 
-### Findings   (≤ 10 rows)
+### Findings   (at most 10 rows)
 | Sev | Conf | Location | Finding | Simplest fix | Net lines |
 Each row expands below: quoted line, failure scenario, proof tag if any.
 
-### Unconfirmed   (40–59; one line each)
+### Unconfirmed   (40-59; one line each)
 ### Degraded   (only if a lens did not run: which, why, what is unknown)
-### Guardrails   (2–5 conditions under which this verdict holds)
+### Guardrails   (2-5 conditions under which this verdict holds)
 ```
 
 Omit empty sections.
+
+This file is posted verbatim inside the PR comment in Phase 5, under the same
+account as the verdict, so it is written to the comment's rules: the short
+dash, never the emdash; repo-relative paths only — the pre-flight artifacts
+print `repo: /home/...` lines by design and none of them may be pasted; a
+credential is cited as `file:line` and its kind, never its value. The lint
+reads the whole comment, report included, and refuses all three.
 
 ---
 
 ## Phase 5: Finish
 
-1. Commit the report to `{OUTPUT_DIR}` (see
-   `references/output-capture.md`). No quality loop, no rubric snapshot —
-   the report is the deliverable.
-2. If this branch has a PR, post the verdict. Load the voice first:
+1. **The report is not committed.** It is posted inside the PR comment,
+   collapsed under the verdict, so the reader finds it where they already are
+   and no reviewer pushes to the author's branch. `{OUTPUT_DIR}/review-*.md`
+   and `{OUTPUT_DIR}/preflight/` are working files: leave them untracked.
+   (The report used to be a committed file with a link, and three lint rounds
+   went on that link — missing, then in a scratchpad, then on a side branch —
+   each the same defect: the delivery stored where the reader was not.)
+2. If the preamble found a PR, post the verdict. Under **NO_PR** there is
+   nowhere to post: say so and stop here. Load the voice first:
 
 ```bash
 cat ~/.claude/skills/jjstack/references/pr-comment-voice.md
 ```
 
-Resolve the PR once, into a file — the **base** repo, not a fork:
+Compose `{OUTPUT_DIR}/pr-comment-head.md` — the visible part — in the
+structure the voice reference gives: the attribution line **first**, the
+verdict, ≤ 3 blocking findings one line each, `N blocking, M total` with
+`M-N more` pointing at the report beneath, one guardrail.
+
+**Every comment opens with `Claude jjstack/skills/review/SKILL.md`.** It posts
+under a human's GitHub account — that is whose token `gh` holds — so without
+that line a reader cannot tell this review from something its apparent author
+wrote, and a footer is read after the verdict has already been taken as theirs.
+The lint refuses a comment that omits it or puts it anywhere but first.
+
+Then assemble the comment: the visible part, and the report verbatim in one
+collapsed `<details>` block beneath it, summarised as "Full report". The
+join is markup GitHub is particular about, so one tool writes it:
 
 ```bash
-gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+~/.claude/skills/jjstack/bin/jjstack-pr-comment-assemble --head {OUTPUT_DIR}/pr-comment-head.md --report {OUTPUT_DIR}/review-YYYY-MM-DD.md --out {OUTPUT_DIR}/pr-comment.md
 ```
 
-Read the outcome in a second call:
-
-```bash
-cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
-```
-
-The PR URL names the base repo — the one the number belongs to — even on a
-cross-repository PR; `headRepository` would name the fork.
-
-- exit 0 → continue. `no pull requests found` → **NO_PR**, say so, stop here.
-  Anything else → **GH_ERROR**: report stderr verbatim and stop. Never read an
-  auth or network failure as "nothing to post".
-
-Compose `{OUTPUT_DIR}/pr-comment.md` in the structure the voice reference
-gives: verdict, ≤ 3 blocking findings one line each, `N blocking, M total`,
-link to the committed report, and the attribution line last.
-
-**Every comment carries `Claude jjstack/skills/review/SKILL.md`.** It posts under
-a human's GitHub account — that is whose token `gh` holds — so without that
-line a reader cannot tell this review from something its apparent author
-wrote. The lint refuses a comment that omits it.
-
-**When every finding is resolved, or there were none, the comment is exactly
-one line and nothing else:**
+**When every finding is resolved, the visible part is exactly one line**, and
+the report — each prior finding marked fixed, with its evidence — still rides
+beneath it: "all issues resolved" asserts findings existed and were fixed, and
+without the report a PR that closed eleven findings renders identically to one
+that was clean on sight.
 
 ```text
-Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
 ```
 
-(`no findings` in place of `all issues resolved` on a first clean review.) No
-posture, no coverage line, no summary of what the author changed, no list of
-what was checked. The lint holds this form verbatim, because a budget alone
-leaves room to fill and it got filled twice.
+**When nothing was ever found, the whole comment is that one line and nothing
+else** — no report, because there is nothing to carry — written straight to
+`{OUTPUT_DIR}/pr-comment.md` without the assembler:
+
+```text
+Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved
+```
+
+No posture, no coverage line, no summary of what the author changed, no list
+of what was checked, in either form. The lint holds both verbatim, because a
+budget alone leaves room to fill and it got filled twice. It also refuses a
+`<details open>` block, an empty block, a second block, a local path or an
+emdash anywhere in the body, and a body over GitHub's size limit.
 
 <HARD-GATE>
 Do NOT run `gh pr comment` unless `jjstack-pr-comment-lint` exited 0 on
@@ -428,9 +475,12 @@ expands empty here, and a lint run as its own call cannot gate anything — a
 non-zero exit is simply the previous command's, and the post goes out anyway.
 The gate only exists while the three share a shell. Never split it to satisfy
 the general rule; the general rule is about avoiding permission prompts, and
-this is the one place where obeying it disables a credential gate. Lint exit 4 is a credential in the
-comment: cite `file:line` only and re-run; the value stays in the report.
-Exit 1 is budget or link: move findings into the report, never delete them.
+this is the one place where obeying it disables a credential gate. Lint exit
+4 is a credential in the comment: cite `file:line` and the kind of credential,
+and re-run — the value goes nowhere public, and the report is inside the
+comment now. Exit 1 is budget or shape: move findings from the visible part
+into the report, never delete them.
 
 3. Update `README.md` only if the change under review affects it.
-4. Close with the verdict, the minutes elapsed, and the report path.
+4. Close with the verdict, the minutes elapsed, and the comment URL that
+   `gh pr comment` printed.
