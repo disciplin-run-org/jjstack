@@ -19,9 +19,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   was merged on a mergeability check read before the review existed, and all
   three shipped in a release. A new `jjstack-pr-unread-check` exits non-zero
   when the thread has moved since you last read it, and the merge is chained
-  behind it, so it cannot run past. It reads reviews as well as comments,
-  because someone who clicks Request changes leaves a review and not a comment,
-  and it treats an unreadable thread as a refusal rather than as good news.
+  behind it, so it cannot run past. It reads all three surfaces a person can
+  leave something on - an issue comment, a submitted review, and a reply inside
+  an inline review thread - because they are three different shapes and the
+  usual tools return only the first two, and it treats a thread it could not
+  read as a refusal rather than as good news.
 - **A review comment can no longer approve at the top while rejecting at the
   bottom.** Now that the report rides inside the comment, the visible verdict
   is checked against it: a one-line "all issues resolved - lgtm - approved"

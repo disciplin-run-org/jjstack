@@ -18,12 +18,13 @@
 # --since is the moment you last actually READ the thread, not the moment you
 # last looked at the merge button.
 #
-# Both surfaces are read, because they are different surfaces: a comment
-# carries `createdAt`, a review carries `submittedAt`, and someone who clicks
-# "Request changes" leaves a review with no `createdAt` at all. Taking the max
-# over one of them is how an unread review hides behind a stale comment date.
-# `updatedAt` is not used: it also moves on a push or a label, so it answers a
-# different question.
+# THREE surfaces are read, because they are three different surfaces with three
+# different fields: an issue comment carries `createdAt`, a submitted review
+# carries `submittedAt`, and a reply inside an inline review thread is neither -
+# it lives on the pulls/comments endpoint and `gh pr view` does not return it at
+# all. Reading fewer than all three is how an unread item hides behind a stale
+# date on another surface. `updatedAt` is not used: it also moves on a push or a
+# label, so it answers a different question.
 #
 # Exit: 0 nothing newer · 1 something is unread (it is named) · 2 usage
 #       3 the thread could not be read — never mistaken for "nothing new".
@@ -63,11 +64,30 @@ RAW=$(gh pr view "$PR" --repo "$REPO" --json comments,reviews 2>&1) || {
   printf '%s\n' "$RAW" >&2
   exit 3
 }
+# A command that succeeds and prints nothing is not an empty thread; an empty
+# thread is `{"comments":[],"reviews":[]}`. Without this, empty output parsed to
+# an empty list and the gate said quiet - which is precisely the reading this
+# file's own header promises never to make. The promise is unconditional now.
+[ -n "$RAW" ] || {
+  echo -e "${CYA}error${RST} the thread read returned nothing at all — NOT 'nothing new'" >&2
+  exit 3
+}
+
+# The inline surface, which `gh pr view` cannot return. Its absence is not an
+# error - most pull requests have none - but a failure to ASK is, and is not
+# quietly folded into an empty list.
+INLINE=$(gh api "repos/$REPO/pulls/$PR/comments" --jq '[.[] | {kind:"inline", who:(.user.login // "?"), at:.created_at}]' 2>&1) || {
+  echo -e "${CYA}error${RST} could not read the inline review comments — NOT 'nothing new':" >&2
+  printf '%s\n' "$INLINE" >&2
+  exit 3
+}
+[ -n "$INLINE" ] || INLINE='[]'
 
 # One list, both surfaces, each with the field it actually carries.
-NEWER=$(printf '%s' "$RAW" | jq -r --arg since "$SINCE" '
+NEWER=$(printf '%s' "$RAW" | jq -r --arg since "$SINCE" --argjson inline "$INLINE" '
   [ (.comments[]? | {kind:"comment", who:(.author.login // "?"), at:.createdAt}),
-    (.reviews[]?  | {kind:"review",  who:(.author.login // "?"), at:.submittedAt, state:.state}) ]
+    (.reviews[]?  | {kind:"review",  who:(.author.login // "?"), at:.submittedAt, state:.state}),
+    ($inline[]?) ]
   | map(select(.at != null and .at > $since))
   | sort_by(.at)[]
   | "\(.at)  \(.kind)\(if .state then " (" + .state + ")" else "" end) by \(.who)"

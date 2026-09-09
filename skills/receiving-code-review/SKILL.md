@@ -244,10 +244,12 @@ looked at the merge button. Exit 1 names what arrived and refuses the merge;
 exit 3 means the thread could not be read, which is never treated as nothing
 new.
 
-Both surfaces are checked, because they are different surfaces: a comment
-carries `createdAt`, a review carries `submittedAt`, and someone who clicks
-Request changes leaves a review with no `createdAt` at all. Comparing one of
-them is how an unread review hides behind a stale comment date.
+All three surfaces are checked, because a person can leave something on any of
+them and they are three different shapes: an issue comment carries `createdAt`,
+a submitted review carries `submittedAt` and no `createdAt` at all, and a reply
+inside an inline review thread is on neither list — `gh pr view` cannot return
+it. Comparing fewer than all three is how an unread item hides behind a stale
+date on another surface.
 
 A review that is unread at merge time has cost the whole engagement: its
 findings are on `main` before anyone answers them, and the author who merged

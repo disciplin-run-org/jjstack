@@ -1222,12 +1222,25 @@ check "…and never reads an unreadable thread as nothing new" \
 # instead of the mechanism it named. `gh` is stubbed so the thread is a fixture
 # and the exit code is the assertion.
 UNR=$(tmp unread); UNRBIN="$UNR/bin"; mkdir -p "$UNRBIN"
-gh_stub() {   # gh_stub <json-or-FAIL>
-  if [ "$1" = FAIL ]; then
-    printf '#!/usr/bin/env bash\necho "could not resolve host" >&2\nexit 1\n' > "$UNRBIN/gh"
-  else
-    printf '#!/usr/bin/env bash\ncat <<%s\n%s\n%s\n' 'JSONEOF' "$1" 'JSONEOF' > "$UNRBIN/gh"
-  fi
+# The stub dispatches, because the tool asks TWO endpoints: `gh pr view` for
+# issue comments and submitted reviews, and `gh api .../pulls/N/comments` for
+# replies inside inline review threads, which `gh pr view` cannot return at all.
+# A stub that answered both with one blob could not tell the surfaces apart.
+gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [inline-json|FAIL]
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$1" = api ]; then\n'
+    case "${2-[]}" in
+      FAIL) printf '  echo "HTTP 502" >&2; exit 1\n' ;;
+      *)    printf '  cat <<%s\n%s\n%s\n  exit 0\n' 'INEOF' "${2-[]}" 'INEOF' ;;
+    esac
+    printf 'fi\n'
+    case "$1" in
+      FAIL)  printf 'echo "could not resolve host" >&2; exit 1\n' ;;
+      EMPTY) printf 'exit 0\n' ;;
+      *)     printf 'cat <<%s\n%s\n%s\n' 'PVEOF' "$1" 'PVEOF' ;;
+    esac
+  } > "$UNRBIN/gh"
   chmod +x "$UNRBIN/gh"
 }
 unread_rc() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" >/dev/null 2>&1; echo $?; }
@@ -1257,6 +1270,24 @@ check "…and an unreadable thread exits 3, never 0" \
 gh_stub '{"comments":[],"reviews":[]}'
 check "…and a malformed --since is a usage error, not a pass" \
       "[ \$(unread_rc yesterday) -eq 2 ]"
+# THE THIRD SURFACE. A reply inside an inline review thread is neither an issue
+# comment nor a submitted review, and `gh pr view` does not return it, so a
+# reader of the other two calls the thread quiet while it is not.
+gh_stub '{"comments":[],"reviews":[]}' '[{"kind":"inline","who":"r","at":"2026-09-09T19:00:00Z"}]'
+check "…and sees a reply inside an INLINE review thread" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that inline reply predates the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# ...and a failure to ASK the inline endpoint is a refusal, not an empty list.
+gh_stub '{"comments":[],"reviews":[]}' FAIL
+check "…and refuses when the inline surface cannot be read (exit 3)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A command that SUCCEEDS and prints nothing is not an empty thread. Without
+# this the empty output parsed to an empty list and the gate said quiet, which
+# is the reading the tool's own header promises never to make.
+gh_stub EMPTY
+check "…and a successful read that returns nothing is exit 3, not quiet" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
 check "…with the incident that produced the rule named" \
       "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
 # The process diagram is a second place the step list is stated, so it drifts.
