@@ -1247,7 +1247,12 @@ check "the detector's jq program is extractable (anti-vacuity floor)" \
 
 # Fixture A: the newest entry belongs to somebody else, and of MINE the newest
 # is a review and the oldest a comment. Correct answer: MY review.
-det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}}]}'
+# The third comment is MINE and NEWEST of all, and its body does not open with
+# the attribution line: it is the author's own reply to the last round, which
+# is a real shape on a real PR. Without it the startswith filter is never the
+# reason anything is excluded, and deleting that filter stays green while the
+# detector starts returning the author's reply as "the previous round".
+det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
 det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
 check "…and run, it returns MY newest round, not another account's newer one" \
       "[ \"\$det_out_a\" = WANT-REVIEW ]"
@@ -1263,14 +1268,29 @@ check "…and when my newest round is a comment, it returns the comment" \
 # The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
 # truncates it to one key, every gated call in the file short-circuits on its
 # own [ -n ] test, and the review completes having posted nothing at all.
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
 append_pat='>> {OUTPUT_DIR}/pr.env'
-failclosed_pat='(.login|type)'
 check "the login is APPENDED to pr.env, never written over it" \
       "grep -qF \"$append_pat\" '$SK'"
 check "…and refuses to guess when it is missing" \
       "grep -q 'A missing .PR_ME. stops the review' '$SK'"
-check "…emitting nothing rather than the string null on a failed call" \
-      "grep -qF \"$failclosed_pat\" '$SK'"
+
+# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
+# touched: inverting the test, binding .name instead of .login, returning an
+# empty binding instead of nothing, and renaming the key all stayed green, and
+# the first of those is this commit's own defect restored verbatim.
+me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
+me_prog=${me_line#*--jq \'}
+me_prog=${me_prog%%\' >>*}
+check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#me_prog} -gt 30 ]"
+me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
+check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
+me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on an error body it emits NOTHING, not the string null" \
+      "[ -z \"\$me_err\" ]"
 check "…so the positional concatenation is gone" \
       "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
 check "…so the comments-only detector is gone" \
