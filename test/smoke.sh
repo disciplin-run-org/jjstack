@@ -1126,6 +1126,37 @@ check "the reviewer-request trap is recorded with the working call" \
 # skill keep recommending `gh pr edit` for everything else.
 check "…and names the broken subcommand as wholly broken, not one flag" \
       "grep -q 'gh pr edit. does not work' '$SK'"
+# UNDER REVIEW. GitHub has no such state, and the one that looks like it -
+# a review left unsubmitted - is PENDING and visible only to its author, so it
+# signals to nobody. A commit status is visible to everyone and can gate the
+# merge, and unlike --approve it is not refused on a self-authored PR.
+check "the review announces itself with a pending commit status" \
+      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+check "…and the pr identity carries the head sha the status needs" \
+      "grep -q 'PR_SHA=' '$SK'"
+check "…and names why an unsubmitted review is not that signal" \
+      "grep -q 'visible only to the' '$SK'"
+# A required check left pending blocks the merge forever and the run that
+# stranded it is gone, so every exit path owes a terminal status.
+check "…and a run that ends any other way still posts a terminal status" \
+      "grep -q 'A pending status is a promise to replace it' '$SK'"
+# Named so nobody reaches for the richer API and finds out in production.
+check "…and records that Check Runs refuse a personal token" \
+      "grep -q 'authenticate via a GitHub App' '$SK'"
+# The mapping is PINNED as a table, like the event table: `success` and
+# `failure` both appear in prose nearby, so a word-grep would survive gutting
+# it. Anti-vacuity floor first.
+sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' | grep -v '^$' | sort > "$SANDBOX/status.txt"
+check "the verdict-to-status table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/status.txt') -eq 3 ]"
+printf '%s\n' '`success`' '`failure`' '`error`' | sort > "$SANDBOX/status-want.txt"
+check "…and maps every verdict to one of the three terminal states" \
+      "diff -q '$SANDBOX/status.txt' '$SANDBOX/status-want.txt' >/dev/null"
+# CAUTION carries a P1 and a P1 blocks, so a green check beside it is the same
+# contradiction as an approval that lists blocking findings.
+check "…with CAUTION failing the check, not passing it" \
+      "grep -q 'CAUTION. fails the check' '$SK'"
 # GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
 # and no lens asked for it; complexity, naming and why-not-what comments had
 # no owner either, so a correct implementation of the wrong shape passed.

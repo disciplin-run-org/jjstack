@@ -164,7 +164,7 @@ the output dir. Note the start time — the 60-minute clock runs from here.
 Resolve the PR once, into a file — the **base** repo, not a fork:
 
 ```bash
-gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+gh pr view --json number,url,commits --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))\nPR_SHA=\(.commits[-1].oid)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
 ```
 
 Read the outcome in a second call:
@@ -197,6 +197,34 @@ this branch stands in, if one exists. A re-review still runs Phases 0–3 in
 full — a second commit can introduce a fresh P0, and a pass that only
 re-checks the old findings would return APPROVE over it. What the previous
 round changes is Phase 4's *filter*, not which phases run.
+
+### Say that a review has started
+
+GitHub has no "under review" state. A review request marks who is *expected*
+to review, and a review left unsubmitted is **PENDING and visible only to the
+person who started it** — so the one thing that looks like this signal tells
+nobody. The mechanism that does is a commit status: it shows in the PR's
+checks box for everyone, and a repository can make it a required check so a
+merge waits on it. Post one before Phase 0 begins:
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_SHA" ] && gh api -X POST repos/"$PR_REPO"/statuses/"$PR_SHA" -f state=pending -f context=jjstack/review -f description='Review in progress'
+```
+
+A status is not subject to the self-authored refusal that blocks `--approve`:
+on a PR the token's own account opened, this is the only machine-readable
+verdict channel that works, and the only one a branch rule can gate on.
+
+**A pending status is a promise to replace it.** Phase 5 posts the terminal
+one. If the run ends any other way — the 60-minute budget, a GH_ERROR, an
+abort — post `state=error` with the reason before stopping. A required check
+left pending blocks the merge forever, and the review that stranded it is
+gone. Under NO_PR skip all of this: there is no checks box to post into.
+
+(`state` accepts `error`, `failure`, `pending`, `success` only, and
+`description` is truncated past 140 characters. The richer Check Runs API
+gives progress and annotations but refuses a personal token with *You must
+authenticate via a GitHub App*, so it is not an option here.)
 
 ---
 
@@ -504,11 +532,30 @@ PR identity sourced in that same command. This applies to EVERY invocation.
 . {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr review "$PR_NUM" --repo "$PR_REPO" <EVENT> --body-file {OUTPUT_DIR}/pr-comment.md
 ```
 
+**Then replace the pending status the preamble posted.** It answers one
+question — does anything block this merge — so it is binary where the verdict
+is not:
+
+| Verdict | Commit status |
+|---|---|
+| `APPROVE` | `success` |
+| `CAUTION`, `REJECT` | `failure` |
+| `STOP` | `error` |
+
+`CAUTION` fails the check because it carries a P1, and a P1 blocks. A green
+check beside a verdict that names a blocking finding is the same contradiction
+as an approval that goes on to list them; the human overrides the gate if they
+want it merged anyway.
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_SHA" ] && gh api -X POST repos/"$PR_REPO"/statuses/"$PR_SHA" -f state=<STATE> -f context=jjstack/review -f description='<VERDICT>: <N> blocking, <K> non-blocking'
+```
+
 **Confirm it landed.** GitHub accepts some review calls and does nothing
 observable, so read the state back rather than trusting the exit code:
 
 ```bash
-gh pr view <PR_NUM> --repo <PR_REPO> --json reviewDecision,reviews --jq '{decision:.reviewDecision, last:(.reviews|last|{state,author:.author.login})}'
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviewDecision,reviews,statusCheckRollup --jq '{decision:.reviewDecision, last:(.reviews|last|{state,author:.author.login}), status:[.statusCheckRollup[]?|select(.context=="jjstack/review")|.state]}'
 ```
 
 An empty `decision` after an `--approve` means the state was refused and only

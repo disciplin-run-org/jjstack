@@ -59,6 +59,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   fraction that counts only passes, and may name one thing the change does
   well.
 
+  It also says when it has started. GitHub has no "under review" state, and
+  the thing that looks like one, a review left unsubmitted, is visible only
+  to the person who started it. `/review` now posts a pending commit status
+  when it begins and replaces it with the verdict when it ends, so everyone
+  can see a review is in flight and a repository can require that check
+  before a merge. On a pull request you opened yourself, where GitHub refuses
+  to record an approval, that status is the only machine-readable verdict
+  that works.
+
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a
