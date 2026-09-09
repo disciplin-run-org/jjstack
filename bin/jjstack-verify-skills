@@ -9,6 +9,13 @@
 #   3. an installed symlink that dangles after a repo move
 #   4. a shared base copy-pasted back into its callers (the drift the
 #      base exists to prevent)
+#   5. a skill that shadows a Claude Code built-in without declaring it,
+#      or declares a shadow that no longer exists (the wrapper pattern
+#      shadows gstack by design; a built-in is someone else's namespace)
+#   6. a description longer than the harness keeps (the model routes on
+#      what survives the cut; the cut landed inside a note once)
+#   7. a built-in list older than the installed Claude Code (warn only:
+#      the list is data, refreshed by bin/jjstack-builtins-refresh)
 #
 # Scope note: a directory under skills/ with no SKILL.md is not a skill
 # and is skipped — git cannot track an empty directory, so these are
@@ -24,8 +31,22 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fails=0
 
-ok()  { echo -e "  ${GRN}ok${RST}  $1"; }
-bad() { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
+ok()   { echo -e "  ${GRN}ok${RST}  $1"; }
+bad()  { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
+warn() { echo -e "  ${YEL}warn${RST} $1"; }
+
+# The description block of a SKILL.md, indentation stripped: either the
+# `description: |` block up to the next top-level key or the closing ---,
+# or a single `description: text` line.
+desc_of() {
+  awk '
+    /^---$/ { if (++dash == 2) exit; next }
+    /^description: \|/ { f=1; next }
+    /^description: /   { sub(/^description: /, ""); print; next }
+    f && /^[^ ]/ { f=0 }
+    f { sub(/^  /, ""); print }
+  ' "$1"
+}
 
 # Real skills only: a directory is a skill iff it holds a SKILL.md.
 find "$REPO/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -printf '%h\n' \
@@ -59,15 +80,93 @@ echo "== 4. shared bases are not copy-pasted into their callers =="
 # Keyed on a distinctive body marker, not the title: a skill may legitimately
 # NAME a base (e.g. jj-qa's H1 mentions "QA Philosophy") without copying it.
 # marker|reference
-cat > "$TMP/markers" <<'EOF'
+cat > "$TMP/markers" <<'MARK'
 Dedup check before writing|memory-sweep.md
-EOF
+MARK
 while IFS='|' read -r marker ref; do
   [ -n "$marker" ] || continue
   c=$(grep -rlF "$marker" "$REPO/references/" "$REPO/skills/" 2>/dev/null | wc -l)
   if [ "$c" -eq 1 ]; then ok "$ref — body lives in exactly one file"
   else bad "$ref — body marker '$marker' found in $c files; expected 1"; fi
 done < "$TMP/markers"
+
+echo "== 5. every shadowed Claude Code built-in is declared, and every declaration is live =="
+# The ownership rule (README, "Whose name is it"): jjstack shadows gstack
+# names by design. It may shadow a Claude Code built-in only when the
+# built-in stays reachable under another name, and the skill says so:
+#   shadows:
+#     - "claude-code:/review -> /code-review"
+# An undeclared collision FAILS. A declaration with no collision behind it
+# FAILS too: the built-in was renamed or removed, and the description note
+# the declaration justifies is now wrong. The list of built-ins is DATA in
+# references/claude-code-builtins.txt, derived from the installed binary by
+# bin/jjstack-builtins-refresh — never a comment that says "re-check".
+BUILTINS="$REPO/references/claude-code-builtins.txt"
+grep -vE '^[[:space:]]*(#|$)' "$BUILTINS" | sort -u > "$TMP/builtins"
+comm -12 "$TMP/builtins" "$TMP/skills" > "$TMP/collisions"
+# declared: skill|entry
+while read -r d; do
+  awk -v s="$d" '
+    /^---$/ { if (++dash == 2) exit; next }
+    /^shadows:/ { f=1; next }
+    f && /^[^ ]/ { f=0 }
+    f && /^ *- / { sub(/^ *- */, ""); gsub(/"/, ""); print s "|" $0 }
+  ' "$REPO/skills/$d/SKILL.md"
+done < "$TMP/skills" > "$TMP/declared"
+
+while IFS='|' read -r skill entry; do
+  [ -n "$skill" ] || continue
+  if ! [[ "$entry" =~ ^claude-code:/([a-z0-9-]+)\ -\>\ /([a-z0-9-]+)$ ]]; then
+    bad "$skill: shadows entry '$entry' is not 'claude-code:/<name> -> /<other-name>'"; continue
+  fi
+  name="${BASH_REMATCH[1]}"; alt="${BASH_REMATCH[2]}"
+  if [ "$name" != "$skill" ]; then
+    bad "$skill declares a shadow of /$name — a skill can only shadow its own name"; continue
+  fi
+  if ! grep -qx "$name" "$TMP/collisions"; then
+    bad "$skill declares a shadow of /$name but no such built-in is listed — stale; drop the declaration and the description note"; continue
+  fi
+  if ! grep -qx "$alt" "$TMP/builtins"; then
+    bad "$skill says the built-in is reachable as /$alt, but /$alt is not a listed built-in"; continue
+  fi
+  if grep -qx "$alt" "$TMP/skills"; then
+    bad "$skill says the built-in is reachable as /$alt, but jjstack shadows /$alt too"; continue
+  fi
+  # The note must reach the model: the alt name has to appear in the part
+  # of the description the harness keeps (check 6 sets the ceiling).
+  if ! desc_of "$REPO/skills/$skill/SKILL.md" | head -c 1400 | grep -qF "/$alt"; then
+    bad "$skill: the description must name /$alt within its first 1400 chars — that is the only place the user learns it"; continue
+  fi
+  ok "$skill shadows /$name (declared; built-in reachable as /$alt)"
+done < "$TMP/declared"
+
+while read -r c; do
+  [ -n "$c" ] || continue
+  grep -q "^$c|" "$TMP/declared" && continue
+  bad "$c shadows the Claude Code built-in /$c and does not declare it — add 'shadows:' naming the other name the built-in keeps, or rename to jj-$c"
+done < "$TMP/collisions"
+[ -s "$TMP/collisions" ] || ok "no skill shadows a Claude Code built-in"
+
+echo "== 6. descriptions fit the harness =="
+# Observed on Claude Code 2.1.266: a 1622-char description was cut near
+# 1535, inside the sentence naming the alternate command. 1400 leaves room
+# for the harness to move a little.
+DESC_MAX=1400
+while read -r d; do
+  n=$(desc_of "$REPO/skills/$d/SKILL.md" | wc -c)
+  if [ "$n" -le "$DESC_MAX" ]; then ok "$d ($n)"
+  else bad "$d description is $n chars; the harness cuts near 1535 and the ceiling is $DESC_MAX"; fi
+done < "$TMP/skills"
+
+echo "== 7. the built-in list is not older than the installed Claude Code =="
+listed=$(sed -n 's/^# claude-code-version: *//p' "$BUILTINS" | head -1)
+installed=$(claude --version 2>/dev/null | awk '{print $1}')
+if [ -z "$listed" ]; then bad "$BUILTINS carries no '# claude-code-version:' header"
+elif [ -z "$installed" ]; then warn "claude is not on PATH — cannot compare against list ($listed)"
+elif [ "$listed" = "$installed" ]; then ok "list and installed agree ($installed)"
+elif [ "$(printf '%s\n%s\n' "$listed" "$installed" | sort -V | tail -1)" = "$installed" ]; then
+  warn "installed Claude Code $installed is newer than the list ($listed): bin/jjstack-builtins-refresh | diff $BUILTINS -"
+else ok "list ($listed) is newer than installed ($installed)"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then

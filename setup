@@ -56,7 +56,7 @@ if [ ! -d "$ANTHROPIC_SEC_DIR/.git" ]; then
   if git clone https://github.com/anthropics/claude-code-security-review.git "$ANTHROPIC_SEC_DIR" 2>/dev/null; then
     ok "Anthropic security-review installed"
   else
-    warn "Failed to clone Anthropic security-review. /security-review will work without it."
+    warn "Failed to clone Anthropic security-review. /jj-security-review will work without it."
   fi
 else
   # Auto-update: pull latest from Anthropic (trusted unconditionally)
@@ -70,7 +70,7 @@ if [ ! -d "$SENTRY_SKILLS_DIR/.git" ]; then
   if git clone https://github.com/getsentry/skills.git "$SENTRY_SKILLS_DIR" 2>/dev/null; then
     ok "Sentry skills installed"
   else
-    warn "Failed to clone Sentry skills. /security-review will work without it."
+    warn "Failed to clone Sentry skills. /jj-security-review will work without it."
   fi
 else
   git -C "$SENTRY_SKILLS_DIR" pull --ff-only -q 2>/dev/null && ok "Sentry skills updated" || true
@@ -86,7 +86,7 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
     rm -rf "$OWASP_TMP"
     ok "OWASP security reference installed"
   else
-    warn "Failed to clone OWASP reference. /security-review will work without it."
+    warn "Failed to clone OWASP reference. /jj-security-review will work without it."
     rm -rf "$OWASP_TMP"
   fi
 fi
@@ -206,6 +206,27 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
     ok "Installed $skill_name (new)"
   fi
 done
+
+# Prune links for skills that left the repo (renamed or removed). The loop
+# above only ever ADDS: after skills/security-review became
+# skills/jj-security-review, the old link would keep pointing at a directory
+# that no longer exists, and the harness would keep listing a skill that no
+# longer loads. Only links the previous manifest recorded as OURS are
+# touched; a gstack original is restored, anything else is removed.
+PRUNED=()
+for name in "${!EXISTING_ORIGINALS[@]}"; do
+  [ -d "$JJSTACK_DIR/skills/$name" ] && [ -f "$JJSTACK_DIR/skills/$name/SKILL.md" ] && continue
+  target_link="$SKILLS_DIR/$name"
+  [ -L "$target_link" ] || continue
+  case "$(readlink "$target_link")" in *jjstack/*) ;; *) continue ;; esac
+  original="${EXISTING_ORIGINALS[$name]}"
+  if [ -n "$original" ] && [ -e "$original" ]; then
+    ln -snf "$original" "$target_link"; PRUNED+=("$name (restored gstack)")
+  else
+    rm -f "$target_link"; PRUNED+=("$name (removed)")
+  fi
+done
+[ "${#PRUNED[@]}" -gt 0 ] && ok "Pruned stale links: ${PRUNED[*]}"
 
 # Write manifest
 printf '%s\n' "${MANIFEST_LINES[@]}" > "$MANIFEST"

@@ -1200,6 +1200,95 @@ for t in jjstack-review-preflight jjstack-review-tooling-sweep \
   check "$t --help is non-empty" "[ -s '$HLP' ]"
 done
 
+echo "== 11. skill namespace: shadows are declared, checked, and the check runs =="
+# The class: a jjstack skill takes a name Claude Code also ships, and the user
+# typing it silently gets the other thing. PR #12 shipped a detector for it
+# that (a) missed the second live collision, (b) no automation ran, and (c)
+# no test covered — delete it and everything stayed green. The rules here are
+# DERIVED: the set of declared shadows comes from the skills themselves, and
+# every branch of check 5 has a fixture that must fail it.
+VS="$BIN/jjstack-verify-skills"
+check "the skill-tree checks pass on this tree" "bash '$VS' >/dev/null 2>&1"
+check "the workflow runs the skill-tree checks on pull requests" \
+      "grep -q 'bin/jjstack-verify-skills' '$DIR/.github/workflows/verify.yml' && grep -q 'pull_request' '$DIR/.github/workflows/verify.yml'"
+check "…and the smoke suite" "grep -q 'test/smoke.sh' '$DIR/.github/workflows/verify.yml'"
+
+# A fixture repo is a copy of bin/ + references/ with a synthetic skills/.
+# Each case mutates one thing and names the check-5 branch it must trip.
+mkskill() {  # mkskill <root> <name> [shadows-entry] [description]
+  mkdir -p "$1/skills/$2"
+  { printf -- '---\nname: %s\ndescription: |\n  %s\n' "$2" "${4:-A test skill; the other name is /$2-alt.}"
+    [ -n "${3:-}" ] && printf 'shadows:\n  - "%s"\n' "$3"
+    printf -- '---\n# %s\n' "$2"; } > "$1/skills/$2/SKILL.md"
+}
+mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt, gamma]
+  local r; r=$(tmp nsfix)
+  cp -r "$BIN" "$r/bin"; mkdir -p "$r/references" "$r/skills"
+  printf '# claude-code-version: 2.1.266\nalpha\nalpha-alt\ngamma\n' > "$r/references/claude-code-builtins.txt"
+  echo "$r"
+}
+vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt'; mkskill "$F" beta
+check "declared shadow with a live built-in and a reachable alt passes" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and a name that collides with nothing is not mentioned by check 5" \
+      "! vs_out '$F' | grep -q 'beta shadows'"
+
+F=$(mkfix); mkskill "$F" alpha
+check "undeclared collision FAILS and names the fix" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha and does not declare it'"
+check "…and the script exits non-zero" "! vs_out '$F' >/dev/null"
+
+F=$(mkfix); mkskill "$F" beta 'claude-code:/beta -> /alpha-alt'
+check "stale declaration (no built-in behind it) FAILS" \
+      "vs_out '$F' | grep -q 'beta declares a shadow of /beta but no such built-in is listed'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /nowhere'
+check "an alt that is not a listed built-in FAILS (the reachability claim is false)" \
+      "vs_out '$F' | grep -q 'but /nowhere is not a listed built-in'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /gamma'; mkskill "$F" gamma 'claude-code:/gamma -> /alpha-alt'
+check "an alt that jjstack shadows too FAILS (the other name is taken as well)" \
+      "vs_out '$F' | grep -q 'but jjstack shadows /gamma too'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A test skill that never names the other command.'
+check "a declaration whose description never names the alt FAILS" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt within its first 1400 chars'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt"
+check "a description over the ceiling FAILS check 6" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
+check "a skill declaring a shadow of a different name FAILS" \
+      "vs_out '$F' | grep -q 'a skill can only shadow its own name'"
+
+F=$(mkfix); mkskill "$F" alpha 'shadows /alpha'
+check "a malformed shadows entry FAILS with the expected shape" \
+      "vs_out '$F' | grep -q \"is not 'claude-code:/<name> -> /<other-name>'\""
+
+F=$(mkfix); sed -i '/^# claude-code-version/d' "$F/references/claude-code-builtins.txt"; mkskill "$F" beta
+check "a built-in list with no version header FAILS check 7" \
+      "vs_out '$F' | grep -q 'carries no .# claude-code-version:. header'"
+
+# DERIVE, DON'T ENUMERATE: every shadow the real tree declares must be one
+# the real built-in list contains, and every real collision must be declared.
+# This is check 5 run on the real tree with its verdict read back, so a
+# collision that lands on main cannot pass this file either.
+check "every declared shadow in the real tree is reported as declared" \
+      "! vs_out '$DIR' | grep -q 'does not declare it'"
+check "the real built-in list carries a version header" \
+      "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
+check "the real built-in list contains the two names that collided on main (review, security-review)" \
+      "grep -qx review '$DIR/references/claude-code-builtins.txt' && grep -qx security-review '$DIR/references/claude-code-builtins.txt'"
+check "the refresh script reproduces the binary-derived block's shape (header lines present)" \
+      "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
+check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
+      "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
+check "setup prunes links for skills that left the repo" \
+      "grep -q 'Prune links for skills that left the repo' '$DIR/setup'"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built

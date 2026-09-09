@@ -1,5 +1,5 @@
 ---
-name: security-review
+name: jj-security-review
 version: 0.4.0
 description: |
   Security review for codebases, MCP servers, and web applications. Combines
@@ -7,7 +7,8 @@ description: |
   approach with 17 vulnerability references, OWASP Top 10:2025 + Agentic AI
   security, and jjstack's MCP-specific CWE assessment. Saves findings to repo,
   iterates to 10/10, injects DNA.
-  jjstack skill that enhances the built-in /security-review.
+  Named /jj-security-review so Claude Code's own built-in /security-review stays
+  reachable: that one has no other name, so jjstack does not shadow it.
 allowed-tools:
   - Read
   - Grep
@@ -20,7 +21,7 @@ allowed-tools:
   - Write
 ---
 
-# jjstack security-review
+# jjstack jj-security-review
 
 Enhanced security review that layers three trusted sources with jjstack's own
 MCP-focused assessment:
@@ -491,7 +492,7 @@ Generate a structured security report at `{OUTPUT_DIR}/security-review.md`:
 
 **Date:** {date}
 **Scope:** Git diff + full codebase CWE assessment
-**Assessor:** Claude Code + jjstack /security-review
+**Assessor:** Claude Code + jjstack /jj-security-review
 **Sources:** Anthropic security-review, Sentry security-review, OWASP Top 10:2025
 
 ## Summary
