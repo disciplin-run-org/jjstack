@@ -339,6 +339,19 @@ means users configure DNA once in their global config and all jjstack skills use
 
 ### Hooks
 
+> **SUPERSEDED (2026-09-09), for the permission gate only.** Everything below
+> about `auto-approve-safe.sh` describes the original three-tier design: an
+> always-approved read-only tier that included `WebFetch`, a Haiku risk
+> classifier, and a permissive regex fallback when the API was unreachable.
+> None of those three is still true. `WebFetch` was removed from the tier
+> (`Read` plus `WebFetch` is a complete two-step exfiltration path with no
+> prompt at either step), the classifier is gone entirely, and the fallback
+> now refuses rather than allows. The gate is `hooks/permission-floor.py`, a
+> deterministic `PreToolUse` deny; `auto-approve-safe.sh` is an audit line and
+> a tubemail relay that decides nothing, and installation is by copy, not the
+> symlink described further down. See ADR AR-4, the README's Hooks section,
+> and `references/hard-gate-convention.md`. The rest of this document stands.
+
 jjstack ships efficiency hooks that reduce permission friction during Claude Code sessions.
 
 **Auto-approve hook** (`hooks/auto-approve-safe.sh`):
