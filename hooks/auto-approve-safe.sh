@@ -106,6 +106,52 @@ esac
 [ "$TOOL_NAME" != "Bash" ] && defer
 [ -z "$COMMAND" ] && defer
 
+# ── Heuristic decision, used whenever the Haiku tier is unavailable ───────────
+#
+# This used to be an allowlist of ~20 read-only command names that also deferred on
+# ANY pipe or subshell, so `grep x src | head` prompted. In a normal dev session
+# almost every command deferred, which is the opposite of what an auto-approve hook
+# is for. Inverted: allow ordinary development work, defer the specific things that
+# genuinely need a person.
+#
+# Safe to be generous here because this is NOT the only guard. block-destructive.sh
+# runs as a separate PreToolUse hook on every Bash call and hard-blocks the
+# catastrophic shapes (recursive deletes against home/root, find -delete, git clean,
+# zero-truncation, disk writes) regardless of what this hook decides. Two independent
+# layers; this one decides "ask the human?", that one decides "never, at all".
+needs_human() {
+  local c="$1"
+  # privilege escalation
+  grep -qEi '(^|[;&|[:space:]])(sudo|doas|su)([[:space:]]|$)'                <<<"$c" && return 0
+  # rewriting or discarding history / work
+  grep -qEi 'git[[:space:]]+push[^|;&]*(--force|-f[[:space:]]|--delete)'     <<<"$c" && return 0
+  grep -qEi 'git[[:space:]]+push[^|;&]*[[:space:]](main|master|prod|production)\b' <<<"$c" && return 0
+  grep -qEi 'git[[:space:]]+(reset[^|;&]*--hard|filter-repo|filter-branch)'  <<<"$c" && return 0
+  # system-level package installs and services
+  grep -qEi '(^|[;&|[:space:]])(pacman|apt|apt-get|dnf|yum|zypper|snap|flatpak)[[:space:]]+(-S|-R|install|remove|purge|upgrade)' <<<"$c" && return 0
+  grep -qEi '(^|[;&|[:space:]])(systemctl|crontab|usermod|useradd|visudo)([[:space:]]|$)' <<<"$c" && return 0
+  grep -qEi 'npm[[:space:]]+(i|install)[^|;&]*[[:space:]]-g\b'              <<<"$c" && return 0
+  # piping the network into a shell
+  grep -qEi '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|k)?sh'  <<<"$c" && return 0
+  # reaching another machine
+  grep -qEi '(^|[;&|[:space:]])(ssh|scp)([[:space:]]|$)'                    <<<"$c" && return 0
+  grep -qEi 'rsync[^|;&]*[[:space:]][^[:space:]]+@[^[:space:]]+:'           <<<"$c" && return 0
+  # destructive cloud / infra
+  grep -qEi 'aws[[:space:]]+[a-z0-9-]+[[:space:]]+(delete|terminate|remove)' <<<"$c" && return 0
+  grep -qEi 'kubectl[[:space:]]+delete|terraform[[:space:]]+(apply|destroy)' <<<"$c" && return 0
+  grep -qEi 'docker[[:space:]]+system[[:space:]]+prune|gh[[:space:]]+repo[[:space:]]+delete' <<<"$c" && return 0
+  # production secrets and config
+  grep -qEi '\.env[.-]?(production|prod|beta)'                              <<<"$c" && return 0
+  # broad permission changes
+  grep -qEi 'chmod[^|;&]*[[:space:]]777|chown[^|;&]*-R[^|;&]*[[:space:]]/'  <<<"$c" && return 0
+  return 1
+}
+
+heuristic_decide() {
+  needs_human "$COMMAND" && defer
+  allow
+}
+
 # ── Get API key ───────────────────────────────────────────────────────────────
 API_KEY="${ANTHROPIC_API_KEY}"
 if [ -z "$API_KEY" ]; then
@@ -122,13 +168,7 @@ if [ -z "$API_KEY" ]; then
 fi
 
 if [ -z "$API_KEY" ]; then
-  # No key — fail-closed: only allow clearly safe read-only commands
-  # Reject commands with shell metacharacters that could chain dangerous operations
-  echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
-  echo "$COMMAND" | grep -qE '\|' && defer
-  SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
-  echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
-  defer
+  heuristic_decide
 fi
 
 # ── Build JSON payload safely using jq ───────────────────────────────────────
@@ -137,7 +177,7 @@ PAYLOAD=$(jq -n \
   '{
     model: "claude-haiku-4-5-20251001",
     max_tokens: 10,
-    system: "You are a shell command safety rater. Respond with exactly one word: LOW, MEDIUM, or HIGH.",
+    system: "You are a shell command safety rater for a developer machine. Respond with exactly one word: LOW, MEDIUM, or HIGH. Rate HIGH only if the command is irreversible or destructive: deletes or overwrites files (rm, truncate, dd), drops databases, force-pushes to remote branches, exfiltrates data, installs system packages, or modifies system configuration outside the project directory. Rate everything else LOW or MEDIUM. Prefer LOW.",
     messages: [{
       role: "user",
       content: ("Rate the risk of this shell command being run on a developer local machine:\n\n" + $cmd)
@@ -154,19 +194,14 @@ RESPONSE=$(curl -s --max-time 6 https://api.anthropic.com/v1/messages \
 RISK=$(echo "$RESPONSE" | jq -r '.content[0].text // ""' | grep -oE 'LOW|MEDIUM|HIGH' | head -1 | tr '[:lower:]' '[:upper:]')
 
 case "$RISK" in
-  LOW)
+  LOW|MEDIUM)
     allow
     ;;
-  MEDIUM|HIGH)
+  HIGH)
     defer
     ;;
   *)
-    # API call failed or unexpected response — fail-closed: only allow safe read-only commands
-    # Reject commands with shell metacharacters that could chain dangerous operations
-    echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
-    echo "$COMMAND" | grep -qE '\|' && defer
-    SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
-    echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
-    defer
+    # API call failed or unexpected response - fall back to the heuristic
+    heuristic_decide
     ;;
 esac
