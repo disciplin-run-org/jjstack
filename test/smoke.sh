@@ -663,6 +663,17 @@ body sec_bearer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `api.py:4` hardcode
 check "a bearer token after a word is a credential (exit 4)" "[ \$(lint '$PCL/sec_bearer.md') = 4 ]"
 body sec_urlnouser '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
 check "…and a password-only URL, with no username before the colon" "[ \$(lint '$PCL/sec_urlnouser.md') = 4 ]"
+# THE QUOTED HALF OF THE SAME CLASS. The optional quote sat AFTER the word
+# group, so a quote could precede the value but not the word - which excludes
+# exactly the JSON and YAML forms a security finding quotes from source. Three
+# members published clean while the bare forms were caught, so the rule read as
+# covered. No fixture distinguished the two regexes; these do.
+body sec_json '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.json:3` hardcoded\n"Authorization": "Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "a JSON-quoted bearer token is a credential (exit 4)" "[ \$(lint '$PCL/sec_json.md') = 4 ]"
+body sec_yaml '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.yml:3` hardcoded\nauthorization: '"'"'Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba'"'"'\n'"$RPT"
+check "…and a single-quoted YAML one" "[ \$(lint '$PCL/sec_yaml.md') = 4 ]"
+body sec_jsonkey '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.json:4` hardcoded\n"api_key": "live sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "…and a quoted key whose value carries a word first" "[ \$(lint '$PCL/sec_jsonkey.md') = 4 ]"
 # Control: the ordinary prose these two must not start refusing.
 body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
 check "…while ordinary prose about auth is not a credential (control)" "[ \$(lint '$PCL/sec_prose.md') = 0 ]"
@@ -793,8 +804,18 @@ check "…and the declared total covers them, so the residual holds" \
 # reader is never told exist. The old fixture declared exactly that and an
 # assertion certified it clean, so the hole was not missed by the tests - it
 # was ratified by them.
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold_under.md"
-check "a declared total smaller than the report beneath it is bad-residual" \
+# TEMPLATE SHAPE. Phase 4's report puts each finding in a table ROW and expands
+# it beneath, so a finding carries at least two P-tokens. Every fixture here was
+# flat bullets - one token per finding - so occurrences and findings coincided
+# and no fixture could tell a row count from a token sweep. Counting tokens
+# refused the honest comment and passed only an inflated one; these two shapes
+# are what distinguishes the two rules, so both are pinned.
+tmplrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n\n**P1 `a:1`** - the expansion, carrying the token a second time.\n\n**P2 `b:2`** - and so does this one.\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 2 total.\n\n**P1** `a:1` one\n\n1 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_true.md"
+check "a template-shaped report declaring its TRUE total lints clean" \
+      "[ \$(lint '$PCL/fold_true.md') = 0 ]"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
+check "…and one declaring fewer than its table shows is bad-residual" \
       "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
 # ...and the approve path has the same hole in its own vocabulary: one visible
 # line saying approved, over a report that rejects.
@@ -1162,8 +1183,57 @@ check "the merge is preceded by a fresh read of the thread" \
       "grep -q 'Re-read the thread in the same breath as the merge' '$RCR'"
 check "…because a mergeability check answers a different question" \
       "grep -qF 'is not \`unreviewed\`' '$RCR'"
-check "…and the read is chained to the merge, not left to a later turn" \
-      "grep -q 'json comments,reviews,updatedAt' '$RCR'"
+# The first version of this guard asserted the `gh pr view` line, which exits 0
+# whether or not anything is unread - so it certified a chain that gated on
+# nothing. The mechanism is the EXIT CODE, so the guard names the tool that has
+# one and the merge it gates.
+check "…and the read is a check that exits non-zero, chained to the merge" \
+      "grep -q 'jjstack-pr-unread-check .* && gh pr merge' '$RCR'"
+check "…and that check ships" "[ -x '$DIR/bin/jjstack-pr-unread-check' ]"
+check "…and never reads an unreadable thread as nothing new" \
+      "grep -q 'never treated as nothing' '$RCR'"
+
+# The check is EXERCISED, not greped. A guard on the word `submittedAt` passed
+# with the reviews arm deleted, because the word is also in the file's header
+# comment - the sixth time in this engagement that a guard matched vocabulary
+# instead of the mechanism it named. `gh` is stubbed so the thread is a fixture
+# and the exit code is the assertion.
+UNR=$(tmp unread); UNRBIN="$UNR/bin"; mkdir -p "$UNRBIN"
+gh_stub() {   # gh_stub <json-or-FAIL>
+  if [ "$1" = FAIL ]; then
+    printf '#!/usr/bin/env bash\necho "could not resolve host" >&2\nexit 1\n' > "$UNRBIN/gh"
+  else
+    printf '#!/usr/bin/env bash\ncat <<%s\n%s\n%s\n' 'JSONEOF' "$1" 'JSONEOF' > "$UNRBIN/gh"
+  fi
+  chmod +x "$UNRBIN/gh"
+}
+unread_rc() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" >/dev/null 2>&1; echo $?; }
+
+# A REVIEW newer than --since, and no comment at all: the surface a "Request
+# changes" click lands on, and the one a comments-only reader cannot see.
+gh_stub '{"comments":[],"reviews":[{"author":{"login":"r"},"submittedAt":"2026-09-09T19:00:00Z","state":"CHANGES_REQUESTED"}]}'
+check "the unread check sees a REVIEW newer than the last read (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that same review is older than the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# A COMMENT newer, with no reviews: the other surface, other field.
+gh_stub '{"comments":[{"author":{"login":"r"},"createdAt":"2026-09-09T19:00:00Z"}],"reviews":[]}'
+check "…and sees a COMMENT newer than the last read" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+# An empty thread is the only case that may pass.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and an empty thread is the only quiet one" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 0 ]"
+# A thread that cannot be read is NOT nothing new. Distinct code, so a caller
+# chaining `check && merge` refuses either way, and the operator can tell why.
+gh_stub FAIL
+check "…and an unreadable thread exits 3, never 0" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A --since that is not an instant cannot be compared; refuse at parse time
+# rather than string-compare something that sorts wrong.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and a malformed --since is a usage error, not a pass" \
+      "[ \$(unread_rc yesterday) -eq 2 ]"
 check "…with the incident that produced the rule named" \
       "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
 # The process diagram is a second place the step list is stated, so it drifts.

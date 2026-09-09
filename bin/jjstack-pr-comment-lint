@@ -195,7 +195,7 @@ while IFS='|' read -r label pat; do
   hits=$(grep -nPi -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
   [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
 done <<'SECRETS'
-assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*([A-Za-z][A-Za-z0-9_-]{0,15}[[:space:]]+)?["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
+assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*["']?([A-Za-z][A-Za-z0-9_-]{0,15}[[:space:]]+)?["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
 private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----
 credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]*:[^/@[:space:]]{6,}@
 aws key id|(AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)[0-9A-Z]{16}
@@ -403,7 +403,16 @@ localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$
 # over a report reading REJECT with two unfixed P0s linted clean and posted:
 # the author reads the top of the comment and merges, with the blocking
 # findings one click below, unread.
-n_rep=$(count_findings "$REP")
+# The report's findings are its TABLE ROWS, not its P-tokens. Phase 4's
+# template puts each finding in a row and expands it beneath, so a token sweep
+# counts every finding at least twice and a Guardrails line mentioning P0
+# counts a third. Floored against that, a comment declaring its true total was
+# REFUSED and only an inflated one passed - the rule exists so a reader is
+# never told there are fewer findings than there are, and it made the reviewer
+# tell them there are more. Introduced by the fix for the opposite defect, and
+# invisible to every fixture, because a fixture of flat bullets carries one
+# token per finding and the two counts coincide.
+n_rep=$(sed -n '/^### Findings/,/^### /p' "$REP" 2>/dev/null | grep -cE '^\|[[:space:]]*P[0-3][[:space:]]*\|')
 if [ "$VERDICT" = "approve" ]; then
   # A resolved or clean verdict may not sit on a report that still blocks.
   if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(REJECT|CAUTION|STOP)' "$REP" 2>/dev/null; then

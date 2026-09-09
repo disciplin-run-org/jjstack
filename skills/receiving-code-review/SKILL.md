@@ -224,16 +224,31 @@ of them is about your change. GitHub answers whether the branches conflict; it
 says nothing about whether a review is sitting on the pull request that you
 have not read. Reading only the first is how a review gets merged over.
 
-So the last thing before a merge is a fresh read of the thread, and it is
-chained to the merge in one command so no turn can pass between them:
+So the last thing before a merge is a check that **exits non-zero** when the
+thread has moved, chained to the merge so no turn can pass between them:
 
 ```bash
-gh pr view <N> --repo <REPO> --json comments,reviews,updatedAt \
-  --jq '{last_comment:(.comments|last|{author:.author.login,createdAt}), reviews:[.reviews[]|.state], updatedAt}'
+~/.claude/skills/jjstack/bin/jjstack-pr-unread-check --pr <N> --repo <REPO> --since <the moment you last READ the thread> && gh pr merge <N> --repo <REPO> --squash --delete-branch
 ```
 
-Compare `createdAt` against the last comment you have actually read. If
-anything arrived since, **stop and read it**, whatever the merge button says.
+**The exit code is the whole mechanism, and this is the second attempt at it.**
+The first printed `gh pr view` and called that the chain. `gh pr view` exits 0
+whether or not anything is unread, so `read && merge` gated on nothing while
+looking exactly like a gate, and it left the reader to compare timestamps by
+eye, which puts a turn between the read and the merge by construction. The
+reviewer-side chain in `/review` works for the one reason that one was missing:
+its lint exits non-zero. This is the author side's equivalent.
+
+`--since` is when you last actually **read** the thread, not when you last
+looked at the merge button. Exit 1 names what arrived and refuses the merge;
+exit 3 means the thread could not be read, which is never treated as nothing
+new.
+
+Both surfaces are checked, because they are different surfaces: a comment
+carries `createdAt`, a review carries `submittedAt`, and someone who clicks
+Request changes leaves a review with no `createdAt` at all. Comparing one of
+them is how an unread review hides behind a stale comment date.
+
 A review that is unread at merge time has cost the whole engagement: its
 findings are on `main` before anyone answers them, and the author who merged
 is the one who has to go back and fix them.
