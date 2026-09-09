@@ -1,48 +1,68 @@
 #!/bin/bash
-# jjstack auto-approve hook — smart permission gate using Claude Haiku.
+# jjstack PermissionRequest hook — an audit trail and a tubemail relay.
 #
-# Three-tier risk assessment:
-#   1. Read-only tools (Read, Glob, Grep, etc.) → always approve
-#   2. Bash commands → Claude Haiku rates risk as LOW/MEDIUM/HIGH
-#      - LOW  → auto-approve
-#      - MEDIUM/HIGH → defer to user
-#   3. Fallback heuristic if API unavailable → block dangerous patterns, allow rest
+# This file used to BE the permission policy: it asked Claude Haiku to rate
+# every Bash command and, when the answer was anything but LOW, exited silently
+# so the normal permission dialog appeared. The policy now lives in two places
+# that cannot fail open or fail closed at 3am:
 #
-# Requires: jq, curl (python3 for the QM dispatch path below)
-# API key: set ANTHROPIC_API_KEY env var, or store in ~/.claude/anthropic_api_key
+#   permissions in ~/.claude/settings.json  — mode and the prefix-expressible
+#                                             deny rules (hooks/permissions.policy.json)
+#   hooks/permission-floor.py               — a PreToolUse deny for the rules a
+#                                             prefix cannot express
 #
-# ── QM dispatch ─────────────────────────────────────────────────────────────
-# When running inside a Quartermaster worker (claude-qm), the qm-tubemail
-# forwarder runs its own risk policy AND knows the request_id of each
-# permission_request it forwarded to the hub. Delegating to the forwarder
-# lets it resolve the hub-side pending entry atomically with the approval,
-# instead of leaving a stale pending behind. Non-QM sessions skip this block.
+# so nothing here decides anything any more. What is left is worth keeping:
 #
-# We detect QM by QM_WORKER_NAME + the presence of the forwarder's unix
-# socket. If anything fails (socket stale, forwarder wedged, timeout), we
-# fall through to the normal logic below — the hook never blocks Claude.
+#   1. the audit line, which is how "how many times did a person get
+#      interrupted, and why" is answerable at all (bin/jjstack-permission-audit
+#      reads this log), and
+#   2. the tubemail pairing, so the handful of requests that still reach a
+#      human can be answered remotely with tm_respond_permission instead of
+#      someone walking to that worker's terminal.
+#
+# Why it no longer rates. Between 2026-09-07 and 09 this hook deferred 183
+# times; 147 of those were the rater returning nothing usable, because the
+# answer parser accepts only a bare LOW/MEDIUM/HIGH and Haiku replies
+# "LOW\n\n**Rationale:**..." on long commands, truncated at max_tokens: 10.
+# Every one of the 183 was approved by the human it woke. An LLM in the hot
+# path of a permission gate is a second failure mode protecting nothing.
+#
+# It cannot approve anything. There is no `allow` branch left, deliberately:
+# an allow rule has no effect in bypassPermissions mode anyway, and a hook that
+# can only observe cannot become a bypass. Reaching this hook now means the
+# harness itself is asking — a critical-path rm, AskUserQuestion, a residual
+# no mode auto-approves — and those are exactly the cases a person should see.
+#
+# Requires: jq. python3 only when a tubemail socket is present.
+#
+#   JJSTACK_HOOK_LOG=<path>   where to append the audit line (/dev/null to skip)
 
 INPUT=$(cat)
 
-# Temporary diagnostic — logs every hook invocation, prune after bridge smoke-test is done.
-echo "$(date -Iseconds) worker=${QM_WORKER_NAME:-<none>} tool=$(echo "$INPUT" | jq -r '.tool_name // "?"')" \
-  >> /tmp/auto-approve-hook.log 2>/dev/null
+TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
+MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // "?"')
 
-if [ -n "$QM_WORKER_NAME" ]; then
-  QM_HOOK_SOCK="/tmp/qm-hook-${QM_WORKER_NAME}.sock"
-  if [ -S "$QM_HOOK_SOCK" ]; then
-    # Short-circuit read-only tools locally even in QM mode — saves a round
-    # trip for the common case and keeps the socket dedicated to Bash etc.
-    case "$(echo "$INPUT" | jq -r '.tool_name // empty')" in
-      Read|Glob|Grep|Search|WebSearch|WebFetch)
-        jq -n '{hookSpecificOutput: {hookEventName: "PermissionRequest", decision: {behavior: "allow"}}}'
-        exit 0
-        ;;
-    esac
+LOG_PATH="${JJSTACK_HOOK_LOG:-$HOME/.claude/logs/jjstack-permission-hook.log}"
+log() {
+  [ "$LOG_PATH" = "/dev/null" ] && return 0
+  mkdir -p "$(dirname "$LOG_PATH")" 2>/dev/null || return 0
+  printf '%s worker=%s tool=%s mode=%s %s\n' \
+    "$(date -Iseconds)" "${TM_WORKER_NAME:-<none>}" \
+    "${TOOL_NAME:-?}" "$MODE" "$1" >> "$LOG_PATH" 2>/dev/null
+}
 
-    # Script passed via -c so stdin stays available for the hook JSON.
-    # A heredoc here would hijack stdin and send empty bytes to the socket.
-    QM_DISPATCH_PY='
+# ── hand the request to the tubemail forwarder, if there is one ──────────────
+# The forwarder holds the request_id of the permission_request it posted to the
+# hub. Telling it about this request is what lets an orchestrator answer from
+# tm_pending_permissions; without it the hub keeps a pending entry nobody can
+# resolve (RCA 2026-05-10).
+#
+# Its reply is NOT relayed. Relaying the socket's bytes verbatim once let a
+# stub add `updatedInput` and rewrite the command that was approved, and
+# `[ -S ]` is the only check there is on the peer. We read the answer only to
+# record whether the pairing happened.
+dispatch_socket() {
+  printf '%s' "$INPUT" | python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(2.0)
@@ -64,109 +84,21 @@ finally:
         s.close()
     except Exception:
         pass
-'
-    QM_RESPONSE=$(printf '%s' "$INPUT" | python3 -c "$QM_DISPATCH_PY" "$QM_HOOK_SOCK" 2>/dev/null)
-    if [ -n "$QM_RESPONSE" ]; then
-      # Forwarder responded — relay its JSON to Claude and exit.
-      # An empty JSON object `{}` from the server means 'defer' (let the
-      # normal prompt appear), which is a valid hook response.
-      printf '%s' "$QM_RESPONSE"
-      exit 0
-    fi
-    # Socket present but no response (timeout, crash) — fall through.
-  fi
-fi
-
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-
-allow() {
-  jq -n '{
-    hookSpecificOutput: {
-      hookEventName: "PermissionRequest",
-      decision: { behavior: "allow" }
-    }
-  }'
-  exit 0
+' "$1" 2>/dev/null
 }
 
-defer() {
-  # Exit 0 = let the normal permission dialog appear
-  exit 0
-}
-
-# ── Non-Bash tools: always allow ─────────────────────────────────────────────
-case "$TOOL_NAME" in
-  Read|Glob|Grep|Search|WebSearch|WebFetch)
-    allow
-    ;;
-esac
-
-# ── Bail out if not a Bash command ───────────────────────────────────────────
-[ "$TOOL_NAME" != "Bash" ] && defer
-[ -z "$COMMAND" ] && defer
-
-# ── Get API key ───────────────────────────────────────────────────────────────
-API_KEY="${ANTHROPIC_API_KEY}"
-if [ -z "$API_KEY" ]; then
-  KEY_FILE="$HOME/.claude/anthropic_api_key"
-  if [ -f "$KEY_FILE" ]; then
-    # Warn if key file is readable by others (should be 600)
-    PERMS=$(stat -c '%a' "$KEY_FILE" 2>/dev/null || stat -f '%Lp' "$KEY_FILE" 2>/dev/null)
-    case "$PERMS" in
-      600|400) ;; # OK
-      *) chmod 600 "$KEY_FILE" 2>/dev/null || true ;;
-    esac
-    API_KEY=$(cat "$KEY_FILE" 2>/dev/null | tr -d '[:space:]')
+SOCK="/tmp/tubemail-hook-${TM_WORKER_NAME:-}.sock"
+if [ -n "${TM_WORKER_NAME:-}" ] && [ -S "$SOCK" ]; then
+  RESP=$(dispatch_socket "$SOCK")
+  if [ -n "$RESP" ]; then
+    log "decision=defer reason=residual paired=yes"
+  else
+    log "decision=defer reason=residual paired=no"
   fi
+else
+  log "decision=defer reason=residual paired=n/a"
 fi
 
-if [ -z "$API_KEY" ]; then
-  # No key — fail-closed: only allow clearly safe read-only commands
-  # Reject commands with shell metacharacters that could chain dangerous operations
-  echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
-  echo "$COMMAND" | grep -qE '\|' && defer
-  SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
-  echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
-  defer
-fi
-
-# ── Build JSON payload safely using jq ───────────────────────────────────────
-PAYLOAD=$(jq -n \
-  --arg cmd "$COMMAND" \
-  '{
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 10,
-    system: "You are a shell command safety rater. Respond with exactly one word: LOW, MEDIUM, or HIGH.",
-    messages: [{
-      role: "user",
-      content: ("Rate the risk of this shell command being run on a developer local machine:\n\n" + $cmd)
-    }]
-  }')
-
-# ── Call Claude Haiku ─────────────────────────────────────────────────────────
-RESPONSE=$(curl -s --max-time 6 https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d "$PAYLOAD" 2>/dev/null)
-
-RISK=$(echo "$RESPONSE" | jq -r '.content[0].text // ""' | grep -oE 'LOW|MEDIUM|HIGH' | head -1 | tr '[:lower:]' '[:upper:]')
-
-case "$RISK" in
-  LOW)
-    allow
-    ;;
-  MEDIUM|HIGH)
-    defer
-    ;;
-  *)
-    # API call failed or unexpected response — fail-closed: only allow safe read-only commands
-    # Reject commands with shell metacharacters that could chain dangerous operations
-    echo "$COMMAND" | grep -qE '[;&|`$]\(' && defer
-    echo "$COMMAND" | grep -qE '\|' && defer
-    SAFE_READONLY='^\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|date|pwd|whoami|uname|id|env|printenv|git (status|log|diff|show|branch|tag|remote|rev-parse|describe))\b'
-    echo "$COMMAND" | grep -qE "$SAFE_READONLY" && allow
-    defer
-    ;;
-esac
+# Exit 0 with no stdout: the normal permission flow decides, as it would have
+# without this hook installed.
+exit 0
