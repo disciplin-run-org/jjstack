@@ -29,6 +29,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   A re-review reads the previous round from the PR thread, so it works on any
   machine. `jjstack-pr-comment-assemble` writes the join.
 
+- **`/receiving-code-review` now sweeps the whole document before committing
+  a fix.** A finding names one sentence; the idea behind it usually lives in
+  several. The step: grep the concept, read every place against the new text,
+  and if the idea is restated three or more times state it once and have the
+  others refer to it. Fixing only the named sentence hands the reviewer the
+  next round for free.
+
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a
