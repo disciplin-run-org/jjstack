@@ -154,7 +154,9 @@ That arithmetic is what proves a short comment is a moved finding rather than
 a dropped one. The word `non-blocking` is there for the reader of an APPROVE
 that still lists findings: approve-with-notes is ordinary practice, but the
 verdict has to say so on its own line, not leave it to be inferred from the
-P-numbers. The block has to hold the report: a block
+P-numbers. **`P0` and `P1` block; `P2` and `P3` do not** — say that once here
+rather than per finding, so a reader can map any severity to the verdict
+without being told again. The block has to hold the report: a block
 around nothing reads exactly like no report at all, and the linter refuses it.
 
 ## A clean approve is one line

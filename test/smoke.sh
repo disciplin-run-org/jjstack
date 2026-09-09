@@ -1085,9 +1085,61 @@ check "the evidence pack the skill reads includes the test baseline"       "grep
 # The post and its lint must be ONE command: Claude Code does not persist shell
 # state, so a sourced PR identity in a separate call expands empty.
 check "the PR post is chained to the lint in one command" \
-      "grep -q 'jjstack-pr-comment-lint .* && gh pr comment' '$SK'"
+      "grep -q 'jjstack-pr-comment-lint .* && gh pr review' '$SK'"
 check "…and the PR identity is sourced in that same command" \
-      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr comment' '$SK'"
+      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr review' '$SK'"
+# GITHUB MECHANICS. The verdict was posted as an issue comment, so the PR's
+# Reviews box stayed empty through twelve rounds on this skill's own PR:
+# reviewDecision "" and reviews []. A review attaches the verdict to the head
+# commit and satisfies a branch rule that requires one; a comment does neither.
+check "the verdict is posted as a review, not an issue comment" \
+      "! grep -q 'gh pr comment' '$SK'"
+# The mapping is PINNED as a table, not grepped as a word: `--request-changes`
+# also appears in the self-authored paragraph, so a grep for it stayed green
+# with the table gutted. Anti-vacuity floor first, then the exact row set.
+sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' | grep -v '^$' | sort > "$SANDBOX/events.txt"
+check "the verdict-to-event table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/events.txt') -eq 3 ]"
+printf '%s\n' '`--approve`' '`--comment`' '`--request-changes`' | sort > "$SANDBOX/events-want.txt"
+check "…and maps every verdict to one of the three review events" \
+      "diff -q '$SANDBOX/events.txt' '$SANDBOX/events-want.txt' >/dev/null"
+# Verified against the API, not assumed: POST .../reviews with event=APPROVE or
+# REQUEST_CHANGES on a self-authored PR returns 422; event=COMMENT is accepted.
+check "…and the self-authored refusal is named, since only --comment works there" \
+      "grep -q 'Can not approve your own pull request' '$SK'"
+# Read-back is pinned to the COMMAND, not the word: `reviewDecision` also
+# appears in the sentence about the twelve rounds that left it empty, so a
+# bare grep survived deleting the read-back entirely.
+check "…and the posted state is read back rather than assumed" \
+      "grep -q -- '--json reviewDecision,reviews' '$SK'"
+# gh pr edit --add-reviewer dies on a Projects-classic GraphQL error before it
+# reaches the request, and the REST endpoint returns 200 for a login it
+# silently drops - so the request is read back too.
+# Same class again: the prose says to read `requested_reviewers` back, so the
+# word survives deleting the call that does it. Pin the endpoint invocation.
+check "the reviewer-request trap is recorded with the working call" \
+      "grep -q 'requested_reviewers --input -' '$SK'"
+check "…and names the broken one so it is not reached for again" \
+      "grep -q -- 'gh pr edit --add-reviewer' '$SK'"
+# GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
+# and no lens asked for it; complexity, naming and why-not-what comments had
+# no owner either, so a correct implementation of the wrong shape passed.
+check "a lens asks whether the change is the right shape" \
+      "grep -q 'is the abstraction earned' '$SK'"
+check "…and whether it is more complex than the problem needs" \
+      "grep -q 'more complex than the problem needs' '$SK'"
+check "…and reads names and why-not-what comments" \
+      "grep -q 'instead of .why.' '$SK'"
+# EVERY LINE. A lens count says nothing about which files were opened.
+check "the report names the diff files no lens read" \
+      "grep -q 'Not read:' '$SK'"
+check "…and requires every file to be read or named" \
+      "grep -q 'read by at least one lens or named' '$SK'"
+# GOOD THINGS. Step 0 admits only harm, so nothing done well had anywhere to
+# go and the author could not tell which parts of the approach to repeat.
+check "the report may name one thing done well" \
+      "grep -q 'specific enough to repeat' '$SK'"
 check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
 # THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
 # lint rounds went on the link. The skill must say the new shape everywhere it

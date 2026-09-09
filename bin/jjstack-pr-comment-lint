@@ -128,7 +128,7 @@ done
 # vendors we listed", which is the round-3 defect this rule exists to fix.
 #
 # A credential gate may not degrade. Exit 2 here stops the `&&` chain before
-# `gh pr comment`, so an unsupported grep means "will not post", never "posts
+# `gh pr review`, so an unsupported grep means "will not post", never "posts
 # your key".
 # The probe must MATCH something, and must exercise a lookahead. `grep -qP ''`
 # against empty input returns 1 on a machine with full PCRE - no line to match -

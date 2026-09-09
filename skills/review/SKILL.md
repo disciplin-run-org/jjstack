@@ -263,7 +263,7 @@ wrong result) | simplest fix (deletion first) | net lines`.
 
 | Agent | Lens |
 |---|---|
-| **context** | git history of the touched hunks (`git log -p`, `git blame`): reintroduced bugs, contradicted recent intent; comments/docstrings whose "must/never" the diff now violates; CLAUDE.md rules the diff breaks (only rules the file actually states); intent fidelity — a stated case not implemented, or a behaviour change the claim never mentions |
+| **design + context** | is this the right shape: does the change belong in this layer, is the abstraction earned by more than one caller, is it more complex than the problem needs, is there generality no caller needs today; git history of the touched hunks (`git log -p`, `git blame`): reintroduced bugs, contradicted recent intent; names that mislead about what the thing does, and comments that say *what* instead of *why*; comments/docstrings whose "must/never" the diff now violates; CLAUDE.md rules the diff breaks (only rules the file actually states); intent fidelity — a stated case not implemented, or a behaviour change the claim never mentions |
 | **correctness** | logic, boundaries, error paths, partial-failure states, races/TOCTOU, leaked handles, missing timeouts; **blast-radius walk** — for every call site in `blast-radius.md`, does it still hold against the new definition? A broken out-of-diff caller is P0 |
 | **security** | OWASP-class on the diff: injection, authz/authn gaps, secret exposure, unsafe deserialization, SSRF, LLM trust boundary; use `references/owasp-security/` if present |
 | **coverage + absence** | for each new/changed behaviour, is there a test that fails when it regresses? name the untested branch; then *what should have changed and didn't* — schema without migration, enum member without its consumers, signature without its callers or docs, config key without a default |
@@ -376,9 +376,12 @@ committed:
 
 **Verdict:** APPROVE | CAUTION | REJECT | STOP - one line why
 **Coverage:** <lenses run>/<applicable> · <n> findings, <n> unconfirmed, <n> dropped
+**Not read:** <files in the diff no lens opened, or "none">
 
 ### Bottom line
-2-3 sentences: land it or not, the main risk.
+2-3 sentences: land it or not, the main risk. Then at most one sentence
+naming something the change does well, when it is specific enough to repeat
+on purpose.
 
 ### Findings   (at most 10 rows)
 | Sev | Conf | Location | Finding | Simplest fix | Net lines |
@@ -389,7 +392,12 @@ Each row expands below: quoted line, failure scenario, proof tag if any.
 ### Guardrails   (2-5 conditions under which this verdict holds)
 ```
 
-Omit empty sections.
+Omit empty sections, except `Not read`, which is stated even when empty.
+
+**Every file in the diff is read by at least one lens or named on the `Not
+read` line.** A coverage fraction counts lenses, not files, so a generated
+blob or a vendored directory that no pass opened reads to the author as
+examined. Naming it is the difference between a gap and a silent one.
 
 This file is posted verbatim inside the PR comment in Phase 5, under the same
 account as the verdict, so it is written to the comment's rules: the short
@@ -459,15 +467,52 @@ budget alone leaves room to fill and it got filled twice. It also refuses a
 `<details open>` block, an empty block, a second block, a local path or an
 emdash anywhere in the body, and a body over GitHub's size limit.
 
+**The verdict goes on the PR as a review, not as a plain comment.** An issue
+comment leaves the Reviews box empty: GitHub records the PR as never reviewed,
+a branch rule requiring an approval is not satisfied, and the verdict is not
+attached to the commit it judged. Twelve rounds ran on this skill's own PR and
+left `reviewDecision` empty and `reviews` an empty list. Map the verdict to
+the review event:
+
+| Verdict | Event |
+|---|---|
+| `APPROVE` | `--approve` |
+| `CAUTION` | `--comment` |
+| `REJECT`, `STOP` | `--request-changes` |
+
+**GitHub refuses a state on your own PR.** When the token's account opened the
+PR, `--approve` and `--request-changes` return HTTP 422, whose message is
+`Can not approve your own pull request`, and only `--comment` is accepted.
+Resolve authorship before posting:
+
+```bash
+gh pr view <PR_NUM> --repo <PR_REPO> --json author --jq .author.login
+```
+
+Equal to `gh api user --jq .login` → self-authored: post `--comment` whatever
+the verdict says, and state in the close-out that the review state could not be
+set and why. The verdict still reads from the body; what is lost is the green
+check, and claiming otherwise is worse than saying it plainly.
+
 <HARD-GATE>
-Do NOT run `gh pr comment` unless `jjstack-pr-comment-lint` exited 0 on
+Do NOT run `gh pr review` unless `jjstack-pr-comment-lint` exited 0 on
 {OUTPUT_DIR}/pr-comment.md in the SAME shell command as the post, with the
 PR identity sourced in that same command. This applies to EVERY invocation.
 </HARD-GATE>
 
 ```bash
-. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr review "$PR_NUM" --repo "$PR_REPO" <EVENT> --body-file {OUTPUT_DIR}/pr-comment.md
 ```
+
+**Confirm it landed.** GitHub accepts some review calls and does nothing
+observable, so read the state back rather than trusting the exit code:
+
+```bash
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviewDecision,reviews --jq '{decision:.reviewDecision, last:(.reviews|last|{state,author:.author.login})}'
+```
+
+An empty `decision` after an `--approve` means the state was refused and only
+the body landed. Report that, do not restate the verdict as though it stuck.
 
 **This chain is the one sanctioned exception to one-command-per-Bash-call.**
 Claude Code does not persist shell state, so `$PR_NUM` set in an earlier call
@@ -481,6 +526,21 @@ and re-run — the value goes nowhere public, and the report is inside the
 comment now. Exit 1 is budget or shape: move findings from the visible part
 into the report, never delete them.
 
-3. Update `README.md` only if the change under review affects it.
-4. Close with the verdict, the minutes elapsed, and the comment URL that
-   `gh pr comment` printed.
+3. **Requesting a reviewer** is the author's move, not this skill's, and it
+   carries one trap worth recording here because the fix belongs with the
+   other `gh` mechanics: `gh pr edit --add-reviewer` fails outright on a
+   GraphQL Projects-classic deprecation error and never reaches the request.
+   The REST endpoint works:
+
+```bash
+echo '{"reviewers":["<login>"]}' | gh api -X POST repos/<PR_REPO>/pulls/<PR_NUM>/requested_reviewers --input -
+```
+
+   It returns 200 and silently ignores a login it does not recognise, so read
+   `requested_reviewers` back before believing it. A reviewer that is a Claude
+   session rather than a GitHub account cannot be requested at all — the
+   posted review is the whole record in that case, which is the second reason
+   it must be a review and not a comment.
+4. Update `README.md` only if the change under review affects it.
+5. Close with the verdict, the minutes elapsed, whether the review state was
+   set or refused, and the URL `gh pr review` printed.
