@@ -279,7 +279,13 @@ def main() -> int:
         return 0
     rule, reason = verdict
 
-    log_path = os.environ.get("JJSTACK_FLOOR_LOG", "")
+    # Default to the real log rather than requiring an env var the harness has
+    # no way to set: an audit that reads a file nothing ever writes reports
+    # zero denies and looks exactly like a gate that never fires.
+    log_path = os.environ.get(
+        "JJSTACK_FLOOR_LOG",
+        os.path.join(os.path.expanduser("~"), ".claude", "logs", "jjstack-floor.log"),
+    )
     if log_path and log_path != "/dev/null":
         try:
             os.makedirs(os.path.dirname(log_path), exist_ok=True)

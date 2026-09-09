@@ -1101,8 +1101,14 @@ for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-le
             jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff \
             jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines; do
   check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+  # "Ships" means tracked, so ASK GIT rather than walking the directory. The
+  # walk read gitignored working files too — a developer's own
+  # .claude/settings.local.json, which had allow rules naming these tools,
+  # reddened three of these on their machine and nowhere else. That is the
+  # "different verdict on a different machine" this file's header forbids, and
+  # it was reached through untracked state rather than through $HOME.
   check "nothing that ships mentions the deleted $gone" \
-        "! grep -rq --exclude-dir=.git --exclude-dir=docs --exclude=smoke.sh --exclude=CHANGELOG.md '$gone' '$DIR'"
+        "! git -C '$DIR' grep -qI --untracked -e '$gone' -- . ':!docs' ':!test/smoke.sh' ':!CHANGELOG.md' ':!*.local.json'"
 done
 
 echo "== 10. the guards the round-1 review found missing =="
