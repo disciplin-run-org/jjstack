@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# jjstack-review-preflight — build the /review evidence pack before any AI runs.
+#
+# Orchestrates the three deterministic pre-passes and writes an index. One
+# command, so the SKILL.md prompt stays prose and the logic stays testable:
+#
+#   1. tooling sweep      — run the real typechecker/linter/tests, and derive
+#                           the "already covered, do NOT report" exclusion list
+#                           from what actually ran   (jjstack-review-tooling-sweep)
+#   2. blast-radius map   — every changed public symbol's callers OUTSIDE the
+#                           diff                 (jjstack-review-blast-radius)
+#   3. intent gathering   — commit messages, PR body, linked issues
+#                                                (jjstack-review-intent)
+#
+# Every sub-pass degrades gracefully: a missing tool or no PR is recorded as
+# "skipped — structurally inapplicable", never as a failure. The pack is always
+# written, even when every pass had nothing to say, because an absent artifact
+# and an empty one mean very different things to the review.
+#
+# EVIDENCE-PACK.md never claims more than the artifact it points at: each pass
+# writes a `*-status.env` of facts and each row is rendered from those, never
+# from an exit code. rc=0 means "the pass completed", not "found something".
+#
+# Usage:
+#   jjstack-review-preflight --out DIR [--base REF] [--repo DIR]
+#                            [--skip-tests] [--dry-run]
+#                            [--typecheck CMD] [--lint CMD] [--test CMD]
+#
+#   --typecheck/--lint/--test are forwarded to the sweep; "none" disables one.
+#   `--typecheck none --lint none --test none` is the documented way to review
+#   a tree you do not trust, executing nothing from it.
+#
+# Exit: 0 pack built, 2 usage error, 3 could not build a pack at all.
+#       A sub-pass that skips or finds failures does NOT fail the pack — the
+#       review must continue and report what it learned.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+# The ONE shared argument guard; see the file for why it is not five patches.
+. "$(dirname "${BASH_SOURCE[0]}")/jjstack-review-argcheck.sh"
+
+YEL="\033[33m"; CYA="\033[96m"; GRN="\033[32m"; RST="\033[0m"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+OUT=""; REPO=""; BASE=""; DRY=0; SKIP_TESTS=0
+TC_OVERRIDE=""; LINT_OVERRIDE=""; TEST_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)        review_need_value "$1" $# || exit 2; OUT="$2"; shift 2 ;;
+    --repo)       review_need_value "$1" $# || exit 2; REPO="$2"; shift 2 ;;
+    --base)       review_need_value "$1" $# || exit 2; BASE="$2"; shift 2 ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
+    # Passed straight through to the sweep. The skill tells you to review an
+    # untrusted tree with `--typecheck none --lint none --test none`, and this
+    # is the entry point it tells you to run — rejecting them here left the
+    # documented non-executing path with no way to reach it.
+    --typecheck)  review_need_value "$1" $# || exit 2; TC_OVERRIDE="$2"; shift 2 ;;
+    --lint)       review_need_value "$1" $# || exit 2; LINT_OVERRIDE="$2"; shift 2 ;;
+    --test)       review_need_value "$1" $# || exit 2; TEST_OVERRIDE="$2"; shift 2 ;;
+    --dry-run)    DRY=1; shift ;;
+    -h|--help)    show_help "$0"; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -z "$OUT" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") --out DIR [--base REF] [--repo DIR]" >&2; exit 2; }
+
+if [ -z "$REPO" ]; then REPO="$(git rev-parse --show-toplevel 2>/dev/null)"; fi
+
+# `declare -A` is bash 4+. Without `set -e` it fails SILENTLY on bash 3.2 and
+# degrades to an indexed array, where every string subscript collapses to index
+# 0 — all five rows would report the last pass's result. Refuse loudly.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo -e "${CYA}error${RST} bash 4+ required (associative arrays); found ${BASH_VERSION:-unknown}" >&2
+  exit 3
+fi
+
+# A --base this repo cannot resolve is refused HERE, before a single pass runs
+# and before any artifact is written — otherwise every pass renders a clean-
+# looking artifact over an empty diff.
+if [ -n "$BASE" ]; then
+  if ! git -C "${REPO:-.}" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1; then
+    echo -e "${CYA}error${RST} --base '$BASE' does not resolve to a commit in ${REPO:-.}" >&2
+    echo -e "${YEL}hint${RST}  check the spelling and that the ref is fetched:" >&2
+    echo -e "${YEL}hint${RST}    git -C '${REPO:-.}' rev-parse --verify '$BASE'" >&2
+    exit 2
+  fi
+fi
+
+declare -A RC
+run_pass() { # run_pass <label> <script> [args...]
+  local label="$1"; shift
+  local script="$1"; shift
+  if [ ! -x "$HERE/$script" ]; then
+    RC["$label"]=127
+    echo -e "${YEL}warn${RST}  $script missing or not executable" >&2
+    return 0
+  fi
+  "$HERE/$script" "$@"
+  RC["$label"]=$?
+  return 0
+}
+
+DRYFLAG=(); [ "$DRY" -eq 1 ] && DRYFLAG=(--dry-run)
+REPOFLAG=(); [ -n "$REPO" ] && REPOFLAG=(--repo "$REPO")
+BASEFLAG=(); [ -n "$BASE" ] && BASEFLAG=(--base "$BASE")
+TESTFLAG=(); [ "$SKIP_TESTS" -eq 1 ] && TESTFLAG=(--skip-tests)
+TOOLFLAG=()
+[ -n "$TC_OVERRIDE" ]   && TOOLFLAG+=(--typecheck "$TC_OVERRIDE")
+[ -n "$LINT_OVERRIDE" ] && TOOLFLAG+=(--lint "$LINT_OVERRIDE")
+[ -n "$TEST_OVERRIDE" ] && TOOLFLAG+=(--test "$TEST_OVERRIDE")
+
+echo "== preflight evidence pack → $OUT =="
+run_pass tooling   jjstack-review-tooling-sweep     --out "$OUT" "${REPOFLAG[@]}" "${TESTFLAG[@]}" ${TOOLFLAG+"${TOOLFLAG[@]}"} "${DRYFLAG[@]}"
+run_pass blast     jjstack-review-blast-radius      --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
+run_pass intent    jjstack-review-intent            --out "$OUT" "${REPOFLAG[@]}" "${BASEFLAG[@]}" "${DRYFLAG[@]}"
+
+if [ "$DRY" -eq 1 ]; then
+  echo "[dry-run] would write: $OUT/EVIDENCE-PACK.md"
+  exit 0
+fi
+
+mkdir -p "$OUT" || exit 3
+
+verdict() { # verdict <rc> <ok-text>
+  case "$1" in
+    0) echo "$2" ;;
+    1) echo "ran — **deterministic failures found**" ;;
+    3) echo "skipped — structurally inapplicable" ;;
+    127) echo "unavailable — script missing" ;;
+    *) echo "error (rc=$1)" ;;
+  esac
+}
+
+# --- every row reads the facts its own pass wrote, never a bare exit code ---
+fact() { # fact <status-file> <KEY> -> value, or "" when the pass wrote none
+  [ -f "$OUT/$1" ] || return 0
+  sed -n "s/^$2=//p" "$OUT/$1" | head -n1
+}
+sweep_fact() { fact tooling-status.env "$1"; }
+
+TC_S="$(sweep_fact TYPECHECK_STATUS)"
+LINT_S="$(sweep_fact LINT_STATUS)"
+TEST_S="$(sweep_fact TEST_STATUS)"
+N_DETECTED="$(sweep_fact TOOLS_DETECTED)"
+N_PASSED="$(sweep_fact TOOLS_PASSED)"
+N_SKIPPED="$(sweep_fact TOOLS_SKIPPED)"
+N_FAILED="$(sweep_fact TOOLS_FAILED)"
+N_ERRORED="$(sweep_fact TOOLS_ERRORED)"
+
+row_tooling() {
+  # No status file at all: the sweep never got far enough to report anything.
+  if [ -z "$TC_S" ]; then verdict "${RC[tooling]:-9}" 'ran — but wrote no status; read `tooling-results.md`'; return; fi
+  local detail="typecheck: $TC_S · lint: $LINT_S · test: $TEST_S"
+  if [ "${N_DETECTED:-0}" = "0" ]; then
+    echo "skipped — structurally inapplicable: no typechecker, linter or test runner detected. NOTHING was checked"
+  elif [ "${N_FAILED:-0}" != "0" ]; then
+    echo "ran — **deterministic failures found** ($detail)"
+  elif [ "${N_ERRORED:-0}" != "0" ]; then
+    echo "ran — **$N_ERRORED tool(s) COULD NOT RUN**: a KNOWN GAP, not a pass ($detail)"
+  elif [ "${N_PASSED:-0}" = "0" ]; then
+    echo "skipped — $N_DETECTED tool(s) detected, **NONE ran**. NOTHING was proven ($detail)"
+  elif [ "${N_SKIPPED:-0}" != "0" ]; then
+    echo "ran — no failures, but **$N_SKIPPED detected tool(s) were NOT run** ($detail)"
+  else
+    echo "ran — no failures ($detail)"
+  fi
+}
+
+row_blast() {
+  local rc="${RC[blast]:-9}" st sym mapped cont trunc=""
+  [ "$rc" = "0" ] || { verdict "$rc" 'ran — map built'; return; }
+  st="$(fact blast-status.env BLAST_STATUS)"
+  sym="$(fact blast-status.env BLAST_SYMBOLS)"
+  mapped="$(fact blast-status.env BLAST_MAPPED)"
+  cont="$(fact blast-status.env BLAST_CONTAINED)"
+  [ "$(fact blast-status.env BLAST_TRUNCATED)" = "1" ] && \
+    trunc=" — **TRUNCATED** (\`--max-symbols\`): the rest were NOT mapped"
+  case "$st" in
+    mapped) echo "ran — map built: ${sym:-0} symbol(s), ${mapped:-0} with out-of-diff references, ${cont:-0} contained$trunc" ;;
+    nosymbols) echo "ran — **NO definition-shaped change** in this diff: nothing was mapped. Absence of a map, not evidence of containment" ;;
+    empty)  echo "ran — **EMPTY diff in this scope**: NOTHING was mapped. Read \`blast-radius.md\` for the scope it used" ;;
+    "")     verdict "$rc" 'ran — but wrote no status; read `blast-radius.md`' ;;
+    *)      echo "unknown ($st) — read \`blast-radius.md\`" ;;
+  esac
+}
+
+row_intent() {
+  local rc="${RC[intent]:-9}" st c pr iss
+  [ "$rc" = "0" ] || { verdict "$rc" 'ran — claim gathered'; return; }
+  st="$(fact intent-status.env INTENT_STATUS)"
+  c="$(fact intent-status.env INTENT_COMMITS)"
+  pr="$(fact intent-status.env INTENT_PR)"
+  iss="$(fact intent-status.env INTENT_ISSUES)"
+  case "$st" in
+    gathered) echo "ran — claim gathered (commits: ${c:-0} · PR: ${pr:-no} · issues: ${iss:-0})" ;;
+    none)     echo "ran — **NO claim was recoverable**: 0 commits, no PR, no issues. Do NOT invent one and grade the code against it" ;;
+    "")       verdict "$rc" 'ran — but wrote no status; read `intent.md`' ;;
+    *)        echo "unknown ($st) — read \`intent.md\`" ;;
+  esac
+}
+
+row_baseline() {
+  case "$TEST_S" in
+    pass)    echo "ran — baseline recorded (green)" ;;
+    fail)    echo "ran — baseline recorded (**RED**: pre-existing failures)" ;;
+    skipped) echo "skipped — runner detected but NOT run (\`--skip-tests\` / re-entrancy guard). **NO baseline exists**" ;;
+    error)   echo "unavailable — runner could not execute. **NO baseline exists**" ;;
+    none)    echo "skipped — structurally inapplicable: no test runner detected. **NO baseline exists**" ;;
+    *)       verdict "${RC[tooling]:-9}" 'unknown — read `test-baseline.md`' ;;
+  esac
+}
+
+{
+  echo "# /review pre-flight evidence pack"
+  echo
+  echo "Built before any AI pass ran, by deterministic tooling. Phase 1 (gstack)"
+  echo "and Phase 2 (jjstack passes) consume this — they do not rediscover it."
+  echo
+  echo "- repo:      \`${REPO:-<unknown>}\`"
+  echo "- generated: $(date -u +%FT%TZ)"
+  echo
+  echo "| # | pre-pass | artifact | status |"
+  echo "|---|----------|----------|--------|"
+  echo "| 1 | Deterministic tooling sweep | \`tooling-results.md\`, \`exclusions.md\` | $(row_tooling) |"
+  echo "| 2 | Blast-radius map | \`blast-radius.md\` | $(row_blast) |"
+  echo "| 3 | Intent extraction | \`intent.md\` | $(row_intent) |"
+  # Row 4 shares row 1's execution but not its meaning: a red baseline is a
+  # recorded fact, not a broken pre-pass — and a MISSING baseline is neither.
+  echo "| 4 | Test baseline snapshot | \`test-baseline.md\` | $(row_baseline) |"
+  echo
+  echo "## Reading order for the review"
+  echo
+  echo "1. \`intent.md\` — what the change claims. Read FIRST, before judging."
+  echo "2. \`exclusions.md\` — what tooling already covers. Never spend a finding"
+  echo "   on a category marked COVERED; every category marked IN SCOPE is yours."
+  echo "3. \`blast-radius.md\` — the call sites outside the diff. This is the"
+  echo "   defect class a diff-only reviewer cannot see at all."
+  echo "4. \`tooling-results.md\` — real failures, already found. Fold them into"
+  echo "   the report as-is; they need no confidence score, they are facts."
+  echo "5. \`test-baseline.md\` — the green/red state before the review, so"
+  echo "   \"nothing broke\" is a comparison rather than an assertion."
+  echo
+  echo "A pass marked *skipped — structurally inapplicable* is a legitimate"
+  echo "outcome (no test runner, no PR, no review history). Say so in the report"
+  echo "instead of implying the check passed."
+  echo
+  echo "Three statuses above are **KNOWN GAPS, never passes** — carry each into"
+  echo "the report as one:"
+  echo
+  echo "- *COULD NOT RUN* — the tool exists but never judged the code (missing"
+  echo "  binary, timeout, broken invocation). It produced no findings, so"
+  echo "  nothing from it may be reported as one, and its category stays IN"
+  echo "  SCOPE for the AI passes."
+  echo "- *NO baseline exists* — row 4 recorded nothing. No later pass may claim"
+  echo "  the change \"broke nothing\": there is no before-state to compare against."
+  echo "- *NOTHING was checked* — no tooling was detected at all. Absence of"
+  echo "  evidence, not evidence of health."
+} > "$OUT/EVIDENCE-PACK.md"
+
+echo -e "${GRN}evidence pack${RST} → $OUT/EVIDENCE-PACK.md"
+exit 0

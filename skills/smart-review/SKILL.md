@@ -66,14 +66,14 @@ When review IS warranted:
 The recommended jjstack workflow before shipping:
 
 ```
-/review          → gstack adversarial review (enhanced by jjstack to 10/10)
+/review          → jjstack's budgeted diff review (pre-flight, 4 passes, verdict)
 /code-review     → Anthropic multi-agent review (auto-triggered by smart-review)
 /ship            → create PR and push
 ```
 
-Smart-review bridges the gap between jjstack's `/review` wrapper (which focuses on
-the design document and quality score) and Anthropic's `/code-review` (which focuses
-on the actual code diff).
+Smart-review pairs jjstack's `/review` (which reviews the diff under a budget,
+with its own pre-flight and verdict) with Anthropic's `/code-review` as a
+second, independent opinion on the same diff.
 
 ## Graceful Failure
 

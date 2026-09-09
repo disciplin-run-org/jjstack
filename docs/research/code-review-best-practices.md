@@ -1,11 +1,13 @@
-# AI code-review best practices — high-recall, self-verified
+# AI code-review best practices — the research behind `/review`
 
-Operating manual for the jjstack `/review` wrapper. jjstack `/review` is
-deliberately tuned for **recall** (catch more, take longer, spend more tokens)
-rather than the efficiency stance of Anthropic's `/code-review` and gstack's
-default `/review`. High recall is only usable when the reviewer — not the human
-— filters first; the practices below are how the noise stays low while the net
-stays wide. Each is drawn from a cited source at the bottom.
+**Research, not doctrine.** Nothing loads this file at runtime; `/review`'s
+actual rules live in `skills/review/SKILL.md`. It is kept because the sourcing
+is worth having when the skill is next changed.
+
+It records how the reference reviewers are tuned and what the literature says
+about the precision/recall trade. Read the caveat under "jjstack's move" before
+taking any of it as a recommendation: jjstack tried the recall-max end of this
+curve and abandoned it.
 
 ## How the reference peers are tuned (know what you are beating)
 
@@ -24,9 +26,21 @@ stays wide. Each is drawn from a cited source at the bottom.
   < 50 lines, gates several under 100 lines, and auto-gates specialists that
   have found nothing in 10+ runs.
 
-**jjstack's move:** run the union of both tools' passes, force every specialist
-regardless of gating, add the dimensions Anthropic drops, then earn the low
-noise back with per-finding self-verification instead of by dropping dimensions.
+**jjstack's move, as of v0.3.0 — and the correction that produced it.** The
+first attempt did exactly what this section used to recommend: run the union of
+both tools' passes, force every specialist regardless of gating, never drop a
+finding. Measured over the nine PRs that built it, that reviewer produced
+14,906 insertions against 112 deletions, ~230 findings of which 75% were P2/P3,
+and a P2/P3 count that ROSE every round while P0/P1 fell. It never converged.
+
+What replaced it keeps the cheap half — run the repo's real tooling first, map
+the callers outside the diff, read the stated intent — and puts a budget on the
+expensive half: gstack's own gating applies unless `--deep` is passed, four
+passes rather than ten, ten findings in the report, and a re-review that
+verifies only the prior P0/P1 and returns `STOP` if the count did not fall.
+Practice 12 below is therefore stated too strongly for this codebase: high
+recall is defensible only when someone has measured that it finds more real
+bugs, and nobody had.
 
 ## Ranked best practices (what / why)
 
