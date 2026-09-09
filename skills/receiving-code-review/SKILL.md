@@ -148,6 +148,28 @@ For agreed items: make the fix. Group related fixes into commits. Don't
 fix-and-squash if the review is ongoing — reviewers need to see what
 changed per round.
 
+**A fix to a document is not done when the named sentence is changed. It
+is done when the whole document agrees with the change.** A finding names
+one place; the idea behind it usually lives in several. Before committing:
+
+1. Find every place the *idea* is stated — grep the concept, not the
+   wording the finding used. `git log -S` on the phrase you are removing
+   shows what else that commit touched.
+2. Read each one against the new text. If two places now say different
+   things, the fix is incomplete, and committing it hands the reviewer the
+   next round for free.
+3. If the same idea is restated in three or more places, that is the
+   defect: state it once and have the others refer to it. A bullet cannot
+   drift from a definition it does not restate.
+
+This applies to prose exactly as it applies to code — a skill, a policy or
+a README is machine instructions, and a contradiction in it is a bug.
+Measured on jjstack's `/review` rebuild (2026-09): four consecutive review
+rounds each found the same scoping rule contradicted in a place the previous
+fix had not touched. Each fix changed the sentence the finding named and
+nothing else. One sweep of the concept before the first commit would have
+collapsed all four into one.
+
 For disagreed items: write the disagreement response in the review
 thread. Be specific. "Already handled elsewhere" is not an answer;
 "Already handled in `auth_middleware.py:L42`" is.
@@ -238,6 +260,9 @@ agreement leaves a known-wrong change in the code.
   capitulation; code gets worse with every round.
 - **Fixing a finding but not verifying the fix** — leaves a different
   bug behind.
+- **Fixing the sentence the finding named and nothing else** — the idea
+  lives elsewhere too; the reviewer finds the sibling next round and you
+  have paid for two rounds to move one word.
 - **Arguing style nits for more than two rounds** — it's a nit, pick
   one, move on.
 - **Taking disagreement personally** — review is about the code, not
