@@ -153,22 +153,23 @@ is done when the whole document agrees with the change.** A finding names
 one place; the idea behind it usually lives in several. Before committing:
 
 1. Find every place the *idea* is stated — grep the concept, not the
-   wording the finding used. `git log -S` on the phrase you are removing
-   shows what else that commit touched.
+   wording the finding used. `git log -S '<phrase>' --stat` on the phrase
+   you are removing shows what else that commit touched — before the branch
+   is squashed; after, it names the whole feature.
 2. Read each one against the new text. If two places now say different
    things, the fix is incomplete, and committing it hands the reviewer the
    next round for free.
 3. If the same idea is restated in three or more places, that is the
    defect: state it once and have the others refer to it. A bullet cannot
-   drift from a definition it does not restate.
+   drift from a definition it does not restate. A place read on its own — a
+   frontmatter `description`, a HARD-GATE block — restates by design; check
+   that it agrees, do not collapse it.
 
 This applies to prose exactly as it applies to code — a skill, a policy or
-a README is machine instructions, and a contradiction in it is a bug.
-Measured on jjstack's `/review` rebuild (2026-09): four consecutive review
-rounds each found the same scoping rule contradicted in a place the previous
-fix had not touched. Each fix changed the sentence the finding named and
-nothing else. One sweep of the concept before the first commit would have
-collapsed all four into one.
+a README is machine instructions, and a contradiction in it is a bug. The
+measurement behind this step is in `/review`'s equivalence gate: three
+rounds on one scoping rule, each fix restating the scope in a place the last
+one had not touched.
 
 For disagreed items: write the disagreement response in the review
 thread. Be specific. "Already handled elsewhere" is not an answer;
@@ -275,4 +276,5 @@ agreement leaves a known-wrong change in the code.
 Pattern adapted from `obra/superpowers` `receiving-code-review` (MIT).
 jjstack additions: AI-reviewer-specific section, tiebreaker via `/codex`,
 work-order-feedback loop for underspecified tasks, severity matrix with
-"Out of scope" handling.
+"Out of scope" handling, whole-document sweep before committing a fix
+(Step 3).
