@@ -418,8 +418,8 @@ cat ~/.claude/skills/jjstack/references/pr-comment-voice.md
 
 Compose `{OUTPUT_DIR}/pr-comment-head.md` — the visible part — in the
 structure the voice reference gives: the attribution line **first**, the
-verdict, ≤ 3 blocking findings one line each, `N blocking, M total` with
-`M-N more` pointing at the report beneath, one guardrail.
+verdict, ≤ 3 blocking findings one line each, `N blocking, K non-blocking`
+with `N+K-shown more` pointing at the report beneath, one guardrail.
 
 **Every comment opens with `Claude jjstack/skills/review/SKILL.md`.** It posts
 under a human's GitHub account — that is whose token `gh` holds — so without

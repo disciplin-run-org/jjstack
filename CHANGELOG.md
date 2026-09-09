@@ -36,6 +36,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   others refer to it. Fixing only the named sentence hands the reviewer the
   next round for free.
 
+- **The verdict line says `N blocking, K non-blocking`, not `N blocking, M
+  total`.** An approval that goes on to list findings is ordinary practice,
+  but it read as a contradiction until you worked out from the severities
+  that none of them block. The word says it. The old form is refused.
+
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a
