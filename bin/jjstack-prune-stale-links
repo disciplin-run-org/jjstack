@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# jjstack-prune-stale-links — remove installed skill links that this repo no
+# longer backs.
+#
+#   jjstack-prune-stale-links <skills-dir> <repo-dir> [manifest]
+#
+# The install loop only ever ADDS. When a skill is renamed or dropped
+# (skills/security-review -> skills/jj-security-review), the old link in
+# ~/.claude/skills keeps pointing at a directory that no longer exists and the
+# harness keeps listing a skill that will not load.
+#
+# This lives in its own script for two reasons. It is driven by the SKILLS
+# DIRECTORY, not by the install manifest: the manifest is read through the
+# jjstack link, which on a worktree install points somewhere that has no
+# manifest, and a prune keyed on it iterated zero times on exactly the install
+# that needed it. And a loop buried in `setup` cannot be exercised by the test
+# suite without running an installer that mutates the user's real skills dir.
+#
+# Only links this repo owns are touched: a symlink whose target resolves inside
+# <repo-dir>/skills/ and whose target has no SKILL.md. A gstack original from
+# the manifest is restored; anything else is removed. Prints one line per
+# pruned link. Never red.
+set -uo pipefail
+
+SKILLS_DIR="${1:?usage: jjstack-prune-stale-links <skills-dir> <repo-dir> [manifest]}"
+REPO_DIR="${2:?usage: jjstack-prune-stale-links <skills-dir> <repo-dir> [manifest]}"
+MANIFEST="${3:-}"
+
+[ -d "$SKILLS_DIR" ] || exit 0
+REPO_REAL="$(cd "$REPO_DIR" && pwd -P)" || exit 0
+
+declare -A ORIGINALS=()
+if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then
+  while IFS='|' read -r name orig_target _; do
+    [ -z "$name" ] && continue
+    case "$name" in \#*) continue ;; esac
+    ORIGINALS["$name"]="$orig_target"
+  done < "$MANIFEST"
+fi
+
+for link in "$SKILLS_DIR"/*; do
+  [ -L "$link" ] || continue
+  name="$(basename "$link")"
+  [ "$name" = "jjstack" ] && continue          # the repo root link, not a skill
+
+  # readlink -f still prints the path for a DANGLING link, which is the whole
+  # case here; fall back to the raw target if it cannot.
+  dest="$(readlink -f "$link" 2>/dev/null)"
+  [ -n "$dest" ] || dest="$(readlink "$link")"
+  case "$dest" in "$REPO_REAL"/skills/*) ;; *) continue ;; esac
+  [ -f "$dest/SKILL.md" ] && continue          # still a skill here
+
+  original="${ORIGINALS[$name]:-}"
+  if [ -n "$original" ] && [ -e "$original" ]; then
+    ln -snf "$original" "$link"
+    echo "$name (restored to $original)"
+  else
+    rm -f "$link"
+    echo "$name (removed)"
+  fi
+done

@@ -33,6 +33,23 @@ jjstack does not replace gstack — it stands on its shoulders. Same command
 names you already know (`/review`, `/qa`, `/ship`), enhanced behavior, plus
 a library of original skills the gstack base doesn't ship.
 
+### Whose name is it
+
+Sharing a name is the point of a wrapper, and it needs a rule, because
+Claude Code ships built-in commands of its own on a cadence jjstack does not
+control. jjstack shadows **gstack** names by design — that is the contract.
+It shadows a **Claude Code** built-in only when the built-in stays reachable
+under another name, and the skill declares it in frontmatter
+(`shadows: - "claude-code:/review -> /code-review"`) so the check can hold
+it to that. Otherwise the skill takes a `jj-` prefix. Today: `/review` keeps
+its name (Claude's reviewer answers to `/code-review`); jjstack's security
+audit is `/jj-security-review` (Claude's `/security-review` has no other
+name). `bin/jjstack-verify-skills` fails on an undeclared collision and on a
+stale declaration; the built-in list it reads is data in
+`references/claude-code-builtins.txt`, regenerated from the installed binary
+by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
+is newer than the list. It runs on every pull request.
+
 ---
 
 ## The Three Pillars
@@ -132,9 +149,9 @@ enhancements transparently.
 ### Security & Code Review
 | Skill | What it does |
 |-------|--------------|
-| `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
+| `/jj-security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. Carries the `jj-` prefix because Claude Code's own `/security-review` has no other name. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. |
+| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. Also the name of Claude Code's built-in reviewer; type `/code-review` for that one. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -197,7 +214,7 @@ loads. Read them directly or let skills load them for you.
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |
 | `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
-| `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
+| `owasp-security/` | Language-specific security quirks — the layer below `/jj-security-review` |
 
 These references are the durable layer. Skills come and go; the philosophy
 stays.
@@ -377,7 +394,7 @@ load DNA files, then delegate to the corresponding gstack skill via
 `cat`. After gstack completes, jjstack runs post-enhancement: quality loop
 to 10/10, output capture into `{repo}/jjstack/`, README maintenance.
 
-**Layered skills** (`/security-review`, `/product-manager-review`,
+**Layered skills** (`/jj-security-review`, `/product-manager-review`,
 `/qa-review`, `/unit-test-builder`) — pure jjstack skills that load
 multiple reference documents and run their own multi-phase pipelines with
 sub-agent verification.

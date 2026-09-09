@@ -53,6 +53,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   what every Claude session on the machine was allowed to do. Installing now
   writes real files, replaces any old link, and backs up your settings first.
 
+- **`/security-review` is now `/jj-security-review`, and shadowing a Claude
+  Code built-in is a declared, checked decision.** Claude Code ships its own
+  `/security-review` and `/review`. jjstack's skills sat on both names, so
+  typing them reached jjstack's and, for `/security-review`, Claude's had no
+  other name to be reached by. The rule now: jjstack shadows gstack names by
+  design, shadows a Claude Code name only when the built-in keeps another
+  name and the skill says so (`/review` does — Claude's reviewer is
+  `/code-review`), and otherwise takes the `jj-` prefix. Re-run `./setup`:
+  it removes the old `security-review` link. `bin/jjstack-verify-skills`
+  fails on an undeclared collision or a stale declaration, reads the
+  built-in list from `references/claude-code-builtins.txt` (regenerate with
+  `bin/jjstack-builtins-refresh`), warns when your Claude Code is newer than
+  that list, and runs on every pull request — before this, nothing ran it.
+
 - **The `/review` PR comment opens with its attribution, and carries the full
   report inside it, collapsed under the verdict.** `Claude
   jjstack/skills/review/SKILL.md` is now the first line of every comment, not
