@@ -233,8 +233,22 @@ thing between you and an unrecoverable act:
   with no description defers, because there is nothing to judge it against.
   The same command with a purpose passes.
 
-LOW auto-approves; anything else, including a missing key or a failed call,
-defers to you.
+`LOW` and `MEDIUM` proceed; `HIGH` defers to you, and the rater is told to
+reserve it for what is irreversible or destructive beyond what was asked.
+
+When nothing rated the command at all — no API key, a failed call, an answer
+that was not one of the three words — the gate does not shut. It falls back to
+a list of the shapes that genuinely need a person: privilege escalation,
+history rewriting, force-pushes and pushes to main, system package installs
+and services, piping the network into a shell, reaching another machine,
+destructive cloud and infrastructure commands, production env files, broad
+permission changes. Everything else proceeds, so `grep x src | head` does not
+wake you when the network is down.
+
+That fallback is deliberately permissive and is not load-bearing on its own.
+The floor and the no-stated-purpose rule above run first and cannot be reached
+from it, and `block-destructive.sh` is a separate hook that hard-blocks the
+catastrophic shapes whatever this one decides.
 
 In a tubemail worker the hook also hands its approval to the session's
 forwarder socket, which is the only component that knows the request_id —

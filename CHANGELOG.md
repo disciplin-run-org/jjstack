@@ -41,6 +41,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   a credential file (only curl piped to a shell was caught). Both had been
   reported as refused — they were, but by the model's rating rather than by
   the deterministic floor, so the floor was never actually holding them.
+- **And ordinary work no longer waits on a human when the rater is
+  unavailable.** With no API key, or when the call failed, the gate used to
+  fall back to a list of about twenty read-only verbs and defer on anything
+  with a pipe or a subshell — so `grep x src | head` woke you up, which is the
+  opposite of what an auto-approve hook is for. The fallback is now a list of
+  the shapes that genuinely need a person: privilege escalation, history
+  rewriting, force-pushes and pushes to main, system package installs and
+  services, piping the network into a shell, reaching another machine,
+  destructive cloud and infrastructure commands, production env files, and
+  broad permission changes. Everything else proceeds. In the same spirit, a
+  `MEDIUM` rating now proceeds rather than deferring, and the rater is told to
+  reserve `HIGH` for what is irreversible.
+
+  **This is a deliberate loosening, and it is safe only because it is not the
+  only guard.** The floor and the no-stated-purpose rule both run before any of
+  this and cannot be reached from the fallback, and `block-destructive.sh` is a
+  separate hook that hard-blocks the catastrophic shapes whatever this one
+  decides. If that separate hook is ever removed, this is the change to revisit
+  first.
   Both are now on the floor, with fixtures.
 - **Approvals in a tubemail worker no longer leave a permission stuck pending.**
   The hook had a delegation path keyed on `QM_WORKER_NAME` — a variable nothing

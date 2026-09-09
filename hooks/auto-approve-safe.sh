@@ -101,6 +101,47 @@ esac
 
 matches() { printf '%s' "$COMMAND" | grep -qE "$1"; }
 
+# ── needs_human: the unrated fallback ────────────────────────────────────────
+# Consulted only when no rating was obtained — no API key, a failed call, or an
+# answer that was not one of the three words. It is a DENYLIST: the shapes a
+# person should see, and everything else proceeds. That is a deliberate
+# loosening of the older fallback, which allowed about twenty read-only verbs
+# and deferred on any pipe or subshell, so `grep x src | head` woke a human.
+#
+# It is not the only guard and must never be read as one. The absolute floor
+# above has already run and cannot be reached from here; the destructive-with-
+# no-purpose rule above has already run; and `block-destructive.sh` is a
+# separate PreToolUse hook that hard-blocks the catastrophic shapes whatever
+# this file decides. Three layers. If the third is ever removed, this function
+# is the one to revisit first.
+needs_human() {
+  local c="$1"
+  # privilege escalation
+  grep -qEi '(^|[;&|[:space:]])(sudo|doas|su)([[:space:]]|$)'                <<<"$c" && return 0
+  # rewriting or discarding history and work
+  grep -qEi 'git[[:space:]]+push[^|;&]*(--force|-f[[:space:]]|--delete)'     <<<"$c" && return 0
+  grep -qEi 'git[[:space:]]+push[^|;&]*[[:space:]](main|master|prod|production)\b' <<<"$c" && return 0
+  grep -qEi 'git[[:space:]]+(reset[^|;&]*--hard|filter-repo|filter-branch)'  <<<"$c" && return 0
+  # system-level package installs and services
+  grep -qEi '(^|[;&|[:space:]])(pacman|apt|apt-get|dnf|yum|zypper|snap|flatpak)[[:space:]]+(-S|-R|install|remove|purge|upgrade)' <<<"$c" && return 0
+  grep -qEi '(^|[;&|[:space:]])(systemctl|crontab|usermod|useradd|visudo)([[:space:]]|$)' <<<"$c" && return 0
+  grep -qEi 'npm[[:space:]]+(i|install)[^|;&]*[[:space:]]-g\b'              <<<"$c" && return 0
+  # piping the network into a shell
+  grep -qEi '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|k)?sh'  <<<"$c" && return 0
+  # reaching another machine
+  grep -qEi '(^|[;&|[:space:]])(ssh|scp)([[:space:]]|$)'                    <<<"$c" && return 0
+  grep -qEi 'rsync[^|;&]*[[:space:]][^[:space:]]+@[^[:space:]]+:'           <<<"$c" && return 0
+  # destructive cloud and infra
+  grep -qEi 'aws[[:space:]]+[a-z0-9-]+[[:space:]]+(delete|terminate|remove)' <<<"$c" && return 0
+  grep -qEi 'kubectl[[:space:]]+delete|terraform[[:space:]]+(apply|destroy)' <<<"$c" && return 0
+  grep -qEi 'docker[[:space:]]+system[[:space:]]+prune|gh[[:space:]]+repo[[:space:]]+delete' <<<"$c" && return 0
+  # production secrets and config
+  grep -qEi '\.env[.-]?(production|prod|beta)'                              <<<"$c" && return 0
+  # broad permission changes
+  grep -qEi 'chmod[^|;&]*[[:space:]]777|chown[^|;&]*-R[^|;&]*[[:space:]]/'  <<<"$c" && return 0
+  return 1
+}
+
 # ── 3. absolute floor — no rating lifts these ────────────────────────────────
 # A destructive verb whose target IS a root, with nothing after it. The
 # trailing (space|end|;) is what separates `rm -rf $HOME` from the perfectly
@@ -169,7 +210,9 @@ A destructive command is acceptable — LOW — when it is BOTH:
   1. SPECIFIC: it names a definite target. Removing one named directory, resetting one named branch, force-pushing one named feature branch. A command whose target is a whole home directory, a filesystem root, or an unbounded wildcard is NOT specific.
   2. ALIGNED with the stated purpose below. 'Remove the stale build directory' justifies deleting that build directory. It does not justify deleting a source tree, rewriting history, or touching credentials.
 
-Rate MEDIUM or HIGH when the command reaches wider than its stated purpose needs, when the two do not match, or when the damage would be hard to undo and was not asked for.
+Rate HIGH when the command reaches wider than its stated purpose needs, when the two do not match, or when the damage would be hard to undo and was not asked for. HIGH is the answer that stops the command and asks a person, so give it whenever the effect is irreversible or destructive beyond what was asked.
+
+MEDIUM is ordinary work with a sharp edge: the command is specific and aligned, and the worst case is annoying rather than irreversible. MEDIUM proceeds. If you are weighing MEDIUM against HIGH on something that cannot be undone, answer HIGH.
 
 Work confined to scratch space is routine and rates LOW even when it uses rm -rf, sed -i, chmod, cp -a or heredocs. Scratch space means paths under /tmp, directories from mktemp, a session scratchpad such as /tmp/claude-*/…/scratchpad, throwaway git worktrees under .claude/worktrees, and fixture repos the command itself creates. Building, mutating and deleting inside those is the normal shape of test and review work.
 
@@ -236,9 +279,21 @@ One word: LOW, MEDIUM, or HIGH."
   fi
 fi
 
-# Anything that is not an explicit LOW defers — missing key, failed call and
-# unparseable answer included. Fail closed.
-[ "$RISK" = "LOW" ] || defer "risk=${RISK:-unrated}"
+# HIGH always defers. LOW and MEDIUM proceed: the rater is told to reserve HIGH
+# for what is irreversible or destructive, so MEDIUM is "ordinary work with a
+# sharp edge", and deferring it woke a person for routine development.
+#
+# An EMPTY rating is not a rating. It means no key, a failed call, or an answer
+# that was not one of the three words, and it is the case the old rule folded
+# into "defer everything". It now goes to needs_human: the floor and the
+# no-purpose rule have already run and cannot be reached from here, so what
+# remains is a command nobody rated, judged against the shapes a person should
+# see. Fail closed on a HIGH; fall back, not shut, on no answer at all.
+case "$RISK" in
+  LOW|MEDIUM) ;;
+  HIGH)       defer "risk=HIGH" ;;
+  *)          needs_human "$COMMAND" && defer "unrated:needs-human" ;;
+esac
 
 # ── 7. local decision is ALLOW — pair it with the forwarder if there is one ──
 LOCAL_DECISION="allow"
