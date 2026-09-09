@@ -763,6 +763,17 @@ check "blocking + non-blocking minus shown must equal the \"more\" count" "[ \$(
 body res_wrong 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n4 more in the report below.\n'"$RPT"
 check "…and a wrong \"more\" count is bad-residual" \
       "grep -q bad-residual <<<\"\$(why '$PCL/res_wrong.md')\""
+# CASE AND BASE. The declaration is matched case-insensitively, so `K` was
+# re-grepped out of it case-sensitively, came back empty, and bash read the
+# empty operand as 0: nine findings in the report, nothing in the visible part
+# pointing at them, clean and exit 0. A leading zero aborted the arithmetic
+# instead, leaving n_tot unset and skipping the whole check - silently.
+body res_case 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 9 Non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "a capital N in Non-blocking does not disable the residual gate" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_case.md')\""
+body res_zero 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 09 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n'"$RPT"
+check "…nor does a leading zero, which used to abort the arithmetic" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_zero.md')\""
 # A budget that cannot be evaluated is not a budget: an empty flag value must
 # fail closed, not report clean.
 big=$(printf '**REJECT** - 1 blocking, 0 non-blocking.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
@@ -1097,11 +1108,15 @@ check "the verdict is posted as a review, not an issue comment" \
 # The mapping is PINNED as a table, not grepped as a word: `--request-changes`
 # also appears in the self-authored paragraph, so a grep for it stayed green
 # with the table gutted. Anti-vacuity floor first, then the exact row set.
-sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f3 | sed -e '1,2d' \
-  -e 's/^ *//' -e 's/ *$//' | grep -v '^$' | sort > "$SANDBOX/events.txt"
+# BOTH cells, not the value column: pinning only the right-hand side let the
+# rows be transposed - APPROVE to --request-changes, REJECT to --approve - with
+# ALL 312 PASS. A row set needs both halves of the row.
+sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/events.txt"
 check "the verdict-to-event table is locatable (anti-vacuity floor)" \
       "[ \$(grep -c . '$SANDBOX/events.txt') -eq 3 ]"
-printf '%s\n' '`--approve`' '`--comment`' '`--request-changes`' | sort > "$SANDBOX/events-want.txt"
+printf '%s\n' '`APPROVE`|`--approve`' '`CAUTION`|`--comment`' '`REJECT`, `STOP`|`--request-changes`' \
+  | sort > "$SANDBOX/events-want.txt"
 check "…and maps every verdict to one of the three review events" \
       "diff -q '$SANDBOX/events.txt' '$SANDBOX/events-want.txt' >/dev/null"
 # Verified against the API, not assumed: POST .../reviews with event=APPROVE or
@@ -1153,11 +1168,12 @@ check "…and records that Check Runs refuse a personal token" \
 # The mapping is PINNED as a table, like the event table: `success` and
 # `failure` both appear in prose nearby, so a word-grep would survive gutting
 # it. Anti-vacuity floor first.
-sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f3 | sed -e '1,2d' \
-  -e 's/^ *//' -e 's/ *$//' | grep -v '^$' | sort > "$SANDBOX/status.txt"
+sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/status.txt"
 check "the verdict-to-status table is locatable (anti-vacuity floor)" \
       "[ \$(grep -c . '$SANDBOX/status.txt') -eq 3 ]"
-printf '%s\n' '`success`' '`failure`' '`error`' | sort > "$SANDBOX/status-want.txt"
+printf '%s\n' '`APPROVE`|`success`' '`CAUTION`, `REJECT`|`failure`' '`STOP`|`error`' \
+  | sort > "$SANDBOX/status-want.txt"
 check "…and maps every verdict to one of the three terminal states" \
       "diff -q '$SANDBOX/status.txt' '$SANDBOX/status-want.txt' >/dev/null"
 # CAUTION carries a P1 and a P1 blocks, so a green check beside it is the same
@@ -1196,8 +1212,18 @@ check "…nor links a report file from the comment" \
       "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
 check "…so the canonical resolved line ends at approved" \
       "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
-check "a re-review reads the previous round from the PR thread" \
-      "grep -q 'json comments' '$SK'"
+# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
+# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
+# the suite red. A guard's title is a claim; this one claimed the mechanism was
+# right while its body enforced the broken one.
+check "a re-review reads the reviews, where the verdict now lands" \
+      "grep -q 'json reviews,comments' '$SK'"
+check "…and still reads comments, for rounds posted before the change" \
+      "grep -q '.comments\[\]?' '$SK'"
+check "…and trusts authorship attested by GitHub, not a copyable prefix" \
+      "grep -q 'author.login == \$me' '$SK'"
+check "…so the comments-only detector is gone" \
+      "! grep -q -- '--json comments --jq' '$SK'"
 check "…and the report template carries no emdash, since it is posted now" \
       "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
 check "…and that template range is non-empty (anti-vacuity floor)" \

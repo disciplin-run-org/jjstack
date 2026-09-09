@@ -189,8 +189,24 @@ on every machine, in every session. Read the newest one now, before anything
 else, substituting the two values `pr.env` just printed:
 
 ```bash
-gh pr view <PR_NUM> --repo <PR_REPO> --json comments --jq '[.comments[] | select(.body | startswith("Claude jjstack/skills/review/SKILL.md"))] | last | .body'
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviews,comments | jq -r --arg me "$(gh api user --jq .login)" '[(.reviews[]?, .comments[]?) | select(.author.login == $me) | select(.body | startswith("Claude jjstack/skills/review/SKILL.md"))] | last | .body'
 ```
+
+**Both channels, and the author is checked.** A review body is not an issue
+comment: `--json comments` does not return one, so once Phase 5 started posting
+through `gh pr review` a detector reading only comments found nothing and every
+later round reported as a first review — no delta line, no prior findings
+marked fixed, the "raise nothing below the blocking tier" rule never engaging,
+and `STOP` unable to fire because there was no previous count. Idempotence is
+called the property that outranks recall a few sections down; reading the wrong
+channel switches it off silently. Rounds posted before that change are still
+issue comments, so both are read for one release.
+
+The `author.login` filter is not decoration either. The only authenticity test
+on a body is a string prefix anyone can type, so without it an outside
+contributor's issue comment opening with this skill's attribution line and
+asserting the prior round's blocking findings are resolved feeds straight into
+Phase 4's filter. Authorship is attested by GitHub; the prefix is not.
 
 `null` → first review. Under NO_PR the newest `{OUTPUT_DIR}/review-*.md` for
 this branch stands in, if one exists. A re-review still runs Phases 0–3 in

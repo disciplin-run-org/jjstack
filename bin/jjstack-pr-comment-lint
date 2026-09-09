@@ -411,8 +411,14 @@ else
     fail "no-residual" "no \"N blocking, K non-blocking\" declared. Without both counts, a reader cannot tell a short comment from a dropped finding, or an approve-with-notes from a contradiction."
   else
     n_block=$(echo "$decl" | grep -oE '^[0-9]+')
-    n_nonblock=$(echo "$decl" | grep -oE '[0-9]+ non-blocking' | grep -oE '^[0-9]+')
-    n_tot=$((n_block + n_nonblock))
+    # -i, because line 409 matched case-insensitively: a legitimate
+    # "9 Non-blocking" re-grepped case-sensitively returned empty, bash read
+    # the empty operand as 0, and nine findings sat in the report with nothing
+    # in the visible part pointing at them - clean, exit 0. And base 10
+    # explicitly, or "09" aborts the arithmetic, leaves n_tot unset, and skips
+    # the whole check below just as silently.
+    n_nonblock=$(echo "$decl" | grep -oiE '[0-9]+ non-blocking' | grep -oE '^[0-9]+')
+    n_tot=$((10#${n_block:-0} + 10#${n_nonblock:-0}))
     if [ "$n_tot" -gt "$n_find" ]; then
       want=$((n_tot - n_find))
       got=$(grep -oiE '[0-9]+ more\b' "$VIS" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
