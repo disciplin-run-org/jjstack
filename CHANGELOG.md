@@ -11,16 +11,23 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
-- **The `/review` PR comment opens with its attribution, and links only a
-  committed report.** `Claude jjstack/skills/review/SKILL.md` is now the first
-  line of every comment, not the last — a footer is read after the verdict has
-  already been taken as the account holder's own opinion. And the report link
-  must be repo-relative (`jjstack/review-YYYY-MM-DD.md`) and exist at the root
-  of the repository the comment is written in. The final approval on the
-  skill's own PR linked a report in the reviewer's scratchpad: the linter's
-  fallback to the comment's own directory let it through, so the link pointed
-  at nothing on any machine but one. That fallback is gone, and any local path
-  (`/tmp`, `~`, `/home`) anywhere in the body is refused outright.
+- **The `/review` PR comment opens with its attribution, and carries the full
+  report inside it, collapsed under the verdict.** `Claude
+  jjstack/skills/review/SKILL.md` is now the first line of every comment, not
+  the last — a footer is read after the verdict has already been taken as the
+  account holder's own opinion. And the report is no longer a file committed
+  to your repository and linked: it rides in the same comment, folded under a
+  "Full report" block, so the reader finds it where they already are, it
+  survives branch deletion, and no reviewer has to push to your branch to
+  deliver it. Three lint rounds had gone on that link — missing, then pointing
+  at the reviewer's scratchpad, then on a side branch — each the same defect,
+  the delivery stored where the reader was not. The visible part keeps its
+  budget (three findings, twelve lines); the report beneath is as long as the
+  review needed, and the linter reads all of it: a credential, a local path
+  (`/tmp`, `~`, `/home`), or an emdash anywhere in the body is refused, and so
+  is a block that is missing, empty, doubled, unclosed, or rendered expanded.
+  A re-review reads the previous round from the PR thread, so it works on any
+  machine. `jjstack-pr-comment-assemble` writes the join.
 
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
@@ -66,12 +73,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   line.** The review posts under your GitHub account, because that is whose
   token `gh` holds, so until now the comments read as though you had written
   them yourself. Every comment now carries `Claude
-  jjstack/code-review/skill.md` — as the opening of a one-line verdict, or as
-  the last line of a findings comment so the verdict still comes first. And
-  when everything is resolved, or nothing was found, the comment is exactly
-  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md`
-  and nothing else: no posture, no coverage claim, no summary of what you
-  changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
+  jjstack/skills/review/SKILL.md` as its first line. And when everything is
+  resolved, or nothing was found, the visible comment is exactly
+  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved`
+  (or `no findings` on a first clean review) and nothing else: no posture, no
+  coverage claim, no summary of what you changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
   the one a model reaches for almost never, and disclosure is the byline's
   job, not the prose's. The linter holds the form verbatim, because a budget
   alone leaves room to fill and it got filled twice.

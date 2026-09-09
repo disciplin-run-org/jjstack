@@ -25,10 +25,10 @@ credential it is:
 
 > **P0** `conf.py:12` an AWS access key id is committed.
 
-Never the value itself. The evidence belongs in the committed report, which is
-where every other repro already lives. `jjstack-pr-comment-lint` refuses this
-one closed - it exits 4, it cannot be silenced, and it will not print the thing
-it caught.
+Never the value itself - not in the visible part, and not in the report
+collapsed beneath it, which is the same public comment one click down.
+`jjstack-pr-comment-lint` reads the whole body and refuses this one closed - it
+exits 4, it cannot be silenced, and it will not print the thing it caught.
 
 ## Attribution: every comment says a machine wrote it
 
@@ -50,26 +50,29 @@ is read last or not at all - by then the reader has already taken the verdict
 as the account holder's opinion. The linter refuses a comment where it is
 absent or anywhere but first.
 
-## A resolved review is one line
+## A resolved review is one visible line, with the report beneath it
 
-When every finding is fixed, or there were none to begin with, the comment is
-exactly this and nothing else:
+When every finding is fixed, the visible part of the comment is exactly this:
 
 ```
-Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md
+Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved
 ```
 
-For a first review that found nothing, the line is
-`…: no findings - lgtm - approved` — no path, because nothing was found and
-there is nothing to point at. A **resolved** review carries the report, and the
-lint checks the file exists: "all issues resolved" asserts that findings existed
-and were fixed, and without the pointer a PR that closed eleven findings over
-three rounds renders identically to one that was clean on sight. This is the
-one place brevity was deleting evidence rather than moving it, on the very
-comment telling the reader not to worry. No posture line, no coverage claim, no list of what was
+and the full report - each prior finding marked fixed, with its evidence -
+rides under it in one collapsed block. "All issues resolved" asserts that
+findings existed and were fixed, and without the report a PR that closed
+eleven findings over three rounds renders identically to one that was clean
+on sight. This was the one place brevity deleted evidence rather than moving
+it, on the very comment telling the reader not to worry.
+
+For a first review that found nothing, the whole comment is
+`…: no findings - lgtm - approved` and nothing else - no report, because
+nothing was found and there is nothing to carry.
+
+In either form: no posture line, no coverage claim, no list of what was
 checked, no summary of what the author changed. The author of a clean PR wants
-the verdict. Everything else is already in the committed report, and a reader
-who wants it will open that.
+the verdict. Everything else is in the report, and a reader who wants it will
+open that.
 
 **Write `lgtm`, in those letters.** It is the idiom a human reviewer uses and
 one a model reaches for almost never — left to itself an AI writes "Looks good
@@ -89,16 +92,21 @@ was wanted.
 ## The one principle
 
 **The comment is a doorbell, not the delivery.** Verdict, the blocking findings,
-a link. The full report is already committed to `{repo}/jjstack/` with every
-finding, repro, confidence score, and the triage ledger.
+and the rest one click away. The full report rides in the same comment,
+collapsed beneath the verdict, with every finding, repro, and confidence score.
+It used to be a file committed to the reviewed repository and linked from the
+comment; three lint rounds went on that link - missing, then pointing at the
+reviewer's scratchpad, then on a side branch because the reviewer would not
+push to the author's branch - and each was the same defect: the delivery
+stored where the reader was not. The comment is where the reader is.
 
 The failure mode is not a wrong finding: it is forty lines of correct findings
 that the author scrolls past. A review nobody reads is a review that did not
 happen.
 
-Brevity moves evidence. It never deletes it. If the comment will not fit, cut
-findings out of the comment and leave them in the report - never cut the
-evidence under a finding you kept.
+Brevity moves evidence. It never deletes it. If the visible part will not
+fit, cut findings out of it and leave them in the report beneath - never cut
+the evidence under a finding you kept.
 
 ## Structure
 
@@ -113,40 +121,52 @@ Claude jjstack/skills/review/SKILL.md
 **P0** `file:line` claim: the specific consequence.
 **P1** `file:line` claim: the specific consequence.
 
-M-N more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
+M-N more + repros + evidence in the report below.
 Guardrail: the condition under which this verdict holds.
+
+<details><summary>Full report</summary>
+
+## /review: <target>            (commit <sha>, <minutes> min)
+…the Phase 4 report, verbatim…
+
+</details>
 ```
 
-The report link is **repo-relative and committed** - `jjstack/review-YYYY-MM-DD.md`,
-checked against the repository the comment is written in. Never a path on the
-reviewer's machine: `/tmp/...`, `~/...`, a scratchpad, a worktree copy. A
-reader of the PR cannot open your disk, and the linter refuses any of those
-anywhere in the body, link or not. Write the comment inside the reviewed
-checkout, so the check runs against the right tree.
+The block is written by `jjstack-pr-comment-assemble`, not by hand: GitHub
+wants `<details>` on its own line and a blank line after `<summary>` before it
+renders markdown inside. The linter refuses a block that is missing, empty,
+doubled, unclosed, or `open` - an expanded report is forty lines of correct
+findings the author scrolls past, in a new costume.
+
+The report is public, so it keeps the comment's rules. Never a path on the
+reviewer's machine anywhere in the body, above or below the fold: `/tmp/...`,
+`~/...`, a scratchpad, a worktree copy - the pre-flight artifacts print
+`repo: /home/...` lines by design, and none of them may be pasted. A reader
+of the PR cannot open your disk.
 
 One line per finding. `file:line` is not decoration - it is what makes the
 finding actionable without a second round trip.
 
 The counts are not decoration either, and they are checked. `N blocking, M
 total` must be there, `M` cannot be smaller than `N`, and when `M` exceeds the
-findings shown the comment has to say `M-N more` and link the rest. That
-arithmetic is what proves a short comment is a moved finding rather than a
-dropped one. The linked report has to exist on disk before the comment goes out:
-a link to nothing reads exactly like no link at all.
+findings shown the comment has to say `M-N more` and carry the rest in the
+block beneath. That arithmetic is what proves a short comment is a moved
+finding rather than a dropped one. The block has to hold the report: a block
+around nothing reads exactly like no report at all, and the linter refuses it.
 
 ## A clean approve is one line
 
 When nothing was found, say that and stop - the exact line is above. The
-budget for a resolved or clean verdict is ONE line, and the linter enforces
-it separately. The reason is the failure it prevents: a real clean review once
-spent about 25 lines - posture counts, coverage claims, five evidence bullets -
-proving it had nothing to say. Every one of those lines was true and none of
-them was wanted.
+budget for a clean verdict, and for the visible part of a resolved one, is ONE
+line, and the linter enforces it separately. The reason is the failure it
+prevents: a real clean review once spent about 25 lines - posture counts,
+coverage claims, five evidence bullets - proving it had nothing to say. Every
+one of those lines was true and none of them was wanted.
 
-The author of a clean PR wants the verdict. The evidence for *why* it is clean
-is already in the committed report, for the one reader in twenty who goes
-looking. Listing it in the comment is the reviewer showing their work to someone
-who did not ask.
+The author of a clean PR wants the verdict. On a resolved review the evidence
+is in the report beneath, for the one reader in twenty who goes looking.
+Listing it in the comment is the reviewer showing their work to someone who
+did not ask.
 
 Do not pad an approve to look thorough. "No findings" from a review that ran
 every lens is a strong statement on its own, and manufacturing a nit to justify
@@ -210,11 +230,12 @@ Right - seven findings found, two shown, none lost:
 > **P1** `api/routes.py:210` `OrderStatus` gained `CANCELLED`;
 > `billing/report.py:44` still raises. Outside the diff.
 >
-> 5 more + repros + evidence: `jjstack/review-2026-09-07.md`
+> 5 more + repros + evidence in the report below.
 > Verdict holds while the token path stays synchronous.
 
-Seven lines. About six seconds of reading. The author knows what blocks the
-merge, where to look, and where the rest lives.
+Seven lines visible, the report folded under them. About six seconds of
+reading. The author knows what blocks the merge, where to look, and where the
+rest lives.
 
 ## Trust the reader
 
