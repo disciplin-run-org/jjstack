@@ -89,6 +89,26 @@ if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
     mv "$TMP_SETTINGS" "$SETTINGS_FILE"
     ok "Removed hook config from settings.json"
   fi
+  # Remove the PreToolUse permission floor. Same selective filter as above:
+  # PreToolUse also carries the injection guard and whatever else the user has
+  # registered, so this drops one entry rather than the key.
+  if grep -q "permission-floor" "$SETTINGS_FILE" 2>/dev/null; then
+    TMP_SETTINGS=$(mktemp)
+    jq '.hooks.PreToolUse = [.hooks.PreToolUse[] | select(.hooks | all(.command | test("permission-floor") | not))]
+        | if .hooks.PreToolUse == [] then del(.hooks.PreToolUse) else . end' "$SETTINGS_FILE" > "$TMP_SETTINGS"
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    ok "Removed permission-floor hook config from settings.json"
+  fi
+  # The permissions block itself is deliberately NOT reverted. jjstack replaced
+  # it with a policy the user may since have edited, and guessing which of
+  # those rules were theirs would either strip protection or leave rules they
+  # never asked for. The backups under ~/.claude/backups/ hold the block from
+  # before each ./setup run; point them there rather than choosing for them.
+  if [ -d "$HOME/.claude/backups" ]; then
+    LAST_BACKUP=$(ls -1t "$HOME/.claude/backups"/settings.json.* 2>/dev/null | head -1)
+    [ -n "$LAST_BACKUP" ] && \
+      warn "permissions in settings.json left as-is; pre-setup copy: $LAST_BACKUP"
+  fi
   # Also remove MCP reconnect hook config
   if grep -q "mcp-reconnect" "$SETTINGS_FILE" 2>/dev/null; then
     TMP_SETTINGS=$(mktemp)

@@ -56,7 +56,7 @@ if [ ! -d "$ANTHROPIC_SEC_DIR/.git" ]; then
   if git clone https://github.com/anthropics/claude-code-security-review.git "$ANTHROPIC_SEC_DIR" 2>/dev/null; then
     ok "Anthropic security-review installed"
   else
-    warn "Failed to clone Anthropic security-review. /security-review will work without it."
+    warn "Failed to clone Anthropic security-review. /jj-security-review will work without it."
   fi
 else
   # Auto-update: pull latest from Anthropic (trusted unconditionally)
@@ -70,7 +70,7 @@ if [ ! -d "$SENTRY_SKILLS_DIR/.git" ]; then
   if git clone https://github.com/getsentry/skills.git "$SENTRY_SKILLS_DIR" 2>/dev/null; then
     ok "Sentry skills installed"
   else
-    warn "Failed to clone Sentry skills. /security-review will work without it."
+    warn "Failed to clone Sentry skills. /jj-security-review will work without it."
   fi
 else
   git -C "$SENTRY_SKILLS_DIR" pull --ff-only -q 2>/dev/null && ok "Sentry skills updated" || true
@@ -86,7 +86,7 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
     rm -rf "$OWASP_TMP"
     ok "OWASP security reference installed"
   else
-    warn "Failed to clone OWASP reference. /security-review will work without it."
+    warn "Failed to clone OWASP reference. /jj-security-review will work without it."
     rm -rf "$OWASP_TMP"
   fi
 fi
@@ -207,99 +207,127 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
   fi
 done
 
+# Prune links for skills that left the repo (renamed or removed). Delegated to
+# bin/jjstack-prune-stale-links so the test suite can drive it against a
+# fixture instead of an installer that mutates the real skills dir. The first
+# version of this loop keyed on the install manifest, which is read through the
+# jjstack link and does not exist on a worktree install — so it iterated zero
+# times on exactly the install whose link the rename orphaned.
+PRUNED_OUT="$("$JJSTACK_DIR/bin/jjstack-prune-stale-links" "$SKILLS_DIR" "$JJSTACK_DIR" "$MANIFEST" 2>/dev/null)"
+if [ -n "$PRUNED_OUT" ]; then
+  while IFS= read -r line; do [ -n "$line" ] && ok "Pruned $line"; done <<< "$PRUNED_OUT"
+fi
+
 # Write manifest
 printf '%s\n' "${MANIFEST_LINES[@]}" > "$MANIFEST"
 
-# ─── Step 5: Install hooks ──────────────────────────────────
+# ─── Step 5: Install hooks and the permission policy ──────────
 mkdir -p "$HOOKS_DIR"
 
-HOOK_SRC="$JJSTACK_DIR/hooks/auto-approve-safe.sh"
-HOOK_DST="$HOOKS_DIR/auto-approve-safe.sh"
-HOOK_STATUS="skipped"
+# Back up settings before touching them. Everything below rewrites the
+# permissions block wholesale, and "I'll just restore it" needs a file to
+# restore from.
+if [ -f "$SETTINGS_FILE" ]; then
+  SETTINGS_BACKUP="$HOME/.claude/backups/settings.json.$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$(dirname "$SETTINGS_BACKUP")"
+  cp "$SETTINGS_FILE" "$SETTINGS_BACKUP"
+  ok "Backed up settings.json to $SETTINGS_BACKUP"
+fi
 
-if [ -f "$HOOK_SRC" ]; then
-  if [ -L "$HOOK_DST" ]; then
-    # Already a symlink — update it
-    ln -snf "$HOOK_SRC" "$HOOK_DST"
-    HOOK_STATUS="updated"
-  elif [ -f "$HOOK_DST" ]; then
-    # Real file exists — check if it's identical
-    if diff -q "$HOOK_SRC" "$HOOK_DST" >/dev/null 2>&1; then
-      HOOK_STATUS="already installed (identical)"
-    else
-      warn "Hook already exists at $HOOK_DST with different content. Skipping."
-      HOOK_STATUS="skipped (conflict)"
+# Hooks are installed BY COPY, never by symlink.
+#
+# They used to be symlinked into this checkout, which made the machine-wide
+# permission policy whatever branch the checkout happened to sit on: a
+# `git checkout` silently changed what every session on the box was allowed to
+# do, and an editor left mid-edit was the live gate. A copy is a decision with
+# a timestamp. test/settings-lint.sh fails if one is a symlink again.
+install_hook() {
+  local name="$1"
+  local src="$JJSTACK_DIR/hooks/$name"
+  local dst="$HOOKS_DIR/$name"
+  [ -f "$src" ] || return 0
+  if [ -L "$dst" ]; then
+    rm -f "$dst"
+    warn "Replaced symlinked hook $name with a copy"
+  fi
+  cp "$src" "$dst"
+  chmod +x "$dst"
+}
+
+for hook in auto-approve-safe.sh permission-floor.py injection-guard.sh error-detector.sh; do
+  install_hook "$hook"
+done
+ok "Installed hooks by copy into $HOOKS_DIR"
+
+# Register a hook command once, appending rather than replacing: the settings
+# file holds other people's hooks too, and an `=` here has wiped them before.
+register_hook() {
+  local event="$1" matcher="$2" command="$3" needle="$4"
+  [ -f "$SETTINGS_FILE" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  grep -q "$needle" "$SETTINGS_FILE" 2>/dev/null && return 0
+  local tmp
+  tmp=$(mktemp)
+  jq --arg e "$event" --arg m "$matcher" --arg c "$command" \
+    '.hooks[$e] = ((.hooks[$e] // []) + [{"matcher": $m, "hooks": [{"type": "command", "command": $c}]}])' \
+    "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+  ok "Registered $needle on $event"
+}
+
+[ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
+
+# The floor: a PreToolUse DENY for the shapes no rating should be able to lift.
+# deny and not ask, because deny hands Claude the reason and it reroutes inside
+# the same turn, and because ask stops the session until a person answers.
+register_hook PreToolUse "Bash" "~/.claude/hooks/permission-floor.py" "permission-floor"
+# The audit trail, and the tubemail relay for the few requests that still reach
+# a person. It decides nothing.
+register_hook PermissionRequest "" "~/.claude/hooks/auto-approve-safe.sh" "auto-approve-safe"
+register_hook PreToolUse "Write|Edit" "~/.claude/hooks/injection-guard.sh" "injection-guard"
+register_hook PostToolUse "Bash" "~/.claude/hooks/error-detector.sh" "error-detector"
+register_hook PostToolUseFailure "mcp__" "$JJSTACK_DIR/hooks/mcp-reconnect.sh" "mcp-reconnect"
+
+# ─── Step 5b: the permission policy itself ────────────────────
+#
+# hooks/permissions.policy.json is the canonical policy and this applies it
+# verbatim; setup invents no rule of its own, so what the machine enforces can
+# be read in one file and diffed.
+#
+# The permissions block is REPLACED, not merged. It is a policy, and a policy
+# that accretes is how the previous one reached 462 allow rules that matched
+# nothing while 19 ask rules quietly prompted in every mode. The backup above
+# holds the old block; settings.local.json is untouched.
+POLICY_FILE="$JJSTACK_DIR/hooks/permissions.policy.json"
+if [ -f "$POLICY_FILE" ] && command -v jq >/dev/null 2>&1; then
+  OLD_ALLOW=$(jq '(.permissions.allow // []) | length' "$SETTINGS_FILE")
+  OLD_ASK=$(jq '(.permissions.ask // []) | length' "$SETTINGS_FILE")
+  TMP_SETTINGS=$(mktemp)
+  # {{HOME}} is substituted here rather than baked into the file, so the policy
+  # is readable as one machine-independent document and still produces the
+  # absolute paths the permission matcher wants.
+  if jq --slurpfile policy <(sed "s|{{HOME}}|${HOME#/}|g" "$POLICY_FILE") \
+       '.permissions = $policy[0].permissions' \
+       "$SETTINGS_FILE" > "$TMP_SETTINGS" && [ -s "$TMP_SETTINGS" ]; then
+    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    NEW_ALLOW=$(jq '.permissions.allow | length' "$SETTINGS_FILE")
+    NEW_DENY=$(jq '.permissions.deny | length' "$SETTINGS_FILE")
+    ok "Applied permission policy: mode=bypassPermissions, ask=0 (was $OLD_ASK), deny=$NEW_DENY, allow=$NEW_ALLOW (was $OLD_ALLOW)"
+    if [ "$OLD_ASK" -gt 0 ]; then
+      echo "     $OLD_ASK ask rule(s) removed — an ask rule prompts in EVERY mode,"
+      echo "     including --dangerously-skip-permissions. That was the interruption."
     fi
   else
-    ln -snf "$HOOK_SRC" "$HOOK_DST"
-    HOOK_STATUS="installed"
+    rm -f "$TMP_SETTINGS"
+    warn "Could not apply the permission policy — settings.json left unchanged"
   fi
 fi
 
-# Inject hook config into settings.json if not present
-if [ -f "$SETTINGS_FILE" ]; then
-  if ! grep -q "auto-approve-safe" "$SETTINGS_FILE" 2>/dev/null; then
-    if command -v jq >/dev/null 2>&1; then
-      TMP_SETTINGS=$(mktemp)
-      jq '.hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
-      mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-      ok "Injected hook config into settings.json"
-    else
-      warn "jq not found — add the hook config to $SETTINGS_FILE manually"
-    fi
-  fi
-elif command -v jq >/dev/null 2>&1; then
-  echo '{}' | jq '.hooks.PermissionRequest = [{"matcher": "", "hooks": [{"type": "command", "command": "~/.claude/hooks/auto-approve-safe.sh"}]}]' > "$SETTINGS_FILE"
-  ok "Created settings.json with hook config"
-fi
-
-# Install MCP auto-reconnect hook
-RECONNECT_HOOK="$JJSTACK_DIR/hooks/mcp-reconnect.sh"
-if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
-  if ! grep -q "mcp-reconnect" "$SETTINGS_FILE" 2>/dev/null; then
-    TMP_SETTINGS=$(mktemp)
-    jq --arg hook "$RECONNECT_HOOK" '.hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) + [{"matcher": "mcp__", "hooks": [{"type": "command", "command": $hook}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
-    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    ok "Injected MCP auto-reconnect hook into settings.json"
-  fi
-fi
-
-# Install prompt-injection guard hook (PreToolUse on Write/Edit of .md files)
-INJECTION_HOOK_SRC="$JJSTACK_DIR/hooks/injection-guard.sh"
-INJECTION_HOOK_DST="$HOOKS_DIR/injection-guard.sh"
-if [ -f "$INJECTION_HOOK_SRC" ]; then
-  if [ -L "$INJECTION_HOOK_DST" ]; then
-    ln -snf "$INJECTION_HOOK_SRC" "$INJECTION_HOOK_DST"
-  elif [ ! -e "$INJECTION_HOOK_DST" ]; then
-    ln -snf "$INJECTION_HOOK_SRC" "$INJECTION_HOOK_DST"
-  fi
-fi
-if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
-  if ! grep -q "injection-guard" "$SETTINGS_FILE" 2>/dev/null; then
-    TMP_SETTINGS=$(mktemp)
-    jq '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/injection-guard.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
-    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    ok "Injected prompt-injection guard hook into settings.json"
-  fi
-fi
-
-# Install error-detector hook (PostToolUse on Bash — logs failed commands)
-ERROR_HOOK_SRC="$JJSTACK_DIR/hooks/error-detector.sh"
-ERROR_HOOK_DST="$HOOKS_DIR/error-detector.sh"
-if [ -f "$ERROR_HOOK_SRC" ]; then
-  if [ -L "$ERROR_HOOK_DST" ]; then
-    ln -snf "$ERROR_HOOK_SRC" "$ERROR_HOOK_DST"
-  elif [ ! -e "$ERROR_HOOK_DST" ]; then
-    ln -snf "$ERROR_HOOK_SRC" "$ERROR_HOOK_DST"
-  fi
-fi
-if [ -f "$SETTINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
-  if ! grep -q "error-detector" "$SETTINGS_FILE" 2>/dev/null; then
-    TMP_SETTINGS=$(mktemp)
-    jq '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": "~/.claude/hooks/error-detector.sh"}]}])' "$SETTINGS_FILE" > "$TMP_SETTINGS"
-    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    ok "Injected error-detector hook into settings.json"
-  fi
+# A stale auto-mode trust boundary is worse than none: it names a repo nobody
+# works in, so every real project reads as unrecognized infrastructure.
+if command -v jq >/dev/null 2>&1 && jq -e '.autoMode' "$SETTINGS_FILE" >/dev/null 2>&1; then
+  TMP_SETTINGS=$(mktemp)
+  jq 'del(.autoMode)' "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+  ok "Removed the stale autoMode environment block"
 fi
 
 # ─── Step 6: Install Context7 MCP server ─────────────────────
@@ -448,7 +476,13 @@ chmod +x "$JJSTACK_DIR/bin/jjstack-skill-miss-report" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/bin/jjstack-plan" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/hooks/skill-miss-detect.sh" 2>/dev/null || true
 chmod +x "$JJSTACK_DIR/hooks/skill-fired-clear.sh" 2>/dev/null || true
-chmod +x "$HOOK_SRC" 2>/dev/null || true
+# Every hook in the repo, rather than the one variable step 5 used to leave
+# behind: that spelling broke the moment step 5 stopped tracking a single
+# "the hook" and started installing a set, and under `set -u` it aborted the
+# run after the policy had already been applied.
+for h in "$JJSTACK_DIR"/hooks/*.sh "$JJSTACK_DIR"/hooks/*.py; do
+  [ -f "$h" ] && chmod +x "$h" 2>/dev/null || true
+done
 
 # Put jjstack-plan on PATH so `! jjstack-plan ...` works in the user's terminal.
 # The /plan-edit skill's display commands (view/diff) are run by the user via
@@ -506,7 +540,7 @@ if [ ${#PLUGINS_SKIPPED[@]} -gt 0 ]; then
 fi
 
 echo ""
-echo "  Hook: auto-approve-safe.sh ($HOOK_STATUS)"
+echo "  Permission gate: floor + audit hook installed by copy, policy applied"
 echo "  Statusline: $STATUSLINE_STATUS"
 echo "  Skill-trigger index: $TRIGGER_STATUS"
 echo "  Context7: $CONTEXT7_STATUS"

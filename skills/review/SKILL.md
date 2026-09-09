@@ -3,8 +3,10 @@ name: review
 version: 0.4.0
 description: |
   Pre-landing code review that finishes in under an hour and converges on
-  re-review. Wraps gstack's /review with a deterministic pre-flight (run the
-  repo's own typechecker/linter/tests, map the callers outside the diff, read
+  re-review. Takes the /review name, which Claude Code also gives its own
+  reviewer; for that one type /code-review. Wraps gstack's /review with a
+  deterministic pre-flight (run the repo's own typechecker/linter/tests, map
+  the callers outside the diff, read
   the stated intent), four bounded jjstack passes (context, correctness,
   security, coverage+absence), per-finding verification with a confidence
   gate, a three-valued APPROVE/CAUTION/REJECT verdict, and a short PR comment
@@ -13,10 +15,12 @@ description: |
   PR comment, collapsed under the verdict.
   Trigger on: "review my changes", "pre-landing review", "review the diff",
   "review before merge", "review this PR", "code review", "thorough review".
-  Do NOT trigger for: security-only review (use /security-review), two-stage
+  Do NOT trigger for: security-only review (use /jj-security-review), two-stage
   spec-then-quality review (use /two-stage-review), processing incoming review
   feedback (use /receiving-code-review), or design/UI review (use
   /design-review).
+shadows:
+  - "claude-code:/review -> /code-review"
 allowed-tools:
   - Read
   - Grep

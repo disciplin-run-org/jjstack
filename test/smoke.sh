@@ -1260,8 +1260,14 @@ for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-le
             jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff \
             jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines; do
   check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+  # "Ships" means tracked, so ASK GIT rather than walking the directory. The
+  # walk read gitignored working files too — a developer's own
+  # .claude/settings.local.json, which had allow rules naming these tools,
+  # reddened three of these on their machine and nowhere else. That is the
+  # "different verdict on a different machine" this file's header forbids, and
+  # it was reached through untracked state rather than through $HOME.
   check "nothing that ships mentions the deleted $gone" \
-        "! grep -rq --exclude-dir=.git --exclude-dir=docs --exclude=smoke.sh --exclude=CHANGELOG.md '$gone' '$DIR'"
+        "! git -C '$DIR' grep -qI --untracked -e '$gone' -- . ':!docs' ':!test/smoke.sh' ':!CHANGELOG.md' ':!*.local.json'"
 done
 
 echo "== 10. the guards the round-1 review found missing =="
@@ -1358,6 +1364,324 @@ for t in jjstack-review-preflight jjstack-review-tooling-sweep \
         "! grep -qE '^(set -o|set -u|YEL=|CYA=|GRN=|HERE=|SRC=)' '$HLP'"
   check "$t --help is non-empty" "[ -s '$HLP' ]"
 done
+
+echo "== 11. the permission gate (floor, policy, and what is installed) =="
+# The gate this replaces asked a model to rate every command and woke a person
+# whenever the answer was not LOW. It woke one 183 times in 48 hours and was
+# approved 183 times. What is asserted here is the shape of the replacement:
+# the floor refuses a fixed set outright, the PermissionRequest hook cannot
+# approve anything at all, and the policy carries no rule that reintroduces a
+# prompt.
+for f in "$HOOKS"/auto-approve-safe.sh "$DIR"/test/settings-lint.sh; do
+  check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
+done
+check "python -m py_compile permission-floor.py" \
+      "python3 -m py_compile '$HOOKS/permission-floor.py' 2>/dev/null"
+
+# The policy table and the mutation proof are whole suites of their own. Run
+# them and read their exit status: 1 is a mismatch, 2 is "the table cannot
+# fail", which is the louder failure and must not be collapsed into it.
+pol_out=$(python3 "$DIR/test/permission-policy-check.py" 2>&1); pol_rc=$?
+check "permission-policy fixtures pass (rc=0; 2 would mean the table is vacuous)" \
+      "[ \"$pol_rc\" = 0 ]"
+[ "$pol_rc" = 0 ] || printf '     %s\n' "$pol_out"
+check "every rule the hook declares has a fixture" \
+      "printf '%s' \"\$pol_out\" | grep -qE 'CASES=[0-9]+ RULES=[0-9]+'"
+
+mut_out=$(python3 "$DIR/test/permission-floor-mutation.py" 2>&1); mut_rc=$?
+check "mutation proof: every rule is load-bearing" "[ \"$mut_rc\" = 0 ]"
+[ "$mut_rc" = 0 ] || printf '     %s\n' "$mut_out"
+check "...and each rule reddens only its OWN rows (no rule covered by a neighbour)" \
+      "printf '%s' \"\$mut_out\" | grep -q 'survived=0 misattributed=0'"
+
+# ── the PermissionRequest hook cannot approve anything ───────────────────────
+# It used to be the whole policy. A hook that can still emit `allow` is a hook
+# that can still be a bypass, and the point of the rewrite is that it observes.
+hookout=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"permission_mode":"bypassPermissions"}' \
+          | JJSTACK_HOOK_LOG=/dev/null TM_WORKER_NAME= bash "$HOOKS/auto-approve-safe.sh" 2>&1)
+check "PermissionRequest hook emits nothing at all (it decides nothing)" "[ -z \"\$hookout\" ]"
+check "PermissionRequest hook has no 'allow' branch left" \
+      "! grep -q '\"behavior\": *\"allow\"' '$HOOKS/auto-approve-safe.sh'"
+# The rater is gone, and gone means the credential path with it. A hook that
+# still reads the API key file is a hook that can still be rate-limited into
+# waking somebody at 3am.
+for needle in 'api.anthropic.com' 'anthropic_api_key' 'ANTHROPIC_API_KEY' 'curl '; do
+  check "no '$needle' remains in the PermissionRequest hook" \
+        "! grep -q '$needle' '$HOOKS/auto-approve-safe.sh'"
+done
+
+# ── the policy file ──────────────────────────────────────────────────────────
+POL="$HOOKS/permissions.policy.json"
+check "the policy is valid JSON" "jq -e . '$POL' >/dev/null 2>&1"
+check "the policy sets bypassPermissions" \
+      "[ \"\$(jq -r '.permissions.defaultMode' '$POL')\" = bypassPermissions ]"
+# THE regression. One Bash ask rule prompts in every mode, bypass included, and
+# no allow rule anywhere can lift it. This single assertion is what stands
+# between the fix and 183 interruptions coming back one rule at a time.
+n_ask=$(jq -r '[.permissions.ask[] | select(startswith("Bash("))] | length' "$POL")
+check "the policy carries no Bash ask rule (an ask rule prompts in EVERY mode)" \
+      "[ \"\$n_ask\" = 0 ]"
+check "the policy still denies something (a policy that denies nothing is not one)" \
+      "[ \"\$(jq '.permissions.deny | length' '$POL')\" -ge 10 ]"
+
+# ── settings-lint, driven both ways ──────────────────────────────────────────
+# A lint is worth what its negative control is worth. Build a settings file the
+# lint must PASS, then break it one way at a time and require a failure each
+# time — otherwise "0 failed" only means the lint never looks.
+LINTDIR=$(tmp lint)
+good="$LINTDIR/good.json"
+jq --arg h "$HOOKS" '{
+     permissions: .permissions,
+     hooks: {
+       PreToolUse: [{matcher:"Bash", hooks:[{type:"command", command:($h + "/permission-floor.py")}]}],
+       PermissionRequest: [{matcher:"", hooks:[{type:"command", command:($h + "/auto-approve-safe.sh")}]}]
+     }}' "$POL" | sed "s|{{HOME}}|${HOME#/}|g" > "$good"
+bash "$DIR/test/settings-lint.sh" "$good" >/dev/null 2>&1
+check "settings-lint PASSES a settings file that matches the policy (control)" "[ \$? -eq 0 ]"
+
+jq '.permissions.ask += ["Bash(git push *)"]' "$good" > "$LINTDIR/ask.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/ask.json" >/dev/null 2>&1
+check "settings-lint FAILS on a single reintroduced Bash ask rule" "[ \$? -ne 0 ]"
+
+jq '.permissions.defaultMode = "auto"' "$good" > "$LINTDIR/mode.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/mode.json" >/dev/null 2>&1
+check "settings-lint FAILS when the mode is not bypassPermissions" "[ \$? -ne 0 ]"
+
+jq '.permissions.deny = []' "$good" > "$LINTDIR/deny.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/deny.json" >/dev/null 2>&1
+check "settings-lint FAILS when a policy deny rule is missing" "[ \$? -ne 0 ]"
+
+jq '.hooks.PreToolUse = []' "$good" > "$LINTDIR/nofloor.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/nofloor.json" >/dev/null 2>&1
+check "settings-lint FAILS when the floor hook is not registered" "[ \$? -ne 0 ]"
+
+# The symlink check is the one that was silently false for months: the gate was
+# aliased into a working checkout, so `git checkout` changed machine-wide
+# policy. Drive it with a real symlink rather than trusting the branch exists.
+SLDIR=$(tmp slhooks)
+cp "$HOOKS/auto-approve-safe.sh" "$SLDIR/auto-approve-safe.sh"
+ln -sfn "$HOOKS/permission-floor.py" "$SLDIR/permission-floor.py"
+jq --arg h "$SLDIR" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/symlink.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/symlink.json" >/dev/null 2>&1
+check "settings-lint FAILS when a hook is installed as a symlink" "[ \$? -ne 0 ]"
+
+# An installed-but-inert hook passes every structural check above.
+INERT=$(tmp inert)
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$INERT/permission-floor.py"
+chmod +x "$INERT/permission-floor.py"
+cp "$HOOKS/auto-approve-safe.sh" "$INERT/auto-approve-safe.sh"
+jq --arg h "$INERT" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/inert.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/inert.json" >/dev/null 2>&1
+check "settings-lint FAILS on a registered but inert floor (the positive control)" "[ \$? -ne 0 ]"
+
+echo "== 12. skill namespace: shadows are declared, checked, and the check runs =="
+# The class: a jjstack skill takes a name Claude Code also ships, and the user
+# typing it silently gets the other thing. PR #12 shipped a detector for it
+# that (a) missed the second live collision, (b) no automation ran, and (c)
+# no test covered — delete it and everything stayed green. The rules here are
+# DERIVED: the set of declared shadows comes from the skills themselves, and
+# every branch of check 5 has a fixture that must fail it.
+#
+# ROUND 2. Three guards in this section were satisfied by a COMMENT and one
+# positive control could not fail, so they are rewritten here to drive the
+# thing they name. The workflow guards read a comment-stripped copy and anchor
+# to the YAML keys; the prune guard runs the prune; and every fixture repo now
+# satisfies check 4 so a non-zero exit really is check 5's verdict.
+VS="$BIN/jjstack-verify-skills"
+check "the skill-tree checks pass on this tree" "bash '$VS' >/dev/null 2>&1"
+
+# The workflow guards. A substring grep over the whole file passed on a
+# workflow that ran neither command, both strings sitting inside a comment.
+WF="$SANDBOX/verify-nocomments.yml"
+sed 's/#.*//' "$DIR/.github/workflows/verify.yml" > "$WF"
+check "the workflow triggers on pull requests (key, not prose)" \
+      "grep -qE '^on:' '$WF' && grep -qE '^[[:space:]]+pull_request:[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the skill-tree checks" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash bin/jjstack-verify-skills[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the smoke suite" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash test/smoke.sh[[:space:]]*$' '$WF'"
+
+# A fixture repo is a copy of bin/ + references/ with a synthetic skills/.
+# Each case mutates one thing and names the check-5 branch it must trip.
+# mkskill emits BOTH YAML block styles: reading only `|` measured 2 bytes for
+# the 25 skills that use `>`, so check 6 passed them unconditionally and
+# check 5's alt-name rule read those same 2 bytes.
+mkskill() {  # mkskill <root> <name> [shadows-entry] [description] [block-style]
+  mkdir -p "$1/skills/$2"
+  { printf -- '---\nname: %s\ndescription: %s\n  %s\n' "$2" "${5:-|}" "${4:-A test skill; the other name is /$2-alt.}"
+    [ -n "${3:-}" ] && printf 'shadows:\n  - "%s"\n' "$3"
+    printf -- '---\n# %s\n' "$2"; } > "$1/skills/$2/SKILL.md"
+}
+mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt, gamma]
+  local r; r=$(tmp nsfix)
+  cp -r "$BIN" "$r/bin"; mkdir -p "$r/references" "$r/skills"
+  printf '# claude-code-version: 2.1.266\nalpha\nalpha-alt\ngamma\n' > "$r/references/claude-code-builtins.txt"
+  # Satisfy check 4 so the run's EXIT CODE is check 5's verdict and nothing
+  # else. Without this every fixture already failed check 4, and the exit-code
+  # control below passed whatever check 5 did.
+  printf 'Dedup check before writing\n' > "$r/references/memory-sweep.md"
+  echo "$r"
+}
+vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt'; mkskill "$F" beta
+check "declared shadow with a live built-in and a reachable alt passes" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and a name that collides with nothing is not mentioned by check 5" \
+      "! vs_out '$F' | grep -q 'beta shadows'"
+check "…and the fixture is otherwise clean, so exit 0 (control for the exit codes below)" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" alpha
+check "undeclared collision FAILS and names the fix" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha and does not declare it'"
+check "…and the script exits non-zero (meaningful now that check 4 passes)" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" beta 'claude-code:/beta -> /alpha-alt'
+check "stale declaration (no built-in behind it) FAILS" \
+      "vs_out '$F' | grep -q 'beta declares a shadow of /beta but no such built-in is listed'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /nowhere'
+check "an alt that is not a listed built-in FAILS (the reachability claim is false)" \
+      "vs_out '$F' | grep -q 'but /nowhere is not a listed built-in'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /gamma'; mkskill "$F" gamma 'claude-code:/gamma -> /alpha-alt'
+check "an alt that jjstack shadows too FAILS (the other name is taken as well)" \
+      "vs_out '$F' | grep -q 'but jjstack shadows /gamma too'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A test skill that never names the other command.'
+check "a declaration whose description never names the alt FAILS" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt within its first 1400 chars'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt"
+check "a description over the ceiling FAILS check 6" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+
+# THE FOLDED-SCALAR PAIR. Same two assertions, `>` instead of `|`. Before the
+# parser was widened both passed vacuously: the description read as 2 bytes,
+# so it was under any ceiling and contained no alt name to find.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt" '>'
+check "a folded-scalar description over the ceiling FAILS check 6 too" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill that never names the other command.' '>'
+check "…and a folded-scalar description that omits the alt FAILS check 5 too" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill; the other name is /alpha-alt.' '>'
+check "…and a well-formed folded-scalar skill still passes (not just always-fail)" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and its measured length is the real one, not the 2 bytes after the colon" \
+      "! vs_out '$F' | grep -qE 'ok  alpha \(2\)'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
+check "a skill declaring a shadow of a different name FAILS" \
+      "vs_out '$F' | grep -q 'a skill can only shadow its own name'"
+
+F=$(mkfix); mkskill "$F" alpha 'shadows /alpha'
+check "a malformed shadows entry FAILS with the expected shape" \
+      "vs_out '$F' | grep -q \"is not 'claude-code:/<name> -> /<other-name>'\""
+
+F=$(mkfix); sed -i '/^# claude-code-version/d' "$F/references/claude-code-builtins.txt"; mkskill "$F" beta
+check "a built-in list with no version header FAILS check 7" \
+      "vs_out '$F' | grep -q 'carries no .# claude-code-version:. header'"
+
+# THE LIST IS HAND-EDITED, so it must be read tolerantly. One trailing space on
+# a name dropped it out of the collision set and the check reported success —
+# the exact hole this section exists to close, reopened by whitespace.
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/^alpha$/alpha /' "$F/references/claude-code-builtins.txt"
+check "a trailing space on a built-in name does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/$/\r/' "$F/references/claude-code-builtins.txt"
+check "a CRLF built-in list does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+check "…and its version header still parses (check 7 does not report a missing header)" \
+      "! vs_out '$F' | grep -q 'carries no'"
+
+# THE VERIFIER'S OWN OUTPUT IS NOT WRITABLE BY A SKILL. Check 5 is the first
+# path that feeds SKILL.md text into the print helpers; `echo -e` there let a
+# contributed file emit cursor movement and repaint a FAIL line green.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt\033[2K\033[1A'
+check "escape sequences from a SKILL.md are printed literally, not interpreted" \
+      "vs_out '$F' | grep -qF '033['"
+
+# THE PRUNE, EXERCISED. The previous guard grepped `setup` for the text of a
+# comment: deleting the whole loop left the comment and the suite stayed green.
+# It is its own script now precisely so this can drive it.
+PR="$BIN/jjstack-prune-stale-links"
+prunefix() {   # prunefix → <root> with repo/skills/{stays} and links/{stays,gone,foreign}
+  local r; r=$(tmp prune)
+  mkdir -p "$r/repo/skills/stays" "$r/links" "$r/elsewhere/other"
+  printf -- '---\nname: stays\n---\n' > "$r/repo/skills/stays/SKILL.md"
+  ln -s "$r/repo/skills/stays" "$r/links/stays"
+  ln -s "$r/repo/skills/gone"  "$r/links/gone"      # dangling: renamed away
+  ln -s "$r/elsewhere/other"   "$r/links/foreign"   # not ours
+  echo "$r"
+}
+# `-L`, never `-e`: the link under test points at a path that does not exist,
+# so `-e` is false whether the link is there or not and the assertion cannot
+# fail. A mutation that deleted the prune loop entirely left both green.
+P=$(prunefix); out=$(bash "$PR" "$P/links" "$P/repo")
+check "the prune removes a link this repo no longer backs" "[ ! -L '$P/links/gone' ]"
+check "…and says so" "printf '%s' \"\$out\" | grep -q 'gone (removed)'"
+check "…and keeps the link that still resolves to a skill" "[ -L '$P/links/stays' ]"
+check "…and does not touch a link pointing outside this repo" "[ -L '$P/links/foreign' ]"
+
+# With a manifest, a gstack original is RESTORED rather than removed.
+P=$(prunefix); mkdir -p "$P/gstack/gone"; printf -- '---\n---\n' > "$P/gstack/gone/SKILL.md"
+printf '# manifest\ngone|%s|x\n' "$P/gstack/gone" > "$P/manifest"
+out=$(bash "$PR" "$P/links" "$P/repo" "$P/manifest")
+check "with a manifest the gstack original is restored, not removed" \
+      "[ \"\$(readlink '$P/links/gone')\" = '$P/gstack/gone' ]"
+check "…and says restored" "printf '%s' \"\$out\" | grep -q 'gone (restored to'"
+
+# THE REGRESSION THAT MOTIVATED THE EXTRACTION: keyed on the install manifest,
+# the prune iterated zero times when no manifest existed — which is the case on
+# a worktree install, the one whose link the rename orphans.
+P=$(prunefix); bash "$PR" "$P/links" "$P/repo" "$P/no-such-manifest" >/dev/null
+check "the prune works with NO manifest (the install that needed it had none)" \
+      "[ ! -L '$P/links/gone' ]"
+# COMMENT-STRIPPED, like the workflow guards above. The first version of this
+# grepped the whole file, and the comment three lines above the call satisfied
+# it: a mutation that replaced the invocation with a no-op left the suite green.
+SETUP_NC="$SANDBOX/setup-nocomments.sh"
+sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
+check "setup invokes the prune script (code, not a comment)" \
+      "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
+printf '%s\n' '"$SKILLS_DIR" "$JJSTACK_DIR"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and this repo" \
+      "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+
+# A blank line inside a markdown table ENDS it, and the rows below render as
+# raw pipe text. Editing the /review row in this PR introduced exactly that on
+# the repo's front page. The class, not the instance: no blank line may sit
+# between two table rows anywhere in the docs this repo ships.
+for f in README.md TUTORIAL.md CHANGELOG.md; do
+  split=$(awk '/^\|/{if(blank&&prev){print FILENAME": "NR}; prev=1; blank=0; next}
+               /^[[:space:]]*$/{if(prev)blank=1; next}
+               {prev=0; blank=0}' "$DIR/$f")
+  check "$f has no blank line splitting a markdown table" "[ -z \"\$split\" ]"
+done
+
+# DERIVE, DON'T ENUMERATE: every shadow the real tree declares must be one
+# the real built-in list contains, and every real collision must be declared.
+check "every declared shadow in the real tree is reported as declared" \
+      "! vs_out '$DIR' | grep -q 'does not declare it'"
+check "no skill in the real tree reports a 2-byte description" \
+      "! vs_out '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+check "the real built-in list carries a version header" \
+      "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
+check "the real built-in list contains the two names that collided on main (review, security-review)" \
+      "grep -qx review '$DIR/references/claude-code-builtins.txt' && grep -qx security-review '$DIR/references/claude-code-builtins.txt'"
+check "the refresh script reproduces the binary-derived block's shape (header lines present)" \
+      "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
+check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
+      "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

@@ -33,6 +33,23 @@ jjstack does not replace gstack — it stands on its shoulders. Same command
 names you already know (`/review`, `/qa`, `/ship`), enhanced behavior, plus
 a library of original skills the gstack base doesn't ship.
 
+### Whose name is it
+
+Sharing a name is the point of a wrapper, and it needs a rule, because
+Claude Code ships built-in commands of its own on a cadence jjstack does not
+control. jjstack shadows **gstack** names by design — that is the contract.
+It shadows a **Claude Code** built-in only when the built-in stays reachable
+under another name, and the skill declares it in frontmatter
+(`shadows: - "claude-code:/review -> /code-review"`) so the check can hold
+it to that. Otherwise the skill takes a `jj-` prefix. Today: `/review` keeps
+its name (Claude's reviewer answers to `/code-review`); jjstack's security
+audit is `/jj-security-review` (Claude's `/security-review` has no other
+name). `bin/jjstack-verify-skills` fails on an undeclared collision and on a
+stale declaration; the built-in list it reads is data in
+`references/claude-code-builtins.txt`, regenerated from the installed binary
+by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
+is newer than the list. It runs on every pull request.
+
 ---
 
 ## The Three Pillars
@@ -97,7 +114,7 @@ have on a developer machine.
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
-| Permission friction | Manual approve every time | Smart auto-approve with Haiku risk classifier |
+| Permission friction | Manual approve every time | Deterministic deny floor; long runs never stop to ask |
 | MCP resilience | Manual reconnect | Auto-reconnect with retry tracking |
 | Auto-updates | gstack-only | jjstack checks on every skill use |
 | Prompt-injection guard | None | PreToolUse hook scans markdown writes |
@@ -132,9 +149,9 @@ enhancements transparently.
 ### Security & Code Review
 | Skill | What it does |
 |-------|--------------|
-| `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
+| `/jj-security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. Carries the `jj-` prefix because Claude Code's own `/security-review` has no other name. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. |
+| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. Also the name of Claude Code's built-in reviewer; type `/code-review` for that one. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -197,7 +214,7 @@ loads. Read them directly or let skills load them for you.
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |
 | `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
-| `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
+| `owasp-security/` | Language-specific security quirks — the layer below `/jj-security-review` |
 
 These references are the durable layer. Skills come and go; the philosophy
 stays.
@@ -206,13 +223,36 @@ stays.
 
 ## Hooks
 
-jjstack ships six optional hooks that ride along with every Claude Code
+jjstack ships seven optional hooks that ride along with every Claude Code
 session.
 
-**`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
-pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
-classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
-Fail-closed when the API is unreachable.
+**`permission-floor.py`** — The permission gate: a `PreToolUse` hook on
+`Bash` that refuses eleven shapes and lets everything else run without
+asking anyone. It calls nothing and needs no API key.
+
+Ten rules are the floor — commands whose reach is unbounded (`rm -rf ~`,
+`chmod -R 777 /`), whose content nobody has read (`curl … | sh`), that send
+a local file or a known secret path to the network, that write to a block
+device, that power the machine down, or that force-push the trunk. The
+eleventh is `SHAPE`: one command per Bash call. A chained call is refused
+with instructions to split it, which is both a readability rule and what
+makes the other ten exact — `S=/tmp/x; rm -rf $S` begins with an
+assignment, so no prefix rule the permission system has ever sees the `rm`.
+Heredoc bodies and quoted strings are excluded from that scan, so writing a
+commit message or a fixture file stays one call.
+
+Refusals are `deny`, not `ask`: Claude is told the rule and the fix and
+reroutes inside the same turn, so an unattended run never stops for a
+person. `test/settings-lint.sh` checks the installed policy and
+`bin/jjstack-permission-audit --since 24h` reports how often anyone was
+actually interrupted.
+
+**`auto-approve-safe.sh`** — A `PermissionRequest` hook that decides
+nothing. It writes the audit line the permission audit reads, and hands the
+request to the tubemail forwarder so an orchestrator can answer the few
+residual prompts remotely with `tm_respond_permission`. It has no `allow`
+branch, deliberately: a hook that can approve is a hook that can be a
+bypass.
 
 **`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
 into every prompt (see [Memory](#memory)): deterministic always-rules,
@@ -354,7 +394,7 @@ load DNA files, then delegate to the corresponding gstack skill via
 `cat`. After gstack completes, jjstack runs post-enhancement: quality loop
 to 10/10, output capture into `{repo}/jjstack/`, README maintenance.
 
-**Layered skills** (`/security-review`, `/product-manager-review`,
+**Layered skills** (`/jj-security-review`, `/product-manager-review`,
 `/qa-review`, `/unit-test-builder`) — pure jjstack skills that load
 multiple reference documents and run their own multi-phase pipelines with
 sub-agent verification.

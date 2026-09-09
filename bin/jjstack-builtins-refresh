@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# jjstack-builtins-refresh — derive the names Claude Code registers as slash
+# commands from the INSTALLED binary, and print them in the shape of
+# references/claude-code-builtins.txt so the maintainer can diff the two.
+#
+#   bin/jjstack-builtins-refresh | diff references/claude-code-builtins.txt -
+#
+# There is no API that enumerates built-ins. The binary is the source of
+# truth, and two registration shapes carry a slash name:
+#   name:"<x>",description:"…"   a command registered by string name
+#   name:<ident>,aliases:["<x>"]  an alias on a registration whose name is a
+#                                 minified identifier — this is how /review
+#                                 rides on /code-review (v2.1.223+)
+# Skill-type built-ins (design, dataviz, code-review, …) register by a shape
+# with no stable marker; the reference file keeps those by hand under the
+# "session-listed" header and this script reprints them unchanged.
+#
+# Deterministic, read-only, never edits the reference file. Yellow for the
+# warning, never red.
+set -uo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REF="$REPO/references/claude-code-builtins.txt"
+YEL="\033[33m"; RST="\033[0m"
+
+bin="$(command -v claude 2>/dev/null)" || { echo -e "${YEL}claude is not on PATH${RST}" >&2; exit 2; }
+bin="$(readlink -f "$bin")"
+ver="$(claude --version 2>/dev/null | awk '{print $1}')"
+[ -n "$ver" ] || { echo -e "${YEL}claude --version printed nothing${RST}" >&2; exit 2; }
+
+echo "# claude-code-version: $ver"
+echo "# Names Claude Code registers as slash commands. One per line; '#' comments."
+echo "# Regenerate: bin/jjstack-builtins-refresh | diff references/claude-code-builtins.txt -"
+echo "# session-listed (skill-type built-ins, kept by hand — see the refresh script header)"
+# Reprint the hand-kept block verbatim: from that header to the next header.
+[ -f "$REF" ] && awk '/^# session-listed/{f=1;next} /^# /{f=0} f&&NF' "$REF" | sort -u
+echo "# binary-derived ($(basename "$bin"))"
+{
+  strings -n 6 "$bin" | grep -oE 'name:"[a-z][a-z0-9-]*",(description|aliases)' \
+    | sed -E 's/^name:"//; s/",.*$//'
+  strings -n 6 "$bin" | grep -oE 'name:[A-Za-z$_][A-Za-z0-9$_]*,aliases:\["[a-z][a-z0-9-]*"' \
+    | sed -E 's/.*\["//; s/"$//'
+} | sort -u
