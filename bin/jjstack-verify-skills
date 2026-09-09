@@ -31,9 +31,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fails=0
 
-ok()   { echo -e "  ${GRN}ok${RST}  $1"; }
-bad()  { echo -e "  ${CYA}FAIL${RST} $1"; fails=$((fails + 1)); }
-warn() { echo -e "  ${YEL}warn${RST} $1"; }
+# The message can carry text lifted from a SKILL.md, so it is %s and never
+# %b: `echo -e` on a contributed `shadows:` entry lets that file emit cursor
+# movement and repaint this script's own FAIL line as a green one.
+ok()   { printf '  %bok%b  %s\n'   "$GRN" "$RST" "$1"; }
+bad()  { printf '  %bFAIL%b %s\n'  "$CYA" "$RST" "$1"; fails=$((fails + 1)); }
+warn() { printf '  %bwarn%b %s\n'  "$YEL" "$RST" "$1"; }
 
 # The description block of a SKILL.md, indentation stripped: either the
 # `description: |` block up to the next top-level key or the closing ---,
@@ -41,7 +44,7 @@ warn() { echo -e "  ${YEL}warn${RST} $1"; }
 desc_of() {
   awk '
     /^---$/ { if (++dash == 2) exit; next }
-    /^description: \|/ { f=1; next }
+    /^description: *[|>]/ { f=1; next }
     /^description: /   { sub(/^description: /, ""); print; next }
     f && /^[^ ]/ { f=0 }
     f { sub(/^  /, ""); print }
@@ -102,7 +105,8 @@ echo "== 5. every shadowed Claude Code built-in is declared, and every declarati
 # references/claude-code-builtins.txt, derived from the installed binary by
 # bin/jjstack-builtins-refresh — never a comment that says "re-check".
 BUILTINS="$REPO/references/claude-code-builtins.txt"
-grep -vE '^[[:space:]]*(#|$)' "$BUILTINS" | sort -u > "$TMP/builtins"
+tr -d '\r' < "$BUILTINS" | sed 's/[[:space:]]*$//; s/^[[:space:]]*//' \
+  | grep -vE '^(#|$)' | sort -u > "$TMP/builtins"
 comm -12 "$TMP/builtins" "$TMP/skills" > "$TMP/collisions"
 # declared: skill|entry
 while read -r d; do
@@ -159,7 +163,7 @@ while read -r d; do
 done < "$TMP/skills"
 
 echo "== 7. the built-in list is not older than the installed Claude Code =="
-listed=$(sed -n 's/^# claude-code-version: *//p' "$BUILTINS" | head -1)
+listed=$(tr -d '\r' < "$BUILTINS" | sed -n 's/^# claude-code-version: *//p' | sed 's/[[:space:]]*$//' | head -1)
 installed=$(claude --version 2>/dev/null | awk '{print $1}')
 if [ -z "$listed" ]; then bad "$BUILTINS carries no '# claude-code-version:' header"
 elif [ -z "$installed" ]; then warn "claude is not on PATH — cannot compare against list ($listed)"

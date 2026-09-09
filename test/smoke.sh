@@ -1207,17 +1207,34 @@ echo "== 11. skill namespace: shadows are declared, checked, and the check runs 
 # no test covered — delete it and everything stayed green. The rules here are
 # DERIVED: the set of declared shadows comes from the skills themselves, and
 # every branch of check 5 has a fixture that must fail it.
+#
+# ROUND 2. Three guards in this section were satisfied by a COMMENT and one
+# positive control could not fail, so they are rewritten here to drive the
+# thing they name. The workflow guards read a comment-stripped copy and anchor
+# to the YAML keys; the prune guard runs the prune; and every fixture repo now
+# satisfies check 4 so a non-zero exit really is check 5's verdict.
 VS="$BIN/jjstack-verify-skills"
 check "the skill-tree checks pass on this tree" "bash '$VS' >/dev/null 2>&1"
-check "the workflow runs the skill-tree checks on pull requests" \
-      "grep -q 'bin/jjstack-verify-skills' '$DIR/.github/workflows/verify.yml' && grep -q 'pull_request' '$DIR/.github/workflows/verify.yml'"
-check "…and the smoke suite" "grep -q 'test/smoke.sh' '$DIR/.github/workflows/verify.yml'"
+
+# The workflow guards. A substring grep over the whole file passed on a
+# workflow that ran neither command, both strings sitting inside a comment.
+WF="$SANDBOX/verify-nocomments.yml"
+sed 's/#.*//' "$DIR/.github/workflows/verify.yml" > "$WF"
+check "the workflow triggers on pull requests (key, not prose)" \
+      "grep -qE '^on:' '$WF' && grep -qE '^[[:space:]]+pull_request:[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the skill-tree checks" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash bin/jjstack-verify-skills[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the smoke suite" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash test/smoke.sh[[:space:]]*$' '$WF'"
 
 # A fixture repo is a copy of bin/ + references/ with a synthetic skills/.
 # Each case mutates one thing and names the check-5 branch it must trip.
-mkskill() {  # mkskill <root> <name> [shadows-entry] [description]
+# mkskill emits BOTH YAML block styles: reading only `|` measured 2 bytes for
+# the 25 skills that use `>`, so check 6 passed them unconditionally and
+# check 5's alt-name rule read those same 2 bytes.
+mkskill() {  # mkskill <root> <name> [shadows-entry] [description] [block-style]
   mkdir -p "$1/skills/$2"
-  { printf -- '---\nname: %s\ndescription: |\n  %s\n' "$2" "${4:-A test skill; the other name is /$2-alt.}"
+  { printf -- '---\nname: %s\ndescription: %s\n  %s\n' "$2" "${5:-|}" "${4:-A test skill; the other name is /$2-alt.}"
     [ -n "${3:-}" ] && printf 'shadows:\n  - "%s"\n' "$3"
     printf -- '---\n# %s\n' "$2"; } > "$1/skills/$2/SKILL.md"
 }
@@ -1225,6 +1242,10 @@ mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt
   local r; r=$(tmp nsfix)
   cp -r "$BIN" "$r/bin"; mkdir -p "$r/references" "$r/skills"
   printf '# claude-code-version: 2.1.266\nalpha\nalpha-alt\ngamma\n' > "$r/references/claude-code-builtins.txt"
+  # Satisfy check 4 so the run's EXIT CODE is check 5's verdict and nothing
+  # else. Without this every fixture already failed check 4, and the exit-code
+  # control below passed whatever check 5 did.
+  printf 'Dedup check before writing\n' > "$r/references/memory-sweep.md"
   echo "$r"
 }
 vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
@@ -1234,11 +1255,14 @@ check "declared shadow with a live built-in and a reachable alt passes" \
       "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
 check "…and a name that collides with nothing is not mentioned by check 5" \
       "! vs_out '$F' | grep -q 'beta shadows'"
+check "…and the fixture is otherwise clean, so exit 0 (control for the exit codes below)" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
 
 F=$(mkfix); mkskill "$F" alpha
 check "undeclared collision FAILS and names the fix" \
       "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha and does not declare it'"
-check "…and the script exits non-zero" "! vs_out '$F' >/dev/null"
+check "…and the script exits non-zero (meaningful now that check 4 passes)" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
 
 F=$(mkfix); mkskill "$F" beta 'claude-code:/beta -> /alpha-alt'
 check "stale declaration (no built-in behind it) FAILS" \
@@ -1260,6 +1284,21 @@ F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.
 check "a description over the ceiling FAILS check 6" \
       "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
 
+# THE FOLDED-SCALAR PAIR. Same two assertions, `>` instead of `|`. Before the
+# parser was widened both passed vacuously: the description read as 2 bytes,
+# so it was under any ceiling and contained no alt name to find.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt" '>'
+check "a folded-scalar description over the ceiling FAILS check 6 too" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill that never names the other command.' '>'
+check "…and a folded-scalar description that omits the alt FAILS check 5 too" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill; the other name is /alpha-alt.' '>'
+check "…and a well-formed folded-scalar skill still passes (not just always-fail)" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and its measured length is the real one, not the 2 bytes after the colon" \
+      "! vs_out '$F' | grep -qE 'ok  alpha \(2\)'"
+
 F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
 check "a skill declaring a shadow of a different name FAILS" \
       "vs_out '$F' | grep -q 'a skill can only shadow its own name'"
@@ -1272,12 +1311,91 @@ F=$(mkfix); sed -i '/^# claude-code-version/d' "$F/references/claude-code-builti
 check "a built-in list with no version header FAILS check 7" \
       "vs_out '$F' | grep -q 'carries no .# claude-code-version:. header'"
 
+# THE LIST IS HAND-EDITED, so it must be read tolerantly. One trailing space on
+# a name dropped it out of the collision set and the check reported success —
+# the exact hole this section exists to close, reopened by whitespace.
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/^alpha$/alpha /' "$F/references/claude-code-builtins.txt"
+check "a trailing space on a built-in name does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/$/\r/' "$F/references/claude-code-builtins.txt"
+check "a CRLF built-in list does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+check "…and its version header still parses (check 7 does not report a missing header)" \
+      "! vs_out '$F' | grep -q 'carries no'"
+
+# THE VERIFIER'S OWN OUTPUT IS NOT WRITABLE BY A SKILL. Check 5 is the first
+# path that feeds SKILL.md text into the print helpers; `echo -e` there let a
+# contributed file emit cursor movement and repaint a FAIL line green.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt\033[2K\033[1A'
+check "escape sequences from a SKILL.md are printed literally, not interpreted" \
+      "vs_out '$F' | grep -qF '033['"
+
+# THE PRUNE, EXERCISED. The previous guard grepped `setup` for the text of a
+# comment: deleting the whole loop left the comment and the suite stayed green.
+# It is its own script now precisely so this can drive it.
+PR="$BIN/jjstack-prune-stale-links"
+prunefix() {   # prunefix → <root> with repo/skills/{stays} and links/{stays,gone,foreign}
+  local r; r=$(tmp prune)
+  mkdir -p "$r/repo/skills/stays" "$r/links" "$r/elsewhere/other"
+  printf -- '---\nname: stays\n---\n' > "$r/repo/skills/stays/SKILL.md"
+  ln -s "$r/repo/skills/stays" "$r/links/stays"
+  ln -s "$r/repo/skills/gone"  "$r/links/gone"      # dangling: renamed away
+  ln -s "$r/elsewhere/other"   "$r/links/foreign"   # not ours
+  echo "$r"
+}
+# `-L`, never `-e`: the link under test points at a path that does not exist,
+# so `-e` is false whether the link is there or not and the assertion cannot
+# fail. A mutation that deleted the prune loop entirely left both green.
+P=$(prunefix); out=$(bash "$PR" "$P/links" "$P/repo")
+check "the prune removes a link this repo no longer backs" "[ ! -L '$P/links/gone' ]"
+check "…and says so" "printf '%s' \"\$out\" | grep -q 'gone (removed)'"
+check "…and keeps the link that still resolves to a skill" "[ -L '$P/links/stays' ]"
+check "…and does not touch a link pointing outside this repo" "[ -L '$P/links/foreign' ]"
+
+# With a manifest, a gstack original is RESTORED rather than removed.
+P=$(prunefix); mkdir -p "$P/gstack/gone"; printf -- '---\n---\n' > "$P/gstack/gone/SKILL.md"
+printf '# manifest\ngone|%s|x\n' "$P/gstack/gone" > "$P/manifest"
+out=$(bash "$PR" "$P/links" "$P/repo" "$P/manifest")
+check "with a manifest the gstack original is restored, not removed" \
+      "[ \"\$(readlink '$P/links/gone')\" = '$P/gstack/gone' ]"
+check "…and says restored" "printf '%s' \"\$out\" | grep -q 'gone (restored to'"
+
+# THE REGRESSION THAT MOTIVATED THE EXTRACTION: keyed on the install manifest,
+# the prune iterated zero times when no manifest existed — which is the case on
+# a worktree install, the one whose link the rename orphans.
+P=$(prunefix); bash "$PR" "$P/links" "$P/repo" "$P/no-such-manifest" >/dev/null
+check "the prune works with NO manifest (the install that needed it had none)" \
+      "[ ! -L '$P/links/gone' ]"
+# COMMENT-STRIPPED, like the workflow guards above. The first version of this
+# grepped the whole file, and the comment three lines above the call satisfied
+# it: a mutation that replaced the invocation with a no-op left the suite green.
+SETUP_NC="$SANDBOX/setup-nocomments.sh"
+sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
+check "setup invokes the prune script (code, not a comment)" \
+      "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
+printf '%s\n' '"$SKILLS_DIR" "$JJSTACK_DIR"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and this repo" \
+      "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+
+# A blank line inside a markdown table ENDS it, and the rows below render as
+# raw pipe text. Editing the /review row in this PR introduced exactly that on
+# the repo's front page. The class, not the instance: no blank line may sit
+# between two table rows anywhere in the docs this repo ships.
+for f in README.md TUTORIAL.md CHANGELOG.md; do
+  split=$(awk '/^\|/{if(blank&&prev){print FILENAME": "NR}; prev=1; blank=0; next}
+               /^[[:space:]]*$/{if(prev)blank=1; next}
+               {prev=0; blank=0}' "$DIR/$f")
+  check "$f has no blank line splitting a markdown table" "[ -z \"\$split\" ]"
+done
+
 # DERIVE, DON'T ENUMERATE: every shadow the real tree declares must be one
 # the real built-in list contains, and every real collision must be declared.
-# This is check 5 run on the real tree with its verdict read back, so a
-# collision that lands on main cannot pass this file either.
 check "every declared shadow in the real tree is reported as declared" \
       "! vs_out '$DIR' | grep -q 'does not declare it'"
+check "no skill in the real tree reports a 2-byte description" \
+      "! vs_out '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
 check "the real built-in list carries a version header" \
       "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
 check "the real built-in list contains the two names that collided on main (review, security-review)" \
@@ -1286,8 +1404,6 @@ check "the refresh script reproduces the binary-derived block's shape (header li
       "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
 check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
       "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
-check "setup prunes links for skills that left the repo" \
-      "grep -q 'Prune links for skills that left the repo' '$DIR/setup'"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

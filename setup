@@ -207,26 +207,16 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
   fi
 done
 
-# Prune links for skills that left the repo (renamed or removed). The loop
-# above only ever ADDS: after skills/security-review became
-# skills/jj-security-review, the old link would keep pointing at a directory
-# that no longer exists, and the harness would keep listing a skill that no
-# longer loads. Only links the previous manifest recorded as OURS are
-# touched; a gstack original is restored, anything else is removed.
-PRUNED=()
-for name in "${!EXISTING_ORIGINALS[@]}"; do
-  [ -d "$JJSTACK_DIR/skills/$name" ] && [ -f "$JJSTACK_DIR/skills/$name/SKILL.md" ] && continue
-  target_link="$SKILLS_DIR/$name"
-  [ -L "$target_link" ] || continue
-  case "$(readlink "$target_link")" in *jjstack/*) ;; *) continue ;; esac
-  original="${EXISTING_ORIGINALS[$name]}"
-  if [ -n "$original" ] && [ -e "$original" ]; then
-    ln -snf "$original" "$target_link"; PRUNED+=("$name (restored gstack)")
-  else
-    rm -f "$target_link"; PRUNED+=("$name (removed)")
-  fi
-done
-[ "${#PRUNED[@]}" -gt 0 ] && ok "Pruned stale links: ${PRUNED[*]}"
+# Prune links for skills that left the repo (renamed or removed). Delegated to
+# bin/jjstack-prune-stale-links so the test suite can drive it against a
+# fixture instead of an installer that mutates the real skills dir. The first
+# version of this loop keyed on the install manifest, which is read through the
+# jjstack link and does not exist on a worktree install — so it iterated zero
+# times on exactly the install whose link the rename orphaned.
+PRUNED_OUT="$("$JJSTACK_DIR/bin/jjstack-prune-stale-links" "$SKILLS_DIR" "$JJSTACK_DIR" "$MANIFEST" 2>/dev/null)"
+if [ -n "$PRUNED_OUT" ]; then
+  while IFS= read -r line; do [ -n "$line" ] && ok "Pruned $line"; done <<< "$PRUNED_OUT"
+fi
 
 # Write manifest
 printf '%s\n' "${MANIFEST_LINES[@]}" > "$MANIFEST"
