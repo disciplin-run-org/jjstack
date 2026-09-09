@@ -41,6 +41,24 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   but it read as a contradiction until you worked out from the severities
   that none of them block. The word says it. The old form is refused.
 
+- **`/review` now posts its verdict as a GitHub review, not a loose comment,
+  and looks at what the change is rather than only whether it works.** The
+  verdict used to arrive as an ordinary comment, which left the PR's Reviews
+  box empty: GitHub recorded the pull request as never reviewed, and a branch
+  rule that requires an approval saw nothing. It is now a review, with the
+  verdict mapped to approve, comment, or request-changes. On a pull request
+  you opened yourself GitHub refuses to record a state at all, so the review
+  posts as a comment there and the closing line tells you the state was
+  refused instead of implying a green check. Requesting a reviewer has its
+  own two traps, both now documented with the call that actually works.
+
+  The review also gained the questions it was missing. It asks whether the
+  change is the right shape and whether it is more complex than the problem
+  needs, reads names and whether comments say why rather than what, names any
+  file in the diff that no pass opened instead of reporting a coverage
+  fraction that counts only passes, and may name one thing the change does
+  well.
+
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a
