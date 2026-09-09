@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""How often did a permission prompt interrupt a person, and why.
+
+This is the acceptance measurement for the permission gate. The gate's whole
+claim is that autonomous work runs without stopping for a human, and a claim
+like that is worth exactly as much as the number that checks it. Deterministic:
+it reads logs and transcripts, and calls nothing.
+
+    bin/jjstack-permission-audit --since 24h
+
+Sources, all read-only:
+  ~/.claude/logs/jjstack-permission-hook.log   every request that reached a
+                                               human-facing prompt, per worker
+                                               and permission mode
+  ~/.claude/logs/jjstack-floor.log             every PreToolUse deny, per rule
+  ~/.claude/projects/*/*.jsonl                 the commands themselves, so the
+                                               shape of what still prompts is
+                                               visible rather than guessed
+
+The verb table strips the leading `VAR=`, `cd` and `set -a` before counting,
+because that prefix is exactly what made 391 of 393 prompts invisible to the
+permission system's own matching. Reading it any other way hides the finding.
+
+Exit 0 always: this reports, it does not judge. test/settings-lint.sh is the
+one that fails a build.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import datetime
+import glob
+import json
+import os
+import re
+import sys
+
+HOME = os.path.expanduser("~")
+HOOK_LOG = os.path.join(HOME, ".claude", "logs", "jjstack-permission-hook.log")
+FLOOR_LOG = os.path.join(HOME, ".claude", "logs", "jjstack-floor.log")
+PROJECTS = os.path.join(HOME, ".claude", "projects")
+
+
+def parse_since(text):
+    m = re.fullmatch(r"(\d+)([hdm])", text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError("use forms like 90m, 24h, 7d")
+    n, unit = int(m.group(1)), m.group(2)
+    delta = {"m": datetime.timedelta(minutes=n),
+             "h": datetime.timedelta(hours=n),
+             "d": datetime.timedelta(days=n)}[unit]
+    return datetime.datetime.now().astimezone() - delta
+
+
+def read_log(path, cutoff):
+    """Rows of `ts key=value ...` at or after cutoff."""
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    for line in open(path, encoding="utf-8", errors="replace"):
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            ts = datetime.datetime.fromisoformat(parts[0])
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.astimezone()
+        if ts < cutoff:
+            continue
+        row = {"ts": ts}
+        for p in parts[1:]:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                row[k] = v
+        rows.append(row)
+    return rows
+
+
+LEADING_NOISE = re.compile(
+    r"^\s*(?:set\s+-\w+\s*;?\s*|cd\s+\S+\s*(?:&&|;)?\s*|[A-Za-z_][A-Za-z0-9_]*=\S*\s*;?\s*)+"
+)
+
+
+def leading_verb(command):
+    stripped = LEADING_NOISE.sub("", command, count=1).lstrip()
+    token = stripped.split(None, 1)[0] if stripped.split() else "(empty)"
+    return token[:24]
+
+
+def recent_commands(cutoff):
+    """Bash commands Claude issued in the window, from the session transcripts."""
+    cmds = []
+    cutoff_ts = cutoff.timestamp()
+    for path in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl")):
+        try:
+            if os.path.getmtime(path) < cutoff_ts:
+                continue
+        except OSError:
+            continue
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"Bash"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                ts = obj.get("timestamp", "")
+                try:
+                    when = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if when.astimezone() < cutoff:
+                    continue
+                for block in (obj.get("message") or {}).get("content") or []:
+                    if (isinstance(block, dict) and block.get("type") == "tool_use"
+                            and block.get("name") == "Bash"):
+                        command = (block.get("input") or {}).get("command") or ""
+                        if command:
+                            cmds.append((os.path.basename(os.path.dirname(path)), command))
+    return cmds
+
+
+def table(title, counter, total=None, limit=None):
+    print("\n%s" % title)
+    if not counter:
+        print("  (none)")
+        return
+    shown = counter.most_common(limit) if limit else counter.most_common()
+    width = max(len(str(k)) for k, _ in shown)
+    for key, n in shown:
+        share = "  %5.1f%%" % (100.0 * n / total) if total else ""
+        print("  %-*s  %5d%s" % (width, key, n, share))
+    rest = len(counter) - len(shown)
+    if rest > 0:
+        print("  ... and %d more" % rest)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--since", type=parse_since, default="24h",
+                    help="window, e.g. 90m, 24h, 7d (default 24h)")
+    args = ap.parse_args()
+    cutoff = args.since
+    if isinstance(cutoff, str):
+        cutoff = parse_since(cutoff)
+
+    hours = max((datetime.datetime.now().astimezone() - cutoff).total_seconds() / 3600.0, 1e-9)
+    print("window: since %s (%.1f h)" % (cutoff.isoformat(timespec="seconds"), hours))
+
+    prompts = read_log(HOOK_LOG, cutoff)
+    print("\n== prompts that reached a person ==")
+    print("  total          %d" % len(prompts))
+    print("  per hour       %.2f" % (len(prompts) / hours))
+    table("by worker", collections.Counter(r.get("worker", "?") for r in prompts), len(prompts))
+    table("by permission mode", collections.Counter(r.get("mode", "?") for r in prompts), len(prompts))
+    table("by reason", collections.Counter(r.get("reason", "?") for r in prompts), len(prompts))
+    table("by tool", collections.Counter(r.get("tool", "?") for r in prompts), len(prompts))
+    paired = collections.Counter(r.get("paired", "?") for r in prompts)
+    table("tubemail pairing (a 'no' is a pending entry nobody can answer)", paired, len(prompts))
+
+    denies = read_log(FLOOR_LOG, cutoff)
+    print("\n== floor denies (no person involved) ==")
+    print("  total          %d" % len(denies))
+    print("  per hour       %.2f" % (len(denies) / hours))
+    table("by rule", collections.Counter(r.get("rule", "?") for r in denies), len(denies))
+    table("by worker", collections.Counter(r.get("worker", "?") for r in denies), len(denies))
+
+    cmds = recent_commands(cutoff)
+    print("\n== what Claude actually ran (%d Bash calls) ==" % len(cmds))
+    table("leading verb, after stripping VAR= / cd / set -a",
+          collections.Counter(leading_verb(c) for _, c in cmds), len(cmds), limit=20)
+    compound = sum(1 for _, c in cmds if re.search(r"&&|\|\||;|\n|\$\(", c))
+    if cmds:
+        print("\n  compound (chained) calls  %d  %.1f%% — SHAPE should drive this to 0"
+              % (compound, 100.0 * compound / len(cmds)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
