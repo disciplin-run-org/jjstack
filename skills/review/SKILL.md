@@ -217,9 +217,18 @@ verdict channel that works, and the only one a branch rule can gate on.
 
 **A pending status is a promise to replace it.** Phase 5 posts the terminal
 one. If the run ends any other way — the 60-minute budget, a GH_ERROR, an
-abort — post `state=error` with the reason before stopping. A required check
-left pending blocks the merge forever, and the review that stranded it is
-gone. Under NO_PR skip all of this: there is no checks box to post into.
+abort — post `state=error` with the reason before stopping. Nothing else will:
+the run that posted it is gone, so where the check is required the merge waits
+on a review that is never coming.
+
+That is recoverable, not fatal, and the recovery belongs here so nobody has to
+find it under pressure. A status is keyed by commit and context and the newest
+one on that pair wins, so anyone with write access clears a stranded check with
+one call — the same POST above with `state=success`. Failing that, a repository
+admin can drop the context from the required list, or merge past it where
+bypass is allowed. Recoverable by hand is still worse than not stranding it.
+
+Under NO_PR skip all of this: there is no checks box to post into.
 
 (`state` accepts `error`, `failure`, `pending`, `success` only, and
 `description` is truncated past 140 characters. The richer Check Runs API

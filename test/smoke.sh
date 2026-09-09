@@ -1140,6 +1140,13 @@ check "…and names why an unsubmitted review is not that signal" \
 # stranded it is gone, so every exit path owes a terminal status.
 check "…and a run that ends any other way still posts a terminal status" \
       "grep -q 'A pending status is a promise to replace it' '$SK'"
+# The hazard without the recovery is a scare, not an instruction: a stranded
+# check is cleared by one POST, because a status is keyed by commit+context and
+# the newest wins. Someone meeting this at merge time needs the way out.
+check "…and says how a stranded check is cleared" \
+      "grep -q 'keyed by commit and context' '$SK'"
+check "…naming the call that clears it" \
+      "grep -q 'the same POST above with .state=success' '$SK'"
 # Named so nobody reaches for the richer API and finds out in production.
 check "…and records that Check Runs refuse a personal token" \
       "grep -q 'authenticate via a GitHub App' '$SK'"
