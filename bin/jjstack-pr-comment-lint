@@ -195,9 +195,9 @@ while IFS='|' read -r label pat; do
   hits=$(grep -nPi -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
   [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
 done <<'SECRETS'
-assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
+assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*([A-Za-z][A-Za-z0-9_-]{0,15}[[:space:]]+)?["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
 private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----
-credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]+:[^/@[:space:]]{6,}@
+credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]*:[^/@[:space:]]{6,}@
 aws key id|(AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)[0-9A-Z]{16}
 github token|gh[pousr]_[A-Za-z0-9]{36,}
 github fine-grained pat|github_pat_[A-Za-z0-9_]{22,}
@@ -397,8 +397,18 @@ localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$
 # could show three findings, declare nothing, and pass clean. That is precisely
 # how "be brief" turns into "drop findings". The arithmetic is checkable, so it
 # is checked: M-N must be stated, and it must equal total minus shown.
+# The report is in the same file now, so the visible half is answerable to it.
+# Before the fold this check COULD not see the report; now it can, and until
+# this fix it still did not. A one-line "all issues resolved - lgtm - approved"
+# over a report reading REJECT with two unfixed P0s linted clean and posted:
+# the author reads the top of the comment and merges, with the blocking
+# findings one click below, unread.
+n_rep=$(count_findings "$REP")
 if [ "$VERDICT" = "approve" ]; then
-  : # the canonical one-line form above already states the outcome
+  # A resolved or clean verdict may not sit on a report that still blocks.
+  if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(REJECT|CAUTION|STOP)' "$REP" 2>/dev/null; then
+    fail "verdict-contradicts-report" "the visible line approves while the report beneath it does not. The reader takes the top of the comment as the answer and never opens the block."
+  fi
 else
   decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$VIS" 2>/dev/null | head -1)
   if [ -z "$decl" ]; then
@@ -408,6 +418,11 @@ else
     n_tot=$(echo "$decl" | grep -oE '[0-9]+ total' | grep -oE '^[0-9]+')
     if [ "$n_tot" -lt "$n_block" ]; then
       fail "bad-residual" "$decl: the total cannot be smaller than the blocking count."
+    elif [ "$n_rep" -gt "$n_tot" ]; then
+      # The declared total is a FLOOR, not a free variable. It may exceed what
+      # the report enumerates, but never fall below it: that is a finding the
+      # reader is never told exists.
+      fail "bad-residual" "$n_tot declared, but the report beneath carries $n_rep. The declared total is what the reader trusts; it cannot be smaller than the report it sits on."
     elif [ "$n_tot" -gt "$n_find" ]; then
       want=$((n_tot - n_find))
       got=$(grep -oiE '[0-9]+ more\b' "$VIS" 2>/dev/null | head -1 | grep -oE '^[0-9]+')

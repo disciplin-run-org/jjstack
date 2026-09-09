@@ -51,4 +51,18 @@ assemble() {
   cat "$REPORT"
   printf '\n</details>\n'
 }
-if [ -n "$OUT" ]; then assemble > "$OUT"; else assemble; fi
+# `> "$OUT"` truncates before `cat` reads, so --out naming an input destroys it
+# and exits 0. The report is a working file that is never committed, by design,
+# so there is no copy anywhere: one mistyped flag at the end of an hour costs
+# the hour, and the tool reports success. Refuse the alias before writing.
+if [ -n "$OUT" ]; then
+  for _in in "$HEAD" "$REPORT"; do
+    if [ "$OUT" -ef "$_in" ] 2>/dev/null || [ "$OUT" = "$_in" ]; then
+      echo -e "${CYA}error${RST} --out is one of the inputs ($_in): it would be truncated before it is read" >&2
+      exit 4
+    fi
+  done
+  assemble > "$OUT"
+else
+  assemble
+fi

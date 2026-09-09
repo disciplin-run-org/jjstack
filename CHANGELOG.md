@@ -9,6 +9,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A review comment can no longer approve at the top while rejecting at the
+  bottom.** Now that the report rides inside the comment, the visible verdict
+  is checked against it: a one-line "all issues resolved - lgtm - approved"
+  sitting over a report that rejects is refused, and a declared finding total
+  smaller than the report beneath it is refused too. Before this, the reader
+  saw the approval, merged, and the blocking findings sat one click below,
+  unread.
+- **Two routine credential shapes are caught.** A bearer token written after a
+  word (`Authorization: Bearer …`) and a URL whose password has no username
+  before it both published clean. Quoting the offending line is what a security
+  finding is supposed to do, so finding the hardcoded token had become the act
+  that published it.
+- **Pointing the comment assembler's `--out` at one of its own inputs no longer
+  destroys that file.** It truncated before reading and exited zero. The report
+  is a working file that is never committed, so one mistyped flag at the end of
+  an hour cost the hour and the tool reported success.
+
 ### Changed
 
 - **The `/review` PR comment opens with its attribution, and carries the full

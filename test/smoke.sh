@@ -646,12 +646,26 @@ body() { printf '%b' "$2" > "$PCL/$1.md"; }
 # The smallest block the lint accepts as a report: one collapsed <details>
 # carrying the heading the report template opens with.
 RPT='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT - fixture\n\n</details>\n'
+# The approve-form fixtures need a report that does NOT block. Sharing one
+# REJECT report across every fixture was harmless while nothing read the
+# report; now that the visible verdict answers to it, a resolved line over a
+# REJECT body is the contradiction under test, not a neutral backdrop.
+RPT_OK='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
 
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
 body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
+# The two shapes a security finding routinely quotes, both of which published
+# clean until the report moved inside the comment and made them routine.
+body sec_bearer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `api.py:4` hardcoded\nAuthorization: Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba\n'"$RPT"
+check "a bearer token after a word is a credential (exit 4)" "[ \$(lint '$PCL/sec_bearer.md') = 4 ]"
+body sec_urlnouser '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
+check "…and a password-only URL, with no username before the colon" "[ \$(lint '$PCL/sec_urlnouser.md') = 4 ]"
+# Control: the ordinary prose these two must not start refusing.
+body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
+check "…while ordinary prose about auth is not a credential (control)" "[ \$(lint '$PCL/sec_prose.md') = 0 ]"
 body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
@@ -730,7 +744,7 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
 body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
@@ -767,13 +781,26 @@ check "…and forty visible filler lines are too-long (control)" \
 # comment carrying a real report, and the reviewer would trim the evidence to
 # fit - the exact failure the block exists to end.
 longrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n%.0s- **P2** `f:1` a finding in the report, one of many\n' $(seq 200))
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 200 total.\n\n**P1** `a:1` x\n\n199 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
 check "a 200-line report beneath the fold passes the visible budget" \
       "[ \$(lint '$PCL/fold.md') = 0 ]"
 check "…and its 200 P-tokens do not count against the visible cap" \
       "! grep -q too-many <<<\"\$(why '$PCL/fold.md')\""
-check "…nor against the residual arithmetic" \
+check "…and the declared total covers them, so the residual holds" \
       "! grep -q bad-residual <<<\"\$(why '$PCL/fold.md')\""
+# THE FLOOR THIS PINS. The same report under a total that does not cover it is
+# the shape that shipped: a visible "1 blocking, 1 total" over 200 findings the
+# reader is never told exist. The old fixture declared exactly that and an
+# assertion certified it clean, so the hole was not missed by the tests - it
+# was ratified by them.
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold_under.md"
+check "a declared total smaller than the report beneath it is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
+# ...and the approve path has the same hole in its own vocabulary: one visible
+# line saying approved, over a report that rejects.
+body att_contra "Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved\n$RPT"
+check "a resolved verdict over a REJECT report is refused" \
+      "grep -q verdict-contradicts-report <<<\"\$(why '$PCL/att_contra.md')\""
 # The whole body has a cap of its own: GitHub refuses a comment over 65536
 # characters, AFTER the lint said clean. Refuse it here and name the cause.
 "$BIN/jjstack-pr-comment-lint" "$PCL/fold.md" --max-total-chars 500 >/dev/null 2>&1
@@ -835,7 +862,7 @@ check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
 ATT='Claude jjstack/skills/review/SKILL.md'
-body att_ok "$ATT: all issues resolved - lgtm - approved\n$RPT"
+body att_ok "$ATT: all issues resolved - lgtm - approved\n$RPT_OK"
 check "the canonical resolved line, with its report beneath, passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 # A resolved verdict asserts findings existed and were fixed, so it carries the
 # report. Without it the approve path is the one place brevity DELETES evidence.
@@ -844,12 +871,12 @@ check "a resolved line with no report block is refused" \
       "grep -q no-report <<<\"\$(why '$PCL/att_norep.md')\""
 # The old form carried a file path after the verdict. There is no file now;
 # the path is refused as prose after the canonical line.
-body att_oldpath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n$RPT"
+body att_oldpath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n$RPT_OK"
 check "the old path-carrying resolved line is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_oldpath.md')\""
 # Prose appended AFTER a canonical line, with the block present: the block is
 # fine, the visible part is not, and the message has to say which.
-body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAnd prose nobody asked for.\n$RPT"
+body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAnd prose nobody asked for.\n$RPT_OK"
 check "prose after a valid resolved line is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_wordy.md')\""
 check "…and is NOT misdiagnosed as a missing report" \
@@ -857,7 +884,7 @@ check "…and is NOT misdiagnosed as a missing report" \
 body att_clean "$ATT: no findings - lgtm - approved\n"
 check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
 # A clean review has nothing to carry: a block under it is padding.
-body att_cleanrep "$ATT: no findings - lgtm - approved\n$RPT"
+body att_cleanrep "$ATT: no findings - lgtm - approved\n$RPT_OK"
 check "a clean approve with a report block is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_cleanrep.md')\""
 body att_none '**APPROVE** - no findings.\n'
@@ -938,6 +965,20 @@ check "…and so is a missing one" "[ \$? -eq 3 ]"
 check "a missing --report is a usage error (exit 2)" "[ \$? -eq 2 ]"
 timeout 5 "$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report >/dev/null 2>&1
 check "a value-less trailing flag is refused, not spun on (exit 2)" "[ \$? -eq 2 ]"
+
+# ALIASING. `> "$OUT"` truncates before `cat` reads, so --out naming an input
+# destroyed it and exited 0. The report is never committed by design, so there
+# is no copy: one mistyped flag at the end of an hour cost the hour, and the
+# tool reported success. Both directions, and the file must survive intact.
+cp "$ASM/report.md" "$ASM/report.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/report.md" >/dev/null 2>&1
+check "--out naming the report is refused (exit 4)" "[ \$? -eq 4 ]"
+check "…and the report is left byte-for-byte intact" \
+      "cmp -s '$ASM/report.md' '$ASM/report.keep'"
+cp "$ASM/head.md" "$ASM/head.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/head.md" >/dev/null 2>&1
+check "--out naming the head is refused too" "[ \$? -eq 4 ]"
+check "…and the head survives" "cmp -s '$ASM/head.md' '$ASM/head.keep'"
 
 echo "== 9. the review skill says what it does =="
 SK="$DIR/skills/review/SKILL.md"
