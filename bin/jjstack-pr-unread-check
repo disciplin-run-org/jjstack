@@ -76,18 +76,36 @@ RAW=$(gh pr view "$PR" --repo "$REPO" --json comments,reviews 2>&1) || {
 # The inline surface, which `gh pr view` cannot return. Its absence is not an
 # error - most pull requests have none - but a failure to ASK is, and is not
 # quietly folded into an empty list.
-INLINE=$(gh api "repos/$REPO/pulls/$PR/comments" --jq '[.[] | {kind:"inline", who:(.user.login // "?"), at:.created_at}]' 2>&1) || {
+#
+# PAGINATED, and that is the whole rule rather than a tuning knob. `gh api` with
+# no flags returns 30 items and does not follow the Link header, and this
+# endpoint returns OLDEST FIRST - so past 30 inline comments the tool received
+# the oldest 30 and the newest reply was precisely the item missing from the
+# response. The newest item is the one this gate exists to catch, so reading one
+# page deep failed in exactly the case it was written for.
+INLINE=$(gh api --paginate "repos/$REPO/pulls/$PR/comments?per_page=100" 2>&1) || {
   echo -e "${CYA}error${RST} could not read the inline review comments — NOT 'nothing new':" >&2
   printf '%s\n' "$INLINE" >&2
   exit 3
 }
-[ -n "$INLINE" ] || INLINE='[]'
+# Empty is refused the same way the thread read is, one call above. Treating it
+# as an empty list here while exiting 3 there was the same conditional handled
+# two ways in one file.
+[ -n "$INLINE" ] || {
+  echo -e "${CYA}error${RST} the inline read returned nothing at all — NOT 'nothing new'" >&2
+  exit 3
+}
+# --paginate concatenates one JSON array per page; `add` folds them into one.
+# The MAPPING stays below rather than riding in `--jq`, so the field names are
+# exercised by anything that feeds this tool a real API object.
+INLINE=$(printf '%s' "$INLINE" | jq -s 'add // []' 2>/dev/null) || {
+  echo -e "${CYA}error${RST} could not parse the inline review comments" >&2; exit 3; }
 
 # One list, both surfaces, each with the field it actually carries.
 NEWER=$(printf '%s' "$RAW" | jq -r --arg since "$SINCE" --argjson inline "$INLINE" '
   [ (.comments[]? | {kind:"comment", who:(.author.login // "?"), at:.createdAt}),
     (.reviews[]?  | {kind:"review",  who:(.author.login // "?"), at:.submittedAt, state:.state}),
-    ($inline[]?) ]
+    ($inline[]? | {kind:"inline", who:(.user.login // "?"), at:.created_at}) ]
   | map(select(.at != null and .at > $since))
   | sort_by(.at)[]
   | "\(.at)  \(.kind)\(if .state then " (" + .state + ")" else "" end) by \(.who)"

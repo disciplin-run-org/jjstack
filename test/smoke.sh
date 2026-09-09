@@ -1226,13 +1226,26 @@ UNR=$(tmp unread); UNRBIN="$UNR/bin"; mkdir -p "$UNRBIN"
 # issue comments and submitted reviews, and `gh api .../pulls/N/comments` for
 # replies inside inline review threads, which `gh pr view` cannot return at all.
 # A stub that answered both with one blob could not tell the surfaces apart.
-gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [inline-json|FAIL]
+# The stub answers the API the way the real one does, in two respects that the
+# tool's correctness depends on. It PAGINATES only when asked: without
+# --paginate it returns the first page and stops, which is what let a newest
+# reply past item 30 go unseen. And it returns RAW API objects, so the tool's
+# own field mapping (.user.login, .created_at) is exercised rather than handed
+# the already-mapped shape it expects.
+gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [page1-json|FAIL] [page2-json]
   {
     printf '#!/usr/bin/env bash\n'
     printf 'if [ "$1" = api ]; then\n'
     case "${2-[]}" in
-      FAIL) printf '  echo "HTTP 502" >&2; exit 1\n' ;;
-      *)    printf '  cat <<%s\n%s\n%s\n  exit 0\n' 'INEOF' "${2-[]}" 'INEOF' ;;
+      FAIL)  printf '  echo "HTTP 502" >&2; exit 1\n' ;;
+      EMPTY) printf '  exit 0\n' ;;
+      *)    printf '  cat <<%s\n%s\n%s\n' 'P1EOF' "${2-[]}" 'P1EOF'
+            if [ -n "${3-}" ]; then
+              printf '  case " $* " in *" --paginate "*)\n'
+              printf '  cat <<%s\n%s\n%s\n' 'P2EOF' "$3" 'P2EOF'
+              printf '  ;; esac\n'
+            fi
+            printf '  exit 0\n' ;;
     esac
     printf 'fi\n'
     case "$1" in
@@ -1244,6 +1257,7 @@ gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [inline-json|FAIL]
   chmod +x "$UNRBIN/gh"
 }
 unread_rc() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" >/dev/null 2>&1; echo $?; }
+unread_out() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" 2>&1; }
 
 # A REVIEW newer than --since, and no comment at all: the surface a "Request
 # changes" click lands on, and the one a comments-only reader cannot see.
@@ -1273,14 +1287,25 @@ check "…and a malformed --since is a usage error, not a pass" \
 # THE THIRD SURFACE. A reply inside an inline review thread is neither an issue
 # comment nor a submitted review, and `gh pr view` does not return it, so a
 # reader of the other two calls the thread quiet while it is not.
-gh_stub '{"comments":[],"reviews":[]}' '[{"kind":"inline","who":"r","at":"2026-09-09T19:00:00Z"}]'
+gh_stub '{"comments":[],"reviews":[]}' '[{"user":{"login":"r"},"created_at":"2026-09-09T19:00:00Z"}]'
 check "…and sees a reply inside an INLINE review thread" \
       "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
 check "…and passes when that inline reply predates the last read" \
       "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# The exit code alone does not pin the MAPPING: reading the wrong author field
+# yields "?" and still exits 1. The reported line has to name the person, or a
+# renamed field is invisible.
+check "…and names the author it read from the raw API object" \
+      "unread_out 2026-09-09T12:00:00Z | grep -q 'inline by r'"
 # ...and a failure to ASK the inline endpoint is a refusal, not an empty list.
 gh_stub '{"comments":[],"reviews":[]}' FAIL
 check "…and refuses when the inline surface cannot be read (exit 3)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A SUCCESSFUL inline read that prints nothing is refused the same way the
+# thread read is. Handling the same condition two ways in one file is what this
+# pins: the other call exits 3, so this one does too.
+gh_stub '{"comments":[],"reviews":[]}' EMPTY
+check "…and an inline read that succeeds with no output is exit 3, not quiet" \
       "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
 # A command that SUCCEEDS and prints nothing is not an empty thread. Without
 # this the empty output parsed to an empty list and the gate said quiet, which
@@ -1288,6 +1313,25 @@ check "…and refuses when the inline surface cannot be read (exit 3)" \
 gh_stub EMPTY
 check "…and a successful read that returns nothing is exit 3, not quiet" \
       "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# PAGE TWO. The endpoint returns OLDEST first and an unpaginated read stops at
+# 30, so the NEWEST reply is precisely the item that falls off - the one item
+# this gate exists to catch. Page 1 here is entirely older than the last read;
+# page 2 carries the only thing newer. A tool that reads one page deep calls
+# this thread quiet.
+p1=$(printf '[%s{"user":{"login":"r"},"created_at":"2026-09-09T04:00:00Z"}]' "$(for i in $(seq 29); do printf '{"user":{"login":"r"},"created_at":"2026-09-09T03:00:00Z"},'; done)")
+p2='[{"user":{"login":"r"},"created_at":"2026-09-09T06:00:00Z"}]'
+gh_stub '{"comments":[],"reviews":[]}' "$p1" "$p2"
+check "the newest inline reply on PAGE TWO is still seen (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# Control: with the newest item on page 1 the same stub exits 1 too, so the
+# assertion above is about REACH and not about the stub being broken.
+gh_stub '{"comments":[],"reviews":[]}' "$p2" '[]'
+check "…and the same tool sees it when it is on page one (control)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# ...and page 1 alone, all of it older, is genuinely quiet.
+gh_stub '{"comments":[],"reviews":[]}' "$p1" '[]'
+check "…and a first page that is entirely older stays quiet" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 0 ]"
 check "…with the incident that produced the rule named" \
       "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
 # The process diagram is a second place the step list is stated, so it drifts.
