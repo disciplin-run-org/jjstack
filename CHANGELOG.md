@@ -22,8 +22,6 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   at nothing on any machine but one. That fallback is gone, and any local path
   (`/tmp`, `~`, `/home`) anywhere in the body is refused outright.
 
-### Changed
-
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a
