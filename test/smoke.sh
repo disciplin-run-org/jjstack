@@ -899,12 +899,16 @@ check "…and none of them is location-scoped, in any vocabulary" \
 # comments and tests alike.
 check "the skill has an equivalence gate" \
       "grep -q '^## The equivalence gate' '$SK'"
-check "…that asks for one input on which before and after differ" \
-      "grep -q 'name one input on which they lead to a different result' '$SK'"
+check "…that asks who acts differently, and what they do" \
+      "grep -q 'name who acts differently, and what they do' '$SK'"
 check "…and applies it to findings, fixes, and repeat findings" \
       "[ \$(grep -cE 'is not a finding|is not a fix|is not new' '$SK') -ge 3 ]"
-check "…in the verification step, per finding" \
-      "grep -q 'Equivalence gate\.' '$SK'"
+check "…as verification step 0: who is harmed on this tree, today" \
+      "grep -q 'Name who is harmed on this tree, today' '$SK'"
+check "…naming the escapes a model reaches for" \
+      "grep -q 'they read it and move on' '$SK'"
+check "…and that a clean review is the expected result" \
+      "grep -q 'result, not the weak one' '$SK'"
 check "…and on the author side, per fix" \
       "grep -q 'Every fix passes the equivalence gate' '$SK'"
 check "…and the retracted prose-is-unreviewable rule is gone" \

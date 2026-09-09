@@ -44,7 +44,9 @@ after **say the same thing**.
 
 Before any finding is published and before any fix is committed, put the two
 texts side by side — the current text and the proposed text — and answer one
-question: **name one input on which they lead to a different result.** A
+question: **name who acts differently, and what they do.** A different output
+is not enough; the first finding published under this gate had a different
+output and no reader who did anything with it. A
 different action a reader takes, a different output the code produces, a
 different verdict, a different line in a report. If you cannot name one, the
 two are equivalent, and:
@@ -249,6 +251,10 @@ claim.
 
 For each merged finding (batch them; do not spawn per finding):
 
+0. **Name who is harmed on this tree, today, and what they do wrong.** If the
+   answer is "nobody", or "they read it and move on", or "someone first has to
+   change something", it is not a finding. A clean review is the expected
+   result, not the weak one.
 1. **Quote the line.** Open the file, confirm the quoted line is there and
    means what the finding says. Unquotable → confidence 0.
 2. **Failure scenario.** The specific input/state that reaches the bug and the
@@ -261,10 +267,7 @@ For each merged finding (batch them; do not spawn per finding):
 5. **Library misuse claims:** before asserting a third-party API is used
    wrongly, check the docs for the version the repo pins. Stale training
    knowledge is a known false-positive class; no script needed.
-6. **Equivalence gate.** Name one input on which the current text and the
-   proposed fix lead to a different result. None → the finding is a paraphrase;
-   drop it. Equivalent to a finding already raised → it is that finding, and
-   the earlier fix was incomplete; say so instead of counting it again.
+
 
 **A guard's title is a claim, and carries the same burden as a finding.** A
 check named for a concept while its body tests something that does not exist is
