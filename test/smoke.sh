@@ -902,7 +902,13 @@ check "the skill has an equivalence gate" \
 check "…that asks who acts differently, and what they do" \
       "grep -q 'name who acts differently, and what they do' '$SK'"
 check "…and applies it to findings, fixes, and repeat findings" \
-      "[ \$(grep -cE 'is not a finding|is not a fix|is not new' '$SK') -ge 3 ]"
+      "[ \$(grep -cE 'is not a finding|is not a fix|is not new' '$SK') -eq 4 ]"
+# The gate's QUESTION was corrected to "who acts differently" while its
+# enumeration two sentences later still listed "a different line in a report"
+# as sufficient - one paragraph saying both. Presence of the new wording could
+# not catch that; absence of the old enumeration can.
+check "…and the gate no longer lists a different output as sufficient" \
+      "! grep -q 'different line in a report' '$SK'"
 check "…as verification step 0: who is harmed on this tree, today" \
       "grep -q 'Name who is harmed on this tree, today' '$SK'"
 check "…naming the escapes a model reaches for" \

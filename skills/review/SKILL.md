@@ -46,9 +46,7 @@ Before any finding is published and before any fix is committed, put the two
 texts side by side — the current text and the proposed text — and answer one
 question: **name who acts differently, and what they do.** A different output
 is not enough; the first finding published under this gate had a different
-output and no reader who did anything with it. A
-different action a reader takes, a different output the code produces, a
-different verdict, a different line in a report. If you cannot name one, the
+output and no reader who did anything with it. If you cannot name them, the
 two are equivalent, and:
 
 - a **finding** whose fix is equivalent to the current text is not a finding.
@@ -267,7 +265,6 @@ For each merged finding (batch them; do not spawn per finding):
 5. **Library misuse claims:** before asserting a third-party API is used
    wrongly, check the docs for the version the repo pins. Stale training
    knowledge is a known false-positive class; no script needed.
-
 
 **A guard's title is a claim, and carries the same burden as a finding.** A
 check named for a concept while its body tests something that does not exist is
