@@ -175,7 +175,7 @@ The re-review detector below filters on the account that posted, so resolve
 that once too, into the same file:
 
 ```bash
-gh api user --jq '"PR_ME=\(.login)"' >> {OUTPUT_DIR}/pr.env 2>> {OUTPUT_DIR}/pr.err
+gh api user --jq 'if (.login|type)=="string" then "PR_ME=\(.login)" else empty end' >> {OUTPUT_DIR}/pr.env 2>> {OUTPUT_DIR}/pr.err
 ```
 
 Read the outcome in a second call:
@@ -184,7 +184,11 @@ Read the outcome in a second call:
 cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
 
-**A missing `PR_ME` stops the review; it does not default.** The filter drops
+**A missing `PR_ME` stops the review; it does not default.** The `if` above
+is what makes that true rather than aspirational: `--jq` is applied to the
+error response as well as the success one, and jq interpolates a missing field
+as the literal string `null`, so the plain form wrote `PR_ME=null` on a failed
+call. The line was present, the rule keyed on absence, and nothing stopped. The filter drops
 every entry whose author does not match, so an empty binding matches nothing,
 the detector prints `null`, and the skill reads that as a first review. That is
 the same silent first-review failure as reading the wrong channel, reached
@@ -204,7 +208,7 @@ Then decide **first review or re-review**. The previous round is on the PR:
 every comment this skill posts opens with its attribution line and carries
 its full report collapsed beneath the verdict, so the thread is the record —
 on every machine, in every session. Read the newest one now, before anything
-else, substituting the two values `pr.env` just printed:
+else, substituting the bracketed values `pr.env` just printed:
 
 ```bash
 gh pr view <PR_NUM> --repo <PR_REPO> --json reviews,comments | jq -r --arg me '<PR_ME>' '[(.reviews[]? | {body, at: .submittedAt, who: .author.login}), (.comments[]? | {body, at: .createdAt, who: .author.login})] | map(select(.who == $me and ((.body // "") | startswith("Claude jjstack/skills/review/SKILL.md")))) | sort_by(.at) | last | .body'

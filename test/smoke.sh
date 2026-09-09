@@ -1228,26 +1228,51 @@ check "…and still reads comments, for rounds posted before the change" \
 # restored silently, under a guard whose title said the opposite. Pin the whole
 # mechanism: the login is resolved into pr.env, bound on the command line, and
 # compared against the author.
-check "…and trusts authorship attested by GitHub, not a copyable prefix" \
-      "grep -q 'who: .author.login' '$SK'"
-check "…comparing it against the bound login" \
-      "grep -q '.who == \$me' '$SK'"
-check "…binding the login the command filters on" \
-      "grep -q -- \"--arg me '<PR_ME>'\" '$SK'"
-check "…which pr.env resolves once, beside the other three values" \
-      "grep -q 'PR_ME=' '$SK'"
+# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
+# instance each of a single class: a check that pins a STRING while its title
+# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
+# so an inverted mapping passed. Round 2, the --arg me binding pinned by
+# nothing. Round 3, five single-edit mutations on this very block green at 392:
+# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
+# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
+# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
+# from the skill and EXECUTED against fixtures; what it returns is the
+# assertion. A string check cannot see any of those five edits; running it sees
+# four, and the fifth is the append operator, pinned literally below.
+det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
+det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
+det_prog=${det_prog%\'}
+check "the detector's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#det_prog} -gt 80 ]"
+
+# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
+# is a review and the oldest a comment. Correct answer: MY review.
+det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}}]}'
+det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and run, it returns MY newest round, not another account's newer one" \
+      "[ \"\$det_out_a\" = WANT-REVIEW ]"
+
+# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
+# This is the half fixture A cannot see - it is what fails when the comments
+# arm stops carrying an author, or when the arms' timestamps are swapped.
+det_b='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and when my newest round is a comment, it returns the comment" \
+      "[ \"\$det_out_b\" = WANT-COMMENT ]"
+
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+append_pat='>> {OUTPUT_DIR}/pr.env'
+failclosed_pat='(.login|type)'
+check "the login is APPENDED to pr.env, never written over it" \
+      "grep -qF \"$append_pat\" '$SK'"
 check "…and refuses to guess when it is missing" \
       "grep -q 'A missing .PR_ME. stops the review' '$SK'"
-# ORDERING. jq's comma is positional: reviews then comments, so `last` meant
-# "the last comment if any matched", never "the newest round".
-check "the previous round is chosen by time, not by channel order" \
-      "grep -q 'sort_by(.at)' '$SK'"
+check "…emitting nothing rather than the string null on a failed call" \
+      "grep -qF \"$failclosed_pat\" '$SK'"
 check "…so the positional concatenation is gone" \
       "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
-check "…and both timestamps are read, one per channel" \
-      "grep -q 'at: .submittedAt' '$SK'"
-check "…including the comment side" \
-      "grep -q 'at: .createdAt' '$SK'"
 check "…so the comments-only detector is gone" \
       "! grep -q -- '--json comments --jq' '$SK'"
 check "…and the report template carries no emdash, since it is posted now" \
