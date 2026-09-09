@@ -11,6 +11,48 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
+- **Long-running work no longer stops to ask you for permission.** Over a
+  measured 48 hours, sessions on this machine interrupted a person 430 times,
+  about nine times an hour, and every single interruption was approved. That
+  is not a safety check, it is a queue of things you have to click. Two causes,
+  both now gone. The permission settings listed the verbs an autonomous run
+  uses most (`rm`, `curl`, `git push`, `sudo`, `chmod -R`) as "always ask", and
+  an always-ask rule interrupts you in *every* mode — including a session you
+  deliberately started with permission checks skipped, which is why that flag
+  never seemed to work. And the gate itself asked a small model to rate each
+  command, then woke you whenever the answer came back unreadable, which it
+  did four times out of ten on long commands.
+
+  In their place is a gate that decides on its own and never asks. It refuses
+  ten kinds of command outright: ones whose reach has no bound (deleting a home
+  directory or a filesystem root), ones running code nobody has read (piping a
+  download into a shell), ones sending a local file or a known secret to the
+  network, ones writing to a raw disk, ones powering the machine off, and
+  force-pushes to the trunk. A refusal tells Claude the rule and the fix, so it
+  tries another way in the same breath rather than parking the job until you
+  come back. Everything else simply runs.
+
+- **Claude is now held to one command per Bash call.** Chaining several
+  commands into one call is refused with instructions to split it. That has
+  been the house rule for months and it was quietly ignored: 391 of the 393
+  commands that interrupted somebody were chained. It matters for more than
+  tidiness. A call that starts `S=/tmp/x; rm -rf $S` hides the `rm` behind an
+  assignment, so no safety rule and no audit report ever sees it, and the log
+  of what was actually run becomes unreadable. Writing a multi-line file or a
+  commit message still counts as one command.
+
+- **What the permission gate is doing is now something you can look at.**
+  `bin/jjstack-permission-audit --since 24h` reports how often anyone was
+  interrupted, by which session, and for what, plus how much of the work is
+  still chained. Run it after a long unattended session; the expected answer
+  is zero.
+
+- **jjstack's hooks are installed as copies instead of shortcuts into the
+  source folder.** The permission gate used to be a link into the working
+  copy, which meant that switching branches in that folder silently changed
+  what every Claude session on the machine was allowed to do. Installing now
+  writes real files, replaces any old link, and backs up your settings first.
+
 - **`/security-review` is now `/jj-security-review`, and shadowing a Claude
   Code built-in is a declared, checked decision.** Claude Code ships its own
   `/security-review` and `/review`. jjstack's skills sat on both names, so

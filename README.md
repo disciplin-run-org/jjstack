@@ -114,7 +114,7 @@ have on a developer machine.
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
-| Permission friction | Manual approve every time | Smart auto-approve with Haiku risk classifier |
+| Permission friction | Manual approve every time | Deterministic deny floor; long runs never stop to ask |
 | MCP resilience | Manual reconnect | Auto-reconnect with retry tracking |
 | Auto-updates | gstack-only | jjstack checks on every skill use |
 | Prompt-injection guard | None | PreToolUse hook scans markdown writes |
@@ -223,13 +223,36 @@ stays.
 
 ## Hooks
 
-jjstack ships six optional hooks that ride along with every Claude Code
+jjstack ships seven optional hooks that ride along with every Claude Code
 session.
 
-**`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
-pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
-classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
-Fail-closed when the API is unreachable.
+**`permission-floor.py`** — The permission gate: a `PreToolUse` hook on
+`Bash` that refuses eleven shapes and lets everything else run without
+asking anyone. It calls nothing and needs no API key.
+
+Ten rules are the floor — commands whose reach is unbounded (`rm -rf ~`,
+`chmod -R 777 /`), whose content nobody has read (`curl … | sh`), that send
+a local file or a known secret path to the network, that write to a block
+device, that power the machine down, or that force-push the trunk. The
+eleventh is `SHAPE`: one command per Bash call. A chained call is refused
+with instructions to split it, which is both a readability rule and what
+makes the other ten exact — `S=/tmp/x; rm -rf $S` begins with an
+assignment, so no prefix rule the permission system has ever sees the `rm`.
+Heredoc bodies and quoted strings are excluded from that scan, so writing a
+commit message or a fixture file stays one call.
+
+Refusals are `deny`, not `ask`: Claude is told the rule and the fix and
+reroutes inside the same turn, so an unattended run never stops for a
+person. `test/settings-lint.sh` checks the installed policy and
+`bin/jjstack-permission-audit --since 24h` reports how often anyone was
+actually interrupted.
+
+**`auto-approve-safe.sh`** — A `PermissionRequest` hook that decides
+nothing. It writes the audit line the permission audit reads, and hands the
+request to the tubemail forwarder so an orchestrator can answer the few
+residual prompts remotely with `tm_respond_permission`. It has no `allow`
+branch, deliberately: a hook that can approve is a hook that can be a
+bypass.
 
 **`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
 into every prompt (see [Memory](#memory)): deterministic always-rules,

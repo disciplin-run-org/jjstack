@@ -118,6 +118,36 @@ patterns. If a skill file is blocked on write:
   by the agent as part of SKILL.md).
 - OR rephrase examples to omit imperative framing outside the gate tag.
 
+## A gate everyone approves is not a gate
+
+The rule above is about gates that stop an *agent*. This one is about gates
+that stop a *person*, and it is the opposite failure: a check nobody ever
+fails is not protection, it is latency with a good conscience.
+
+Measure before believing in one. jjstack's permission gate interrupted a human
+430 times in 48 hours and was approved 430 times. Nothing was ever caught,
+because the things worth catching were not in the set it asked about — they
+were in a deterministic floor that had always run underneath it. The prompts
+were the cost with none of the benefit, and they were expensive twice: an
+unattended run parks until somebody walks past, and a person clicking approve
+430 times is not reading number 431 either.
+
+So, for any gate that can interrupt a person:
+
+1. **Count how often it fires and how often it changes the outcome.** If the
+   second number is zero over a real window, the gate is not doing the job it
+   is credited with. `bin/jjstack-permission-audit` exists for exactly this.
+2. **Prefer a rule that refuses to a rule that asks.** A refusal with a reason
+   is actionable inside the same turn: the agent picks another route. An ask
+   converts a machine decision into a human interrupt and loses the context by
+   the time anyone answers.
+3. **Never put a model in the hot path of a gate.** A rater adds a second
+   failure mode — unreachable, rate-limited, truncated, hedged — and each one
+   resolves to interrupting somebody. jjstack's rater failed this way 147 times
+   in those 48 hours and the failures looked identical to a considered opinion.
+4. **Keep the floor deterministic and small enough to enumerate.** Ten rules
+   with a fixture each and a mutation proof beat a judgement nobody can predict.
+
 ## Attribution
 
 Pattern from `obra/superpowers` brainstorming skill's `<HARD-GATE>` block.

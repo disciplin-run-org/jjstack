@@ -1200,7 +1200,120 @@ for t in jjstack-review-preflight jjstack-review-tooling-sweep \
   check "$t --help is non-empty" "[ -s '$HLP' ]"
 done
 
-echo "== 11. skill namespace: shadows are declared, checked, and the check runs =="
+echo "== 11. the permission gate (floor, policy, and what is installed) =="
+# The gate this replaces asked a model to rate every command and woke a person
+# whenever the answer was not LOW. It woke one 183 times in 48 hours and was
+# approved 183 times. What is asserted here is the shape of the replacement:
+# the floor refuses a fixed set outright, the PermissionRequest hook cannot
+# approve anything at all, and the policy carries no rule that reintroduces a
+# prompt.
+for f in "$HOOKS"/auto-approve-safe.sh "$DIR"/test/settings-lint.sh; do
+  check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
+done
+check "python -m py_compile permission-floor.py" \
+      "python3 -m py_compile '$HOOKS/permission-floor.py' 2>/dev/null"
+
+# The policy table and the mutation proof are whole suites of their own. Run
+# them and read their exit status: 1 is a mismatch, 2 is "the table cannot
+# fail", which is the louder failure and must not be collapsed into it.
+pol_out=$(python3 "$DIR/test/permission-policy-check.py" 2>&1); pol_rc=$?
+check "permission-policy fixtures pass (rc=0; 2 would mean the table is vacuous)" \
+      "[ \"$pol_rc\" = 0 ]"
+[ "$pol_rc" = 0 ] || printf '     %s\n' "$pol_out"
+check "every rule the hook declares has a fixture" \
+      "printf '%s' \"\$pol_out\" | grep -qE 'CASES=[0-9]+ RULES=[0-9]+'"
+
+mut_out=$(python3 "$DIR/test/permission-floor-mutation.py" 2>&1); mut_rc=$?
+check "mutation proof: every rule is load-bearing" "[ \"$mut_rc\" = 0 ]"
+[ "$mut_rc" = 0 ] || printf '     %s\n' "$mut_out"
+check "...and each rule reddens only its OWN rows (no rule covered by a neighbour)" \
+      "printf '%s' \"\$mut_out\" | grep -q 'survived=0 misattributed=0'"
+
+# ── the PermissionRequest hook cannot approve anything ───────────────────────
+# It used to be the whole policy. A hook that can still emit `allow` is a hook
+# that can still be a bypass, and the point of the rewrite is that it observes.
+hookout=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"permission_mode":"bypassPermissions"}' \
+          | JJSTACK_HOOK_LOG=/dev/null TM_WORKER_NAME= bash "$HOOKS/auto-approve-safe.sh" 2>&1)
+check "PermissionRequest hook emits nothing at all (it decides nothing)" "[ -z \"\$hookout\" ]"
+check "PermissionRequest hook has no 'allow' branch left" \
+      "! grep -q '\"behavior\": *\"allow\"' '$HOOKS/auto-approve-safe.sh'"
+# The rater is gone, and gone means the credential path with it. A hook that
+# still reads the API key file is a hook that can still be rate-limited into
+# waking somebody at 3am.
+for needle in 'api.anthropic.com' 'anthropic_api_key' 'ANTHROPIC_API_KEY' 'curl '; do
+  check "no '$needle' remains in the PermissionRequest hook" \
+        "! grep -q '$needle' '$HOOKS/auto-approve-safe.sh'"
+done
+
+# ── the policy file ──────────────────────────────────────────────────────────
+POL="$HOOKS/permissions.policy.json"
+check "the policy is valid JSON" "jq -e . '$POL' >/dev/null 2>&1"
+check "the policy sets bypassPermissions" \
+      "[ \"\$(jq -r '.permissions.defaultMode' '$POL')\" = bypassPermissions ]"
+# THE regression. One Bash ask rule prompts in every mode, bypass included, and
+# no allow rule anywhere can lift it. This single assertion is what stands
+# between the fix and 183 interruptions coming back one rule at a time.
+n_ask=$(jq -r '[.permissions.ask[] | select(startswith("Bash("))] | length' "$POL")
+check "the policy carries no Bash ask rule (an ask rule prompts in EVERY mode)" \
+      "[ \"\$n_ask\" = 0 ]"
+check "the policy still denies something (a policy that denies nothing is not one)" \
+      "[ \"\$(jq '.permissions.deny | length' '$POL')\" -ge 10 ]"
+
+# ── settings-lint, driven both ways ──────────────────────────────────────────
+# A lint is worth what its negative control is worth. Build a settings file the
+# lint must PASS, then break it one way at a time and require a failure each
+# time — otherwise "0 failed" only means the lint never looks.
+LINTDIR=$(tmp lint)
+good="$LINTDIR/good.json"
+jq --arg h "$HOOKS" '{
+     permissions: .permissions,
+     hooks: {
+       PreToolUse: [{matcher:"Bash", hooks:[{type:"command", command:($h + "/permission-floor.py")}]}],
+       PermissionRequest: [{matcher:"", hooks:[{type:"command", command:($h + "/auto-approve-safe.sh")}]}]
+     }}' "$POL" | sed "s|{{HOME}}|${HOME#/}|g" > "$good"
+bash "$DIR/test/settings-lint.sh" "$good" >/dev/null 2>&1
+check "settings-lint PASSES a settings file that matches the policy (control)" "[ \$? -eq 0 ]"
+
+jq '.permissions.ask += ["Bash(git push *)"]' "$good" > "$LINTDIR/ask.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/ask.json" >/dev/null 2>&1
+check "settings-lint FAILS on a single reintroduced Bash ask rule" "[ \$? -ne 0 ]"
+
+jq '.permissions.defaultMode = "auto"' "$good" > "$LINTDIR/mode.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/mode.json" >/dev/null 2>&1
+check "settings-lint FAILS when the mode is not bypassPermissions" "[ \$? -ne 0 ]"
+
+jq '.permissions.deny = []' "$good" > "$LINTDIR/deny.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/deny.json" >/dev/null 2>&1
+check "settings-lint FAILS when a policy deny rule is missing" "[ \$? -ne 0 ]"
+
+jq '.hooks.PreToolUse = []' "$good" > "$LINTDIR/nofloor.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/nofloor.json" >/dev/null 2>&1
+check "settings-lint FAILS when the floor hook is not registered" "[ \$? -ne 0 ]"
+
+# The symlink check is the one that was silently false for months: the gate was
+# aliased into a working checkout, so `git checkout` changed machine-wide
+# policy. Drive it with a real symlink rather than trusting the branch exists.
+SLDIR=$(tmp slhooks)
+cp "$HOOKS/auto-approve-safe.sh" "$SLDIR/auto-approve-safe.sh"
+ln -sfn "$HOOKS/permission-floor.py" "$SLDIR/permission-floor.py"
+jq --arg h "$SLDIR" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/symlink.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/symlink.json" >/dev/null 2>&1
+check "settings-lint FAILS when a hook is installed as a symlink" "[ \$? -ne 0 ]"
+
+# An installed-but-inert hook passes every structural check above.
+INERT=$(tmp inert)
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$INERT/permission-floor.py"
+chmod +x "$INERT/permission-floor.py"
+cp "$HOOKS/auto-approve-safe.sh" "$INERT/auto-approve-safe.sh"
+jq --arg h "$INERT" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/inert.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/inert.json" >/dev/null 2>&1
+check "settings-lint FAILS on a registered but inert floor (the positive control)" "[ \$? -ne 0 ]"
+
+echo "== 12. skill namespace: shadows are declared, checked, and the check runs =="
 # The class: a jjstack skill takes a name Claude Code also ships, and the user
 # typing it silently gets the other thing. PR #12 shipped a detector for it
 # that (a) missed the second live collision, (b) no automation ran, and (c)
