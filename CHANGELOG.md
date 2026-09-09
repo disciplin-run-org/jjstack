@@ -9,6 +9,49 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The permission gate stopped interrupting you every few seconds.** The
+  auto-approve hook asked Claude Haiku to rate each command with no context at
+  all, so `rm -rf $SP/mut` — a teardown inside a session scratchpad — looked
+  identical to `rm -rf` on your home directory and got you a prompt. Any session
+  doing heavy scratch work (test harnesses, mutation testing, code review) was
+  approving by hand almost continuously. The rater now sees your working
+  directory, the tool's own stated purpose, and an explicit statement that
+  `/tmp`, `mktemp` directories and throwaway worktrees are ordinary workspace.
+  Measured on the real commands that had been prompting: 0 of 6 approved before,
+  6 of 6 after, with 11 genuinely destructive commands still refused.
+- **Destructive commands you actually want are now approved.** A blanket
+  denylist refused ordinary work: deleting one named build directory,
+  resetting one named branch, force-pushing one named feature branch. The
+  rule is now that a destructive command passes when it is **specific** —
+  it names a definite target rather than sweeping a broad root — **and
+  matches its stated purpose**. "Remove the stale build directory" justifies
+  deleting that directory; it does not justify deleting a source tree.
+- **Two deterministic rules bracket that judgement**, so a model's opinion is
+  never the only thing between you and an unrecoverable act. A **floor** no
+  rating can lift refuses unbounded reach (a filesystem root, a bare `$HOME`
+  or `~`), unreviewable content (`curl … | sh`), uploading a local file or
+  naming a known secret path, device writes, fork bombs and power commands.
+  And because alignment cannot be judged against a purpose nobody stated, a
+  destructive command carrying **no description defers** — the same command
+  with a purpose is approved.
+- **Two holes in the previous release's gate are closed.** `rm -rf ~` slipped
+  through (the rule required `~/` with a slash), and so did `curl -d @` with
+  a credential file (only curl piped to a shell was caught). Both had been
+  reported as refused — they were, but by the model's rating rather than by
+  the deterministic floor, so the floor was never actually holding them.
+  Both are now on the floor, with fixtures.
+- **Approvals in a tubemail worker no longer leave a permission stuck pending.**
+  The hook had a delegation path keyed on `QM_WORKER_NAME` — a variable nothing
+  sets, aimed at a socket that has never existed, so it had been dead code the
+  whole time (0 of 638 recorded invocations took it). It now talks to the
+  forwarder socket that is actually there, so an approval is paired with the
+  request it belongs to. Your local decision stays authoritative: a forwarder
+  running the older context-free policy cannot veto it.
+- The hook's diagnostic log moved out of the world-readable `/tmp` and is now
+  configurable; it records the decision and the reason, not just that it ran.
+
 ### Changed
 
 - **The `/review` PR comment opens with its attribution, and carries the full

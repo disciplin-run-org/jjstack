@@ -210,9 +210,37 @@ jjstack ships six optional hooks that ride along with every Claude Code
 session.
 
 **`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
-pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
-classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
-Fail-closed when the API is unreachable.
+pass. Beyond that it works on one rule: **a destructive command is approved
+when it is specific and matches its stated purpose.** Deleting one named
+build directory to rebuild it is ordinary work; deleting a home directory is
+not, and neither is a force-push while the stated purpose is "fix a typo".
+
+That judgement goes to Claude Haiku, which is given real context — your
+working directory, the action's own stated purpose, and the fact that
+scratch directories under `/tmp`, `mktemp` dirs and throwaway worktrees are
+ordinary workspace. Without that context a rater sees `rm -rf $SP/mut` and
+says MEDIUM, which is why mutation-testing and review runs used to mean a
+prompt every few seconds.
+
+Two deterministic rules bracket the rater so its opinion is never the only
+thing between you and an unrecoverable act:
+
+- **A floor no rating can lift** — unbounded reach (a filesystem root, a bare
+  `$HOME` or `~`), content nobody can review (`curl … | sh`), uploading a
+  local file or naming a known secret path, device writes, fork bombs, power
+  commands. Nothing under the floor is "specific" by definition.
+- **No stated purpose, no alignment** — a destructive command that arrives
+  with no description defers, because there is nothing to judge it against.
+  The same command with a purpose passes.
+
+LOW auto-approves; anything else, including a missing key or a failed call,
+defers to you.
+
+In a tubemail worker the hook also hands its approval to the session's
+forwarder socket, which is the only component that knows the request_id —
+without that, an approved tool left a permission stuck pending hub-side. The
+local decision stays authoritative: a forwarder running the older
+context-free policy cannot veto an allow this hook already reasoned about.
 
 **`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
 into every prompt (see [Memory](#memory)): deterministic always-rules,
