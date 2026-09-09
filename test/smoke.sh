@@ -1220,8 +1220,34 @@ check "a re-review reads the reviews, where the verdict now lands" \
       "grep -q 'json reviews,comments' '$SK'"
 check "…and still reads comments, for rounds posted before the change" \
       "grep -q '.comments\[\]?' '$SK'"
+# The guard used to match ONLY the filter clause. The binding that defines
+# $me sat in a separate span of the same 260-character line and was pinned by
+# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
+# 317 green while the documented command died on a jq compile error, which the
+# skill reads as no previous round. That is the P0 this line exists to fix,
+# restored silently, under a guard whose title said the opposite. Pin the whole
+# mechanism: the login is resolved into pr.env, bound on the command line, and
+# compared against the author.
 check "…and trusts authorship attested by GitHub, not a copyable prefix" \
-      "grep -q 'author.login == \$me' '$SK'"
+      "grep -q 'who: .author.login' '$SK'"
+check "…comparing it against the bound login" \
+      "grep -q '.who == \$me' '$SK'"
+check "…binding the login the command filters on" \
+      "grep -q -- \"--arg me '<PR_ME>'\" '$SK'"
+check "…which pr.env resolves once, beside the other three values" \
+      "grep -q 'PR_ME=' '$SK'"
+check "…and refuses to guess when it is missing" \
+      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
+# ORDERING. jq's comma is positional: reviews then comments, so `last` meant
+# "the last comment if any matched", never "the newest round".
+check "the previous round is chosen by time, not by channel order" \
+      "grep -q 'sort_by(.at)' '$SK'"
+check "…so the positional concatenation is gone" \
+      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
+check "…and both timestamps are read, one per channel" \
+      "grep -q 'at: .submittedAt' '$SK'"
+check "…including the comment side" \
+      "grep -q 'at: .createdAt' '$SK'"
 check "…so the comments-only detector is gone" \
       "! grep -q -- '--json comments --jq' '$SK'"
 check "…and the report template carries no emdash, since it is posted now" \

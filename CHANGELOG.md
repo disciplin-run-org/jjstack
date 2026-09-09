@@ -51,10 +51,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   posts as a comment there and the closing line tells you the state was
   refused instead of implying a green check. Requesting a reviewer has its
   own two traps, both now documented with the call that actually works.
-  A re-review reads the previous round from the reviews rather than the
-  comments, and only from rounds this account actually posted: the body's
-  attribution line is a prefix anyone can type, while authorship is attested
-  by GitHub.
+  A re-review reads the previous round from both channels, picks the newest
+  one by timestamp rather than by which channel it came from, and accepts
+  only rounds this account actually posted: the body's attribution line is a
+  prefix anyone can type, while authorship is attested by GitHub.
 
   The review also gained the questions it was missing. It asks whether the
   change is the right shape and whether it is more complex than the problem

@@ -167,11 +167,25 @@ Resolve the PR once, into a file — the **base** repo, not a fork:
 gh pr view --json number,url,commits --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))\nPR_SHA=\(.commits[-1].oid)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
 ```
 
+The re-review detector below filters on the account that posted, so resolve
+that once too, into the same file:
+
+```bash
+gh api user --jq '"PR_ME=\(.login)"' >> {OUTPUT_DIR}/pr.env 2>> {OUTPUT_DIR}/pr.err
+```
+
 Read the outcome in a second call:
 
 ```bash
 cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
+
+**A missing `PR_ME` stops the review; it does not default.** The filter drops
+every entry whose author does not match, so an empty binding matches nothing,
+the detector prints `null`, and the skill reads that as a first review. That is
+the same silent first-review failure as reading the wrong channel, reached
+through an empty variable instead. If `pr.env` has no `PR_ME` line, treat it as
+**GH_ERROR** and stop.
 
 The PR URL names the base repo — the one the number belongs to — even on a
 cross-repository PR; `headRepository` would name the fork. With no argument
@@ -189,8 +203,25 @@ on every machine, in every session. Read the newest one now, before anything
 else, substituting the two values `pr.env` just printed:
 
 ```bash
-gh pr view <PR_NUM> --repo <PR_REPO> --json reviews,comments | jq -r --arg me "$(gh api user --jq .login)" '[(.reviews[]?, .comments[]?) | select(.author.login == $me) | select(.body | startswith("Claude jjstack/skills/review/SKILL.md"))] | last | .body'
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviews,comments | jq -r --arg me '<PR_ME>' '[(.reviews[]? | {body, at: .submittedAt, who: .author.login}), (.comments[]? | {body, at: .createdAt, who: .author.login})] | map(select(.who == $me and ((.body // "") | startswith("Claude jjstack/skills/review/SKILL.md")))) | sort_by(.at) | last | .body'
 ```
+
+All three values in angle brackets are substituted from `pr.env`, including
+the login: the command carries no `$(...)`, so it survives a permission gate
+that refuses compound calls, and the binding is a named line in a file rather
+than a span buried in the longest line of this document.
+
+**Newest by time, not by position.** jq's `,` emits every left-hand output
+before any right-hand one, so concatenating reviews and comments and taking
+`last` means "the last comment if any comment matched", never "the newest
+round". On a pull request holding a comment-era round and a newer review-era
+round, that returns the older comment: Phase 4 then measures its delta against
+the wrong commit, re-verifies the wrong round's findings, and hands `STOP` a
+count that can read as falling when it rose. Both entries carry a timestamp
+already, `submittedAt` on a review and `createdAt` on a comment, so ordering
+costs nothing but the sort. Executed both ways: with an older comment and a
+newer review the positional form returned the comment and this one returns the
+review; with the channels reversed both return the newer entry.
 
 **Both channels, and the author is checked.** A review body is not an issue
 comment: `--json comments` does not return one, so once Phase 5 started posting
