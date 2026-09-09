@@ -82,6 +82,12 @@ Adapted from `obra/superpowers`' `receiving-code-review`.
 ┌──────────────────────────┐
 │ Close the loop —         │
 │ summarize resolved/open  │
+└────────────┬─────────────┘
+             ▼
+┌──────────────────────────┐
+│ Re-read the thread in    │
+│ the same call as the     │
+│ merge                    │
 └──────────────────────────┘
 ```
 
@@ -211,6 +217,36 @@ Reply on the review with a summary:
 Then re-request review. The reviewer should not have to hunt for your
 responses.
 
+## Step 6: Re-read the thread in the same breath as the merge
+
+**`MERGEABLE` is not `unreviewed`.** They are different questions and only one
+of them is about your change. GitHub answers whether the branches conflict; it
+says nothing about whether a review is sitting on the pull request that you
+have not read. Reading only the first is how a review gets merged over.
+
+So the last thing before a merge is a fresh read of the thread, and it is
+chained to the merge in one command so no turn can pass between them:
+
+```bash
+gh pr view <N> --repo <REPO> --json comments,reviews,updatedAt \
+  --jq '{last_comment:(.comments|last|{author:.author.login,createdAt}), reviews:[.reviews[]|.state], updatedAt}'
+```
+
+Compare `createdAt` against the last comment you have actually read. If
+anything arrived since, **stop and read it**, whatever the merge button says.
+A review that is unread at merge time has cost the whole engagement: its
+findings are on `main` before anyone answers them, and the author who merged
+is the one who has to go back and fix them.
+
+Under a stacked or retargeted pull request this matters more, not less. The
+window between "I checked it was clean" and "I merged" is where the review
+lands, and the check that fills that window is the only thing that closes it.
+
+**Measured:** the review of jjstack #29 posted `CAUTION` with three blocking
+findings at 13:12. The pull request was merged at 13:21, on a `mergeStateStatus`
+of `CLEAN` read before the review existed. All three shipped in a release. No
+step was skipped in bad faith — the step did not exist.
+
 ## When the reviewer is another AI
 
 Two-stage reviews, `/smart-review`, and Anthropic code-review plugin
@@ -264,6 +300,9 @@ agreement leaves a known-wrong change in the code.
 - **Fixing the sentence the finding named and nothing else** — the idea
   lives elsewhere too; the reviewer finds the sibling next round and you
   have paid for two rounds to move one word.
+- **Merging on a mergeability check instead of a fresh read** — `MERGEABLE`
+  answers whether the branches conflict, not whether anyone has reviewed you.
+  A review that lands in the gap between the two ships unread.
 - **Arguing style nits for more than two rounds** — it's a nit, pick
   one, move on.
 - **Taking disagreement personally** — review is about the code, not
@@ -277,4 +316,4 @@ Pattern adapted from `obra/superpowers` `receiving-code-review` (MIT).
 jjstack additions: AI-reviewer-specific section, tiebreaker via `/codex`,
 work-order-feedback loop for underspecified tasks, severity matrix with
 "Out of scope" handling, whole-document sweep before committing a fix
-(Step 3).
+(Step 3), re-reading the thread in the same command as the merge (Step 6).

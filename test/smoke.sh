@@ -1146,6 +1146,39 @@ for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-le
         "! grep -rq --exclude-dir=.git --exclude-dir=docs --exclude=smoke.sh --exclude=CHANGELOG.md '$gone' '$DIR'"
 done
 
+echo "== 9b. the author side says what it does =="
+# /receiving-code-review had NO assertions at all, so both rules added to it
+# shipped untested - including the one added because a fix that changed only
+# the sentence a finding named kept handing the reviewer the next round.
+RCR="$DIR/skills/receiving-code-review/SKILL.md"
+check "the author sweeps the whole document before committing a fix" \
+      "grep -q 'the whole document agrees with the change' '$RCR'"
+check "…by grepping the concept, not the wording the finding used" \
+      "grep -q 'grep the concept, not the' '$RCR'"
+# MERGEABLE is not unreviewed. The review of #29 posted CAUTION with three
+# blocking findings at 13:12; the PR was merged at 13:21 on a mergeability
+# check read before the review existed, and all three shipped in a release.
+check "the merge is preceded by a fresh read of the thread" \
+      "grep -q 'Re-read the thread in the same breath as the merge' '$RCR'"
+check "…because a mergeability check answers a different question" \
+      "grep -qF 'is not \`unreviewed\`' '$RCR'"
+check "…and the read is chained to the merge, not left to a later turn" \
+      "grep -q 'json comments,reviews,updatedAt' '$RCR'"
+check "…with the incident that produced the rule named" \
+      "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
+# The process diagram is a second place the step list is stated, so it drifts.
+# The diagram is a SECOND statement of the step list, so it drifts from the
+# headings. Pin it structurally - the box count - rather than by a phrase
+# inside one box, which a partial edit walks straight past.
+rcr_boxes=$(sed -n '/^```$/,/^```$/p' "$RCR" | grep -c '^┌')
+rcr_steps=$(grep -c '^## Step [0-9]' "$RCR")
+check "the process diagram has boxes to count (anti-vacuity floor)" \
+      "[ \"\$rcr_boxes\" -ge 5 ]"
+check "…and one box per step, plus the inbound 'review received'" \
+      "[ \"\$rcr_boxes\" -eq \$(( rcr_steps + 1 )) ]"
+check "…and the anti-patterns name merging on a mergeability check" \
+      "grep -q 'Merging on a mergeability check' '$RCR'"
+
 echo "== 10. the guards the round-1 review found missing =="
 # Each of these three behaviours shipped with no test: the mutation that
 # reverts it left the suite fully green.

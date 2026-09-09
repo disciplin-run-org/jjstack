@@ -11,6 +11,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **`/receiving-code-review` re-reads the pull request in the same call that
+  merges it.** GitHub's "mergeable" answers whether the branches conflict, not
+  whether anyone has reviewed you, and a review that lands in the gap between
+  the two check and the merge ships unread. That is not hypothetical: a review
+  of this repo posted three blocking findings nine minutes before the pull
+  request was merged on a mergeability check read before the review existed,
+  and all three shipped in a release.
 - **A review comment can no longer approve at the top while rejecting at the
   bottom.** Now that the report rides inside the comment, the visible verdict
   is checked against it: a one-line "all issues resolved - lgtm - approved"
