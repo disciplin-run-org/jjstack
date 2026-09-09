@@ -22,7 +22,8 @@
 # skill; only the checkable half lives in this script.
 #
 # Rules enforced (from the Jesper Jurcenoks Voice DNA, Executive register):
-#   - the attribution line, so a reader knows a machine wrote it
+#   - the attribution line FIRST, so a reader knows a machine wrote it
+#   - a report link that is repo-relative and exists; never a local path
 #   - a resolved/clean verdict is ONE line, in a fixed form
 #   - no credential literal anywhere in the body  (fails closed, exit 4)
 #   - hard size budget: lines and characters
@@ -246,8 +247,40 @@ fi
 # apparent author wrote, and every comment this skill has posted so far read
 # as Jesper's own words.
 ATTRIB='Claude jjstack/skills/review/SKILL.md'
-grep -qF "$ATTRIB" "$SRC" || \
-  fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it."
+# FIRST, not merely present. A footer is read last or not at all; the reader
+# has already taken the verdict as the account holder's opinion by the time
+# they reach it. The first thing on the screen says who wrote this.
+first_line=$(sed -e '/^[[:space:]]*$/d' "$SRC" | head -1)
+case "$first_line" in
+  "$ATTRIB"*) ;;
+  *) if grep -qF "$ATTRIB" "$SRC"; then
+       fail "attribution-not-first" "\"$ATTRIB\" is in the comment but not on its FIRST line. Move it to the top; the verdict follows it."
+     else
+       fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it - on the first line."
+     fi ;;
+esac
+
+# The ONE resolver for a report path, used by both the resolved line and the
+# findings link. Repo-relative, resolved against the repository the comment
+# file lives in, and nowhere else. The old resolver also tried the comment's
+# own directory and its parent, which is exactly how a review run from a
+# scratchpad passed the lint with a report that exists on one machine and
+# nowhere a reader of the PR can reach.
+#   0 found   1 not found   2 not a repo-relative path   3 comment not in a repo
+resolve_report() {
+  case "$1" in /*|~*|../*|*/../*|*/..|.) return 2 ;; esac
+  local sd rt
+  sd=$(cd "$(dirname "$SRC")" && pwd)
+  rt=$(git -C "$sd" rev-parse --show-toplevel 2>/dev/null) || return 3
+  [ -f "$rt/$1" ]
+}
+report_fail() {   # report_fail RC PATH
+  case "$1" in
+    2) fail "local-path" "\`$2\` is not a path inside the repository. A report link is repo-relative (\`jjstack/review-YYYY-MM-DD.md\`), never a local, absolute or home path - a reader of the PR cannot open your machine." ;;
+    3) fail "no-repo" "the comment file is not inside a git repository, so its report link cannot be checked against the tree the PR is for. Write the comment inside the reviewed checkout." ;;
+    *) fail "no-report" "the comment links \`$2\` and no such file exists at the repository root. Commit the report first (Phase 5), then link it: a link to nothing is the same as no link." ;;
+  esac
+}
 
 # --- a resolved or clean verdict is exactly one line, in a fixed form ---
 # Not "short": FIXED. A budget alone leaves room to fill, and it got filled -
@@ -281,14 +314,8 @@ if [ "$VERDICT" = "approve" ]; then
     if [ "$(grep -c . <<<"$body_all")" -gt 1 ]; then
       fail "not-canonical" "a resolved verdict is ONE line. Everything after it belongs in the report."
     else
-    sd=$(cd "$(dirname "$SRC")" && pwd)
-    rt=$(git -C "$sd" rev-parse --show-toplevel 2>/dev/null || true)
-    fnd=0
-    for c in "${rt:+$rt/$rr}" "$sd/$rr" "$sd/../$rr" "$sd/$(basename "$rr")"; do
-      [ -n "$c" ] && [ -f "$c" ] && { fnd=1; break; }
-    done
-    [ "$fnd" -eq 1 ] || \
-      fail "no-report" "the resolved line names \`$rr\` and no such file exists. Commit the report first, then approve."
+    resolve_report "$rr"; rrc=$?
+    [ "$rrc" -eq 0 ] || report_fail "$rrc" "$rr"
     fi
   fi
 fi
@@ -319,7 +346,14 @@ fi
 # And a named report path was never stat'd: `jjstack/does-not-exist-anywhere.md`
 # returned clean. So: the reference must LOOK like a report, and if it names a
 # path it must BE there. A link to nothing is the same as no link.
-report_ref=$(grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' "$SRC" 2>/dev/null | head -1)
+# A local path anywhere in the body is refused outright, whether or not it is
+# the link: it names a machine a reader of the PR cannot reach.
+localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$SRC" 2>/dev/null | head -1 | sed 's/^[[:space:]`(]//')
+[ -n "$localp" ] && fail "local-path" "\`$localp\` is a path on the reviewer's machine. Nothing local goes in a public comment; link the committed \`jjstack/review-YYYY-MM-DD.md\`."
+# The attribution line is a path too (`jjstack/skills/review/SKILL.md`) and
+# now comes FIRST, so it must be dropped before the first report-shaped path
+# is taken - otherwise the link check stats the skill file instead of the report.
+report_ref=$(grep -vF "$ATTRIB" "$SRC" | grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' 2>/dev/null | head -1)
 url_ref=$(grep -oE 'https?://[^)>[:space:]`"'"'"']+' "$SRC" 2>/dev/null \
   | grep -E '(\.md([?#].*)?$|/jjstack/|review-[0-9]{4}-[0-9]{2}-[0-9]{2})' | head -1)
 
@@ -328,17 +362,8 @@ if [ "$VERDICT" = "approve" ]; then
 elif [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
   fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a bare URL inside a citation: brevity moves evidence, it never deletes it."
 elif [ -n "$report_ref" ]; then
-  # Resolve against the repo the comment lives in, then against the comment's own
-  # directory, then one level up: {OUTPUT_DIR} is normally {repo}/jjstack, so
-  # both "jjstack/review-DATE.md" and a bare "review-DATE.md" have to land.
-  src_dir=$(cd "$(dirname "$SRC")" && pwd)
-  root=$(git -C "$src_dir" rev-parse --show-toplevel 2>/dev/null || true)
-  found=0
-  for cand in "${root:+$root/$report_ref}" "$src_dir/$report_ref" "$src_dir/../$report_ref" "$src_dir/$(basename "$report_ref")"; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { found=1; break; }
-  done
-  [ "$found" -eq 1 ] || \
-    fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 5), then link it: a link to nothing is the same as no link."
+  resolve_report "$report_ref"; frc=$?
+  [ "$frc" -eq 0 ] || report_fail "$frc" "$report_ref"
 fi
 
 # --- the residual: the count that proves nothing was dropped ---

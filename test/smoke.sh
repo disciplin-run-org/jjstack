@@ -634,52 +634,58 @@ done
 
 echo "== 8. pr-comment-lint (safety, budget, link) =="
 PCL="$SANDBOX/pcl"; mkdir -p "$PCL"
-printf '# report\n' > "$PCL/review-2026-01-01.md"
+# The comment file lives INSIDE a repo, and the report where Phase 5 commits
+# it: the lint resolves a report link against the repository the comment is
+# in, and nowhere else. The old resolver also tried the comment's own directory
+# and its parent - which is how a review run from a scratchpad passed with a
+# report that existed on one machine and nowhere a reader of the PR could go.
+git -C "$PCL" init -q >/dev/null 2>&1
+mkdir -p "$PCL/jjstack"; printf '# report\n' > "$PCL/jjstack/review-2026-01-01.md"
 lint() { "$BIN/jjstack-pr-comment-lint" "$1" >/dev/null 2>&1; echo $?; }
 body() { printf '%b' "$2" > "$PCL/$1.md"; }
 
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
-body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n`review-2026-01-01.md`\n'
+body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n`jjstack/review-2026-01-01.md`\n'
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
-body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\n`review-2026-01-01.md`\n'
+body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\n`jjstack/review-2026-01-01.md`\n'
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
-body sec_generic '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n\n`review-2026-01-01.md`\n'
+body sec_generic '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n\n`jjstack/review-2026-01-01.md`\n'
 check "a vendor-less assigned credential is blocked (shape, not vendor list)" \
       "[ \$(lint '$PCL/sec_generic.md') = 4 ]"
 # One fixture per vendor row. A row with no fixture can be deleted silently -
 # and the whole enumeration WAS collapsed into the shape rule once, which let a
 # JWT, a Google key, a Stripe key and a fine-grained PAT lint clean and publish.
-body sec_jwt '**REJECT** - 1 blocking, 1 total.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n\n`review-2026-01-01.md`\n'
+body sec_jwt '**REJECT** - 1 blocking, 1 total.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n\n`jjstack/review-2026-01-01.md`\n'
 check "a bare JWT is blocked" "[ \$(lint '$PCL/sec_jwt.md') = 4 ]"
-body sec_goog '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n\n`review-2026-01-01.md`\n'
+body sec_goog '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n\n`jjstack/review-2026-01-01.md`\n'
 check "a Google API key is blocked" "[ \$(lint '$PCL/sec_goog.md') = 4 ]"
-body sec_stripe '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n\n`review-2026-01-01.md`\n'
+body sec_stripe '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n\n`jjstack/review-2026-01-01.md`\n'
 check "a Stripe live key is blocked" "[ \$(lint '$PCL/sec_stripe.md') = 4 ]"
-body sec_pat '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n\n`review-2026-01-01.md`\n'
+body sec_pat '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n\n`jjstack/review-2026-01-01.md`\n'
 check "a fine-grained GitHub PAT is blocked" "[ \$(lint '$PCL/sec_pat.md') = 4 ]"
-body sec_azure '**REJECT** - 1 blocking, 1 total.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n\n`review-2026-01-01.md`\n'
+body sec_azure '**REJECT** - 1 blocking, 1 total.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n\n`jjstack/review-2026-01-01.md`\n'
 check "an Azure connection-string key is blocked" "[ \$(lint '$PCL/sec_azure.md') = 4 ]"
-body sec_slash '**REJECT** - 1 blocking, 1 total.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n\n`review-2026-01-01.md`\n'
+body sec_slash '**REJECT** - 1 blocking, 1 total.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n\n`jjstack/review-2026-01-01.md`\n'
 check "an AWS SECRET key is blocked even though it holds slashes" \
       "[ \$(lint '$PCL/sec_slash.md') = 4 ]"
-body sec_rocket '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n\n`review-2026-01-01.md`\n'
+body sec_rocket '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n\n`jjstack/review-2026-01-01.md`\n'
 check "a hashrocket assignment is blocked" "[ \$(lint '$PCL/sec_rocket.md') = 4 ]"
 
 # The ENTROPY gate, both directions. Without it a review comment ABOUT
 # credential handling exits 4 - unsilenceable - and cannot be posted at all.
-body fp_docpath '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n\n`review-2026-01-01.md`\n'
+body fp_docpath '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n\n`jjstack/review-2026-01-01.md`\n'
 check "a doc path after a credential word is NOT a secret" \
       "[ \$(lint '$PCL/fp_docpath.md') != 4 ]"
-body fp_adr '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n\n`review-2026-01-01.md`\n'
+body fp_adr '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n\n`jjstack/review-2026-01-01.md`\n'
 check "…nor a mixed-case path with a digit that ends in .md" \
       "[ \$(lint '$PCL/fp_adr.md') != 4 ]"
-body fp_k8s '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n\n`review-2026-01-01.md`\n'
+body fp_k8s '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n\n`jjstack/review-2026-01-01.md`\n'
 check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 
-body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n\n`review-2026-01-01.md`\n'
+body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n\n`jjstack/review-2026-01-01.md`\n'
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
 body clean_ok 'Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved\n'
@@ -688,10 +694,10 @@ check "a clean approve passes (control: the secret rule discriminates)" \
 # A bare vendor token carries no `name = value` shape, so the generic rule
 # cannot see it. The prefix list is the backstop and needs its own fixture:
 # narrowing it to AWS alone left this whole section green.
-body sec_ghp '**REJECT** - 1 blocking, 1 total.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n`review-2026-01-01.md`\n'
+body sec_ghp '**REJECT** - 1 blocking, 1 total.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n`jjstack/review-2026-01-01.md`\n'
 check "a bare GitHub token is blocked (the prefix backstop earns its place)" \
       "[ \$(lint '$PCL/sec_ghp.md') = 4 ]"
-body sec_sk '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n\n`review-2026-01-01.md`\n'
+body sec_sk '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n\n`jjstack/review-2026-01-01.md`\n'
 check "a bare openai-style key is blocked too" "[ \$(lint '$PCL/sec_sk.md') = 4 ]"
 
 body nolink '**REJECT** - 1 blocking, 1 total.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
@@ -710,34 +716,34 @@ check "…and it never prints the value it found" "! grep -q 'wJalrXUtnFEMI' <<<
 
 # BUDGET. Findings are counted as OCCURRENCES and in every severity spelling
 # SKILL.md sanctions - six findings written **HIGH** posted under a cap of three.
-body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 4 total. `jjstack/review-2026-01-01.md`\n'
 # Assert the RULE that fired, not merely a non-zero exit. Every one of these
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-link|no-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-link|no-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|no-repo' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
-body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total. `jjstack/review-2026-01-01.md`\n'
 check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`jjstack/review-2026-01-01.md`\n'
 check "the word **low** in prose is not counted as a second finding" \
       "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
-body apbelow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`jjstack/review-2026-01-01.md`\n'
 check "…nor the word below: in a citation" \
       "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
-body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total. `jjstack/review-2026-01-01.md`\n'
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`jjstack/review-2026-01-01.md`\n'
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
 # A budget that cannot be evaluated is not a budget: an empty flag value must
 # fail closed, not report clean.
-big=$(printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a:1` x\n`review-2026-01-01.md`\n%.0sfiller line\n' $(seq 40))
+big=$(printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a:1` x\n`jjstack/review-2026-01-01.md`\n%.0sfiller line\n' $(seq 40))
 printf '%b' "$big" > "$PCL/big.md"
 "$BIN/jjstack-pr-comment-lint" "$PCL/big.md" --max-lines '' >/dev/null 2>&1
 # Exactly 2 - refused at PARSE time. `-ne 0` was not enough: this body also
@@ -774,7 +780,7 @@ check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
 ATT='Claude jjstack/skills/review/SKILL.md'
-body att_ok "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n"
+body att_ok "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n"
 check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 # A resolved verdict asserts findings existed and were fixed, so it carries the
 # report. Without it the approve path is the one place brevity DELETES evidence.
@@ -784,7 +790,7 @@ check "a resolved line with no report path is refused" \
 # Prose appended AFTER a canonical line WITH a valid path: the shape check
 # greps per line, so it matched and the failure surfaced as a nonsense filename
 # under the wrong rule. Fails closed either way; the message has to be right.
-body att_wordypath "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n\nAnd prose nobody asked for.\n"
+body att_wordypath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n\nAnd prose nobody asked for.\n"
 check "prose after a valid resolved line is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_wordypath.md')\""
 check "…and is NOT misdiagnosed as a missing report" \
@@ -794,15 +800,55 @@ check "…and one naming a report that does not exist" \
       "grep -q no-report <<<\"\$(why '$PCL/att_ghost.md')\""
 body att_clean "$ATT: no findings - lgtm - approved\n"
 check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
-body att_none '**APPROVE** - no findings. `review-2026-01-01.md`\n'
+body att_none '**APPROVE** - no findings. `jjstack/review-2026-01-01.md`\n'
 check "an approve with no attribution is refused" "[ \$(lint '$PCL/att_none.md') != 0 ]"
 check "…and the message names attribution, not just length" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_none.md')\""
-body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n'
+body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`jjstack/review-2026-01-01.md`\n'
 check "a findings comment without attribution is refused too" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_find.md')\""
-body att_findok '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n\n'"$ATT"'\n'
-check "…and passes once it carries the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
+body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`jjstack/review-2026-01-01.md`\n'
+check "…and passes once it opens with the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
+# FIRST, not merely present. A footer is read after the verdict has already
+# been taken as the account holder's own opinion.
+body att_footer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`jjstack/review-2026-01-01.md`\n\n'"$ATT"'\n'
+check "attribution as a FOOTER is refused" \
+      "grep -q attribution-not-first <<<\"\$(why '$PCL/att_footer.md')\""
+
+# REPORT LINKS ARE REPO-RELATIVE AND EXIST IN THAT REPO. The final lgtm on the
+# skill's own PR linked a report that lived in the reviewer's scratchpad - the
+# resolver's fallback to the comment's own directory let it through, so the
+# link pointed at nothing on any machine but one.
+body rp_abs "$ATT"': all issues resolved - lgtm - approved - /tmp/somewhere/review-2026-01-01.md\n'
+check "a resolved line naming an absolute path is refused as local" \
+      "grep -q local-path <<<\"\$(why '$PCL/rp_abs.md')\""
+body rp_home "$ATT"': all issues resolved - lgtm - approved - ~/scratch/review-2026-01-01.md\n'
+check "…and so is a home-relative one" \
+      "grep -q local-path <<<\"\$(why '$PCL/rp_home.md')\""
+# The resolver's own path check, distinct from the body scan: these prefixes
+# are not in the body-scan list, so only the resolver can refuse them. Without
+# a fixture here the resolver's case arm could be deleted and stay green.
+body rp_opt "$ATT"': all issues resolved - lgtm - approved - /var/reports/review-2026-01-01.md\n'
+check "an absolute path the body scan does not know is still refused by the resolver" \
+      "grep -q local-path <<<\"\$(why '$PCL/rp_opt.md')\""
+body rp_dotdot "$ATT"': all issues resolved - lgtm - approved - ../elsewhere/review-2026-01-01.md\n'
+check "…and so is a parent-directory traversal" \
+      "grep -q local-path <<<\"\$(why '$PCL/rp_dotdot.md')\""
+body rp_localbody "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md and `jjstack/review-2026-01-01.md`\n'
+check "a local machine path ANYWHERE in the body is refused, link or not" \
+      "grep -q local-path <<<\"\$(why '$PCL/rp_localbody.md')\""
+# The comment's own directory is not a resolution root. A comment in a
+# subdirectory with a report BESIDE it - the scratchpad shape - must not
+# resolve; only the repository root does.
+mkdir -p "$PCL/scratch"; printf '# stray\n' > "$PCL/scratch/review-9999-01-01.md"
+printf '%s: all issues resolved - lgtm - approved - review-9999-01-01.md\n' "$ATT" > "$PCL/scratch/c.md"
+check "a report beside the comment, not at the repo root, is refused" \
+      "\"$BIN/jjstack-pr-comment-lint\" '$PCL/scratch/c.md' 2>&1 | grep -q no-report"
+# And a comment written outside any repository cannot be checked at all.
+NOREPO="$SANDBOX/norepo"; mkdir -p "$NOREPO/jjstack"; printf '# r\n' > "$NOREPO/jjstack/review-2026-01-01.md"
+printf '%s: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n' "$ATT" > "$NOREPO/c.md"
+check "a comment outside any git repo is refused, even with the file beside it" \
+      "grep -q no-repo <<<\"\$(\"$BIN/jjstack-pr-comment-lint\" '$NOREPO/c.md' 2>&1 | grep -oE 'no-repo')\""
 
 # The resolved verdict is a FIXED form, not merely a short one: a budget leaves
 # room to fill, and it got filled - 25 lines of evidence proving a review had

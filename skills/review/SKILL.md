@@ -393,12 +393,17 @@ cross-repository PR; `headRepository` would name the fork.
 
 Compose `{OUTPUT_DIR}/pr-comment.md` in the structure the voice reference
 gives: verdict, ≤ 3 blocking findings one line each, `N blocking, M total`,
-link to the committed report, and the attribution line last.
+link to the committed report — `jjstack/review-YYYY-MM-DD.md`, repo-relative,
+never a path on this machine — with the attribution line **first**.
 
-**Every comment carries `Claude jjstack/skills/review/SKILL.md`.** It posts under
-a human's GitHub account — that is whose token `gh` holds — so without that
-line a reader cannot tell this review from something its apparent author
-wrote. The lint refuses a comment that omits it.
+**Every comment opens with `Claude jjstack/skills/review/SKILL.md`.** It posts
+under a human's GitHub account — that is whose token `gh` holds — so without
+that line a reader cannot tell this review from something its apparent author
+wrote, and a footer is read after the verdict has already been taken as theirs.
+The lint refuses a comment that omits it or puts it anywhere but first, and
+refuses any local path (`/tmp`, `~`, a scratchpad) anywhere in the body:
+write `pr-comment.md` inside the reviewed checkout so the report link is
+checked against that tree.
 
 **When every finding is resolved, or there were none, the comment is exactly
 one line and nothing else:**

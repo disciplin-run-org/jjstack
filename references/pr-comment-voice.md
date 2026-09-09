@@ -44,9 +44,11 @@ the skill that produced it, so a reader can go and read the rules it ran under:
 Claude jjstack/skills/review/SKILL.md
 ```
 
-On a one-line approve it is the opening of the line. On a findings comment it
-is the last line, so the verdict still comes first. The linter refuses a
-comment that does not carry it.
+It is the **first line** of every comment. On a one-line approve it opens
+that line; on a findings comment it stands alone above the verdict. A footer
+is read last or not at all - by then the reader has already taken the verdict
+as the account holder's opinion. The linter refuses a comment where it is
+absent or anywhere but first.
 
 ## A resolved review is one line
 
@@ -104,6 +106,8 @@ Conclusion first. Build the case after. If the opening spends more than one
 sentence setting the stage, the voice is lost.
 
 ```
+Claude jjstack/skills/review/SKILL.md
+
 **VERDICT** - N blocking, M total.
 
 **P0** `file:line` claim: the specific consequence.
@@ -111,9 +115,14 @@ sentence setting the stage, the voice is lost.
 
 M-N more + repros + evidence: `jjstack/review-YYYY-MM-DD.md`
 Guardrail: the condition under which this verdict holds.
-
-Claude jjstack/skills/review/SKILL.md
 ```
+
+The report link is **repo-relative and committed** - `jjstack/review-YYYY-MM-DD.md`,
+checked against the repository the comment is written in. Never a path on the
+reviewer's machine: `/tmp/...`, `~/...`, a scratchpad, a worktree copy. A
+reader of the PR cannot open your disk, and the linter refuses any of those
+anywhere in the body, link or not. Write the comment inside the reviewed
+checkout, so the check runs against the right tree.
 
 One line per finding. `file:line` is not decoration - it is what makes the
 finding actionable without a second round trip.
