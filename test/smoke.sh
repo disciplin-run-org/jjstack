@@ -2336,19 +2336,48 @@ done
 # specimen fixes what you test the pattern against; it does not fix what the
 # pattern keys on. Derive the specimen from the artifact AND the pattern from
 # the mechanism.
+#
+# ONE BOUND, CHOSEN NOT MISSED: the pattern assumes a double quote, so
+# `message='SESSION-BOUNDARY'` is silent. Every MCP argument in this tree is
+# double-quoted without exception, and keying on the mechanism is meant to
+# remove the spelling that MATTERED, not every spelling that could exist.
 GSPEC="$DIR/test/fixtures/guard-tm-send-boundary.md"
 check "…and that guard FIRES on the defect this repo actually shipped (control)" \
       "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$GSPEC'"
-# A BATTERY, not one specimen. A single-specimen control certifies the guard
-# against the one spelling it was built from, which is how both earlier
-# versions passed their own control while missing the defect in another form.
+# A BATTERY, not one specimen — but the battery does TWO jobs and they need
+# different specimens. A set assembled only from "spellings that defeated the
+# old pattern" drifts toward invention by construction, because the old pattern
+# was defeated precisely by spellings this tree has never written.
 BAT="$SANDBOX/boundary-battery"; mkdir -p "$BAT"
+
+# JOB 1 — DERIVED POSITIVE: does the guard catch what this codebase actually
+# writes? Built the way the invariant recipe says: a REAL shipped call, put in
+# the forbidden state. Nothing here is authored — the call is /rollover's own
+# restart signal with its message replaced.
+sed -n '/^mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>-manager",$/,/^ *meta=/p' \
+    "$DIR/skills/rollover/SKILL.md" \
+  | sed 's/message="restart fresh"/message="SESSION-BOUNDARY - settled"/' > "$BAT/shipped-shape.md"
+check "the derived specimen really came out of the shipped skill (not authored)" \
+      "grep -q 'meta={\"kind\": \"restart\"' '$BAT/shipped-shape.md'"
+check "…and the guard FIRES on a REAL shipped call put in the forbidden state" \
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/shipped-shape.md'"
+
+# JOB 2 — DISCRIMINATING SPECIMENS: do they prove the REPAIR, not just the
+# guard? Each must be caught by the new pattern and MISSED by the old one, or
+# it certifies nothing about what changed. These two spellings do NOT occur in
+# this tree — `grep -rnE 'mcp__[a-z_]*__[a-z_]*\([^)]*[a-z_]+\('` over skills/
+# and references/ returns nothing — and that is stated rather than implied:
+# they are here because the previous pattern was blind to them, which is a
+# claim a reader can check. A third specimen (`meta={…}` with a parenthesis in
+# the MESSAGE BODY) was dropped: the old pattern caught it too, because
+# `[^)]*` never had to cross that paren, so it was inert.
 printf 'tm_send(worker=resolve_name($TM_WORKER_NAME),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/nested.md"
 printf 'tm_send(worker="<name>" (the bare name, not the manager),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/paren.md"
-printf 'tm_send(worker="<name>", meta={"kind": "b"},\n  message="SESSION-BOUNDARY (settled) x")\n' > "$BAT/meta.md"
-for spelling in nested paren meta; do
+for spelling in nested paren; do
   check "…and on the same defect spelled with a $spelling in its arguments" \
         "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/$spelling.md'"
+  check "…and that specimen DISCRIMINATES: the pattern it replaced was blind to it" \
+        "! tr '\n' ' ' < '$BAT/$spelling.md' | grep -qE 'tm_send\([^)]*SESSION-BOUNDARY'"
 done
 # THE MIRROR: a guard that fires on prose FORBIDDING the call turns a
 # documentation edit red. The flattened form did exactly that.
@@ -2405,6 +2434,16 @@ c8tree() {   # c8tree -> a copy of the parts check 8 inspects
   echo "$d"
 }
 c8() { bash "$1/bin/jjstack-verify-skills" 2>&1 | sed -n '/== 8/,$p'; }
+
+# THE EXCLUSION LIST IS PINNED. Check 8 skips two files that DOCUMENT the
+# mechanisms rather than using them — its own table, and the reference that
+# teaches how these guards are written. That list is the one place a real call
+# site could hide, so its membership is asserted rather than trusted, and a
+# third entry has to be added here on purpose.
+check "check 8 excludes exactly two documentation files, named" \
+      "[ \"\$(grep -c . <(sed -n '/^cat > \"\$TMP\/notcarriers\"/,/^NOTC\$/p' '$DIR/bin/jjstack-verify-skills' | sed '1d;\$d'))\" = 1 ]"
+check "…and the reference is one of them (the other is the checker itself)" \
+      "grep -q '^references/specimen-recovery.md\$' <(sed -n '/^cat > \"\$TMP\/notcarriers\"/,/^NOTC\$/p' '$DIR/bin/jjstack-verify-skills')"
 
 C=$(c8tree)
 check "check 8 passes on an unmutated copy of this tree (control)" \

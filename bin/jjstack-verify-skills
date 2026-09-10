@@ -254,10 +254,21 @@ printf '%s\t%s\t%s\n' \
     '-' \
     'references/rollover-handover.md bin/jjstack-rollover-slot skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
   > "$TMP/continuation"
-# The guard is not a carrier. This file states every pattern it looks for, so
-# scanning bin/ without this exclusion makes each row find itself and report a
-# leak that is the check's own table — the self-pollution class.
+# DOCUMENTATION ABOUT THE GUARD IS NOT A CARRIER. Two files state the patterns
+# this check looks for: the check's own table, and the reference that teaches
+# how these guards are written and shows one of them being mutated. Scanning
+# them makes each row find a description of itself and report a leak that is
+# its own example — the self-pollution class.
+#
+# The list is deliberately TINY and enumerated, because there is no derivable
+# property that separates "documents the mechanism" from "uses it". The
+# assertion in test/smoke.sh pins its exact membership, so it cannot grow
+# quietly into a place to hide a real call site.
 SELF="bin/$(basename "${BASH_SOURCE[0]}")"
+cat > "$TMP/notcarriers" <<'NOTC'
+references/specimen-recovery.md
+NOTC
+printf '%s\n' "$SELF" >> "$TMP/notcarriers"
 while IFS=$'\t' read -r pat primary allowed; do
   [ -n "$pat" ] || continue
   # CODE ROWS READ A COMMENT-STRIPPED COPY. hooks/shared-memory.sh is the one
@@ -283,7 +294,7 @@ while IFS=$'\t' read -r pat primary allowed; do
     done
   fi
   grep -rlE "$pat" "$scan_root/skills" "$scan_root/references" "$scan_root/hooks" "$scan_root/bin" 2>/dev/null \
-    | sed "s|^$scan_root/||" | grep -vxF "$SELF" | sort -u > "$TMP/carriers"
+    | sed "s|^$scan_root/||" | grep -vxF -f "$TMP/notcarriers" | sort -u > "$TMP/carriers"
   if ! [ -s "$TMP/carriers" ]; then
     bad "'$pat' matches nothing in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
     continue

@@ -91,12 +91,25 @@ same thing about `cp -a`, and `cp -r` has the identical hazard.
 d=$(mktemp -d)
 cp -r "$REPO/bin" "$REPO/skills" "$REPO/references" "$REPO/hooks" "$d/"
 sed -i 's|^RSLOT=|#RSLOT=|' "$d/hooks/shared-memory.sh"   # restore the defect
-bash "$d/bin/jjstack-verify-skills" | grep -q RSLOT || echo "the guard is decorative"
+bash "$d/bin/jjstack-verify-skills" | grep -q 'FAIL.*RSLOT' || echo "the guard is decorative"
 ```
 
 That is a real mutation from this suite, not a placeholder: it disables the
 plain-session handover carrier, which check 8's hook row used to report as
 present anyway.
+
+**Anchor on the FAILURE, not on the row name.** An earlier version of this very
+example ended `grep -q RSLOT`, and the healthy output contains the row name:
+
+```
+  ok  RSLOT=.*jjstack-rollover-slot [hooks/shared-memory.sh] — carried by: …
+```
+
+So it matched whether the guard fired or not — the defect this document
+teaches, in the document's own demonstration of how to avoid it. Measured:
+`grep RSLOT` matches both trees, `grep 'FAIL.*RSLOT'` matches only the mutated
+one, and so does the exit code. **The test of a specimen is itself a guard, and
+gets no exemption from step 4.**
 
 ### Guarding a structural invariant
 
