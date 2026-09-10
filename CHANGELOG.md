@@ -146,6 +146,26 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   missing green check. Branch protection requiring an approval is set per repo
   once the reviewer account has approved something there; it is not on yet.
 
+- **The README now says where the review runs, and the reviewer has a written
+  checkout recipe.** Rung 4 said who reviews your code; it did not say that the
+  reviewer is a session in a different directory with no checkout of anything,
+  which is what buys the distance — a reviewer with no working tree cannot
+  quietly fix what it finds — and what lets you carry on with the next thing
+  while the round runs beside you. Your tree is never touched, because the
+  reviewer never had it.
+
+  The reviewer side of `references/independent-review.md` now carries the three
+  commands that were being retyped from memory every round: fetch the pull
+  request head, add a detached worktree in the session scratchpad, and re-fetch
+  and compare the head before publishing, because a round measured against a
+  head that has since moved is void. Two rounds on this repo were published
+  against a moved head, and stale worktrees from earlier rounds accumulated
+  because nothing said to prune at the end. Prune is now part of the round.
+
+  This replaces PR #13, which proposed a `/spawn-review` command that spawned a
+  second session from the author's session. Under rung 4 that session inherits
+  the author's GitHub identity, so it can never post the review of record.
+
 - **Long-running work no longer stops to ask you for permission.** Over a
   measured 48 hours, sessions on this machine interrupted a person 430 times,
   about nine times an hour, and every single interruption was approved. That
