@@ -55,7 +55,11 @@
 # Usage:
 #   jjstack-pr-comment-lint <file> [--max-lines N] [--max-chars N]
 #                                  [--max-findings N] [--max-total-chars N]
-#                                  [--quiet]
+#                                  [--attribution LINE] [--quiet]
+# --attribution: the first line every comment must open with (default
+#   `Claude jjstack/skills/review/SKILL.md`). A sibling skill that posts under
+#   its own path passes its own; the two canonical one-liners and the report
+#   heading (`## /<skill>:`, matched literally) derive from it.
 # Exit: 0 clean, 1 rule violations found, 2 usage, 3 file missing,
 #       4 a credential literal was found (never post; redact first).
 #
@@ -84,6 +88,17 @@ need_int() {   # need_int FLAG VALUE
       echo -e "${CYA}error${RST} $1 needs a non-negative integer, got '$2'" >&2; exit 2 ;;
   esac
 }
+# Same class for the byline: an empty prefix matches EVERY first line, so the
+# attribution rule would read as a pass on a comment that carries none. A value
+# with a newline can never match one line, and one starting with `-` is a
+# swallowed flag.
+need_attrib() {   # need_attrib FLAG VALUE
+  case "$2" in
+    -*|*$'\n'*) ;;
+    *[![:space:]]*) return 0 ;;
+  esac
+  echo -e "${CYA}error${RST} $1 needs one non-blank line not starting with '-', got '$2'" >&2; exit 2
+}
 
 # Budget is deliberately brutal. A PR comment is a DOORBELL, not the delivery:
 # verdict, the blocking findings, and the rest one click away in the collapsed
@@ -94,12 +109,14 @@ need_int() {   # need_int FLAG VALUE
 # 65536 characters, and a post that fails there fails AFTER the lint said
 # clean. Refuse it here, with margin, and name the real problem.
 SRC=""; MAX_LINES=12; MAX_CHARS=900; MAX_FINDINGS=3; MAX_TOTAL=60000; QUIET=0
+ATTRIB='Claude jjstack/skills/review/SKILL.md'
 while [ $# -gt 0 ]; do
   case "$1" in
     --max-lines)       review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_LINES="$2";    shift 2 ;;
     --max-chars)       review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_CHARS="$2";    shift 2 ;;
     --max-findings)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_FINDINGS="$2"; shift 2 ;;
     --max-total-chars) review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_TOTAL="$2";    shift 2 ;;
+    --attribution)     review_need_value "$1" $# || exit 2; need_attrib "$1" "$2"; ATTRIB="$2";   shift 2 ;;
     --quiet)     QUIET=1; shift ;;
     -h|--help)   show_help "$0"; exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
@@ -107,7 +124,7 @@ while [ $# -gt 0 ]; do
         shift ;;
   esac
 done
-[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N] [--max-total-chars N]" >&2; exit 2; }
+[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N] [--max-total-chars N] [--attribution LINE]" >&2; exit 2; }
 [ -f "$SRC" ] || { echo -e "${CYA}error${RST} no such file: $SRC" >&2; exit 3; }
 # PCRE is a HARD REQUIREMENT, checked once, before anything is read.
 #
@@ -289,8 +306,8 @@ fi
 # It posts under a human's GitHub account, because that is whose token `gh`
 # holds. Without this line a reader cannot tell the review from something its
 # apparent author wrote, and every comment this skill has posted so far read
-# as Jesper's own words.
-ATTRIB='Claude jjstack/skills/review/SKILL.md'
+# as Jesper's own words. The line itself is `$ATTRIB`, set with the defaults
+# above and overridable per skill with --attribution.
 # FIRST, not merely present. A footer is read last or not at all; the reader
 # has already taken the verdict as the account holder's opinion by the time
 # they reach it. The first thing on the screen says who wrote this - so it is
@@ -299,7 +316,7 @@ ATTRIB='Claude jjstack/skills/review/SKILL.md'
 first_line=$(sed -e '/^[[:space:]]*$/d' "$SRC" | head -1)
 case "$first_line" in
   "$ATTRIB"*) ;;
-  *) if grep -qF "$ATTRIB" "$SRC"; then
+  *) if grep -qF -e "$ATTRIB" "$SRC"; then
        fail "attribution-not-first" "\"$ATTRIB\" is in the comment but not on its FIRST line. Move it to the top; the verdict follows it."
      else
        fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it - on the first line."
@@ -317,8 +334,11 @@ esac
 #
 # The anti-vacuity floor is the report's own heading. `<details>` around a
 # blank line satisfies every structural check and carries nothing; requiring
-# the `## /review:` line the report template opens with means the block holds
-# a report, not a placeholder.
+# the `## /<skill>:` line the report template opens with means the block holds
+# a report, not a placeholder. The skill is the one the byline names
+# (`Claude jjstack/skills/<skill>/SKILL.md`), so the report below the fold
+# points at the same rules as the line above it.
+rep_skill=${ATTRIB#Claude jjstack/skills/}; rep_skill=${rep_skill%%/*}
 if [ "$n_open" -ne "$n_close" ]; then
   fail "report-shape" "$n_open <details> against $n_close </details>. The report block opens once, on its own line, and closes once, on its own line."
 elif [ "$n_open" -gt 1 ]; then
@@ -329,8 +349,8 @@ elif [ "$n_open" -eq 1 ]; then
   [ "$c_ln" -gt "$o_ln" ] || fail "report-shape" "</details> comes before <details>."
   grep -qE '^[[:space:]]*<details[[:space:]]+open\b' "$SRC" && \
     fail "report-expanded" "<details open> renders the whole report expanded. The reader gets the verdict; the report is one click away - drop \`open\`."
-  grep -qE '^## /review:' "$REP" || \
-    fail "empty-report" "the collapsed block does not carry a report: no \`## /review:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
+  REP_HEAD="## /$rep_skill:" awk 'index($0, ENVIRON["REP_HEAD"]) == 1 { f = 1 } END { exit !f }' "$REP" || \
+    fail "empty-report" "the collapsed block does not carry a report: no \`## /$rep_skill:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
 fi
 
 # --- a resolved or clean verdict is exactly one visible line, in a fixed form ---

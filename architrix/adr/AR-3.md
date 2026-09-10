@@ -3,11 +3,11 @@ id: AR-3
 title: /review is bounded by a budget and a convergence rule, not by recall
 status: accepted
 spec_refs: []
-paths: ["skills/review/SKILL.md", "bin/jjstack-review-preflight", "bin/jjstack-review-tooling-sweep", "bin/jjstack-review-blast-radius", "bin/jjstack-review-intent", "bin/jjstack-pr-comment-lint", "bin/jjstack-review-argcheck.sh", "references/review-preflight.md", "references/pr-comment-voice.md", "test/smoke.sh"]
+paths: ["skills/review/SKILL.md", "skills/review-lean/SKILL.md", "bin/jjstack-review-preflight", "bin/jjstack-review-tooling-sweep", "bin/jjstack-review-blast-radius", "bin/jjstack-review-intent", "bin/jjstack-pr-comment-lint", "bin/jjstack-review-argcheck.sh", "references/review-preflight.md", "references/pr-comment-voice.md", "test/smoke.sh"]
 supersedes: null
 superseded_by: null
 created: 2026-09-08T17:16:22+00:00
-updated: 2026-09-09T02:00:28+00:00
+updated: 2026-09-10T21:50:00+00:00
 ---
 
 # AR-3: /review is bounded by a budget and a convergence rule, not by recall

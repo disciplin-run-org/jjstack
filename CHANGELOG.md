@@ -11,6 +11,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **`/review-lean`: the same review, rebuilt clean.** `/review` grew by
+  patches over a dozen review rounds. `/review-lean` is the production build:
+  the same budgets, verdicts, GitHub review, commit status and gates before
+  posting, in 469 lines instead of 740. The incident stories are gone from its
+  instructions, because the tests that guard against those incidents already
+  hold them. Both skills now share one test contract, so the rules and
+  commands it pins cannot drift apart. Run it with `/review-lean`; `/review` is unchanged and stays the
+  default until the swap. Its comments open with
+  `Claude jjstack/skills/review-lean/SKILL.md` and its status check is
+  `jjstack/review-lean`, so you can always tell which of the two wrote a
+  verdict.
+
 - **Review requests now open their own review session.** Start
   `jjstack-review-daemon` in the reviewer directory and leave it running.
   When someone requests a review from `ai-assistant-2026`, or someone with

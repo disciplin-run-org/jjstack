@@ -3,11 +3,11 @@ id: AR-6
 title: A PR is merged only after a session that did not write it approves it, and after every push that answers findings
 status: accepted
 spec_refs: []
-paths: ["references/definition-of-done.md", "references/independent-review.md", "skills/review/SKILL.md", "skills/work-order/SKILL.md", "skills/verify-before-done/SKILL.md", "skills/qa-build-loop/SKILL.md", "skills/receiving-code-review/SKILL.md", "test/smoke.sh", "test/fixtures/pr-stale-approval.json", "README.md", "CHANGELOG.md"]
+paths: ["references/definition-of-done.md", "references/independent-review.md", "skills/review/SKILL.md", "skills/review-lean/SKILL.md", "skills/work-order/SKILL.md", "skills/verify-before-done/SKILL.md", "skills/qa-build-loop/SKILL.md", "skills/receiving-code-review/SKILL.md", "test/smoke.sh", "test/fixtures/pr-stale-approval.json", "README.md", "CHANGELOG.md"]
 supersedes: null
 superseded_by: null
 created: 2026-09-10T02:51:43+00:00
-updated: 2026-09-10T05:10:00+00:00
+updated: 2026-09-10T21:50:00+00:00
 ---
 
 # AR-6: A PR is merged only after a session that did not write it approves it, and after every push that answers findings

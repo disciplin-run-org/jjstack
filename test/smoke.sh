@@ -40,8 +40,10 @@ SELF="$DIR/test/smoke.sh"
 BIN="$DIR/bin"; HOOKS="$DIR/hooks"
 LIB="$BIN/jjstack-gbrain-phi-lib.sh"
 pass=0; fail=0
-ok()   { printf '  \033[92mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
-bad()  { printf '  \033[95mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
+# CK_PREFIX labels a run of assertions that is executed more than once, so the
+# two runs of the review-skill contract (section 9) read as two in the output.
+ok()   { printf '  \033[92mPASS\033[0m %s\n' "${CK_PREFIX-}$1"; pass=$((pass+1)); }
+bad()  { printf '  \033[95mFAIL\033[0m %s\n' "${CK_PREFIX-}$1"; fail=$((fail+1)); }
 # An assertion is judged by ITS OWN exit status, never by the exit status of
 # whatever fed it. `set -o pipefail` is right for the tools under test and wrong
 # for the checks: in `printf ... | grep -q PATTERN`, -q exits on the first match
@@ -85,6 +87,10 @@ h_opt=$( pass=0; fail=0; check "probe" "! shopt -qo pipefail" >/dev/null; echo "
 hcheck "HARNESS: pipefail is OFF inside an assertion" "$h_opt" 1
 shopt -qo pipefail
 hcheck "HARNESS: ...and back ON when the assertion returns" "$?" 0
+h_pfx=$( pass=0; fail=0; CK_PREFIX='[x] '; check "probe" "true" | grep -c '\[x\] probe' )
+hcheck "HARNESS: a run label reaches the verdict line" "$h_pfx" 1
+h_pfxf=$( pass=0; fail=0; CK_PREFIX='[x] '; check "probe" "false" | grep -c '\[x\] probe' )
+hcheck "HARNESS: ...on a failing assertion too, where the label matters most" "$h_pfxf" 1
 
 # ── The sandbox ──────────────────────────────────────────────────────
 # One throwaway $HOME for the WHOLE file, exported before the first assertion.
@@ -764,7 +770,7 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$@" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
 body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
@@ -1016,6 +1022,44 @@ check "the AI-register rewrite without lgtm is refused" \
 check "the canonical line carries lgtm verbatim" \
       "grep -qF 'lgtm' '$PCL/att_ok.md'"
 
+# --attribution. A sibling skill posts under its OWN path - the line exists so
+# a reader can open the rules that ran - so the byline is a parameter, and the
+# two canonical one-liners derive from it rather than from the default.
+ATT2='Claude jjstack/skills/review-lean/SKILL.md'
+lint2() { "$BIN/jjstack-pr-comment-lint" "$1" --attribution "$ATT2" >/dev/null 2>&1; echo $?; }
+RPT_LEAN='\n<details><summary>Full report</summary>\n\n## /review-lean: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
+body att2_ok "$ATT2: all issues resolved - lgtm - approved\n$RPT_LEAN"
+check "--attribution: another skill's canonical line passes under the flag" "[ \$(lint2 '$PCL/att2_ok.md') = 0 ]"
+# The report below the fold names the rules that ran, like the byline above it.
+body att2_wrongrep "$ATT2: all issues resolved - lgtm - approved\n$RPT_OK"
+check "…and the report beneath must name the byline's skill, not a sibling's" \
+      "grep -q empty-report <<<\"\$(why '$PCL/att2_wrongrep.md' --attribution '$ATT2')\""
+# The heading is matched LITERALLY. As a regex, a byline segment `a.*` accepted
+# a report headed `## /abc:`, and one carrying `\|` accepted any line with a
+# colon - a block holding no report linted clean.
+body att2_regex "Claude jjstack/skills/a.*/SKILL.md: all issues resolved - lgtm - approved\n"'\n<details><summary>Full report</summary>\n\n## /abc: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
+check "…and is matched literally, so a byline cannot turn it into a pattern" \
+      "grep -q empty-report <<<\"\$(why '$PCL/att2_regex.md' --attribution 'Claude jjstack/skills/a.*/SKILL.md')\""
+check "…and is refused as no-attribution without it (the default did not widen)" \
+      "grep -q no-attribution <<<\"\$(why '$PCL/att2_ok.md')\""
+check "…and the default line is refused under the flag (it replaces, it does not add)" \
+      "grep -q no-attribution <<<\"\$(why '$PCL/att_ok.md' --attribution '$ATT2')\""
+body att2_clean "$ATT2: no findings - lgtm - approved\n"
+check "…and the clean one-liner derives from the flag too" "[ \$(lint2 '$PCL/att2_clean.md') = 0 ]"
+body att2_reworded "$ATT2: everything looks great now, approved!\n$RPT"
+check "…and not-canonical names the flag's resolved line, not the default's" \
+      "\"\$BIN/jjstack-pr-comment-lint\" '$PCL/att2_reworded.md' --attribution '$ATT2' 2>&1 | grep -qF '$ATT2: all issues resolved - lgtm - approved'"
+"$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution '' >/dev/null 2>&1
+check "an empty --attribution is a usage error, not a byline that matches everything" "[ \$? -eq 2 ]"
+"$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution '   ' >/dev/null 2>&1
+check "…and so is a blank one" "[ \$? -eq 2 ]"
+"$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution --quiet >/dev/null 2>&1
+check "…and a value that is really the next flag" "[ \$? -eq 2 ]"
+"$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution $'Claude x\nClaude y' >/dev/null 2>&1
+check "…and a value spanning two lines, which can never match one first line" "[ \$? -eq 2 ]"
+timeout 5 "$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution >/dev/null 2>&1
+check "…and a value-less trailing --attribution exits 2, never spins" "[ \$? -eq 2 ]"
+
 # THE ASSEMBLER. The join between the visible part and the report is three
 # lines of markup GitHub is particular about; one tool writes it, and the lint
 # is the acceptance test for what it writes.
@@ -1058,7 +1102,26 @@ check "--out naming the head is refused too" "[ \$? -eq 4 ]"
 check "…and the head survives" "cmp -s '$ASM/head.md' '$ASM/head.keep'"
 
 echo "== 9. the review skill says what it does =="
-SK="$DIR/skills/review/SKILL.md"
+# ONE CONTRACT, EVERY REVIEW SKILL. /review and its rebuild /review-lean must
+# behave identically, so both are held to the same assertions: the rules pinned
+# as text, the tables pinned as row sets, and the shipped command lines
+# extracted and EXECUTED. The body is the contract; the calls below it name the
+# skills. What does not depend on a skill - the governing docs, the repo-wide
+# sweep for deleted tools - runs once, after the calls.
+# Nothing may reference a tool this branch deleted.
+REVIEW_GONE=(jjstack-review-baseline jjstack-review-calibration jjstack-review-ledger
+             jjstack-review-run-report jjstack-review-normalize jjstack-review-vocab.sh
+             jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff
+             jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines)
+review_skill_contract() {   # <SKILL.md> <attribution line> <label>
+local SK="$1" ATTR="$2" LBL="$3"
+local HDSK HDCMD hdn HDFIX HDBIN HDOUT HDCWD HD_A HD_B HD_BASE HDOLD HDGATE hdg HDHOME HDRES hdr hdc HDTREECMD hdt HDREPO HDT_A HDT_B hd_fetch_ln hd_resolve_ln det_line det_prog det_a det_out_a det_b det_out_b append_pat me_line me_prog me_ok me_err me_nul gone
+echo "-- $LBL: ${SK#$DIR/} --"
+local CK_PREFIX="[$LBL] "   # local: the label cannot outlive the call
+# The attribution is the skill's own path: a reader opens the rules that ran.
+check "every comment opens with this skill's own attribution line" "grep -qF '$ATTR' '$SK'"
+check "…and the previous-round detector filters on that same line" \
+      "grep -qF 'startswith(\"$ATTR\")' '$SK'"
 check "the skill declares its wall-clock budget" "grep -q '60 min' '$SK'"
 check "the skill caps the parallel agents" "grep -qE '\*\*4\*\*, one message' '$SK'"
 check "recall-max is opt-in, not the default" "grep -q -- '--deep' '$SK'"
@@ -1240,7 +1303,16 @@ check "…and names the broken subcommand as wholly broken, not one flag" \
 # signals to nobody. A commit status is visible to everyone and can gate the
 # merge, and unlike --approve it is not refused on a self-authored PR.
 check "the review announces itself with a pending commit status" \
-      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+      "grep -q \"state=pending -f context=jjstack/$LBL -f\" '$SK'"
+# ANCHORED on the skill's own context, at all three sites. A status is keyed by
+# commit and context, newest wins, so two skills sharing a context overwrite
+# each other's verdict on a commit both reviewed - and the prefix form this
+# replaced (`context=jjstack/review`) accepted `jjstack/review-lean` and vice
+# versa. The label is the skill's directory name, which is its context.
+check "…and replaces it under that same context when the round ends" \
+      "grep -q \"state=<STATE> -f context=jjstack/$LBL -f\" '$SK'"
+check "…and reads back the status under that context, not a sibling's" \
+      "grep -qF 'select(.context==\"jjstack/$LBL\")' '$SK'"
 check "…and the pr identity carries the head sha the status needs" \
       "grep -q 'PR_SHA=' '$SK'"
 check "…and names why an unsubmitted review is not that signal" \
@@ -1298,10 +1370,366 @@ check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
 # too, with a 422). The rung adds what that costs beyond the green check: a
 # self-authored round does not satisfy it. The skill has to SAY so, because the
 # author is the one reading the close-out.
-IRV="$DIR/references/independent-review.md"
-DOD="$DIR/references/definition-of-done.md"
 check "the self-authored branch names the rung it does not satisfy" \
       "grep -q 'does not satisfy' '$SK'"
+# …and the skill it describes really has no such refusal, or the guards on
+# the governing docs (after the calls) assert agreement with a file that never
+# changed (anti-vacuity floor).
+check "the skill itself carries no SELF_REVIEW stop" "! grep -q 'SELF_REVIEW' '$SK'"
+check "…and points at the protocol rather than restating it" \
+      "grep -q 'references/independent-review.md' '$SK'"
+check "…and does not become a refusal to run (the author filter makes it safe)" \
+      "grep -q 'not a refusal to run' '$SK'"
+# THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
+# lint rounds went on the link. The skill must say the new shape everywhere it
+# used to say the old one, or a reader follows whichever they reach first.
+check "the skill posts the report inside the comment, collapsed" \
+      "grep -q 'Full report' '$SK'"
+check "…through the assembler, not hand-typed markup" \
+      "grep -q 'jjstack-pr-comment-assemble' '$SK'"
+check "…and no longer commits the report" \
+      "! grep -qi 'commit the report' '$SK'"
+check "…nor links a report file from the comment" \
+      "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
+check "…so the canonical resolved line ends at approved" \
+      "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
+# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
+# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
+# the suite red. A guard's title is a claim; this one claimed the mechanism was
+# right while its body enforced the broken one.
+check "a re-review reads the reviews, where the verdict now lands" \
+      "grep -q 'json reviews,comments' '$SK'"
+check "…and still reads comments, for rounds posted before the change" \
+      "grep -q '.comments\[\]?' '$SK'"
+# The guard used to match ONLY the filter clause. The binding that defines
+# $me sat in a separate span of the same 260-character line and was pinned by
+# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
+# 317 green while the documented command died on a jq compile error, which the
+# skill reads as no previous round. That is the P0 this line exists to fix,
+# restored silently, under a guard whose title said the opposite. Pin the whole
+# mechanism: the login is resolved into pr.env, bound on the command line, and
+# compared against the author.
+# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
+# instance each of a single class: a check that pins a STRING while its title
+# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
+# so an inverted mapping passed. Round 2, the --arg me binding pinned by
+# nothing. Round 3, five single-edit mutations on this very block green at 392:
+# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
+# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
+# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
+# from the skill and EXECUTED against fixtures; what it returns is the
+# assertion. A string check cannot see any of those five edits; running it sees
+# four, and the fifth is the append operator, pinned literally below.
+det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
+det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
+det_prog=${det_prog%\'}
+check "the detector's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#det_prog} -gt 80 ]"
+
+# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
+# is a review and the oldest a comment. Correct answer: MY review.
+# The third comment is MINE and NEWEST of all, and its body does not open with
+# the attribution line: it is the author's own reply to the last round, which
+# is a real shape on a real PR. Without it the startswith filter is never the
+# reason anything is excluded, and deleting that filter stays green while the
+# detector starts returning the author's reply as "the previous round".
+det_a='{"reviews":[{"body":"'"$ATTR"'\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"'"$ATTR"'\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"'"$ATTR"'\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}},{"body":"'"${ATTR%/SKILL.md}"'-x/SKILL.md\nSIBLING-NOT-A-ROUND","createdAt":"2026-09-11T00:00:00Z","author":{"login":"ME"}}]}'
+# The last body is MINE and NEWEST, under a sibling skill whose name extends
+# this one's (`review` -> `review-x`): a detector loosened to a shared prefix
+# returns it, so the run below catches the loosening, not only the string pin.
+det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and run, it returns MY newest round, not another account's newer one" \
+      "[ \"\$det_out_a\" = WANT-REVIEW ]"
+
+# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
+# This is the half fixture A cannot see - it is what fails when the comments
+# arm stops carrying an author, or when the arms' timestamps are swapped.
+det_b='{"reviews":[{"body":"'"$ATTR"'\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"'"$ATTR"'\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and when my newest round is a comment, it returns the comment" \
+      "[ \"\$det_out_b\" = WANT-COMMENT ]"
+
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+append_pat='>> {OUTPUT_DIR}/pr.env'
+check "the login is APPENDED to pr.env, never written over it" \
+      "grep -qF \"$append_pat\" '$SK'"
+check "…and refuses to guess when it is missing" \
+      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
+
+# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
+# touched: inverting the test, binding .name instead of .login, returning an
+# empty binding instead of nothing, and renaming the key all stayed green, and
+# the first of those is this commit's own defect restored verbatim.
+me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
+me_prog=${me_line#*--jq \'}
+me_prog=${me_prog%%\' >>*}
+check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#me_prog} -gt 30 ]"
+me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
+check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
+me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on an error body it emits NOTHING, not the string null" \
+      "[ -z \"\$me_err\" ]"
+# The success body and the 401 body differ in more than the login, so neither
+# asserts WHICH field the guard reads. A producer keyed on the error message
+# instead passes both, and then writes PR_ME=null on any failure body that
+# carries no message, a 404 among them. This third body differs from the
+# success body ONLY in the login, so the field is what the assertion turns on.
+me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on a body differing ONLY in the missing login, still nothing" \
+      "[ -z \"\$me_nul\" ]"
+check "…so the positional concatenation is gone" \
+      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
+check "…so the comments-only detector is gone" \
+      "! grep -q -- '--json comments --jq' '$SK'"
+check "…and the report template carries no emdash, since it is posted now" \
+      "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
+check "…and that template range is non-empty (anti-vacuity floor)" \
+      "[ \$(sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -c .) -gt 10 ]"
+# The lint refuses a report whose heading names another skill, but only at
+# post time. Pin the template here so the refusal is never the first signal.
+check "…and the report it describes opens with this skill's own name" \
+      "sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '^## /$LBL: <target>'"
+for gone in "${REVIEW_GONE[@]}"; do
+  check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+done
+
+echo "-- $LBL: the round refuses to publish against a moved head --"
+# The rule is "every finding was measured at PR_SHA; do not post if the head has
+# moved." Asserting that SKILL.md contains the word "moved" would survive
+# deleting the command, so this section EXTRACTS the shipped command lines and
+# EXECUTES them, in every state they can answer, from where the skill says they
+# run.
+#
+# WHERE IT RUNS is part of the contract, and the first version of this section
+# got it wrong. The independent reviewer works from its own directory, which is
+# not a git repository. The line shipped at 9f42eeb asked `git ls-remote origin`,
+# which cannot answer there, and this section `cd`-ed into a clone before
+# running it: the harness supplied the one precondition the skill never
+# establishes, and CI went green on a command that could not work where the
+# skill says the reviewer lives. So the head check runs from a directory that is
+# NOT a repository, a control proves it is not one, and the 9f42eeb line is
+# frozen as a fixture and run the same way, to prove this harness reproduces
+# that failure instead of hiding it.
+#
+# Three lines are executed, because the rule has three parts and each was once
+# missing: the head check (asks GitHub), the gated post (refuses a stale round
+# mechanically, not by advice), and the tree binding (ties the tree being read to
+# the sha GitHub is asked about - without it the check vouches for GitHub
+# against GitHub, and an approval can land on code nobody read).
+#
+# Extraction keys on each line's output contract, not on its plumbing, so an
+# equally correct rewrite still runs here and a wrong one fails on the fixture
+# instead of on a regex.
+HDSK="$SK"
+HDCMD=$(grep -F 'HEAD_UNCHANGED' "$HDSK" | grep -F 'HEAD_MOVED')
+hdn=$(printf '%s\n' "$HDCMD" | grep -c .)
+check "the skill ships exactly one head check (anti-vacuity floor)" "[ \"\$hdn\" = 1 ]"
+
+HDFIX=$(tmp hdfix); HDBIN="$HDFIX/bin"; HDOUT="$HDFIX/out"; HDCWD="$HDFIX/reviewer"
+mkdir -p "$HDBIN" "$HDOUT" "$HDCWD"
+check "the reviewer's directory in this fixture is not a git repository (control)" \
+      "! git -C '$HDCWD' rev-parse --git-dir >/dev/null 2>&1"
+
+# Three shas: the head the round measured, the head after a force-push, and the
+# base. The object the stub serves carries the base too, so a check that reads
+# the wrong field gets a real, wrong sha rather than nothing.
+HD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+HD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+HD_BASE=cccccccccccccccccccccccccccccccccccccccc
+# The stub answers the way the real API does in the respects the check depends
+# on. It serves a RAW pull-request object and applies --jq to it with real jq,
+# so the check's own field path is exercised rather than handed the answer. Any
+# path but this one pull request is a 404, so asking the wrong repo or number
+# cannot land on the right sha by accident. NEWLINE is what real gh prints for a
+# field the object lacks - exit 0 and one newline, measured - which a
+# "non-empty file" test would read as an answer. `gh pr review` records that it
+# was called, so the gated post can be observed posting or refusing.
+hd_gh() {   # hd_gh <head-sha|FAIL|EMPTY|NEWLINE>
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$1" = pr ] && [ "$2" = review ]; then printf "%%s\\n" "$*" > %q; exit 0; fi\n' "$HDOUT/posted"
+    printf 'if [ "$1" = pr ] && [ "$2" = view ]; then q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done; printf %%s %q | jq -r "$q"; exit 0; fi\n' \
+           "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"commits\":[{\"oid\":\"$1\"}]}"
+    printf '[ "$1" = api ] || { echo "stub: unexpected gh $1" >&2; exit 2; }\n'
+    printf '[ "$2" = repos/o/r/pulls/7 ] || { echo "HTTP 404: Not Found ($2)" >&2; exit 1; }\n'
+    case "$1" in
+      FAIL)    printf 'echo "HTTP 502: Bad Gateway" >&2; exit 1\n' ;;
+      EMPTY)   printf 'exit 0\n' ;;
+      NEWLINE) printf 'echo; exit 0\n' ;;
+      *)       printf 'q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done\n'
+               printf 'o='"'"'{"number":7,"head":{"sha":"%s"},"base":{"sha":"%s"}}'"'"'\n' "$1" "$HD_BASE"
+               printf 'if [ -n "$q" ]; then printf %%s "$o" | jq -r "$q"; else printf %%s "$o"; fi\n' ;;
+    esac
+  } > "$HDBIN/gh"
+  chmod +x "$HDBIN/gh"
+}
+# Run a head check exactly as the reviewer would: from its own directory, with
+# only the documented placeholder substituted. $2 defaults to the shipped line.
+hd_run() {   # hd_run <sha the round recorded> [command]
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$1" > "$HDOUT/pr.env"
+  local c="${2-$HDCMD}"
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${c//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
+}
+
+hd_gh "$HD_B"
+check "a round measured at the current head publishes" "[ \"\$(hd_run $HD_B)\" = HEAD_UNCHANGED ]"
+# NEGATIVE CONTROL. Same command, same stub, one input different: the sha the
+# round recorded. A check that only ever says HEAD_UNCHANGED is no check.
+check "a round measured at an older commit is refused" "[ \"\$(hd_run $HD_A)\" = HEAD_MOVED ]"
+
+# The incident itself: the reviewer records the sha, the author force-pushes,
+# and the report is now about code that is not there.
+hd_gh "$HD_A"
+check "…and the same recorded sha flips to refused when the author force-pushes" \
+      "[ \"\$(hd_run $HD_B)\" = HEAD_MOVED ]"
+check "…while a round measured at the new head is fine (control)" \
+      "[ \"\$(hd_run $HD_A)\" = HEAD_UNCHANGED ]"
+
+# NOT KNOWING IS NOT MOVING. Each of these used to read as HEAD_MOVED, which
+# told the reviewer the author had pushed and to re-run - wrong advice for a
+# failure re-running cannot fix, so the round never published and the author
+# was blamed for it.
+hd_gh FAIL
+check "a failing API call is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh EMPTY
+check "an API call that answers nothing is HEAD_UNKNOWN" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh NEWLINE
+check "an API call that answers a bare newline is HEAD_UNKNOWN (what real gh prints for a missing field)" \
+      "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh "$HD_A"
+check "an empty recorded sha is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run '')\" = HEAD_UNKNOWN ]"
+
+# THE DEFECT, REPRODUCED. The 9f42eeb line, frozen from the blob, run exactly
+# like the shipped one. Against a head that has NOT moved it must fail to say
+# so - if it answers HEAD_UNCHANGED here, this harness is supplying a clone
+# again and every assertion above is measuring the harness, not the skill.
+HDOLD=$(grep -v '^#' "$DIR/test/fixtures/review-head-check-needs-a-clone.txt" | grep -v '^$' | head -1)
+check "the frozen 9f42eeb line is present (anti-vacuity floor)" \
+      "grep -qF 'HEAD_MOVED' <<<\"\$HDOLD\""
+check "the 9f42eeb line cannot confirm a current head from the reviewer's directory (the defect, reproduced)" \
+      "[ \"\$(hd_run $HD_A \"\$HDOLD\")\" != HEAD_UNCHANGED ]"
+
+# THE GATE. The head check prints an answer; what the reviewer does with it is
+# prose, and prose is the step a reviewer gets wrong. The gated post is the one
+# line the skill forbids splitting, so the refusal belongs in it. Run the shipped
+# post line with a lint that passes and a gh that records the post: it must post
+# when head-now holds PR_SHA, and refuse when it holds anything else or nothing.
+HDGATE=$(grep -F 'gh pr review' "$HDSK" | grep -F 'jjstack-pr-comment-lint')
+hdg=$(printf '%s\n' "$HDGATE" | grep -c .)
+check "the skill ships exactly one gated post (anti-vacuity floor)" "[ \"\$hdg\" = 1 ]"
+HDHOME="$HDFIX/fakehome"; mkdir -p "$HDHOME/.claude/skills/jjstack/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
+chmod +x "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
+: > "$HDOUT/pr-comment.md"
+hd_post() {   # hd_post <what head-now holds|ABSENT>  ->  POSTED | REFUSED
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$HD_B" > "$HDOUT/pr.env"
+  rm -f "$HDOUT/posted" "$HDOUT/head-now"
+  [ "$1" = ABSENT ] || printf '%s\n' "$1" > "$HDOUT/head-now"
+  local c="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; c="${c//<EVENT>/--approve}"
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$c" ) >/dev/null 2>&1
+  [ -e "$HDOUT/posted" ] && echo POSTED || echo REFUSED
+}
+check "the gate posts when the head check answered PR_SHA (control: the harness can post)" \
+      "[ \"\$(hd_post $HD_B)\" = POSTED ]"
+check "the gate refuses when the head moved, whatever the reviewer did with the answer" \
+      "[ \"\$(hd_post $HD_A)\" = REFUSED ]"
+check "the gate refuses when the head check was never run" \
+      "[ \"\$(hd_post ABSENT)\" = REFUSED ]"
+
+# A VOIDED ROUND'S ANSWER MUST NOT OUTLIVE IT. After HEAD_MOVED the reviewer
+# re-runs. Resolution re-reads PR_SHA as the new head, and the previous round's
+# head-now already holds that same new head, because that is how the round was
+# voided. So a re-run that skipped the head check would pass the gate on the old
+# file. Resolution discards head-now in the same command, so the only way to post
+# again is to ask again. (Round 2 coverage note on #42.)
+HDRES=$(grep -F 'gh pr view --json number,url,commits' "$HDSK")
+hdr=$(printf '%s\n' "$HDRES" | grep -c .)
+check "the skill resolves the PR in exactly one line (anti-vacuity floor)" "[ \"\$hdr\" = 1 ]"
+hd_resolve() {   # run the shipped resolution line against the stub
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${HDRES//\{OUTPUT_DIR\}/$HDOUT}" ) >/dev/null 2>&1
+}
+hd_gh "$HD_B"
+printf '%s\n' "$HD_B" > "$HDOUT/head-now"   # the voided round's answer, already naming the new head
+hd_resolve
+check "resolution records the new head in pr.env (control: the stub answered)" \
+      "grep -qx 'PR_SHA=$HD_B' '$HDOUT/pr.env'"
+check "…and discards the previous round's head check answer" "[ ! -e '$HDOUT/head-now' ]"
+# End to end on the path that bit: resolve, skip the head check, go straight to
+# the gated post. It must refuse. (hd_post is not reused: it writes its own
+# head-now, which is the one thing this case must not have.)
+rm -f "$HDOUT/posted"
+hdc="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; hdc="${hdc//<EVENT>/--approve}"
+( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$hdc" ) >/dev/null 2>&1
+check "a re-run that skips the head check cannot post on the previous round's answer" \
+      "[ ! -e '$HDOUT/posted' ]"
+
+# THE ATTRIBUTION RIDES THE GATE. The stub lint above isolates the gate from
+# the lint; this runs the same shipped line with the REAL lint, so a skill
+# whose gated post forgets its own --attribution, or passes another skill's,
+# is refused here. A wrapper, not a symlink: the lint sources its argument
+# helper from beside its own path.
+printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$BIN/jjstack-pr-comment-lint" > "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
+printf '%s: no findings - lgtm - approved\n' "$ATTR" > "$HDOUT/pr-comment.md"
+check "the gated post, run with the real lint, posts this skill's own clean line" \
+      "[ \"\$(hd_post $HD_B)\" = POSTED ]"
+printf '%s: no findings - lgtm - approved\n' 'Claude jjstack/skills/OTHER/SKILL.md' > "$HDOUT/pr-comment.md"
+check "…and refuses the same line under another skill's attribution" \
+      "[ \"\$(hd_post $HD_B)\" = REFUSED ]"
+
+# THE TREE BINDING. The head check compares GitHub with GitHub; this line is
+# what compares the tree being read with the sha. The case that bit: a void
+# round leaves its tree behind, `worktree add` refuses the path on the re-run,
+# the reviewer carries on in the old tree, PR_SHA re-resolves to the new head,
+# and the approval lands on code nobody read. The skill says to run this from
+# inside the tree, so here - and only here - the harness does cd into a repo.
+HDTREECMD=$(grep -F 'TREE_AT_HEAD' "$HDSK" | grep -F 'TREE_STALE')
+hdt=$(printf '%s\n' "$HDTREECMD" | grep -c .)
+check "the skill ships exactly one tree binding (anti-vacuity floor)" "[ \"\$hdt\" = 1 ]"
+HDREPO="$HDFIX/tree"
+git init -q "$HDREPO"
+git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+HDT_A=$(git -C "$HDREPO" rev-parse HEAD)
+git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+HDT_B=$(git -C "$HDREPO" rev-parse HEAD)
+hd_tree() {   # hd_tree <dir to stand in> <sha the round recorded>
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$2" > "$HDOUT/pr.env"
+  ( cd "$1" && eval "${HDTREECMD//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
+}
+check "a tree at the recorded head binds" "[ \"\$(hd_tree '$HDREPO' $HDT_B)\" = TREE_AT_HEAD ]"
+check "a tree left at an older commit is stale (the re-run the reviewer found)" \
+      "[ \"\$(hd_tree '$HDREPO' $HDT_A)\" = TREE_STALE ]"
+check "standing in no tree at all is stale, not bound" "[ \"\$(hd_tree '$HDCWD' $HDT_B)\" = TREE_STALE ]"
+check "an empty recorded sha binds nothing" "[ \"\$(hd_tree '$HDREPO' '')\" = TREE_STALE ]"
+
+# ORDER. A treeless reviewer's first command, the PR resolution, fails where it
+# stands ("could not determine base repo"), so the instruction to make a tree has
+# to come before it, not after. Keyed on the fetch the instruction gives and the
+# resolution command itself, so a reworded paragraph still counts.
+hd_fetch_ln=$(grep -n 'pull/<PR>/head' "$HDSK" | head -1 | cut -d: -f1)
+hd_resolve_ln=$(grep -n 'gh pr view --json number,url,commits' "$HDSK" | head -1 | cut -d: -f1)
+check "a reviewer with no tree is told to make one before the command that needs one" \
+      "[ -n \"\$hd_fetch_ln\" ] && [ -n \"\$hd_resolve_ln\" ] && [ \"\$hd_fetch_ln\" -lt \"\$hd_resolve_ln\" ]"
+}  # end review_skill_contract
+review_skill_contract "$DIR/skills/review/SKILL.md"      'Claude jjstack/skills/review/SKILL.md'      review
+review_skill_contract "$DIR/skills/review-lean/SKILL.md" 'Claude jjstack/skills/review-lean/SKILL.md' review-lean
+check "the run label does not outlive the contract (every later section reads unlabelled)" \
+      "[ -z \"\${CK_PREFIX-}\" ]"
+# The rebuild exists to be smaller; the budget is a rule, the way AR-3 states
+# the others, and the voice rule it posts under holds for its own prose. 470 is
+# a ratchet at the size it shipped (740 before): lower it when a trim lands,
+# never raise it to fit an addition - an addition pays for itself elsewhere.
+check "review-lean holds the line budget it was rebuilt for" \
+      "[ \$(wc -l < '$DIR/skills/review-lean/SKILL.md') -le 470 ]"
+check "…and carries no emdash anywhere" "! grep -q '—' '$DIR/skills/review-lean/SKILL.md'"
+check "…and exists, so the two checks above cannot pass on nothing (anti-vacuity floor)" \
+      "[ -s '$DIR/skills/review-lean/SKILL.md' ]"
+
+# ── the governing docs: the same for every review skill ──────────────────
+IRV="$DIR/references/independent-review.md"
+DOD="$DIR/references/definition-of-done.md"
 # THE WHOLE DOCUMENT HAS TO AGREE WITH THE SKILL. An earlier round of this PR
 # carried a SELF_REVIEW refusal and removed it, because the previous-round
 # detector's account filter prevents the corruption the refusal existed for -
@@ -1321,16 +1749,9 @@ for _gov in "$DOD" "$IRV"; do
   check "…nor tells the reader never to run it on their own PR" \
         "! grep -qiE 'never run .{0,3}/review' '$_gov'"
 done
-# …and the skill it describes really has no such refusal, or the guards above
-# are asserting agreement with a file that never changed (anti-vacuity floor).
-check "the skill itself carries no SELF_REVIEW stop" "! grep -q 'SELF_REVIEW' '$SK'"
 check "…and the governing docs say what DOES prevent the corruption" \
       "grep -q 'filters on the posting account' '$IRV'"
-check "…and points at the protocol rather than restating it" \
-      "grep -q 'references/independent-review.md' '$SK'"
 check "…which ships" "test -f '$IRV'"
-check "…and does not become a refusal to run (the author filter makes it safe)" \
-      "grep -q 'not a refusal to run' '$SK'"
 # THE STALE-APPROVAL CHECK IS EXECUTED, NOT QUOTED. Rung 4 merges on an APPROVED
 # review NEWER than the last commit: the round that raised the findings does not
 # cover the commits that answered them. The reference hands the author a jq
@@ -1392,120 +1813,7 @@ check "the InboundSavvy protection turns CODEOWNERS into a requirement" \
       "grep -q 'require_code_owner_reviews' '$IRV'"
 check "…and says what is inert without it" \
       "grep -q 'a .CODEOWNERS. file is inert' '$IRV'"
-# THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
-# lint rounds went on the link. The skill must say the new shape everywhere it
-# used to say the old one, or a reader follows whichever they reach first.
-check "the skill posts the report inside the comment, collapsed" \
-      "grep -q 'Full report' '$SK'"
-check "…through the assembler, not hand-typed markup" \
-      "grep -q 'jjstack-pr-comment-assemble' '$SK'"
-check "…and no longer commits the report" \
-      "! grep -qi 'commit the report' '$SK'"
-check "…nor links a report file from the comment" \
-      "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
-check "…so the canonical resolved line ends at approved" \
-      "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
-# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
-# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
-# the suite red. A guard's title is a claim; this one claimed the mechanism was
-# right while its body enforced the broken one.
-check "a re-review reads the reviews, where the verdict now lands" \
-      "grep -q 'json reviews,comments' '$SK'"
-check "…and still reads comments, for rounds posted before the change" \
-      "grep -q '.comments\[\]?' '$SK'"
-# The guard used to match ONLY the filter clause. The binding that defines
-# $me sat in a separate span of the same 260-character line and was pinned by
-# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
-# 317 green while the documented command died on a jq compile error, which the
-# skill reads as no previous round. That is the P0 this line exists to fix,
-# restored silently, under a guard whose title said the opposite. Pin the whole
-# mechanism: the login is resolved into pr.env, bound on the command line, and
-# compared against the author.
-# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
-# instance each of a single class: a check that pins a STRING while its title
-# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
-# so an inverted mapping passed. Round 2, the --arg me binding pinned by
-# nothing. Round 3, five single-edit mutations on this very block green at 392:
-# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
-# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
-# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
-# from the skill and EXECUTED against fixtures; what it returns is the
-# assertion. A string check cannot see any of those five edits; running it sees
-# four, and the fifth is the append operator, pinned literally below.
-det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
-det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
-det_prog=${det_prog%\'}
-check "the detector's jq program is extractable (anti-vacuity floor)" \
-      "[ \${#det_prog} -gt 80 ]"
-
-# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
-# is a review and the oldest a comment. Correct answer: MY review.
-# The third comment is MINE and NEWEST of all, and its body does not open with
-# the attribution line: it is the author's own reply to the last round, which
-# is a real shape on a real PR. Without it the startswith filter is never the
-# reason anything is excluded, and deleting that filter stays green while the
-# detector starts returning the author's reply as "the previous round".
-det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
-det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
-check "…and run, it returns MY newest round, not another account's newer one" \
-      "[ \"\$det_out_a\" = WANT-REVIEW ]"
-
-# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
-# This is the half fixture A cannot see - it is what fails when the comments
-# arm stops carrying an author, or when the arms' timestamps are swapped.
-det_b='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
-det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
-check "…and when my newest round is a comment, it returns the comment" \
-      "[ \"\$det_out_b\" = WANT-COMMENT ]"
-
-# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
-# truncates it to one key, every gated call in the file short-circuits on its
-# own [ -n ] test, and the review completes having posted nothing at all.
-# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
-# truncates it to one key, every gated call in the file short-circuits on its
-# own [ -n ] test, and the review completes having posted nothing at all.
-append_pat='>> {OUTPUT_DIR}/pr.env'
-check "the login is APPENDED to pr.env, never written over it" \
-      "grep -qF \"$append_pat\" '$SK'"
-check "…and refuses to guess when it is missing" \
-      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
-
-# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
-# touched: inverting the test, binding .name instead of .login, returning an
-# empty binding instead of nothing, and renaming the key all stayed green, and
-# the first of those is this commit's own defect restored verbatim.
-me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
-me_prog=${me_line#*--jq \'}
-me_prog=${me_prog%%\' >>*}
-check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
-      "[ \${#me_prog} -gt 30 ]"
-me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
-check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
-me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
-check "…and on an error body it emits NOTHING, not the string null" \
-      "[ -z \"\$me_err\" ]"
-# The success body and the 401 body differ in more than the login, so neither
-# asserts WHICH field the guard reads. A producer keyed on the error message
-# instead passes both, and then writes PR_ME=null on any failure body that
-# carries no message, a 404 among them. This third body differs from the
-# success body ONLY in the login, so the field is what the assertion turns on.
-me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
-check "…and on a body differing ONLY in the missing login, still nothing" \
-      "[ -z \"\$me_nul\" ]"
-check "…so the positional concatenation is gone" \
-      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
-check "…so the comments-only detector is gone" \
-      "! grep -q -- '--json comments --jq' '$SK'"
-check "…and the report template carries no emdash, since it is posted now" \
-      "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
-check "…and that template range is non-empty (anti-vacuity floor)" \
-      "[ \$(sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -c .) -gt 10 ]"
-# Nothing may reference a tool this branch deleted.
-for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-ledger \
-            jjstack-review-run-report jjstack-review-normalize jjstack-review-vocab.sh \
-            jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff \
-            jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines; do
-  check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+for gone in "${REVIEW_GONE[@]}"; do
   # "Ships" means tracked, so ASK GIT rather than walking the directory. The
   # walk read gitignored working files too — a developer's own
   # .claude/settings.local.json, which had allow rules naming these tools,
@@ -3030,210 +3338,9 @@ done > "$SANDBOX/adr_ids_bad.txt"
 check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
       "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
 
-echo "== 16. the round refuses to publish against a moved head =="
-# The rule is "every finding was measured at PR_SHA; do not post if the head has
-# moved." Asserting that SKILL.md contains the word "moved" would survive
-# deleting the command, so this section EXTRACTS the shipped command lines and
-# EXECUTES them, in every state they can answer, from where the skill says they
-# run.
-#
-# WHERE IT RUNS is part of the contract, and the first version of this section
-# got it wrong. The independent reviewer works from its own directory, which is
-# not a git repository. The line shipped at 9f42eeb asked `git ls-remote origin`,
-# which cannot answer there, and this section `cd`-ed into a clone before
-# running it: the harness supplied the one precondition the skill never
-# establishes, and CI went green on a command that could not work where the
-# skill says the reviewer lives. So the head check runs from a directory that is
-# NOT a repository, a control proves it is not one, and the 9f42eeb line is
-# frozen as a fixture and run the same way, to prove this harness reproduces
-# that failure instead of hiding it.
-#
-# Three lines are executed, because the rule has three parts and each was once
-# missing: the head check (asks GitHub), the gated post (refuses a stale round
-# mechanically, not by advice), and the tree binding (ties the tree being read to
-# the sha GitHub is asked about - without it the check vouches for GitHub
-# against GitHub, and an approval can land on code nobody read).
-#
-# Extraction keys on each line's output contract, not on its plumbing, so an
-# equally correct rewrite still runs here and a wrong one fails on the fixture
-# instead of on a regex.
-HDSK="$DIR/skills/review/SKILL.md"
-HDCMD=$(grep -F 'HEAD_UNCHANGED' "$HDSK" | grep -F 'HEAD_MOVED')
-hdn=$(printf '%s\n' "$HDCMD" | grep -c .)
-check "the skill ships exactly one head check (anti-vacuity floor)" "[ \"\$hdn\" = 1 ]"
-
-HDFIX=$(tmp hdfix); HDBIN="$HDFIX/bin"; HDOUT="$HDFIX/out"; HDCWD="$HDFIX/reviewer"
-mkdir -p "$HDBIN" "$HDOUT" "$HDCWD"
-check "the reviewer's directory in this fixture is not a git repository (control)" \
-      "! git -C '$HDCWD' rev-parse --git-dir >/dev/null 2>&1"
-
-# Three shas: the head the round measured, the head after a force-push, and the
-# base. The object the stub serves carries the base too, so a check that reads
-# the wrong field gets a real, wrong sha rather than nothing.
-HD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-HD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-HD_BASE=cccccccccccccccccccccccccccccccccccccccc
-# The stub answers the way the real API does in the respects the check depends
-# on. It serves a RAW pull-request object and applies --jq to it with real jq,
-# so the check's own field path is exercised rather than handed the answer. Any
-# path but this one pull request is a 404, so asking the wrong repo or number
-# cannot land on the right sha by accident. NEWLINE is what real gh prints for a
-# field the object lacks - exit 0 and one newline, measured - which a
-# "non-empty file" test would read as an answer. `gh pr review` records that it
-# was called, so the gated post can be observed posting or refusing.
-hd_gh() {   # hd_gh <head-sha|FAIL|EMPTY|NEWLINE>
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'if [ "$1" = pr ] && [ "$2" = review ]; then printf "%%s\\n" "$*" > %q; exit 0; fi\n' "$HDOUT/posted"
-    printf 'if [ "$1" = pr ] && [ "$2" = view ]; then q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done; printf %%s %q | jq -r "$q"; exit 0; fi\n' \
-           "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"commits\":[{\"oid\":\"$1\"}]}"
-    printf '[ "$1" = api ] || { echo "stub: unexpected gh $1" >&2; exit 2; }\n'
-    printf '[ "$2" = repos/o/r/pulls/7 ] || { echo "HTTP 404: Not Found ($2)" >&2; exit 1; }\n'
-    case "$1" in
-      FAIL)    printf 'echo "HTTP 502: Bad Gateway" >&2; exit 1\n' ;;
-      EMPTY)   printf 'exit 0\n' ;;
-      NEWLINE) printf 'echo; exit 0\n' ;;
-      *)       printf 'q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done\n'
-               printf 'o='"'"'{"number":7,"head":{"sha":"%s"},"base":{"sha":"%s"}}'"'"'\n' "$1" "$HD_BASE"
-               printf 'if [ -n "$q" ]; then printf %%s "$o" | jq -r "$q"; else printf %%s "$o"; fi\n' ;;
-    esac
-  } > "$HDBIN/gh"
-  chmod +x "$HDBIN/gh"
-}
-# Run a head check exactly as the reviewer would: from its own directory, with
-# only the documented placeholder substituted. $2 defaults to the shipped line.
-hd_run() {   # hd_run <sha the round recorded> [command]
-  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$1" > "$HDOUT/pr.env"
-  local c="${2-$HDCMD}"
-  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${c//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
-}
-
-hd_gh "$HD_B"
-check "a round measured at the current head publishes" "[ \"\$(hd_run $HD_B)\" = HEAD_UNCHANGED ]"
-# NEGATIVE CONTROL. Same command, same stub, one input different: the sha the
-# round recorded. A check that only ever says HEAD_UNCHANGED is no check.
-check "a round measured at an older commit is refused" "[ \"\$(hd_run $HD_A)\" = HEAD_MOVED ]"
-
-# The incident itself: the reviewer records the sha, the author force-pushes,
-# and the report is now about code that is not there.
-hd_gh "$HD_A"
-check "…and the same recorded sha flips to refused when the author force-pushes" \
-      "[ \"\$(hd_run $HD_B)\" = HEAD_MOVED ]"
-check "…while a round measured at the new head is fine (control)" \
-      "[ \"\$(hd_run $HD_A)\" = HEAD_UNCHANGED ]"
-
-# NOT KNOWING IS NOT MOVING. Each of these used to read as HEAD_MOVED, which
-# told the reviewer the author had pushed and to re-run - wrong advice for a
-# failure re-running cannot fix, so the round never published and the author
-# was blamed for it.
-hd_gh FAIL
-check "a failing API call is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
-hd_gh EMPTY
-check "an API call that answers nothing is HEAD_UNKNOWN" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
-hd_gh NEWLINE
-check "an API call that answers a bare newline is HEAD_UNKNOWN (what real gh prints for a missing field)" \
-      "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
-hd_gh "$HD_A"
-check "an empty recorded sha is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run '')\" = HEAD_UNKNOWN ]"
-
-# THE DEFECT, REPRODUCED. The 9f42eeb line, frozen from the blob, run exactly
-# like the shipped one. Against a head that has NOT moved it must fail to say
-# so - if it answers HEAD_UNCHANGED here, this harness is supplying a clone
-# again and every assertion above is measuring the harness, not the skill.
-HDOLD=$(grep -v '^#' "$DIR/test/fixtures/review-head-check-needs-a-clone.txt" | grep -v '^$' | head -1)
-check "the frozen 9f42eeb line is present (anti-vacuity floor)" \
-      "grep -qF 'HEAD_MOVED' <<<\"\$HDOLD\""
-check "the 9f42eeb line cannot confirm a current head from the reviewer's directory (the defect, reproduced)" \
-      "[ \"\$(hd_run $HD_A \"\$HDOLD\")\" != HEAD_UNCHANGED ]"
-
-# THE GATE. The head check prints an answer; what the reviewer does with it is
-# prose, and prose is the step a reviewer gets wrong. The gated post is the one
-# line the skill forbids splitting, so the refusal belongs in it. Run the shipped
-# post line with a lint that passes and a gh that records the post: it must post
-# when head-now holds PR_SHA, and refuse when it holds anything else or nothing.
-HDGATE=$(grep -F 'gh pr review' "$HDSK" | grep -F 'jjstack-pr-comment-lint')
-hdg=$(printf '%s\n' "$HDGATE" | grep -c .)
-check "the skill ships exactly one gated post (anti-vacuity floor)" "[ \"\$hdg\" = 1 ]"
-HDHOME="$HDFIX/fakehome"; mkdir -p "$HDHOME/.claude/skills/jjstack/bin"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
-chmod +x "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
-: > "$HDOUT/pr-comment.md"
-hd_post() {   # hd_post <what head-now holds|ABSENT>  ->  POSTED | REFUSED
-  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$HD_B" > "$HDOUT/pr.env"
-  rm -f "$HDOUT/posted" "$HDOUT/head-now"
-  [ "$1" = ABSENT ] || printf '%s\n' "$1" > "$HDOUT/head-now"
-  local c="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; c="${c//<EVENT>/--approve}"
-  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$c" ) >/dev/null 2>&1
-  [ -e "$HDOUT/posted" ] && echo POSTED || echo REFUSED
-}
-check "the gate posts when the head check answered PR_SHA (control: the harness can post)" \
-      "[ \"\$(hd_post $HD_B)\" = POSTED ]"
-check "the gate refuses when the head moved, whatever the reviewer did with the answer" \
-      "[ \"\$(hd_post $HD_A)\" = REFUSED ]"
-check "the gate refuses when the head check was never run" \
-      "[ \"\$(hd_post ABSENT)\" = REFUSED ]"
-
-# A VOIDED ROUND'S ANSWER MUST NOT OUTLIVE IT. After HEAD_MOVED the reviewer
-# re-runs. Resolution re-reads PR_SHA as the new head, and the previous round's
-# head-now already holds that same new head, because that is how the round was
-# voided. So a re-run that skipped the head check would pass the gate on the old
-# file. Resolution discards head-now in the same command, so the only way to post
-# again is to ask again. (Round 2 coverage note on #42.)
-HDRES=$(grep -F 'gh pr view --json number,url,commits' "$HDSK")
-hdr=$(printf '%s\n' "$HDRES" | grep -c .)
-check "the skill resolves the PR in exactly one line (anti-vacuity floor)" "[ \"\$hdr\" = 1 ]"
-hd_resolve() {   # run the shipped resolution line against the stub
-  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${HDRES//\{OUTPUT_DIR\}/$HDOUT}" ) >/dev/null 2>&1
-}
-hd_gh "$HD_B"
-printf '%s\n' "$HD_B" > "$HDOUT/head-now"   # the voided round's answer, already naming the new head
-hd_resolve
-check "resolution records the new head in pr.env (control: the stub answered)" \
-      "grep -qx 'PR_SHA=$HD_B' '$HDOUT/pr.env'"
-check "…and discards the previous round's head check answer" "[ ! -e '$HDOUT/head-now' ]"
-# End to end on the path that bit: resolve, skip the head check, go straight to
-# the gated post. It must refuse. (hd_post is not reused: it writes its own
-# head-now, which is the one thing this case must not have.)
-rm -f "$HDOUT/posted"
-hdc="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; hdc="${hdc//<EVENT>/--approve}"
-( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$hdc" ) >/dev/null 2>&1
-check "a re-run that skips the head check cannot post on the previous round's answer" \
-      "[ ! -e '$HDOUT/posted' ]"
-
-# THE TREE BINDING. The head check compares GitHub with GitHub; this line is
-# what compares the tree being read with the sha. The case that bit: a void
-# round leaves its tree behind, `worktree add` refuses the path on the re-run,
-# the reviewer carries on in the old tree, PR_SHA re-resolves to the new head,
-# and the approval lands on code nobody read. The skill says to run this from
-# inside the tree, so here - and only here - the harness does cd into a repo.
-HDTREECMD=$(grep -F 'TREE_AT_HEAD' "$HDSK" | grep -F 'TREE_STALE')
-hdt=$(printf '%s\n' "$HDTREECMD" | grep -c .)
-check "the skill ships exactly one tree binding (anti-vacuity floor)" "[ \"\$hdt\" = 1 ]"
-HDREPO="$HDFIX/tree"
-git init -q "$HDREPO"
-git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
-HDT_A=$(git -C "$HDREPO" rev-parse HEAD)
-git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
-HDT_B=$(git -C "$HDREPO" rev-parse HEAD)
-hd_tree() {   # hd_tree <dir to stand in> <sha the round recorded>
-  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$2" > "$HDOUT/pr.env"
-  ( cd "$1" && eval "${HDTREECMD//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
-}
-check "a tree at the recorded head binds" "[ \"\$(hd_tree '$HDREPO' $HDT_B)\" = TREE_AT_HEAD ]"
-check "a tree left at an older commit is stale (the re-run the reviewer found)" \
-      "[ \"\$(hd_tree '$HDREPO' $HDT_A)\" = TREE_STALE ]"
-check "standing in no tree at all is stale, not bound" "[ \"\$(hd_tree '$HDCWD' $HDT_B)\" = TREE_STALE ]"
-check "an empty recorded sha binds nothing" "[ \"\$(hd_tree '$HDREPO' '')\" = TREE_STALE ]"
-
-# ORDER. A treeless reviewer's first command, the PR resolution, fails where it
-# stands ("could not determine base repo"), so the instruction to make a tree has
-# to come before it, not after. Keyed on the fetch the instruction gives and the
-# resolution command itself, so a reworded paragraph still counts.
-hd_fetch_ln=$(grep -n 'pull/<PR>/head' "$HDSK" | head -1 | cut -d: -f1)
-hd_resolve_ln=$(grep -n 'gh pr view --json number,url,commits' "$HDSK" | head -1 | cut -d: -f1)
-check "a reviewer with no tree is told to make one before the command that needs one" \
-      "[ -n \"\$hd_fetch_ln\" ] && [ -n \"\$hd_resolve_ln\" ] && [ \"\$hd_fetch_ln\" -lt \"\$hd_resolve_ln\" ]"
-
+echo "== 16. the reference a treeless reviewer is sent to carries the procedure =="
+# The executed head-check contract runs per skill inside review_skill_contract
+# (section 9). What stays here is the reference it sends a treeless reviewer to.
 # The reference the skill sends a treeless reviewer to must actually carry the
 # procedure - the /review-stack failure was text naming a procedure documented
 # nowhere. Keyed on the COMMAND lines, `git -C <clone> …`, not on the words: the

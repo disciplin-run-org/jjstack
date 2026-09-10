@@ -50,6 +50,13 @@ is read last or not at all - by then the reader has already taken the verdict
 as the account holder's opinion. The linter refuses a comment where it is
 absent or anywhere but first.
 
+A sibling skill names its own path, because the line exists so a reader can
+open the rules that ran: `/review-lean` opens with
+`Claude jjstack/skills/review-lean/SKILL.md` and passes that line to the
+linter with `--attribution`. The canonical one-liners below take the same
+prefix, and the report beneath opens with that skill's name
+(`## /review-lean:`).
+
 ## A resolved review is one visible line, with the report beneath it
 
 When every finding is fixed, the visible part of the comment is exactly this:
