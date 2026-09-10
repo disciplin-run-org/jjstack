@@ -50,6 +50,51 @@ stale declaration; the built-in list it reads is data in
 by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
 is newer than the list. It runs on every pull request.
 
+### Which tree is live
+
+`~/.claude/skills/jjstack` is what every Claude Code session on this machine
+loads. `./setup` points it at a **pinned worktree**, not at your working
+checkout, so the branch you have checked out is never what other sessions
+execute. The pin lives in `~/.jjstack/skills-pin` and moves only when someone
+moves it:
+
+```bash
+bin/jjstack-skills-pin --status     # what is live right now
+bin/jjstack-skills-pin              # advance it to origin/main
+bin/jjstack-skills-pin v0.42.0      # or to a tag, branch or sha
+```
+
+`jjstack-upgrade` advances it for you after a pull. Hooks are installed by
+copy for the same reason and have been since the permission gate landed; this
+is the skills half of that decision.
+
+It is a worktree rather than a copy because the served tree stays a real git
+tree: `VERSION`, `git show origin/main:VERSION` and the update check keep
+working with no special case, advancing is one `git checkout --detach`, and
+going back to any earlier release is the same command with a tag. Your
+checkout is never touched by any of it.
+
+What it does **not** buy you is editing a skill and having the change be live.
+Testing a change on the live tree means committing it and re-pinning:
+
+```bash
+git commit -am "wip"
+bin/jjstack-skills-pin HEAD      # serve your branch, deliberately
+bin/jjstack-skills-pin           # put the release back
+```
+
+That is an install step, just a git-shaped one. It is the price of the
+machine not following your working tree by accident.
+
+Without this, a `git checkout` in the maintainer's clone silently changed what
+every session on the box executed. It happened: an in-flight pull request
+branch was this machine's `/review` for hours, and the reviewer of that very
+pull request had to pin a worktree by hand to produce a verdict that could say
+which reviewer produced it.
+
+If jjstack was installed from a tarball rather than a clone there is no repo
+to hang a worktree off, so `setup` serves the directory directly and says so.
+
 ### Who reviews it
 
 Nothing merges on the author's say-so. Rung 4 of the Definition of Done is an
