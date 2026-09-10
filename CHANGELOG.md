@@ -147,18 +147,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   once the reviewer account has approved something there; it is not on yet.
 
 - **The README now says where the review runs.** Rung 4 said who reviews your
-  code; it did not say that the reviewer is a session in a different directory
-  holding no checkout of anything. That is what buys the distance — a reviewer
-  with no working tree cannot quietly fix what it finds, so a finding has to be
-  written down and argued for — and it is why your own tree is never touched and
-  why you can carry on with the next thing while the round runs beside you. The
-  general case of a second session on another branch is pointed at native
-  `claude --worktree --tmux` rather than at anything jjstack ships.
+  code; it did not say that the reviewer is a session in a different directory,
+  with its own credentials and no clone of the repo it is reviewing. That is what
+  buys the distance — what the reviewer holds is a copy of your head, not your
+  branch, and it does not push, so a finding has to be written down and argued
+  for rather than quietly fixed — and it is why your own tree is never touched
+  and why you can carry on with the next thing while the round runs beside you.
 
-  This is also what replaces PR #13, which proposed a `/spawn-review` command
-  that spawned a second session from the author's session. Under rung 4 that
-  session inherits the author's GitHub identity, so it can never post the review
-  of record.
+  It also settles the alternative that was proposed and rejected: a command that
+  spawned a second reviewing session from your own. A session spawned that way
+  inherits your GitHub identity, so it can never post the review rung 4 waits on.
 
 - **Long-running work no longer stops to ask you for permission.** Over a
   measured 48 hours, sessions on this machine interrupted a person 430 times,
