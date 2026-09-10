@@ -11,6 +11,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A re-run can no longer post on the previous round's answer.** When a round
+  is voided because the author pushed, the answer that voided it names the new
+  head — which is exactly the head the re-run is about to review. So a re-run
+  that skipped the head check would have posted on that stale answer, although
+  the skill said a skipped check refuses. Resolving the pull request now
+  discards the previous answer in the same step, so the only way to post again
+  is to ask again.
+
 - **Four checks that could not have failed.** The change that split the session
   verbs added guards to keep them split, and review found that several of them
   were reading text that had never existed in the form they searched for. A
