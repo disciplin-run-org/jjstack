@@ -36,6 +36,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   is told about this upgrade once and about no release after it, because it
   has no tags to compare. Replace it with a clone to keep being told.
 
+- **A dollar amount in a skill no longer turns into your second word.** The
+  skill loader replaces `$0`, `$1` and so on with the words you typed after the
+  command, before the model reads the file, and it does so inside code blocks
+  too. `/consensus` wrote its costs as `~$0` and `$10`, so a run titled itself
+  after your first word and its verdict said `Cost: ~Stance:`. The four sites
+  are reworded (a contributed fix), and the skill verifier now refuses any
+  skill body carrying such a token, so the next occurrence fails on the pull
+  request rather than in your session. An argument a skill really means is
+  written `$ARGUMENTS[N]`, which the verifier leaves alone.
 - **Four checks that could not have failed.** The change that split the session
   verbs added guards to keep them split, and review found that several of them
   were reading text that had never existed in the form they searched for. A

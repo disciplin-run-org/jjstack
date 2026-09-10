@@ -3251,6 +3251,94 @@ check "…the removal of the tree, which is what stops them piling up" \
       "grep -q '^git -C <clone> worktree remove ' '$HDREF'"
 check "…and the prune" \
       "grep -q '^git -C <clone> worktree prune' '$HDREF'"
+echo "== 17. positional placeholders: the loader rewrites \$<number>, so the verifier refuses one =="
+# The skill loader replaces any $<number> with a word of the invocation
+# before the model reads the file, code fences included. Measured 2026-06-26
+# on Claude Code 2.1.193: /consensus rendered its own H1 as "(local CLIs,
+# ~Stance:)" and its fenced verdict template as "Cost: ~Stance:". PR #32
+# fixed the sites; check 9 of jjstack-verify-skills refuses the next one.
+# Fixtures reuse section 12's mkfix (a repo copy whose other checks pass, so
+# the exit code is check 9's verdict) and differ in ONE thing each.
+mkpos() {  # mkpos <root> <name> <body>  — a skill with a given body
+  mkskill "$1" "$2"
+  printf '%s\n' "$3" >> "$1/skills/$2/SKILL.md"
+}
+F=$(mkfix); mkpos "$F" beta 'It replaces a metered call (one call hit $10).'
+check "a \$10 in the body FAILS, naming the skill, the line and the token" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$10, which the loader replaces'"
+check "…and the message says how to fix it (words, or the loader's own indexed form)" \
+      "vs_out '$F' | grep -q 'write the number in words, or use \$ARGUMENTS\[N\]'"
+check "…and the script exits non-zero on it" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+check "…and the anti-vacuity floor: the check-9 header is printed at all" \
+      "vs_out '$F' | grep -q '== 9. no SKILL.md body carries a positional placeholder'"
+
+F=$(mkfix); mkpos "$F" beta "$(printf '```\nCost: ~$0\n```')"
+check "a \$0 inside a code fence FAILS too (fences are not a shelter; the verdict template proved it)" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$0,'"
+
+F=$(mkfix); mkpos "$F" beta 'A backslash: costs \$1 per call.'
+check "a backslash-escaped \$1 FAILS (the escape is undocumented, so it is unsafe)" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$1,'"
+
+F=$(mkfix); mkpos "$F" beta 'If `$ARGUMENTS` is non-empty, treat it as the problem statement.'
+check "\$ARGUMENTS alone is the intended form and passes" \
+      "vs_out '$F' | grep -q 'ok.*beta — no positional placeholder in the body'"
+check "…and that fixture exits 0 (control: the exit code below is check 9's alone)" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkpos "$F" beta 'Treat $ARGUMENTS[0] as the target and $ARGUMENTS[1] as the mode.'
+check "\$ARGUMENTS[N], the loader's indexed form, passes (it is how a meant argument is written)" \
+      "vs_out '$F' | grep -q 'ok.*beta — no positional placeholder in the body'"
+check "…and exits 0" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+# THE FRONTMATTER IS NOT REWRITTEN. The listing shows a description verbatim,
+# so a $<number> there is prose the model reads as written, not a hit.
+F=$(mkfix); mkskill "$F" beta '' 'A skill whose description says it costs $5 a call.'
+check "a \$5 in the frontmatter description alone passes (the loader never rewrites the frontmatter)" \
+      "vs_out '$F' | grep -q 'ok.*beta — no positional placeholder in the body'"
+check "…and exits 0" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+# THE BOUND IS LINE 1. Review found it unpinned: an awk that read nine `---`
+# lines survived the suite. A frontmatter that does not open on line 1 is not
+# one, so the whole file is body and the $5 inside the late block is reported.
+F=$(mkfix); mkskill "$F" beta '' 'A skill whose description says it costs $5 a call.'
+sed -i '1i <!-- a leading comment: the frontmatter no longer opens on line 1 -->' "$F/skills/beta/SKILL.md"
+check "a frontmatter that does not open on line 1 is body: its \$5 FAILS (the bound is pinned)" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$5,'"
+
+# THE CLOSE IS NOT LINE-ANCHORED. The loader closes the frontmatter on the
+# first later line containing `---`, trailing spaces and all. Round 2 executed
+# an anchored `^---$` close: a `--- ` line kept the whole body as frontmatter
+# up to the next horizontal rule, hiding the $1 above it. Two shapes: the
+# trailing-space close, and a `---` inside a description line.
+F=$(mkfix); mkpos "$F" beta "$(printf 'Treat $1 as the target.\n\n---\n\nMore prose.')"
+awk '/^---$/ && ++n == 2 { $0 = "--- " } { print }' "$F/skills/beta/SKILL.md" > "$F/skills/beta/SKILL.tmp"   # the CLOSING --- gains a trailing space
+mv "$F/skills/beta/SKILL.tmp" "$F/skills/beta/SKILL.md"
+check "the fixture's closing line really is '--- ' with a trailing space (control)" \
+      "grep -q '^--- $' '$F/skills/beta/SKILL.md'"
+check "a frontmatter closed by '--- ' still ends there: the \$1 in the body FAILS" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$1,'"
+F=$(mkfix); mkskill "$F" beta '' 'fast---then costs $1 each.'
+check "a '---' inside a description line closes the frontmatter: its \$1 is body and FAILS" \
+      "vs_out '$F' | grep -qE 'beta:[0-9]+ carries \\\$1,'"
+
+# THE SHIPPED DEFECT, recovered from git rather than typed from memory:
+# skills/consensus/SKILL.md as it stood at 918a291, before PR #32. Three body
+# sites and one in the description; the guard must name the three and NOT the
+# fourth, or it is pinning one spelling on one side or the other.
+PSPEC="$DIR/test/fixtures/skill-positional-consensus.md"
+check "the specimen is the pre-fix consensus skill (provenance header present)" \
+      "grep -q 'Recovered from 918a291:skills/consensus/SKILL.md' '$PSPEC'"
+F=$(mkfix); mkdir -p "$F/skills/consensus"; tail -n +6 "$PSPEC" > "$F/skills/consensus/SKILL.md"   # drop the 5-line provenance header
+check "…and the guard FIRES on the three shipped body sites (control: the fixture is the defect)" \
+      "[ \$(vs_out '$F' | grep -cE 'consensus:(22|34|263) carries \\\$(0|10),') -eq 3 ]"
+check "…and NOT on the description site (line 6), which the loader leaves alone" \
+      "! vs_out '$F' | grep -qE 'consensus:6 carries'"
+check "…and on the tree as it is now, no skill trips it (the class is closed today)" \
+      "! bash '$BIN/jjstack-verify-skills' 2>&1 | grep -q 'carries \\\$[0-9]'"
 
 echo "== 17. a release is a tag, cut without writing to main =="
 # THE INCIDENT. From #41 on, every merge to main failed its release. Branch
