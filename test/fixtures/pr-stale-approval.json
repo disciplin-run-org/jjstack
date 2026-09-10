@@ -1,0 +1,18 @@
+{
+  "reviews": [
+    {
+      "author": {"login": "ai-assistant-2026"},
+      "state": "CHANGES_REQUESTED",
+      "submittedAt": "2026-09-10T09:00:00Z"
+    },
+    {
+      "author": {"login": "ai-assistant-2026"},
+      "state": "APPROVED",
+      "submittedAt": "2026-09-10T11:00:00Z"
+    }
+  ],
+  "commits": [
+    {"committedDate": "2026-09-10T08:00:00Z"},
+    {"committedDate": "2026-09-10T12:00:00Z"}
+  ]
+}

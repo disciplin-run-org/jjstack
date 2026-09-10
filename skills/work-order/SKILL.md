@@ -57,10 +57,12 @@ If you can't write this, the deliverable is underspecified.>
 ## Done when
 <Binary pass/fail criteria. "All tests green AND branch merged to main AND
 CLAUDE.md reflects new rule." No "looks good" — no judgment calls at the gate.
-Default gate: DONE = done-done — the canonical 10-rung Definition of Done in
+Default gate: DONE = done-done — the canonical 11-rung Definition of Done in
 `references/definition-of-done.md` (version-controlled source of truth;
 mirrored in global CLAUDE.md). If a rung genuinely doesn't apply, say so in
-the order; the recipient reports "done N/10" naming missing rungs otherwise.>
+the order; the recipient reports "done N/11" naming missing rungs otherwise.
+Rung 4 is an independent review by a session that did not write the code —
+`references/independent-review.md` says who, per repo class.>
 ```
 
 ## Optional sections

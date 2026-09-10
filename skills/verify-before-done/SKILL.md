@@ -38,10 +38,10 @@ See references/hard-gate-convention.md.
 </HARD-GATE>
 
 Beyond per-deliverable evidence, the unqualified word "done" carries the
-canonical **done-done** meaning — the 10-rung checklist defined in
+canonical **done-done** meaning — the 11-rung checklist defined in
 `references/definition-of-done.md` (the version-controlled source of truth;
 mirrored in global CLAUDE.md). If the work is verified but not all rungs
-hold, report **"done N/10"** and name the missing rungs — never bare
+hold, report **"done N/11"** and name the missing rungs — never bare
 "done".
 
 ## What counts as verification

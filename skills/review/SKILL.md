@@ -586,6 +586,16 @@ the verdict says, and state in the close-out that the review state could not be
 set and why. The verdict still reads from the body; what is lost is the green
 check, and claiming otherwise is worse than saying it plainly.
 
+**Say the other thing it costs, too: a self-authored round does not satisfy
+done-done rung 4**, which requires a review by a session that did not write the
+code (`references/definition-of-done.md`, protocol in
+`references/independent-review.md`). The close-out names the rung as unmet
+rather than leaving the author to infer it from a missing green check. This is
+not a refusal to run - a self-check before handing the PR to a reviewer is
+allowed, and the author filter above keeps that round out of the reviewer's
+previous-round detector, so it costs the reviewer nothing. It is not the
+review the merge waits on.
+
 <HARD-GATE>
 Do NOT run `gh pr review` unless `jjstack-pr-comment-lint` exited 0 on
 {OUTPUT_DIR}/pr-comment.md in the SAME shell command as the post, with the
