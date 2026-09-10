@@ -151,6 +151,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-preflight "$BIN"/jjstack-review-tooling-sweep \
          "$BIN"/jjstack-review-blast-radius "$BIN"/jjstack-review-intent \
          "$BIN"/jjstack-review-argcheck.sh "$BIN"/jjstack-pr-comment-lint \
+         "$BIN"/jjstack-rollover-slot "$BIN"/jjstack-verify-skills \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -1918,9 +1919,23 @@ mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt
   # else. Without this every fixture already failed check 4, and the exit-code
   # control below passed whatever check 5 did.
   printf 'Dedup check before writing\n' > "$r/references/memory-sweep.md"
+  # …and check 8, for the same reason: the rollover mechanisms must live
+  # somewhere allowed, or every fixture fails on the marker that matches
+  # nothing and the exit-code controls above stop meaning anything.
+  mkskill "$r" rollover
+  printf 'mcp__quartermaster__qm_queue_add(\njjstack-rollover-slot write\n' \
+      >> "$r/skills/rollover/SKILL.md"
+  mkskill "$r" resume-from-clear
+  printf 'jjstack-rollover-slot consume\njjstack-rollover-slot status\n' \
+      >> "$r/skills/resume-from-clear/SKILL.md"
   echo "$r"
 }
 vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
+# The verifier prints `  <green>ok<reset>  <message>`, so the literal string
+# "ok  " never appears in its output and every assertion that matched on one
+# was reading past the label it meant to anchor to — the two negatives below
+# could not have failed. Strip the escapes and the anchor becomes real.
+vs_plain() { vs_out "$1" | sed 's/\x1b\[[0-9;]*m//g'; }
 
 F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt'; mkskill "$F" beta
 check "declared shadow with a live built-in and a reachable alt passes" \
@@ -1969,7 +1984,18 @@ F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skil
 check "…and a well-formed folded-scalar skill still passes (not just always-fail)" \
       "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
 check "…and its measured length is the real one, not the 2 bytes after the colon" \
-      "! vs_out '$F' | grep -qE 'ok  alpha \(2\)'"
+      "! vs_plain '$F' | grep -qE 'ok  alpha \(2\)'"
+# CONTROL for that negative and its twin on the real tree further down. A
+# negative is worth nothing unless the pattern can match SOMETHING, and the
+# current parser cannot emit a 2-byte description at all — so the specimen is
+# the line the OLD parser printed, in the exact shape check 6 formats it,
+# colors included. The second assertion is why vs_plain exists: with the
+# escapes left in, the literal "ok  " the pattern anchors to is not there.
+printf '  \033[32mok\033[0m  alpha (2)\n' > "$SANDBOX/desc2.raw"
+check "the 2-byte-description pattern matches the line the old parser produced (control)" \
+      "sed 's/\x1b\[[0-9;]*m//g' '$SANDBOX/desc2.raw' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+check "…and misses that same line while the color escapes are still in it" \
+      "! grep -qE 'ok  [a-z0-9-]+ \(2\)' '$SANDBOX/desc2.raw'"
 
 F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
 check "a skill declaring a shadow of a different name FAILS" \
@@ -2067,7 +2093,7 @@ done
 check "every declared shadow in the real tree is reported as declared" \
       "! vs_out '$DIR' | grep -q 'does not declare it'"
 check "no skill in the real tree reports a 2-byte description" \
-      "! vs_out '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+      "! vs_plain '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
 check "the real built-in list carries a version header" \
       "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
 check "the real built-in list contains the two names that collided on main (review, security-review)" \
@@ -2076,6 +2102,150 @@ check "the refresh script reproduces the binary-derived block's shape (header li
       "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
 check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
       "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
+
+echo "== 13. the handover slot: the only artifact that resumes work =="
+# THE DEFECT THIS CLOSES. /save-and-clear filed a QM resume order whenever
+# "multi-turn work continues past this session" — true of every mid-task
+# session — so asking for a clean context handed the successor the previous
+# task instead. Continuation is an explicit artifact now: /rollover writes the
+# slot, /resume-from-clear consumes it, and neither save-and-* skill may touch
+# it. The script is deterministic on purpose — whether a session resumes is a
+# file that exists or does not, never a judgement call about "unfinished work".
+RS="$BIN/jjstack-rollover-slot"
+slotcwd()  { local r; r=$(tmp slotwork); mkdir -p "$r/repo"; printf '%s' "$r/repo"; }
+slot_dir() { printf '%s' "$HOME/.claude/projects/$(dash "$1")/rollover"; }
+
+W=$(slotcwd)
+check "with no worker name the slot is the plain-session one" \
+      "[ \"\$(TM_WORKER_NAME= bash '$RS' --cwd '$W' path)\" = \"\$(slot_dir '$W')/session.md\" ]"
+check "a worker's slot is named for the worker, not the directory" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' path)\" = \"\$(slot_dir '$W')/alpha-tm.md\" ]"
+# iris-qa hosts three workers in ONE directory. Keying the slot on the cwd
+# alone would have them overwrite each other's handovers.
+check "two workers sharing one directory do not share a slot" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' path)\" != \"\$(TM_WORKER_NAME=beta-tm bash '$RS' --cwd '$W' path)\" ]"
+p=$(TM_WORKER_NAME='../../escape' bash "$RS" --cwd "$W" path)
+check "a worker name cannot walk the slot out of its own directory" \
+      "[ \"\${p%/*}\" = \"\$(slot_dir '$W')\" ]"
+
+# THE LIFECYCLE, driven end to end.
+W=$(slotcwd)
+check "status exits 1 when nothing was handed over" \
+      "! bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+sout=$(printf 'HANDOVER BODY\n' | TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" write)
+check "write prints the slot path it created" "[ -f \"\$sout\" ]"
+check "…and the body is what was handed in" "grep -q 'HANDOVER BODY' \"\$sout\""
+check "…and status now reports that path" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status)\" = \"\$sout\" ]"
+check "…and another worker in the same directory still sees nothing" \
+      "! TM_WORKER_NAME=beta-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+cons=$(TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" consume)
+check "consume reports the slot it retired" "[ \"\$cons\" = \"\$sout\" ]"
+check "…and the live slot is gone" "[ ! -f \"\$sout\" ]"
+check "…so a second clear cannot resume the same work twice" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+check "…and the handover text is kept, not deleted" \
+      "grep -rqs 'HANDOVER BODY' \"\$(slot_dir '$W')\""
+check "consume on an empty slot exits 1 rather than inventing one" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' consume >/dev/null 2>&1"
+
+# A slot nobody consumed would otherwise inject into every prompt forever.
+W=$(slotcwd)
+printf 'OLD\n' | TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" write >/dev/null
+touch -d '30 days ago' "$(TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" path)"
+check "a handover nobody consumed for weeks stops nagging" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+check "…and a wider window still reaches it deliberately" \
+      "TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status --max-age-days 90 >/dev/null 2>&1"
+
+W=$(slotcwd)
+check "an empty handover is refused (a slot that says nothing resumes nothing)" \
+      "! printf '' | TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' write >/dev/null 2>&1"
+check "…and the refusal leaves no slot behind" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+
+# The predecessor transcript is the authoritative handover source, so finding
+# it is code, not a guess the successor makes about which log is whose.
+W=$(slotcwd); PD="$HOME/.claude/projects/$(dash "$W")"; mkdir -p "$PD"
+printf '{}\n' > "$PD/older.jsonl"; touch -d '2 hours ago' "$PD/older.jsonl"
+printf '{}\n' > "$PD/newer.jsonl"
+check "transcript names the newest session log" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript)\" = '$PD/newer.jsonl' ]"
+check "…and --exclude skips your own, naming the predecessor" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript --exclude newer)\" = '$PD/older.jsonl' ]"
+check "…and it exits 1 rather than printing a path that is not there" \
+      "! bash '$RS' --cwd '$W' transcript --exclude newer --exclude older >/dev/null 2>&1"
+
+# THE PLAIN-SESSION CARRIER. A worker gets three carriers (slot, QM resume
+# order, tubemail self-message); a plain session gets the slot and this hook,
+# which announces a waiting handover on the FIRST prompt whatever it says.
+# Driven both ways on purpose: a capability probe that was reasoned about
+# rather than run has shipped inverted in this repo before.
+SMH="$HOOKS/shared-memory.sh"
+mkdir -p "$HOME/.claude/skills"
+ln -sfn "$DIR" "$HOME/.claude/skills/jjstack"
+hook_out() {  # hook_out <cwd> <prompt-json> [worker]
+  printf '{"prompt":%s,"cwd":"%s","session_id":"smoke"}' "$2" "$1" \
+    | env -u TM_WORKER_NAME ${3:+TM_WORKER_NAME="$3"} \
+          JJSTACK_STATE_DIR="$HOME/.jjstack-hooktest" bash "$SMH" 2>/dev/null
+}
+W=$(slotcwd)
+check "with no handover the hook says nothing about one" \
+      "! hook_out '$W' '\"a long enough prompt about something else entirely\"' | grep -qi handover"
+check "…and a two-letter prompt produces no output at all (the normal path)" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"')\" ]"
+printf 'the handover body\n' | TM_WORKER_NAME= bash "$RS" --cwd "$W" write >/dev/null
+check "a waiting handover is announced even on a two-letter prompt" \
+      "hook_out '$W' '\"hi\"' | grep -q '/resume-from-clear'"
+check "…and even on a prompt the hook would normally skip as a system block" \
+      "hook_out '$W' '\"<system block>\"' | grep -q 'rollover handover is waiting'"
+check "…and it names the slot, so the successor does not have to guess" \
+      "hook_out '$W' '\"hi\"' | grep -qF \"\$(TM_WORKER_NAME= bash '$RS' --cwd '$W' path)\""
+# The slot is per-worker, so a worker session must not be shown the plain
+# session's handover — that is how two workers in one cwd stay separate.
+check "a worker session is not shown the plain session's handover" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"' alpha-tm)\" ]"
+TM_WORKER_NAME= bash "$RS" --cwd "$W" consume >/dev/null
+check "…and once consumed the hook goes quiet again" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"')\" ]"
+
+# THE GUARD THAT KEEPS IT THIS WAY (verify-skills check 8). The markers are
+# MECHANISMS — the QM call, the slot verbs — never the word "rollover": a grep
+# for a name survives deleting the code that name describes.
+F=$(mkfix)
+check "check 8 passes on a tree where the mechanisms live only in /rollover" \
+      "vs_plain '$F' | grep -q 'ok  mcp__quartermaster__qm_queue_add'"
+check "…and that fixture exits 0, so the failures below are check 8's verdict" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" save-and-clear
+printf 'mcp__quartermaster__qm_queue_add(\n' >> "$F/skills/save-and-clear/SKILL.md"
+check "a resume order put back into /save-and-clear FAILS and names the file" \
+      "vs_out '$F' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the script exits non-zero" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" save-and-exit
+printf 'jjstack-rollover-slot write\n' >> "$F/skills/save-and-exit/SKILL.md"
+check "a handover written by /save-and-exit FAILS too (an exit resumes nothing)" \
+      "vs_out '$F' | grep -q 'skills/save-and-exit/SKILL.md'"
+
+# ANTI-VACUITY. A marker nobody uses makes check 8 pass by watching nothing.
+F=$(mkfix); sed -i '/qm_queue_add/d' "$F/skills/rollover/SKILL.md"
+check "a marker that matches nothing FAILS instead of passing vacuously" \
+      "vs_out '$F' | grep -q 'appears nowhere'"
+
+# The real tree, asserted directly rather than only through the fixtures.
+check "the real /save-and-clear files no resume order" \
+      "! grep -qF qm_queue_add '$DIR/skills/save-and-clear/SKILL.md'"
+check "the real /save-and-exit files no resume order" \
+      "! grep -qF qm_queue_add '$DIR/skills/save-and-exit/SKILL.md'"
+check "…and neither of them writes a handover slot" \
+      "! grep -qF 'jjstack-rollover-slot write' '$DIR/skills/save-and-clear/SKILL.md' '$DIR/skills/save-and-exit/SKILL.md'"
+check "the real /rollover does file one (the verb that resumes still resumes)" \
+      "grep -qF qm_queue_add '$DIR/skills/rollover/SKILL.md'"
+check "…and no longer delegates its close to /save-and-clear" \
+      "! grep -qiE 'Run /save-and-clear|Execute the /save-and-clear skill' '$DIR/skills/rollover/SKILL.md'"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

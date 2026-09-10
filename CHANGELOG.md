@@ -9,6 +9,37 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Changed
+
+- **Clearing your context no longer picks the old task back up.** There are
+  three things you can want at the end of a session, and until now two of them
+  ran the same machinery. `/save-and-clear` filed a resume order whenever the
+  work "continued" — true of almost any session mid-task — so asking for a
+  clean slate to start something new produced a successor that resumed what
+  you had just walked away from.
+
+  The three verbs now do three different things, and you pick by what happens
+  next rather than by how full the context is:
+
+  | You want to | Use | It hands the next session |
+  |---|---|---|
+  | Shut down, keep the lessons | `/save-and-exit` | nothing |
+  | Start a different task, keep the lessons | `/save-and-clear` | nothing |
+  | Keep going on THIS work in a fresh context | `/rollover` | the handover |
+
+  All three still sweep the conversation for durable lessons and write them to
+  memory. That part never depended on which one you picked. The first two now
+  also close out your Quartermaster items instead of leaving them in flight
+  against a session that no longer exists, which used to stall that worker's
+  queue until someone noticed.
+
+  `/rollover` is a skill in its own right now rather than a variant of
+  `/save-and-clear`, and it writes the handover to a file that the next
+  session reads and then retires. That file is what makes the difference
+  concrete: no handover, no resume. Roll over outside a tubemail worker and
+  you are told exactly what to type; type something else first and your next
+  session is reminded that a handover is waiting for it.
+
 ### Fixed
 
 - **`/receiving-code-review` refuses to merge a pull request with something

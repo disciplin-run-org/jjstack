@@ -16,6 +16,9 @@
 #      what survives the cut; the cut landed inside a note once)
 #   7. a built-in list older than the installed Claude Code (warn only:
 #      the list is data, refreshed by bin/jjstack-builtins-refresh)
+#   8. a continuation mechanism (the QM resume order, the handover slot)
+#      appearing in a skill that is not allowed to resume work — the defect
+#      that made /save-and-clear roll a session over instead of clearing it
 #
 # Scope note: a directory under skills/ with no SKILL.md is not a skill
 # and is skipped — git cannot track an empty directory, so these are
@@ -171,6 +174,50 @@ elif [ "$listed" = "$installed" ]; then ok "list and installed agree ($installed
 elif [ "$(printf '%s\n%s\n' "$listed" "$installed" | sort -V | tail -1)" = "$installed" ]; then
   warn "installed Claude Code $installed is newer than the list ($listed): bin/jjstack-builtins-refresh | diff $BUILTINS -"
 else ok "list ($listed) is newer than installed ($installed)"; fi
+
+echo "== 8. continuation mechanisms live only where a session may resume =="
+# THE CLASS: /save-and-clear filed a QM resume order for any session whose
+# work "continues", so a clear behaved like a rollover. Prose said which skill
+# owned the handover; nothing checked it, and the prose drifted.
+#
+# Keyed on MECHANISMS — the QM call, the slot verbs — never on the word
+# "rollover". A grep for a name survives deleting the code that name
+# describes, and every skill here legitimately NAMES the others in its
+# comparison table.
+#
+# Two ways to fail, and the second is the one that matters: a marker found
+# outside its allowed set FAILS (the mechanism leaked), and a marker found
+# NOWHERE fails too (the guard is watching something this repo no longer has,
+# and would pass forever without ever inspecting anything).
+#
+# `status` has a wider allowed set than `write` and `consume` on purpose: it
+# only READS, so it is how the hook detects a handover and how /rollover
+# verifies the one it just wrote. Handing work on is `write`, picking it up is
+# `consume`, and those two stay pinned to one skill each.
+# marker|space-separated repo-relative files allowed to carry it
+cat > "$TMP/continuation" <<'CONT'
+mcp__quartermaster__qm_queue_add|skills/rollover/SKILL.md references/rollover-handover.md
+jjstack-rollover-slot write|skills/rollover/SKILL.md references/rollover-handover.md
+jjstack-rollover-slot consume|skills/resume-from-clear/SKILL.md references/rollover-handover.md
+jjstack-rollover-slot status|skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh references/rollover-handover.md
+CONT
+while IFS='|' read -r marker allowed; do
+  [ -n "$marker" ] || continue
+  grep -rlF "$marker" "$REPO/skills" "$REPO/references" "$REPO/hooks" 2>/dev/null \
+    | sed "s|^$REPO/||" | sort -u > "$TMP/carriers"
+  if ! [ -s "$TMP/carriers" ]; then
+    bad "'$marker' appears nowhere in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
+    continue
+  fi
+  stray=""
+  while read -r f; do
+    [ -n "$f" ] || continue
+    case " $allowed " in *" $f "*) ;; *) stray="${stray:+$stray, }$f" ;; esac
+  done < "$TMP/carriers"
+  if [ -z "$stray" ]; then ok "$marker — carried only by: $allowed"
+  else bad "$marker appears in $stray — only /rollover hands work to a successor; a clear or an exit that carries this makes the next session resume work nobody asked it to"; fi
+done < "$TMP/continuation"
+
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -184,6 +184,10 @@ enhancements transparently.
 ### Meta & Workflow
 | Skill | What it does |
 |-------|--------------|
+| `/save-and-exit` | Keep the session's lessons, then end it. Sweeps memory, settles the Quartermaster ledger, exits cleanly. |
+| `/save-and-clear` | Keep the lessons, then start a DIFFERENT task with a clean context. Hands nothing to the next session. |
+| `/rollover` | Continue THIS work in a fresh context. The only verb that writes a handover and points a successor at the transcript. |
+| `/resume-from-clear` | The entry side of a rollover: read the handover, read the whole previous transcript, verify live state, continue. |
 | `/state-doc` | Live `STATE.md` that survives `/clear`, `/compact`, restarts. |
 | `/work-order` | Context/Deliverables/Verify/Done template for sub-agent delegation. |
 | `/lean` | Cost-lean execution — explicit budgets, no polishing loops. |
@@ -206,7 +210,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 18 reference documents — the encoded knowledge each skill
+jjstack ships 21 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -228,7 +232,9 @@ loads. Read them directly or let skills load them for you.
 | `independent-review.md` | Rung 4: who reviews a PR before merge (the AI reviewer session, then a human on InboundSavvy repos), why the author never reviews their own, the reviewer identity, and the branch-protection settings |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
-| `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |
+| `memory-sweep.md` | The shared base all three session-boundary skills run — what to keep before the context goes |
+| `qm-ledger-settle.md` | How `/save-and-clear` and `/save-and-exit` close out their Quartermaster items instead of stranding them |
+| `rollover-handover.md` | The contract between `/rollover` and `/resume-from-clear`: what the handover carries and which carrier delivers it |
 | `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
 | `owasp-security/` | Language-specific security quirks — the layer below `/jj-security-review` |
 
