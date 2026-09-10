@@ -2316,24 +2316,46 @@ check "…and 'missing' on the real file with only the marker line removed (hard
 for s in rollover save-and-clear save-and-exit; do
   check "/$s marks the timeline settled with tm_session_boundary" \
         "grep -qF 'tm_session_boundary' '$DIR/skills/$s/SKILL.md'"
-    check "…and /$s never posts a boundary through tm_send, which would deliver it" \
-        "! tr '\\n' ' ' < '$DIR/skills/$s/SKILL.md' | grep -qE 'tm_send\\([^)]*SESSION-BOUNDARY'"
+  check "…and /$s never posts a boundary through tm_send, which would deliver it" \
+        "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
 done
-# WHY THE FLATTENING. The one-line form of that pattern could not catch the
-# defect it names: the call wraps, because that is how these files write an MCP
-# call. Recovered specimen, `4a47453:skills/save-and-clear/SKILL.md`, frozen at
-# test/fixtures/guard-tm-send-boundary.md:
+# KEYED ON THE ARGUMENT, WHICH IS THE MECHANISM. Only a DELIVERING call takes
+# `message=`; the marker tool takes `reason=`. The guard asks what the call
+# does, not how its tokens happen to be spaced.
 #
-#     mcp__tubemail__tm_send(worker="<name>",
-#         message="SESSION-BOUNDARY — /save-and-clear. Everything above this
+# Two earlier spellings failed, and the second is the instructive one.
+# `tm_send\(.*SESSION-BOUNDARY` missed the defect because the call wraps across
+# lines — that is how these files write an MCP call. Flattening the file and
+# using `tm_send\([^)]*SESSION-BOUNDARY` fixed that ONE spelling and stayed
+# blind to two others, because `[^)]*` cannot cross a `)`: a nested call or a
+# parenthetical inside the arguments — ordinary prose here — hid the same
+# defect. It also FIRED on a documentation line warning against the call, so a
+# prose edit turned the suite red.
 #
-# `tm_send\\(.*SESSION-BOUNDARY` is SILENT on that. The flattened form fires.
-# See references/specimen-recovery.md — a guard must exhibit text it matches.
+# That is references/specimen-recovery.md's second half. Recovering the
+# specimen fixes what you test the pattern against; it does not fix what the
+# pattern keys on. Derive the specimen from the artifact AND the pattern from
+# the mechanism.
 GSPEC="$DIR/test/fixtures/guard-tm-send-boundary.md"
 check "…and that guard FIRES on the defect this repo actually shipped (control)" \
-      "tr '\\n' ' ' < '$GSPEC' | grep -qE 'tm_send\\([^)]*SESSION-BOUNDARY'"
-check "…and the one-line form it replaced could NOT (why the fix was needed)" \
-      "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$GSPEC'"
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$GSPEC'"
+# A BATTERY, not one specimen. A single-specimen control certifies the guard
+# against the one spelling it was built from, which is how both earlier
+# versions passed their own control while missing the defect in another form.
+BAT="$SANDBOX/boundary-battery"; mkdir -p "$BAT"
+printf 'tm_send(worker=resolve_name($TM_WORKER_NAME),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/nested.md"
+printf 'tm_send(worker="<name>" (the bare name, not the manager),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/paren.md"
+printf 'tm_send(worker="<name>", meta={"kind": "b"},\n  message="SESSION-BOUNDARY (settled) x")\n' > "$BAT/meta.md"
+for spelling in nested paren meta; do
+  check "…and on the same defect spelled with a $spelling in its arguments" \
+        "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/$spelling.md'"
+done
+# THE MIRROR: a guard that fires on prose FORBIDDING the call turns a
+# documentation edit red. The flattened form did exactly that.
+cp "$DIR/skills/save-and-exit/SKILL.md" "$BAT/prohibition.md"
+printf '\nNever post the marker with `tm_send(` — it delivers, and the SESSION-BOUNDARY\nwould arrive as a work order.\n' >> "$BAT/prohibition.md"
+check "…and stays SILENT on prose that spells the call in order to forbid it" \
+      "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/prohibition.md'"
 # The entry read must be the DEDICATED verb. The flag form fails open: a client
 # holding a stale schema strips an unknown kwarg and the call still succeeds,
 # returning the full tail and re-running settled work while looking correct.
@@ -2346,19 +2368,21 @@ check "the entry side reads from the boundary with the dedicated verb" \
 # which the file still contains — inside the sentence saying never to use it.
 # A vocabulary match passes on prose that says the opposite; pin the CALL.
 check "…and does not call tm_receive with the droppable flag instead" \
-      "! tr '\\n' ' ' < '$RFC' | grep -qE 'tm_receive\\([^)]*since_boundary'"
-# Same defect, same fix. Recovered specimen, `a74c8cc:skills/resume-from-clear/SKILL.md`:
-#
-#     mcp__tubemail__tm_receive(worker="<name from step 2>",
-#                               since_boundary=True, limit=20)
-#
-# Scoped to the ENTRY skill on purpose: this guards which call that file makes,
-# not whether the string appears anywhere in the tree.
+      "! grep -qE 'since_boundary[[:space:]]*=' '$RFC'"
+# Same mechanism-keying. `since_boundary=` is the flag being PASSED; the
+# dedicated verb `tm_receive_since_boundary(` does not contain it, so there is
+# no collision with the call this skill must make. Scoped to the ENTRY skill on
+# purpose: this guards which call that file makes, not whether a string appears
+# somewhere in the tree.
 FSPEC="$DIR/test/fixtures/guard-since-boundary-flag.md"
 check "…and that guard FIRES on the call this repo actually shipped (control)" \
-      "tr '\\n' ' ' < '$FSPEC' | grep -qE 'tm_receive\\([^)]*since_boundary'"
-check "…and the one-line form it replaced could NOT" \
-      "! grep -qE 'tm_receive\\(.*since_boundary' '$FSPEC'"
+      "grep -qE 'since_boundary[[:space:]]*=' '$FSPEC'"
+printf 'mcp__tubemail__tm_receive(worker=pick($X),\n    since_boundary=True)\n' > "$BAT/flag-nested.md"
+check "…and on the same call with a nested call in its arguments" \
+      "grep -qE 'since_boundary[[:space:]]*=' '$BAT/flag-nested.md'"
+printf 'mcp__tubemail__tm_receive_since_boundary(worker="x", limit=20)\n' > "$BAT/dedicated.md"
+check "…and stays SILENT on the dedicated verb, which the entry skill must call" \
+      "! grep -qE 'since_boundary[[:space:]]*=' '$BAT/dedicated.md'"
 check "…and says why, so the next editor does not switch back" \
       "grep -qF 'fails OPEN' '$RFC'"
 

@@ -10,28 +10,58 @@ derive the *specimen* too.
 > pattern was written from the author's memory of that text instead of from
 > the text.
 
-Five instances shipped in a single pull request (#43), each caught by review
-rather than by the suite, and each fix authored the same way as the defect:
+Six instances across two pull requests (#43 and its follow-up), every one
+caught by review rather than by the suite, and every fix authored the same way
+as the defect it replaced. Adding a control per instance did not converge,
+because each control was written from the same memory as the defect it was
+meant to police.
 
-| # | The guard | Why it could not fire |
-|---|---|---|
-| 1 | two negatives anchored on `ok  ` in the verifier's output | the label is colored, so the literal `ok  ` never appears |
-| 2 | the boundary-ordering guard anchored on a sentence | the same sentence appears in the QM resume order, so it read the wrong step |
-| 3 | "reports what it MEASURED", anchored on `status` after `carried by:` | `status` is part of the label, which prints *before* that phrase |
-| 4 | `tm_send\(.*SESSION-BOUNDARY` | the call it guards wraps across two lines |
-| 5 | `grep -qF 'since_boundary=True'` | the file contains that string inside a sentence saying never to use it |
+Each row gives the pattern and the text it got wrong, inline. A citation is
+useless the moment the commit goes: the #43 branch was deleted on merge, so
+none of its shas resolves any more — which is the durability point below,
+demonstrated on this very table.
 
-Adding a control per instance did not converge, because each control was
-written from the same memory as the defect it was meant to police.
+| # | The pattern | What the artifact actually said | How it failed |
+|---|---|---|---|
+| 1 | `ok  [a-z-]+ \(2\)` | `ok<ESC>[0m  alpha (2)` — `ok()` prints `'  %bok%b  %s'`, so the literal `ok  ` is never there | could not fire |
+| 2 | `you are the rolled-over continuation` | the same sentence appears in the QM resume order *above* the step being located, so `head -1` found that one | fired on a **correct** file |
+| 3 | `status.*` searched *after* `carried by:` | the pattern label prints `…status([[:space:]]\|$) — carried by: …`, so `status` is before the phrase, never after | could not fire |
+| 4 | `tm_send\(.*SESSION-BOUNDARY` | `tm_send(worker="<name>",` ⏎ `    message="SESSION-BOUNDARY …` — the call wraps (fixture: `test/fixtures/guard-tm-send-boundary.md`) | could not fire |
+| 4b | `tm_send\([^)]*SESSION-BOUNDARY` — the repair | `[^)]*` cannot cross a `)`, so a nested call or a parenthetical in the arguments hid the same defect; and it fired on prose *forbidding* the call | both, in one pattern |
+| 5 | `grep -qF 'since_boundary=True'` | the file still contained that string, inside the sentence saying never to use it | fired on prose saying the opposite |
+
+Row 4b is the one that matters most, and it is not another instance of the
+same mistake. Its specimen was recovered correctly. It is the second half of
+the rule, below.
 
 ## The rule
 
-**The specimen must be derived from the artifact, never authored from the
-pattern.**
+**Derive the specimen from the artifact, and the pattern from the
+mechanism.**
 
-That is the axis that matters. Recovered-versus-constructed is a proxy for
-it: recovery guarantees derivation automatically, which is why it is the
-default, but a constructed specimen can satisfy the rule too.
+Two halves, and the first alone is not enough.
+
+**The specimen must be derived from the artifact, never authored from the
+pattern.** Recovered-versus-constructed is a proxy for that: recovery
+guarantees derivation automatically, which is why it is the default, but a
+constructed specimen can satisfy the rule too.
+
+**The pattern must key on the mechanism, not on one spelling of it.** Row 4b
+above recovered its specimen correctly and still encoded one spelling —
+arguments containing no parenthesis — because the pattern was derived from
+that one specimen. A single-specimen control cannot see this: it certifies the
+guard against the spelling it was built from. Ask what the code *does* that the
+lawful version does not. A delivering call takes `message=`; the marker tool
+takes `reason=`. Keying on the argument catches every spelling and stays silent
+on prose that merely names the call:
+
+```bash
+grep -qE 'message[[:space:]]*=[[:space:]]*"SESSION-BOUNDARY'   # what it does
+tm_send\([^)]*SESSION-BOUNDARY                                 # how it looks
+```
+
+Where you cannot key on a mechanism, use a **battery** rather than one
+specimen: the same defect in every spelling the codebase actually uses.
 
 ### Guarding a file's content
 
@@ -51,10 +81,22 @@ the same change: **the defect is sitting in your own history.**
 
 The specimen is that program run with the defect restored.
 
+Copy the directories the program reads, **never the repository root**. A
+worktree's `.git` is a pointer file, so a copy of the root shares the ORIGINAL
+index: the copy reports its own toplevel and the original's git dir, and a
+git-invoking mutation writes to the real repository. `test/smoke.sh` says the
+same thing about `cp -a`, and `cp -r` has the identical hazard.
+
 ```bash
-cp -r "$TREE" mutant && patch-the-defect-back-into mutant
-run mutant | grep -qE "$PATTERN" || echo "the guard is decorative"
+d=$(mktemp -d)
+cp -r "$REPO/bin" "$REPO/skills" "$REPO/references" "$REPO/hooks" "$d/"
+sed -i 's|^RSLOT=|#RSLOT=|' "$d/hooks/shared-memory.sh"   # restore the defect
+bash "$d/bin/jjstack-verify-skills" | grep -q RSLOT || echo "the guard is decorative"
 ```
+
+That is a real mutation from this suite, not a placeholder: it disables the
+plain-session handover carrier, which check 8's hook row used to report as
+present anyway.
 
 ### Guarding a structural invariant
 
@@ -125,6 +167,15 @@ extraction simply happened once instead of on every run.
 `test/fixtures/permission-policy.tsv` makes the same argument for the same
 reason.
 
+## Why this is worth the trouble
+
+A guard that cannot fire does not merely fail to catch a future regression.
+**It hides what is already wrong.** The moment row 4's guard was repaired it
+found a live defect nobody had noticed: `/save-and-clear`'s prose was teaching
+the droppable `since_boundary` form that the same change had just documented as
+unsafe. The guard had been sitting over that text, green, since the day it was
+written.
+
 ## Checklist
 
 Before a guard lands:
@@ -133,7 +184,11 @@ Before a guard lands:
 2. Get a specimen out of that artifact — a historical blob, the program with
    the defect restored, or a real artifact placed in the forbidden state.
 3. Run the pattern at the specimen. It must fire.
-4. Run it at the shipped tree. It must not.
+4. Run it at the shipped tree, and know which polarity you have. A guard
+   asserting a mechanism is ABSENT must stay silent there; a guard asserting
+   one is PRESENT must fire. Getting this backwards is failure mode 2 in the
+   table — a guard that fires on a correct file — and it is the reason step 3
+   alone is not enough.
 5. If the specimen came from git, freeze it as a fixture with its provenance.
 6. If you built a mutant, take its text out of the file, never out of a
    listing or your memory of one.
