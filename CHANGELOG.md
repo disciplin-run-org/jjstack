@@ -9,6 +9,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four checks that could not have failed.** The change that split the session
+  verbs added guards to keep them split, and review found that several of them
+  were reading text that had never existed in the form they searched for. A
+  check anchored on one line cannot see a call written across two, and that is
+  how these files write a call. Each one now carries a copy of the real defect
+  it exists to catch, taken from the repository's own history, so a check that
+  stops working says so instead of passing quietly.
+
+  Nothing about how the verbs behave has changed. What changed is whether the
+  machinery that keeps them honest is honest itself.
+
 ### Changed
 
 - **Clearing your context no longer picks the old task back up.** There are

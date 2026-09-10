@@ -221,6 +221,15 @@ echo "== 8. continuation mechanisms live only where a session may resume =="
 # The patterns carry `|` themselves, so it cannot also be the separator.
 V='([^A-Za-z0-9_-]|$)'          # a verb ends at anything that is not identifier
 S='jjstack-rollover-slot[^;|&]*[[:space:]]'
+# The shared union, used ONLY by the read-only status rows. It is deliberately
+# not used by the name row below, and cannot be used by the write and consume
+# rows, which carry the actual safety property and pin one skill each.
+#
+# Measured rather than reasoned: widening $ALL by one file and planting the
+# variable form there kept check 8 green, because the NAME row is the only
+# detector of that class and it was reading the same shared string. One edit
+# to one variable silently widened the one row where widening is dangerous.
+# The status rows are read-only, so uniformity there costs nothing.
 ALL='references/rollover-handover.md bin/jjstack-rollover-slot skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh'
 printf '%s\t%s\t%s\n' \
   'mcp__quartermaster__qm_queue_add' \
@@ -243,7 +252,7 @@ printf '%s\t%s\t%s\n' \
     '' \
   'jjstack-rollover-slot' \
     '-' \
-    "$ALL" \
+    'references/rollover-handover.md bin/jjstack-rollover-slot skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
   > "$TMP/continuation"
 # The guard is not a carrier. This file states every pattern it looks for, so
 # scanning bin/ without this exclusion makes each row find itself and report a
@@ -251,8 +260,30 @@ printf '%s\t%s\t%s\n' \
 SELF="bin/$(basename "${BASH_SOURCE[0]}")"
 while IFS=$'\t' read -r pat primary allowed; do
   [ -n "$pat" ] || continue
-  grep -rlE "$pat" "$REPO/skills" "$REPO/references" "$REPO/hooks" "$REPO/bin" 2>/dev/null \
-    | sed "s|^$REPO/||" | grep -vxF "$SELF" | sort -u > "$TMP/carriers"
+  # CODE ROWS READ A COMMENT-STRIPPED COPY. hooks/shared-memory.sh is the one
+  # file in this table that is code rather than prose, and a commented-out
+  # assignment satisfied the row while the carrier it names was disabled: the
+  # plain-session handover notice can be switched off and this row still says
+  # the hook carries it. The suite catches that three other ways; the row
+  # should not be the one claiming otherwise. Stripping `#` comments is wrong
+  # for markdown (where `#` is a heading), so it is applied per-row.
+  scan_root="$REPO"
+  if [ "${primary%.sh}" != "$primary" ] || [ "${allowed#*.sh}" != "$allowed" ]; then
+    scan_root="$TMP/nocomments"
+    rm -rf "$scan_root"; mkdir -p "$scan_root"
+    for d in skills references hooks bin; do
+      [ -d "$REPO/$d" ] || continue
+      find "$REPO/$d" -type f -print0 2>/dev/null | while IFS= read -r -d '' src; do
+        rel="${src#$REPO/}"; mkdir -p "$scan_root/$(dirname "$rel")"
+        case "$rel" in
+          *.sh|*.py|bin/*) sed 's/#.*//' "$src" > "$scan_root/$rel" 2>/dev/null || cp "$src" "$scan_root/$rel" ;;
+          *) cp "$src" "$scan_root/$rel" ;;
+        esac
+      done
+    done
+  fi
+  grep -rlE "$pat" "$scan_root/skills" "$scan_root/references" "$scan_root/hooks" "$scan_root/bin" 2>/dev/null \
+    | sed "s|^$scan_root/||" | grep -vxF "$SELF" | sort -u > "$TMP/carriers"
   if ! [ -s "$TMP/carriers" ]; then
     bad "'$pat' matches nothing in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
     continue

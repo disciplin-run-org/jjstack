@@ -25,6 +25,14 @@
 # review rounds precisely because the suite listed the cases it knew about
 # instead of asking the implementation which cases exist.
 #
+# DERIVE THE SPECIMEN, TOO. The same idea one level up, and the harder half:
+# an assertion about text some other artifact produces must be written from
+# that text, not from your memory of it. Five guards in PR #43 could not fire
+# for exactly that reason, and each fix was authored the same way as the
+# defect. references/specimen-recovery.md is the rule and the checklist; the
+# short form is that a guard must exhibit text it matches, recovered from the
+# commit where the defect lived or from the program with the defect restored.
+#
 # Usage: test/smoke.sh   (exit 0 = all pass, 1 = a failure)
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -2308,9 +2316,24 @@ check "…and 'missing' on the real file with only the marker line removed (hard
 for s in rollover save-and-clear save-and-exit; do
   check "/$s marks the timeline settled with tm_session_boundary" \
         "grep -qF 'tm_session_boundary' '$DIR/skills/$s/SKILL.md'"
-  check "…and /$s never posts a boundary through tm_send, which would deliver it" \
-        "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
+    check "…and /$s never posts a boundary through tm_send, which would deliver it" \
+        "! tr '\\n' ' ' < '$DIR/skills/$s/SKILL.md' | grep -qE 'tm_send\\([^)]*SESSION-BOUNDARY'"
 done
+# WHY THE FLATTENING. The one-line form of that pattern could not catch the
+# defect it names: the call wraps, because that is how these files write an MCP
+# call. Recovered specimen, `4a47453:skills/save-and-clear/SKILL.md`, frozen at
+# test/fixtures/guard-tm-send-boundary.md:
+#
+#     mcp__tubemail__tm_send(worker="<name>",
+#         message="SESSION-BOUNDARY — /save-and-clear. Everything above this
+#
+# `tm_send\\(.*SESSION-BOUNDARY` is SILENT on that. The flattened form fires.
+# See references/specimen-recovery.md — a guard must exhibit text it matches.
+GSPEC="$DIR/test/fixtures/guard-tm-send-boundary.md"
+check "…and that guard FIRES on the defect this repo actually shipped (control)" \
+      "tr '\\n' ' ' < '$GSPEC' | grep -qE 'tm_send\\([^)]*SESSION-BOUNDARY'"
+check "…and the one-line form it replaced could NOT (why the fix was needed)" \
+      "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$GSPEC'"
 # The entry read must be the DEDICATED verb. The flag form fails open: a client
 # holding a stale schema strips an unknown kwarg and the call still succeeds,
 # returning the full tail and re-running settled work while looking correct.
@@ -2323,7 +2346,19 @@ check "the entry side reads from the boundary with the dedicated verb" \
 # which the file still contains — inside the sentence saying never to use it.
 # A vocabulary match passes on prose that says the opposite; pin the CALL.
 check "…and does not call tm_receive with the droppable flag instead" \
-      "! grep -qE 'tm_receive\\(.*since_boundary' '$RFC'"
+      "! tr '\\n' ' ' < '$RFC' | grep -qE 'tm_receive\\([^)]*since_boundary'"
+# Same defect, same fix. Recovered specimen, `a74c8cc:skills/resume-from-clear/SKILL.md`:
+#
+#     mcp__tubemail__tm_receive(worker="<name from step 2>",
+#                               since_boundary=True, limit=20)
+#
+# Scoped to the ENTRY skill on purpose: this guards which call that file makes,
+# not whether the string appears anywhere in the tree.
+FSPEC="$DIR/test/fixtures/guard-since-boundary-flag.md"
+check "…and that guard FIRES on the call this repo actually shipped (control)" \
+      "tr '\\n' ' ' < '$FSPEC' | grep -qE 'tm_receive\\([^)]*since_boundary'"
+check "…and the one-line form it replaced could NOT" \
+      "! grep -qE 'tm_receive\\(.*since_boundary' '$FSPEC'"
 check "…and says why, so the next editor does not switch back" \
       "grep -qF 'fails OPEN' '$RFC'"
 
@@ -2449,6 +2484,35 @@ check "…and files the resume order" \
       "grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/rollover/SKILL.md'"
 check "…and no longer delegates its close to /save-and-clear" \
       "! grep -qiE 'Run /save-and-clear|Execute the /save-and-clear skill' '$DIR/skills/rollover/SKILL.md'"
+
+# FINDING 3: A COMMENTED-OUT CARRIER IS NOT A CARRIER. hooks/shared-memory.sh
+# is the one file in check 8's table that is CODE rather than prose, and the
+# row was satisfied by the assignment existing at all. Disabling the plain
+# session's handover notice entirely — comment the assignment, make the guard
+# `if false` — left the row green while the carrier it names was dead.
+C=$(c8tree)
+sed -i 's|^RSLOT=|#RSLOT=|' "$C/hooks/shared-memory.sh"
+sed -i 's|if \[ -x "\$RSLOT" \]|if false|' "$C/hooks/shared-memory.sh"
+check "a commented-out hook carrier FAILS check 8 (it used to pass)" \
+      "c8 '$C' | grep -q 'RSLOT'"
+check "…and the mutation really disabled it (the fixture is not a no-op)" \
+      "! grep -qE '^RSLOT=' '$C/hooks/shared-memory.sh'"
+
+# FINDING 4: THE SHARED ALLOW-LIST, MEASURED. Widening it by one file and
+# planting the variable form there used to keep check 8 green: the NAME row is
+# the only detector of that class and it was reading the same shared string, so
+# one edit to one variable silently widened the one row where widening is
+# dangerous. The name row carries its own literal list now; the read-only
+# status rows keep the union, where uniformity costs nothing.
+C=$(c8tree)
+sed -i "s|^ALL='references/rollover-handover.md|ALL='skills/save-and-clear/SKILL.md references/rollover-handover.md|" \
+    "$C/bin/jjstack-verify-skills"
+printf 'RS="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"; "$RS" write\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+check "widening the shared list no longer hides a planted variable form" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the widening really applied (the sed is not a no-op)" \
+      "grep -q \"^ALL='skills/save-and-clear\" '$C/bin/jjstack-verify-skills'"
 
 # THE EVERY-PROMPT PATH FORKS NOTHING. Shadow every external command the script
 # could reach and assert the silent path executed none of them. The shim list is
