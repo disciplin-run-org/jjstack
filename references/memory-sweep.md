@@ -17,12 +17,18 @@ caller:
 
 | Caller | Close it owns (5b / 5c) |
 |---|---|
-| **/save-and-clear** | Session CONTINUES in a fresh context: QM resume order + fresh restart via the manager, or "ready to clear". |
-| **/save-and-exit** | Session ENDS for good: a clean `/exit` typed by the manager, or "ready to exit". No resume order, no process kill. |
-| **/rollover** | Runs /save-and-clear with continuation mandatory, plus a pre-posted prompt injection. |
+| **/save-and-clear** | Next task is a DIFFERENT task: settle the QM ledger, post a session-boundary marker, fresh restart via the manager, or "ready to clear". Hands nothing on. |
+| **/save-and-exit** | Session ENDS for good: settle the QM ledger, a clean `/exit` typed by the manager, or "ready to exit". No resume order, no process kill. |
+| **/rollover** | THIS work continues: write the handover slot, file the QM resume order, pre-post the injection, fresh restart. The only close that resumes. |
 
 Do not invent a close here. Run steps 1-5a, then return to the calling
-skill for 5b/5c.
+skill for its close.
+
+**The sweep never hands work on.** Writing a memory that describes
+unfinished work is fine and expected; writing something a later session
+would treat as an instruction to resume is not. Continuation travels in
+the handover slot (`references/rollover-handover.md`), which only
+/rollover writes — never in memory, which every later session loads.
 
 ## What to save vs what to skip
 
@@ -299,6 +305,7 @@ worker, no equivalent exists.
 |---|---|---|---|
 | **/save-and-clear** | `~/.claude/projects/<...>/memory/*.md` | Cross-session, indefinite | Yes |
 | **/save-and-exit** | `~/.claude/projects/<...>/memory/*.md` | Cross-session, indefinite | Yes |
+| **/rollover** | the same memory files, PLUS a handover slot the successor consumes | Until the successor reads it | Yes, once |
 | **/checkpoint** | One-time snapshot in conversation | Moment | No (the conversation goes) |
 | **state-doc** | `STATE.md` in repo | Days to weeks, branch-scoped | Yes (in git) |
 | **CLAUDE.md edit** | `CLAUDE.md` in repo | Permanent, all contributors | Yes (in git) |
@@ -306,8 +313,12 @@ worker, no equivalent exists.
 
 Pattern: when ending a non-trivial session,
 
-1. Run the sweep (**/save-and-clear** or **/save-and-exit**) to extract
-   cross-session lessons.
+0. Pick the verb by what happens NEXT, not by how full the context is:
+   **/save-and-exit** (nothing follows), **/save-and-clear** (a different
+   task follows), **/rollover** (this work follows). Only the third hands
+   anything on.
+1. Run the sweep — every one of the three does — to extract cross-session
+   lessons.
 2. Update **STATE.md** if the work is mid-flight on a branch.
 3. Promote any 3+ recurrence lesson from STATE.md to **CLAUDE.md** or memory
    per `references/memory-promotion.md` (see jjstack's state-doc skill).

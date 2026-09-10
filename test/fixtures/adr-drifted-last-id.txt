@@ -1,0 +1,8 @@
+# The id counter as this repo actually shipped it, at 68cac1e.
+#
+# It read 2 while AR-6.md was on disk, so the next adr_create would have
+# assigned AR-3 over a record in force. This value IS the failure — it is
+# not a number chosen to be wrong.
+#
+# Re-derive:  git show 68cac1e:architrix/adr/.last_id
+2
