@@ -646,12 +646,37 @@ body() { printf '%b' "$2" > "$PCL/$1.md"; }
 # The smallest block the lint accepts as a report: one collapsed <details>
 # carrying the heading the report template opens with.
 RPT='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT - fixture\n\n</details>\n'
+# The approve-form fixtures need a report that does NOT block. Sharing one
+# REJECT report across every fixture was harmless while nothing read the
+# report; now that the visible verdict answers to it, a resolved line over a
+# REJECT body is the contradiction under test, not a neutral backdrop.
+RPT_OK='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
 
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
 body sec_id '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
+# The two shapes a security finding routinely quotes, both of which published
+# clean until the report moved inside the comment and made them routine.
+body sec_bearer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `api.py:4` hardcoded\nAuthorization: Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba\n'"$RPT"
+check "a bearer token after a word is a credential (exit 4)" "[ \$(lint '$PCL/sec_bearer.md') = 4 ]"
+body sec_urlnouser '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
+check "…and a password-only URL, with no username before the colon" "[ \$(lint '$PCL/sec_urlnouser.md') = 4 ]"
+# THE QUOTED HALF OF THE SAME CLASS. The optional quote sat AFTER the word
+# group, so a quote could precede the value but not the word - which excludes
+# exactly the JSON and YAML forms a security finding quotes from source. Three
+# members published clean while the bare forms were caught, so the rule read as
+# covered. No fixture distinguished the two regexes; these do.
+body sec_json '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:3` hardcoded\n"Authorization": "Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "a JSON-quoted bearer token is a credential (exit 4)" "[ \$(lint '$PCL/sec_json.md') = 4 ]"
+body sec_yaml '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.yml:3` hardcoded\nauthorization: '"'"'Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba'"'"'\n'"$RPT"
+check "…and a single-quoted YAML one" "[ \$(lint '$PCL/sec_yaml.md') = 4 ]"
+body sec_jsonkey '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:4` hardcoded\n"api_key": "live sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "…and a quoted key whose value carries a word first" "[ \$(lint '$PCL/sec_jsonkey.md') = 4 ]"
+# Control: the ordinary prose these two must not start refusing.
+body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
+check "…while ordinary prose about auth is not a credential (control)" "[ \$(lint '$PCL/sec_prose.md') = 0 ]"
 body sec_key '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
@@ -730,7 +755,7 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
 body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
@@ -791,13 +816,59 @@ check "…and forty visible filler lines are too-long (control)" \
 # comment carrying a real report, and the reviewer would trim the evidence to
 # fit - the exact failure the block exists to end.
 longrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n%.0s- **P2** `f:1` a finding in the report, one of many\n' $(seq 200))
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 199 non-blocking.\n\n**P1** `a:1` x\n\n199 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
 check "a 200-line report beneath the fold passes the visible budget" \
       "[ \$(lint '$PCL/fold.md') = 0 ]"
 check "…and its 200 P-tokens do not count against the visible cap" \
       "! grep -q too-many <<<\"\$(why '$PCL/fold.md')\""
-check "…nor against the residual arithmetic" \
+check "…and the declared total covers them, so the residual holds" \
       "! grep -q bad-residual <<<\"\$(why '$PCL/fold.md')\""
+# THE FLOOR THIS PINS. The same report under a total that does not cover it is
+# the shape that shipped: a visible "1 blocking, 1 total" over 200 findings the
+# reader is never told exist. The old fixture declared exactly that and an
+# assertion certified it clean, so the hole was not missed by the tests - it
+# was ratified by them.
+# TEMPLATE SHAPE. Phase 4's report puts each finding in a table ROW and expands
+# it beneath, so a finding carries at least two P-tokens. Every fixture here was
+# flat bullets - one token per finding - so occurrences and findings coincided
+# and no fixture could tell a row count from a token sweep. Counting tokens
+# refused the honest comment and passed only an inflated one; these two shapes
+# are what distinguishes the two rules, so both are pinned.
+tmplrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n\n**P1 `a:1`** - the expansion, carrying the token a second time.\n\n**P2 `b:2`** - and so does this one.\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` one\n\n1 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_true.md"
+check "a template-shaped report declaring its TRUE total lints clean" \
+      "[ \$(lint '$PCL/fold_true.md') = 0 ]"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
+check "…and one declaring fewer than its table shows is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
+# ANTI-VACUITY. The row count is scoped by a `sed` range anchored on a literal
+# heading, so a report that lists findings under ANY other heading yielded an
+# empty range, a floor of zero, and five findings declared as one lint clean.
+# Every fixture above either uses the table or has no findings at all, so none
+# of them could see it. This one has findings and no table.
+bulletrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### What I found\n\n- **P1** `a:1` one\n- **P2** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n- **P3** `e:5` five\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead.md"
+check "findings listed under another heading still floor the declared total" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_nohead.md')\""
+# ...and the same report declaring its true total passes, so the floor counts
+# five and not the Guardrails line that merely mentions P0.
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 4 non-blocking.\n\n**P1** `a:1` one\n\n4 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead_ok.md"
+check "…and the same report declaring five lints clean, so P0 in prose is not a finding" \
+      "[ \$(lint '$PCL/fold_nohead_ok.md') = 0 ]"
+# EACH COUNTER EARNS ITS PLACE. The two are a max, and until this fixture the
+# table count could be deleted with the suite still green: every template
+# report also expands each finding beneath the table, and an expansion line
+# opens with its severity, so the anchor count reached the same answer. A table
+# with no expansions is where they differ, and it is a legal short report.
+tableonly=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n| P2 | 70 | `c:3` | three |\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tableonly" > "$PCL/fold_tableonly.md"
+check "a table with no expansions is counted by its rows, not missed" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_tableonly.md')\""
+# ...and the approve path has the same hole in its own vocabulary: one visible
+# line saying approved, over a report that rejects.
+body att_contra "Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved\n$RPT"
+check "a resolved verdict over a REJECT report is refused" \
+      "grep -q verdict-contradicts-report <<<\"\$(why '$PCL/att_contra.md')\""
 # The whole body has a cap of its own: GitHub refuses a comment over 65536
 # characters, AFTER the lint said clean. Refuse it here and name the cause.
 "$BIN/jjstack-pr-comment-lint" "$PCL/fold.md" --max-total-chars 500 >/dev/null 2>&1
@@ -859,7 +930,7 @@ check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
 ATT='Claude jjstack/skills/review/SKILL.md'
-body att_ok "$ATT: all issues resolved - lgtm - approved\n$RPT"
+body att_ok "$ATT: all issues resolved - lgtm - approved\n$RPT_OK"
 check "the canonical resolved line, with its report beneath, passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 # A resolved verdict asserts findings existed and were fixed, so it carries the
 # report. Without it the approve path is the one place brevity DELETES evidence.
@@ -868,12 +939,12 @@ check "a resolved line with no report block is refused" \
       "grep -q no-report <<<\"\$(why '$PCL/att_norep.md')\""
 # The old form carried a file path after the verdict. There is no file now;
 # the path is refused as prose after the canonical line.
-body att_oldpath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n$RPT"
+body att_oldpath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n$RPT_OK"
 check "the old path-carrying resolved line is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_oldpath.md')\""
 # Prose appended AFTER a canonical line, with the block present: the block is
 # fine, the visible part is not, and the message has to say which.
-body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAnd prose nobody asked for.\n$RPT"
+body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAnd prose nobody asked for.\n$RPT_OK"
 check "prose after a valid resolved line is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_wordy.md')\""
 check "…and is NOT misdiagnosed as a missing report" \
@@ -881,7 +952,7 @@ check "…and is NOT misdiagnosed as a missing report" \
 body att_clean "$ATT: no findings - lgtm - approved\n"
 check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
 # A clean review has nothing to carry: a block under it is padding.
-body att_cleanrep "$ATT: no findings - lgtm - approved\n$RPT"
+body att_cleanrep "$ATT: no findings - lgtm - approved\n$RPT_OK"
 check "a clean approve with a report block is refused as not-canonical" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_cleanrep.md')\""
 body att_none '**APPROVE** - no findings.\n'
@@ -962,6 +1033,20 @@ check "…and so is a missing one" "[ \$? -eq 3 ]"
 check "a missing --report is a usage error (exit 2)" "[ \$? -eq 2 ]"
 timeout 5 "$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report >/dev/null 2>&1
 check "a value-less trailing flag is refused, not spun on (exit 2)" "[ \$? -eq 2 ]"
+
+# ALIASING. `> "$OUT"` truncates before `cat` reads, so --out naming an input
+# destroyed it and exited 0. The report is never committed by design, so there
+# is no copy: one mistyped flag at the end of an hour cost the hour, and the
+# tool reported success. Both directions, and the file must survive intact.
+cp "$ASM/report.md" "$ASM/report.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/report.md" >/dev/null 2>&1
+check "--out naming the report is refused (exit 4)" "[ \$? -eq 4 ]"
+check "…and the report is left byte-for-byte intact" \
+      "cmp -s '$ASM/report.md' '$ASM/report.keep'"
+cp "$ASM/head.md" "$ASM/head.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/head.md" >/dev/null 2>&1
+check "--out naming the head is refused too" "[ \$? -eq 4 ]"
+check "…and the head survives" "cmp -s '$ASM/head.md' '$ASM/head.keep'"
 
 echo "== 9. the review skill says what it does =="
 SK="$DIR/skills/review/SKILL.md"
@@ -1397,6 +1482,163 @@ for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-le
   check "nothing that ships mentions the deleted $gone" \
         "! git -C '$DIR' grep -qI --untracked -e '$gone' -- . ':!docs' ':!test/smoke.sh' ':!CHANGELOG.md' ':!*.local.json'"
 done
+
+echo "== 9b. the author side says what it does =="
+# /receiving-code-review had NO assertions at all, so both rules added to it
+# shipped untested - including the one added because a fix that changed only
+# the sentence a finding named kept handing the reviewer the next round.
+RCR="$DIR/skills/receiving-code-review/SKILL.md"
+check "the author sweeps the whole document before committing a fix" \
+      "grep -q 'the whole document agrees with the change' '$RCR'"
+check "…by grepping the concept, not the wording the finding used" \
+      "grep -q 'grep the concept, not the' '$RCR'"
+# MERGEABLE is not unreviewed. The review of #29 posted CAUTION with three
+# blocking findings at 13:12; the PR was merged at 13:21 on a mergeability
+# check read before the review existed, and all three shipped in a release.
+check "the merge is preceded by a fresh read of the thread" \
+      "grep -q 'Re-read the thread in the same breath as the merge' '$RCR'"
+check "…because a mergeability check answers a different question" \
+      "grep -qF 'is not \`unreviewed\`' '$RCR'"
+# The first version of this guard asserted the `gh pr view` line, which exits 0
+# whether or not anything is unread - so it certified a chain that gated on
+# nothing. The mechanism is the EXIT CODE, so the guard names the tool that has
+# one and the merge it gates.
+check "…and the read is a check that exits non-zero, chained to the merge" \
+      "grep -q 'jjstack-pr-unread-check .* && gh pr merge' '$RCR'"
+check "…and that check ships" "[ -x '$DIR/bin/jjstack-pr-unread-check' ]"
+check "…and never reads an unreadable thread as nothing new" \
+      "grep -q 'never treated as nothing' '$RCR'"
+
+# The check is EXERCISED, not greped. A guard on the word `submittedAt` passed
+# with the reviews arm deleted, because the word is also in the file's header
+# comment - the sixth time in this engagement that a guard matched vocabulary
+# instead of the mechanism it named. `gh` is stubbed so the thread is a fixture
+# and the exit code is the assertion.
+UNR=$(tmp unread); UNRBIN="$UNR/bin"; mkdir -p "$UNRBIN"
+# The stub dispatches, because the tool asks TWO endpoints: `gh pr view` for
+# issue comments and submitted reviews, and `gh api .../pulls/N/comments` for
+# replies inside inline review threads, which `gh pr view` cannot return at all.
+# A stub that answered both with one blob could not tell the surfaces apart.
+# The stub answers the API the way the real one does, in two respects that the
+# tool's correctness depends on. It PAGINATES only when asked: without
+# --paginate it returns the first page and stops, which is what let a newest
+# reply past item 30 go unseen. And it returns RAW API objects, so the tool's
+# own field mapping (.user.login, .created_at) is exercised rather than handed
+# the already-mapped shape it expects.
+gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [page1-json|FAIL] [page2-json]
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$1" = api ]; then\n'
+    case "${2-[]}" in
+      FAIL)  printf '  echo "HTTP 502" >&2; exit 1\n' ;;
+      EMPTY) printf '  exit 0\n' ;;
+      *)    printf '  cat <<%s\n%s\n%s\n' 'P1EOF' "${2-[]}" 'P1EOF'
+            if [ -n "${3-}" ]; then
+              printf '  case " $* " in *" --paginate "*)\n'
+              printf '  cat <<%s\n%s\n%s\n' 'P2EOF' "$3" 'P2EOF'
+              printf '  ;; esac\n'
+            fi
+            printf '  exit 0\n' ;;
+    esac
+    printf 'fi\n'
+    case "$1" in
+      FAIL)  printf 'echo "could not resolve host" >&2; exit 1\n' ;;
+      EMPTY) printf 'exit 0\n' ;;
+      *)     printf 'cat <<%s\n%s\n%s\n' 'PVEOF' "$1" 'PVEOF' ;;
+    esac
+  } > "$UNRBIN/gh"
+  chmod +x "$UNRBIN/gh"
+}
+unread_rc() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" >/dev/null 2>&1; echo $?; }
+unread_out() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" 2>&1; }
+
+# A REVIEW newer than --since, and no comment at all: the surface a "Request
+# changes" click lands on, and the one a comments-only reader cannot see.
+gh_stub '{"comments":[],"reviews":[{"author":{"login":"r"},"submittedAt":"2026-09-09T19:00:00Z","state":"CHANGES_REQUESTED"}]}'
+check "the unread check sees a REVIEW newer than the last read (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that same review is older than the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# A COMMENT newer, with no reviews: the other surface, other field.
+gh_stub '{"comments":[{"author":{"login":"r"},"createdAt":"2026-09-09T19:00:00Z"}],"reviews":[]}'
+check "…and sees a COMMENT newer than the last read" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+# An empty thread is the only case that may pass.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and an empty thread is the only quiet one" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 0 ]"
+# A thread that cannot be read is NOT nothing new. Distinct code, so a caller
+# chaining `check && merge` refuses either way, and the operator can tell why.
+gh_stub FAIL
+check "…and an unreadable thread exits 3, never 0" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A --since that is not an instant cannot be compared; refuse at parse time
+# rather than string-compare something that sorts wrong.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and a malformed --since is a usage error, not a pass" \
+      "[ \$(unread_rc yesterday) -eq 2 ]"
+# THE THIRD SURFACE. A reply inside an inline review thread is neither an issue
+# comment nor a submitted review, and `gh pr view` does not return it, so a
+# reader of the other two calls the thread quiet while it is not.
+gh_stub '{"comments":[],"reviews":[]}' '[{"user":{"login":"r"},"created_at":"2026-09-09T19:00:00Z"}]'
+check "…and sees a reply inside an INLINE review thread" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that inline reply predates the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# The exit code alone does not pin the MAPPING: reading the wrong author field
+# yields "?" and still exits 1. The reported line has to name the person, or a
+# renamed field is invisible.
+check "…and names the author it read from the raw API object" \
+      "unread_out 2026-09-09T12:00:00Z | grep -q 'inline by r'"
+# ...and a failure to ASK the inline endpoint is a refusal, not an empty list.
+gh_stub '{"comments":[],"reviews":[]}' FAIL
+check "…and refuses when the inline surface cannot be read (exit 3)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A SUCCESSFUL inline read that prints nothing is refused the same way the
+# thread read is. Handling the same condition two ways in one file is what this
+# pins: the other call exits 3, so this one does too.
+gh_stub '{"comments":[],"reviews":[]}' EMPTY
+check "…and an inline read that succeeds with no output is exit 3, not quiet" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A command that SUCCEEDS and prints nothing is not an empty thread. Without
+# this the empty output parsed to an empty list and the gate said quiet, which
+# is the reading the tool's own header promises never to make.
+gh_stub EMPTY
+check "…and a successful read that returns nothing is exit 3, not quiet" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# PAGE TWO. The endpoint returns OLDEST first and an unpaginated read stops at
+# 30, so the NEWEST reply is precisely the item that falls off - the one item
+# this gate exists to catch. Page 1 here is entirely older than the last read;
+# page 2 carries the only thing newer. A tool that reads one page deep calls
+# this thread quiet.
+p1=$(printf '[%s{"user":{"login":"r"},"created_at":"2026-09-09T04:00:00Z"}]' "$(for i in $(seq 29); do printf '{"user":{"login":"r"},"created_at":"2026-09-09T03:00:00Z"},'; done)")
+p2='[{"user":{"login":"r"},"created_at":"2026-09-09T06:00:00Z"}]'
+gh_stub '{"comments":[],"reviews":[]}' "$p1" "$p2"
+check "the newest inline reply on PAGE TWO is still seen (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# Control: with the newest item on page 1 the same stub exits 1 too, so the
+# assertion above is about REACH and not about the stub being broken.
+gh_stub '{"comments":[],"reviews":[]}' "$p2" '[]'
+check "…and the same tool sees it when it is on page one (control)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# ...and page 1 alone, all of it older, is genuinely quiet.
+gh_stub '{"comments":[],"reviews":[]}' "$p1" '[]'
+check "…and a first page that is entirely older stays quiet" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 0 ]"
+check "…with the incident that produced the rule named" \
+      "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
+# The process diagram is a second place the step list is stated, so it drifts.
+# The diagram is a SECOND statement of the step list, so it drifts from the
+# headings. Pin it structurally - the box count - rather than by a phrase
+# inside one box, which a partial edit walks straight past.
+rcr_boxes=$(sed -n '/^```$/,/^```$/p' "$RCR" | grep -c '^┌')
+rcr_steps=$(grep -c '^## Step [0-9]' "$RCR")
+check "the process diagram has boxes to count (anti-vacuity floor)" \
+      "[ \"\$rcr_boxes\" -ge 5 ]"
+check "…and one box per step, plus the inbound 'review received'" \
+      "[ \"\$rcr_boxes\" -eq \$(( rcr_steps + 1 )) ]"
+check "…and the anti-patterns name merging on a mergeability check" \
+      "grep -q 'Merging on a mergeability check' '$RCR'"
 
 echo "== 10. the guards the round-1 review found missing =="
 # Each of these three behaviours shipped with no test: the mutation that
