@@ -3,7 +3,7 @@ name: consensus
 description: |
   Multi-vendor AI consensus across four independent voices — Claude Code (Anthropic),
   Codex (OpenAI), AGY/Antigravity (Google + others), and DeepSeek (via OpenCode) — all on
-  flat-rate subscriptions or the free tier, so a full consensus costs ~$0 instead of metered API.
+  flat-rate subscriptions or the free tier, so a full consensus costs about USD 0 instead of metered API.
   Independent-first (anti-sycophancy), a mandatory 10th-man/counterfactual pass when the panel
   agrees too fast, an automatic Competitor-did-it pass when the panel says it can't be done (per
   Clarke's First Law), optional structured anonymized debate, optional stances and pre-mortem,
@@ -19,7 +19,7 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# /consensus — Multi-Vendor AI Consensus (local CLIs, ~$0)
+# /consensus — Multi-Vendor AI Consensus (local CLIs, ~USD 0)
 
 You are running `/consensus`. It gathers a genuine cross-vendor consensus from up to four independent
 voices that each run on a flat-rate subscription or the free tier:
@@ -31,7 +31,7 @@ voices that each run on a flat-rate subscription or the free tier:
 | **AGY** | `agy -p` | Google (+ Claude/GPT-OSS via `--model`) | free OAuth |
 | **DeepSeek** | `opencode run --agent plan` | DeepSeek | free (OpenCode Zen) |
 
-It replaces Pal's metered `consensus` (one call hit $10) with the CLIs you already pay a flat rate
+It replaces Pal's metered `consensus` (one call hit USD 10) with the CLIs you already pay a flat rate
 for. The design borrows PAL's stances, `/council`'s cross-examination structure, intelligence
 tradecraft (the Tenth Man Rule, pre-mortem, key-assumptions check), and the multi-agent debate
 literature. Read the **Why** notes so you preserve the intent.
@@ -260,7 +260,7 @@ Then the verdict. Weight by confidence AND reasoning strength, not headcount.
 ```
 CONSENSUS VERDICT
 Question: <one line>
-Panel: Claude Code, Codex, AGY(<model>), DeepSeek   Passes: <round1 | +tenth-man | +debate | +premortem | +competitor-did-it>   Cost: ~$0
+Panel: Claude Code, Codex, AGY(<model>), DeepSeek   Passes: <round1 | +tenth-man | +debate | +premortem | +competitor-did-it>   Cost: ~USD 0
 
 Agreement map:
   UNANIMOUS:  <points all endorsed>          (but: did the Tenth Man dent any? note it)
