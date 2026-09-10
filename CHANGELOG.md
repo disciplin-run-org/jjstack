@@ -43,6 +43,62 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
+- **Long-running work no longer stops to ask you for permission.** Over a
+  measured 48 hours, sessions on this machine interrupted a person 430 times,
+  about nine times an hour, and every single interruption was approved. That
+  is not a safety check, it is a queue of things you have to click. Two causes,
+  both now gone. The permission settings listed the verbs an autonomous run
+  uses most (`rm`, `curl`, `git push`, `sudo`, `chmod -R`) as "always ask", and
+  an always-ask rule interrupts you in *every* mode — including a session you
+  deliberately started with permission checks skipped, which is why that flag
+  never seemed to work. And the gate itself asked a small model to rate each
+  command, then woke you whenever the answer came back unreadable, which it
+  did four times out of ten on long commands.
+
+  In their place is a gate that decides on its own and never asks. It refuses
+  ten kinds of command outright: ones whose reach has no bound (deleting a home
+  directory or a filesystem root), ones running code nobody has read (piping a
+  download into a shell), ones sending a local file or a known secret to the
+  network, ones writing to a raw disk, ones powering the machine off, and
+  force-pushes to the trunk. A refusal tells Claude the rule and the fix, so it
+  tries another way in the same breath rather than parking the job until you
+  come back. Everything else simply runs.
+
+- **Claude is now held to one command per Bash call.** Chaining several
+  commands into one call is refused with instructions to split it. That has
+  been the house rule for months and it was quietly ignored: 391 of the 393
+  commands that interrupted somebody were chained. It matters for more than
+  tidiness. A call that starts `S=/tmp/x; rm -rf $S` hides the `rm` behind an
+  assignment, so no safety rule and no audit report ever sees it, and the log
+  of what was actually run becomes unreadable. Writing a multi-line file or a
+  commit message still counts as one command.
+
+- **What the permission gate is doing is now something you can look at.**
+  `bin/jjstack-permission-audit --since 24h` reports how often anyone was
+  interrupted, by which session, and for what, plus how much of the work is
+  still chained. Run it after a long unattended session; the expected answer
+  is zero.
+
+- **jjstack's hooks are installed as copies instead of shortcuts into the
+  source folder.** The permission gate used to be a link into the working
+  copy, which meant that switching branches in that folder silently changed
+  what every Claude session on the machine was allowed to do. Installing now
+  writes real files, replaces any old link, and backs up your settings first.
+
+- **`/security-review` is now `/jj-security-review`, and shadowing a Claude
+  Code built-in is a declared, checked decision.** Claude Code ships its own
+  `/security-review` and `/review`. jjstack's skills sat on both names, so
+  typing them reached jjstack's and, for `/security-review`, Claude's had no
+  other name to be reached by. The rule now: jjstack shadows gstack names by
+  design, shadows a Claude Code name only when the built-in keeps another
+  name and the skill says so (`/review` does — Claude's reviewer is
+  `/code-review`), and otherwise takes the `jj-` prefix. Re-run `./setup`:
+  it removes the old `security-review` link. `bin/jjstack-verify-skills`
+  fails on an undeclared collision or a stale declaration, reads the
+  built-in list from `references/claude-code-builtins.txt` (regenerate with
+  `bin/jjstack-builtins-refresh`), warns when your Claude Code is newer than
+  that list, and runs on every pull request — before this, nothing ran it.
+
 - **The `/review` PR comment opens with its attribution, and carries the full
   report inside it, collapsed under the verdict.** `Claude
   jjstack/skills/review/SKILL.md` is now the first line of every comment, not
@@ -67,6 +123,42 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   and if the idea is restated three or more times state it once and have the
   others refer to it. Fixing only the named sentence hands the reviewer the
   next round for free.
+
+- **The verdict line says `N blocking, K non-blocking`, not `N blocking, M
+  total`.** An approval that goes on to list findings is ordinary practice,
+  but it read as a contradiction until you worked out from the severities
+  that none of them block. The word says it. The old form is refused.
+
+- **`/review` now posts its verdict as a GitHub review, not a loose comment,
+  and looks at what the change is rather than only whether it works.** The
+  verdict used to arrive as an ordinary comment, which left the PR's Reviews
+  box empty: GitHub recorded the pull request as never reviewed, and a branch
+  rule that requires an approval saw nothing. It is now a review, with the
+  verdict mapped to approve, comment, or request-changes. On a pull request
+  you opened yourself GitHub refuses to record a state at all, so the review
+  posts as a comment there and the closing line tells you the state was
+  refused instead of implying a green check. Requesting a reviewer has its
+  own two traps, both now documented with the call that actually works.
+  A re-review reads the previous round from both channels, picks the newest
+  one by timestamp rather than by which channel it came from, and accepts
+  only rounds this account actually posted: the body's attribution line is a
+  prefix anyone can type, while authorship is attested by GitHub.
+
+  The review also gained the questions it was missing. It asks whether the
+  change is the right shape and whether it is more complex than the problem
+  needs, reads names and whether comments say why rather than what, names any
+  file in the diff that no pass opened instead of reporting a coverage
+  fraction that counts only passes, and may name one thing the change does
+  well.
+
+  It also says when it has started. GitHub has no "under review" state, and
+  the thing that looks like one, a review left unsubmitted, is visible only
+  to the person who started it. `/review` now posts a pending commit status
+  when it begins and replaces it with the verdict when it ends, so everyone
+  can see a review is in flight and a repository can require that check
+  before a merge. On a pull request you opened yourself, where GitHub refuses
+  to record an approval, that status is the only machine-readable verdict
+  that works.
 
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff

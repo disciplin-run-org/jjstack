@@ -1,0 +1,20 @@
+name: Verify
+
+# Runs on every pull request. Before this workflow existed the only CI was
+# the post-merge version bump on main, so nothing ran the skill-tree checks
+# or the smoke suite before a change landed - a collision with a Claude Code
+# built-in shipped on main with a detector in the tree that no automation
+# invoked (PR #12 review).
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: skill tree invariants
+        run: bash bin/jjstack-verify-skills
+      - name: smoke suite
+        run: bash test/smoke.sh

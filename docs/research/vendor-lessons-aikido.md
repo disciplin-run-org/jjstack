@@ -9,7 +9,7 @@ its ground truth is *"can an attacker reach this"* where Greptile's is *"would a
 human reviewer have commented on this."* That difference is the interesting part.
 
 This file records what was **adopted**, what was **rejected**, and what belongs
-in `/security-review` instead. Everything is labelled **[MECHANIC]** (a described
+in `/jj-security-review` instead. Everything is labelled **[MECHANIC]** (a described
 procedure you could reimplement or test) or **[MARKETING]** (a superlative or a
 number with no published method). Be skeptical: Aikido publishes four mutually
 inconsistent false-positive-reduction numbers on a single page, and disowns all
@@ -208,14 +208,14 @@ compute what it breaks before offering it, not after applying it.** Note this is
 an argument for `/review` keeping its hands off remediation, not an argument for
 adding an autofixer.
 
-## Flagged for `/security-review`, deliberately NOT put in `/review`
+## Flagged for `/jj-security-review`, deliberately NOT put in `/review`
 
-`/review` is the general pre-landing reviewer; `/security-review` is the 10-phase
+`/review` is the general pre-landing reviewer; `/jj-security-review` is the 10-phase
 security audit. The genuinely security-shaped Aikido mechanics belong there:
 
 - **Dependency/CVE reachability and exploitability** — "inspects how a vulnerable
   package is used in your repository or container" to decide whether a CVE is
-  exploitable *here*. That is SCA, and `/security-review` already owns supply-chain
+  exploitable *here*. That is SCA, and `/jj-security-review` already owns supply-chain
   risk (its §6.7).
 - **Exploitability-weighted severity** — and they publish the actual arithmetic
   **[MECHANIC]**, which is rare enough to be worth copying wholesale: a 0–100 scale
@@ -229,11 +229,11 @@ security audit. The genuinely security-shaped Aikido mechanics belong there:
 - **Score explainability** — every adjustment is individually attributable:
   "Click an issue's severity score to see which rules applied, including KEV, PoC,
   and EPSS adjustments." A severity that decomposes into named, inspectable deltas
-  is strictly better than one asserted whole. Applies to `/security-review`'s
+  is strictly better than one asserted whole. Applies to `/jj-security-review`'s
   scoring; a general reviewer has no equivalent public feed to weight against.
 - **Container image, IaC, secrets and cloud-misconfiguration scanning** — Aikido's
   real defensible advantage over a PR reviewer, and entirely outside `/review`'s
-  scope. `/security-review` already covers secrets (§6.3) and insecure defaults
+  scope. `/jj-security-review` already covers secrets (§6.3) and insecure defaults
   (§6.5).
 - **Malware/typosquat detection in dependencies** — supply chain, not code review.
 

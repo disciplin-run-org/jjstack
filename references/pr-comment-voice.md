@@ -116,12 +116,12 @@ sentence setting the stage, the voice is lost.
 ```
 Claude jjstack/skills/review/SKILL.md
 
-**VERDICT** - N blocking, M total.
+**VERDICT** - N blocking, K non-blocking.
 
 **P0** `file:line` claim: the specific consequence.
 **P1** `file:line` claim: the specific consequence.
 
-M-N more + repros + evidence in the report below.
+N+K-shown more + repros + evidence in the report below.
 Guardrail: the condition under which this verdict holds.
 
 <details><summary>Full report</summary>
@@ -147,11 +147,16 @@ of the PR cannot open your disk.
 One line per finding. `file:line` is not decoration - it is what makes the
 finding actionable without a second round trip.
 
-The counts are not decoration either, and they are checked. `N blocking, M
-total` must be there, `M` cannot be smaller than `N`, and when `M` exceeds the
-findings shown the comment has to say `M-N more` and carry the rest in the
-block beneath. That arithmetic is what proves a short comment is a moved
-finding rather than a dropped one. The block has to hold the report: a block
+The counts are not decoration either, and they are checked. `N blocking, K
+non-blocking` must be there, and when `N+K` exceeds the findings shown the
+comment has to say how many `more` and carry the rest in the block beneath.
+That arithmetic is what proves a short comment is a moved finding rather than
+a dropped one. The word `non-blocking` is there for the reader of an APPROVE
+that still lists findings: approve-with-notes is ordinary practice, but the
+verdict has to say so on its own line, not leave it to be inferred from the
+P-numbers. **`P0` and `P1` block; `P2` and `P3` do not** — say that once here
+rather than per finding, so a reader can map any severity to the verdict
+without being told again. The block has to hold the report: a block
 around nothing reads exactly like no report at all, and the linter refuses it.
 
 ## A clean approve is one line
@@ -223,7 +228,7 @@ Wrong - a wall of text that sells:
 
 Right - seven findings found, two shown, none lost:
 
-> **CAUTION** - 2 blocking, 7 total.
+> **CAUTION** - 2 blocking, 5 non-blocking.
 >
 > **P0** `bin/loader.py:88` retry catches `Exception`: a revoked token retries
 > 5x, exits 0, writes nothing.

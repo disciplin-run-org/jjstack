@@ -114,7 +114,7 @@ surrounding code. Does NOT re-check spec compliance.
 - Error handling: no silent catches, no unchecked nulls, no swallowed errors
 - Tests: coverage proportional to risk (Kano level if known)
 - Simplicity: premature abstractions, unused parameters, dead branches
-- Security: injection vectors, secrets, authz gaps (`/security-review` for deep)
+- Security: injection vectors, secrets, authz gaps (`/jj-security-review` for deep)
 - Performance: obvious O(n²) where O(n) works, unbounded memory
 - CLAUDE.md compliance: local project rules followed
 
@@ -182,8 +182,8 @@ the point of the separation.
 - **`/lean`** — lean mode caps tool-call budget. Two-stage review requires
   at least ~6–10 tool calls per stage (read spec, read diff, verify).
   Budget accordingly.
-- **`/security-review`** — orthogonal. Stage 2 surfaces obvious security
-  issues; `/security-review` is deep CWE analysis. Run `/security-review`
+- **`/jj-security-review`** — orthogonal. Stage 2 surfaces obvious security
+  issues; `/jj-security-review` is deep CWE analysis. Run `/jj-security-review`
   separately when the change warrants it.
 
 ## Anti-patterns

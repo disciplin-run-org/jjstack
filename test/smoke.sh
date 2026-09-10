@@ -655,71 +655,71 @@ RPT_OK='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
-body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
+body sec_id '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
 # The two shapes a security finding routinely quotes, both of which published
 # clean until the report moved inside the comment and made them routine.
-body sec_bearer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `api.py:4` hardcoded\nAuthorization: Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba\n'"$RPT"
+body sec_bearer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `api.py:4` hardcoded\nAuthorization: Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba\n'"$RPT"
 check "a bearer token after a word is a credential (exit 4)" "[ \$(lint '$PCL/sec_bearer.md') = 4 ]"
-body sec_urlnouser '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
+body sec_urlnouser '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
 check "…and a password-only URL, with no username before the colon" "[ \$(lint '$PCL/sec_urlnouser.md') = 4 ]"
 # THE QUOTED HALF OF THE SAME CLASS. The optional quote sat AFTER the word
 # group, so a quote could precede the value but not the word - which excludes
 # exactly the JSON and YAML forms a security finding quotes from source. Three
 # members published clean while the bare forms were caught, so the rule read as
 # covered. No fixture distinguished the two regexes; these do.
-body sec_json '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.json:3` hardcoded\n"Authorization": "Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+body sec_json '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:3` hardcoded\n"Authorization": "Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
 check "a JSON-quoted bearer token is a credential (exit 4)" "[ \$(lint '$PCL/sec_json.md') = 4 ]"
-body sec_yaml '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.yml:3` hardcoded\nauthorization: '"'"'Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba'"'"'\n'"$RPT"
+body sec_yaml '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.yml:3` hardcoded\nauthorization: '"'"'Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba'"'"'\n'"$RPT"
 check "…and a single-quoted YAML one" "[ \$(lint '$PCL/sec_yaml.md') = 4 ]"
-body sec_jsonkey '**REJECT** - 1 blocking, 1 total.\n\n**P0** `cfg.json:4` hardcoded\n"api_key": "live sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+body sec_jsonkey '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:4` hardcoded\n"api_key": "live sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
 check "…and a quoted key whose value carries a word first" "[ \$(lint '$PCL/sec_jsonkey.md') = 4 ]"
 # Control: the ordinary prose these two must not start refusing.
-body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
+body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
 check "…while ordinary prose about auth is not a credential (control)" "[ \$(lint '$PCL/sec_prose.md') = 0 ]"
-body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
+body sec_key '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
-body sec_generic '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n'"$RPT"
+body sec_generic '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n'"$RPT"
 check "a vendor-less assigned credential is blocked (shape, not vendor list)" \
       "[ \$(lint '$PCL/sec_generic.md') = 4 ]"
 # One fixture per vendor row. A row with no fixture can be deleted silently -
 # and the whole enumeration WAS collapsed into the shape rule once, which let a
 # JWT, a Google key, a Stripe key and a fine-grained PAT lint clean and publish.
-body sec_jwt '**REJECT** - 1 blocking, 1 total.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n'"$RPT"
+body sec_jwt '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n'"$RPT"
 check "a bare JWT is blocked" "[ \$(lint '$PCL/sec_jwt.md') = 4 ]"
-body sec_goog '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n'"$RPT"
+body sec_goog '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n'"$RPT"
 check "a Google API key is blocked" "[ \$(lint '$PCL/sec_goog.md') = 4 ]"
-body sec_stripe '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n'"$RPT"
+body sec_stripe '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n'"$RPT"
 check "a Stripe live key is blocked" "[ \$(lint '$PCL/sec_stripe.md') = 4 ]"
-body sec_pat '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n'"$RPT"
+body sec_pat '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n'"$RPT"
 check "a fine-grained GitHub PAT is blocked" "[ \$(lint '$PCL/sec_pat.md') = 4 ]"
-body sec_azure '**REJECT** - 1 blocking, 1 total.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n'"$RPT"
+body sec_azure '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n'"$RPT"
 check "an Azure connection-string key is blocked" "[ \$(lint '$PCL/sec_azure.md') = 4 ]"
-body sec_slash '**REJECT** - 1 blocking, 1 total.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'"$RPT"
+body sec_slash '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'"$RPT"
 check "an AWS SECRET key is blocked even though it holds slashes" \
       "[ \$(lint '$PCL/sec_slash.md') = 4 ]"
-body sec_rocket '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n'"$RPT"
+body sec_rocket '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n'"$RPT"
 check "a hashrocket assignment is blocked" "[ \$(lint '$PCL/sec_rocket.md') = 4 ]"
 # The report is public too. "The value stays in the report" was the old rule's
 # escape hatch; the report is now in the same comment, so a secret behind the
 # fold is a secret on the PR.
-body sec_inrep 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key leaked, see report.\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n</details>\n'
+body sec_inrep 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key leaked, see report.\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n</details>\n'
 check "a credential INSIDE the collapsed report is blocked (exit 4)" \
       "[ \$(lint '$PCL/sec_inrep.md') = 4 ]"
 
 # The ENTROPY gate, both directions. Without it a review comment ABOUT
 # credential handling exits 4 - unsilenceable - and cannot be posted at all.
-body fp_docpath '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n'"$RPT"
+body fp_docpath '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n'"$RPT"
 check "a doc path after a credential word is NOT a secret" \
       "[ \$(lint '$PCL/fp_docpath.md') != 4 ]"
-body fp_adr '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n'"$RPT"
+body fp_adr '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n'"$RPT"
 check "…nor a mixed-case path with a digit that ends in .md" \
       "[ \$(lint '$PCL/fp_adr.md') != 4 ]"
-body fp_k8s '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n'"$RPT"
+body fp_k8s '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n'"$RPT"
 check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 
-body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n'"$RPT"
+body sec_pem '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n'"$RPT"
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
 body clean_ok 'Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved\n'
@@ -728,13 +728,13 @@ check "a clean approve passes (control: the secret rule discriminates)" \
 # A bare vendor token carries no `name = value` shape, so the generic rule
 # cannot see it. The prefix list is the backstop and needs its own fixture:
 # narrowing it to AWS alone left this whole section green.
-body sec_ghp '**REJECT** - 1 blocking, 1 total.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'"$RPT"
+body sec_ghp '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'"$RPT"
 check "a bare GitHub token is blocked (the prefix backstop earns its place)" \
       "[ \$(lint '$PCL/sec_ghp.md') = 4 ]"
-body sec_sk '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n'"$RPT"
+body sec_sk '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n'"$RPT"
 check "a bare openai-style key is blocked too" "[ \$(lint '$PCL/sec_sk.md') = 4 ]"
 
-body noreport '**REJECT** - 1 blocking, 1 total.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
+body noreport '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
 # --quiet must not silence the credential rule, and the EXIT CODE alone cannot
 # prove that: silencing the message leaves rc=4 untouched. Assert the output.
 q_out=$("$BIN/jjstack-pr-comment-lint" "$PCL/sec_key.md" --quiet 2>&1); q_rc=$?
@@ -750,7 +750,7 @@ check "…and it never prints the value it found" "! grep -q 'wJalrXUtnFEMI' <<<
 
 # BUDGET. Findings are counted as OCCURRENCES and in every severity spelling
 # SKILL.md sanctions - six findings written **HIGH** posted under a cap of three.
-body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 # Assert the RULE that fired, not merely a non-zero exit. Every one of these
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
@@ -758,26 +758,50 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
-body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n'"$RPT"
+body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` risk here is **low** but real.\n'"$RPT"
 check "the word **low** in prose is not counted as a second finding" \
       "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
-body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n'"$RPT"
+body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x. Details below:\n'"$RPT"
 check "…nor the word below: in a citation" \
       "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
-body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n'"$RPT"
+body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 0 non-blocking.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n'"$RPT"
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
+# RESIDUAL. The verdict line says "N blocking, K non-blocking": an APPROVE that
+# lists findings is a contradiction to a reader until the word tells them none
+# block. The old "M total" form is refused rather than accepted alongside.
+body res_old 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n'"$RPT"
+check "the old \"N blocking, M total\" form is refused (no-residual)" \
+      "grep -q no-residual <<<\"\$(why '$PCL/res_old.md')\""
+body res_new 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "…and the same comment in the new form passes" "[ \$(lint '$PCL/res_new.md') = 0 ]"
+body res_more 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n5 more in the report below.\n'"$RPT"
+check "blocking + non-blocking minus shown must equal the \"more\" count" "[ \$(lint '$PCL/res_more.md') = 0 ]"
+body res_wrong 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n4 more in the report below.\n'"$RPT"
+check "…and a wrong \"more\" count is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_wrong.md')\""
+# CASE AND BASE. The declaration is matched case-insensitively, so `K` was
+# re-grepped out of it case-sensitively, came back empty, and bash read the
+# empty operand as 0: nine findings in the report, nothing in the visible part
+# pointing at them, clean and exit 0. A leading zero aborted the arithmetic
+# instead, leaving n_tot unset and skipping the whole check - silently.
+body res_case 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 9 Non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "a capital N in Non-blocking does not disable the residual gate" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_case.md')\""
+body res_zero 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 09 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n'"$RPT"
+check "…nor does a leading zero, which used to abort the arithmetic" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_zero.md')\""
 # A budget that cannot be evaluated is not a budget: an empty flag value must
 # fail closed, not report clean.
-big=$(printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
+big=$(printf '**REJECT** - 1 blocking, 0 non-blocking.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
 printf '%b' "$big$RPT" > "$PCL/big.md"
 "$BIN/jjstack-pr-comment-lint" "$PCL/big.md" --max-lines '' >/dev/null 2>&1
 # Exactly 2 - refused at PARSE time. `-ne 0` was not enough: this body also
@@ -792,7 +816,7 @@ check "…and forty visible filler lines are too-long (control)" \
 # comment carrying a real report, and the reviewer would trim the evidence to
 # fit - the exact failure the block exists to end.
 longrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n%.0s- **P2** `f:1` a finding in the report, one of many\n' $(seq 200))
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 200 total.\n\n**P1** `a:1` x\n\n199 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 199 non-blocking.\n\n**P1** `a:1` x\n\n199 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
 check "a 200-line report beneath the fold passes the visible budget" \
       "[ \$(lint '$PCL/fold.md') = 0 ]"
 check "…and its 200 P-tokens do not count against the visible cap" \
@@ -811,10 +835,10 @@ check "…and the declared total covers them, so the residual holds" \
 # refused the honest comment and passed only an inflated one; these two shapes
 # are what distinguishes the two rules, so both are pinned.
 tmplrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n\n**P1 `a:1`** - the expansion, carrying the token a second time.\n\n**P2 `b:2`** - and so does this one.\n\n### Guardrails\nHolds while no P0 is added.\n')
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 2 total.\n\n**P1** `a:1` one\n\n1 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_true.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` one\n\n1 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_true.md"
 check "a template-shaped report declaring its TRUE total lints clean" \
       "[ \$(lint '$PCL/fold_true.md') = 0 ]"
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
 check "…and one declaring fewer than its table shows is bad-residual" \
       "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
 # ANTI-VACUITY. The row count is scoped by a `sed` range anchored on a literal
@@ -823,12 +847,12 @@ check "…and one declaring fewer than its table shows is bad-residual" \
 # Every fixture above either uses the table or has no findings at all, so none
 # of them could see it. This one has findings and no table.
 bulletrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### What I found\n\n- **P1** `a:1` one\n- **P2** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n- **P3** `e:5` five\n\n### Guardrails\nHolds while no P0 is added.\n')
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead.md"
 check "findings listed under another heading still floor the declared total" \
       "grep -q bad-residual <<<\"\$(why '$PCL/fold_nohead.md')\""
 # ...and the same report declaring its true total passes, so the floor counts
 # five and not the Guardrails line that merely mentions P0.
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 5 total.\n\n**P1** `a:1` one\n\n4 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead_ok.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 4 non-blocking.\n\n**P1** `a:1` one\n\n4 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead_ok.md"
 check "…and the same report declaring five lints clean, so P0 in prose is not a finding" \
       "[ \$(lint '$PCL/fold_nohead_ok.md') = 0 ]"
 # EACH COUNTER EARNS ITS PLACE. The two are a max, and until this fixture the
@@ -837,7 +861,7 @@ check "…and the same report declaring five lints clean, so P0 in prose is not 
 # opens with its severity, so the anchor count reached the same answer. A table
 # with no expansions is where they differ, and it is a legal short report.
 tableonly=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n| P2 | 70 | `c:3` | three |\n\n### Guardrails\nHolds while no P0 is added.\n')
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tableonly" > "$PCL/fold_tableonly.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tableonly" > "$PCL/fold_tableonly.md"
 check "a table with no expansions is counted by its rows, not missed" \
       "grep -q bad-residual <<<\"\$(why '$PCL/fold_tableonly.md')\""
 # ...and the approve path has the same hole in its own vocabulary: one visible
@@ -856,30 +880,30 @@ check "…under the too-long rule" \
 # be missing, empty, doubled, unclosed, or rendered open. One fixture each.
 check "a findings comment with no report block is refused" \
       "grep -q no-report <<<\"\$(why '$PCL/noreport.md')\""
-body rp_open 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details open><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n</details>\n'
+body rp_open 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details open><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n</details>\n'
 check "a <details open> block is refused: the report renders expanded" \
       "grep -q report-expanded <<<\"\$(why '$PCL/rp_open.md')\""
-body rp_empty 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n\n</details>\n'
+body rp_empty 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n\n</details>\n'
 check "an empty block is refused (anti-vacuity: no report heading inside)" \
       "grep -q empty-report <<<\"\$(why '$PCL/rp_empty.md')\""
 check "…and is NOT reported as a missing block" \
       "! grep -q no-report <<<\"\$(why '$PCL/rp_empty.md')\""
-body rp_two 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT$RPT"
+body rp_two 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT$RPT"
 check "two report blocks are refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_two.md')\""
-body rp_unclosed 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n'
+body rp_unclosed 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n'
 check "an unclosed block is refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_unclosed.md')\""
-body rp_inverted 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n</details>\n\n## /review: fixture (commit 0000000, 1 min)\n\n<details>\n'
+body rp_inverted 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n</details>\n\n## /review: fixture (commit 0000000, 1 min)\n\n<details>\n'
 check "a close before its open is refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_inverted.md')\""
-body rp_findok 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body rp_findok 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "a findings comment with one closed, collapsed, non-empty block passes" \
       "[ \$(lint '$PCL/rp_findok.md') = 0 ]"
 # No repository is needed any more: the comment file can live anywhere. That
 # was the class the old resolver refused (no-repo), and it is now the point.
 NOREPO="$SANDBOX/norepo"; mkdir -p "$NOREPO"
-printf '%b' 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT" > "$NOREPO/c.md"
+printf '%b' 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT" > "$NOREPO/c.md"
 check "a comment outside any git repository passes (nothing on disk is linked)" \
       "[ \$(lint '$NOREPO/c.md') = 0 ]"
 
@@ -935,37 +959,37 @@ body att_none '**APPROVE** - no findings.\n'
 check "an approve with no attribution is refused" "[ \$(lint '$PCL/att_none.md') != 0 ]"
 check "…and the message names attribution, not just length" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_none.md')\""
-body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body att_find '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "a findings comment without attribution is refused too" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_find.md')\""
-body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "…and passes once it opens with the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
 # FIRST, not merely present. A footer is read after the verdict has already
 # been taken as the account holder's opinion.
-body att_footer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"'\n'"$ATT"'\n'
+body att_footer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"'\n'"$ATT"'\n'
 check "attribution as a FOOTER is refused" \
       "grep -q attribution-not-first <<<\"\$(why '$PCL/att_footer.md')\""
 # And a block ABOVE the attribution puts a collapsed "Full report" on top of
 # the byline: the first thing on screen must be who wrote this.
-body att_blockfirst "$RPT"'\n'"$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'
+body att_blockfirst "$RPT"'\n'"$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'
 check "a report block above the attribution is refused" \
       "grep -q attribution-not-first <<<\"\$(why '$PCL/att_blockfirst.md')\""
 
 # LOCAL PATHS. Nothing on the reviewer's machine goes in a public comment - and
 # the pre-flight artifacts the report is built from print `repo: /home/...`
 # lines by design, so the rule reads the whole body, fold included.
-body lp_vis "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md\n'"$RPT"
+body lp_vis "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md\n'"$RPT"
 check "a local machine path in the visible part is refused" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_vis.md')\""
-body lp_home "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x, see ~/scratch/notes.md\n'"$RPT"
+body lp_home "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x, see ~/scratch/notes.md\n'"$RPT"
 check "…and so is a home-relative one" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_home.md')\""
-body lp_rep "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n- repo: `/tmp/claude-1000/x/pin`\n\n</details>\n'
+body lp_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n- repo: `/tmp/claude-1000/x/pin`\n\n</details>\n'
 check "a local path INSIDE the collapsed report is refused too" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_rep.md')\""
 # The emdash rule reads the whole body for the same reason: the report is
 # posted under the same account, in the same voice.
-body em_rep "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT — one P0\n\n</details>\n'
+body em_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT — one P0\n\n</details>\n'
 check "an emdash inside the collapsed report is refused" \
       "grep -q emdash <<<\"\$(why '$PCL/em_rep.md')\""
 
@@ -987,7 +1011,7 @@ check "the canonical line carries lgtm verbatim" \
 # lines of markup GitHub is particular about; one tool writes it, and the lint
 # is the acceptance test for what it writes.
 ASM="$SANDBOX/asm"; mkdir -p "$ASM"
-printf '%s\n\n**CAUTION** - 1 blocking, 2 total.\n\n**P1** `a:1` x\n\n1 more in the report below.\n' "$ATT" > "$ASM/head.md"
+printf '%s\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` x\n\n1 more in the report below.\n' "$ATT" > "$ASM/head.md"
 printf '## /review: fixture (commit 0000000, 3 min)\n\n**Verdict:** CAUTION - fixture\n\n| Sev | Conf |\n|---|---|\n| P1 | 90 |\n| P2 | 70 |\n' > "$ASM/report.md"
 "$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/comment.md"
 check "assemble writes a comment (exit 0)" "[ \$? -eq 0 ]"
@@ -1157,9 +1181,108 @@ check "the evidence pack the skill reads includes the test baseline"       "grep
 # The post and its lint must be ONE command: Claude Code does not persist shell
 # state, so a sourced PR identity in a separate call expands empty.
 check "the PR post is chained to the lint in one command" \
-      "grep -q 'jjstack-pr-comment-lint .* && gh pr comment' '$SK'"
+      "grep -q 'jjstack-pr-comment-lint .* && gh pr review' '$SK'"
 check "…and the PR identity is sourced in that same command" \
-      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr comment' '$SK'"
+      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr review' '$SK'"
+# GITHUB MECHANICS. The verdict was posted as an issue comment, so the PR's
+# Reviews box stayed empty through twelve rounds on this skill's own PR:
+# reviewDecision "" and reviews []. A review attaches the verdict to the head
+# commit and satisfies a branch rule that requires one; a comment does neither.
+check "the verdict is posted as a review, not an issue comment" \
+      "! grep -q 'gh pr comment' '$SK'"
+# The mapping is PINNED as a table, not grepped as a word: `--request-changes`
+# also appears in the self-authored paragraph, so a grep for it stayed green
+# with the table gutted. Anti-vacuity floor first, then the exact row set.
+# BOTH cells, not the value column: pinning only the right-hand side let the
+# rows be transposed - APPROVE to --request-changes, REJECT to --approve - with
+# ALL 312 PASS. A row set needs both halves of the row.
+sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/events.txt"
+check "the verdict-to-event table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/events.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`--approve`' '`CAUTION`|`--comment`' '`REJECT`, `STOP`|`--request-changes`' \
+  | sort > "$SANDBOX/events-want.txt"
+check "…and maps every verdict to one of the three review events" \
+      "diff -q '$SANDBOX/events.txt' '$SANDBOX/events-want.txt' >/dev/null"
+# Verified against the API, not assumed: POST .../reviews with event=APPROVE or
+# REQUEST_CHANGES on a self-authored PR returns 422; event=COMMENT is accepted.
+check "…and the self-authored refusal is named, since only --comment works there" \
+      "grep -q 'Can not approve your own pull request' '$SK'"
+# Read-back is pinned to the COMMAND, not the word: `reviewDecision` also
+# appears in the sentence about the twelve rounds that left it empty, so a
+# bare grep survived deleting the read-back entirely.
+check "…and the posted state is read back rather than assumed" \
+      "grep -q -- '--json reviewDecision,reviews' '$SK'"
+# gh pr edit --add-reviewer dies on a Projects-classic GraphQL error before it
+# reaches the request, and the REST endpoint returns 200 for a login it
+# silently drops - so the request is read back too.
+# Same class again: the prose says to read `requested_reviewers` back, so the
+# word survives deleting the call that does it. Pin the endpoint invocation.
+check "the reviewer-request trap is recorded with the working call" \
+      "grep -q 'requested_reviewers --input -' '$SK'"
+# Named as the CLASS, not the one flag it was first met on: `gh pr edit` dies
+# on the Projects-classic read whatever it was asked to do, verified on
+# --add-reviewer and on a title/body edit. Pinning the flag would have let the
+# skill keep recommending `gh pr edit` for everything else.
+check "…and names the broken subcommand as wholly broken, not one flag" \
+      "grep -q 'gh pr edit. does not work' '$SK'"
+# UNDER REVIEW. GitHub has no such state, and the one that looks like it -
+# a review left unsubmitted - is PENDING and visible only to its author, so it
+# signals to nobody. A commit status is visible to everyone and can gate the
+# merge, and unlike --approve it is not refused on a self-authored PR.
+check "the review announces itself with a pending commit status" \
+      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+check "…and the pr identity carries the head sha the status needs" \
+      "grep -q 'PR_SHA=' '$SK'"
+check "…and names why an unsubmitted review is not that signal" \
+      "grep -q 'visible only to the' '$SK'"
+# A required check left pending blocks the merge forever and the run that
+# stranded it is gone, so every exit path owes a terminal status.
+check "…and a run that ends any other way still posts a terminal status" \
+      "grep -q 'A pending status is a promise to replace it' '$SK'"
+# The hazard without the recovery is a scare, not an instruction: a stranded
+# check is cleared by one POST, because a status is keyed by commit+context and
+# the newest wins. Someone meeting this at merge time needs the way out.
+check "…and says how a stranded check is cleared" \
+      "grep -q 'keyed by commit and context' '$SK'"
+check "…naming the call that clears it" \
+      "grep -q 'the same POST above with .state=success' '$SK'"
+# Named so nobody reaches for the richer API and finds out in production.
+check "…and records that Check Runs refuse a personal token" \
+      "grep -q 'authenticate via a GitHub App' '$SK'"
+# The mapping is PINNED as a table, like the event table: `success` and
+# `failure` both appear in prose nearby, so a word-grep would survive gutting
+# it. Anti-vacuity floor first.
+sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/status.txt"
+check "the verdict-to-status table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/status.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`success`' '`CAUTION`, `REJECT`|`failure`' '`STOP`|`error`' \
+  | sort > "$SANDBOX/status-want.txt"
+check "…and maps every verdict to one of the three terminal states" \
+      "diff -q '$SANDBOX/status.txt' '$SANDBOX/status-want.txt' >/dev/null"
+# CAUTION carries a P1 and a P1 blocks, so a green check beside it is the same
+# contradiction as an approval that lists blocking findings.
+check "…with CAUTION failing the check, not passing it" \
+      "grep -q 'CAUTION. fails the check' '$SK'"
+# GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
+# and no lens asked for it; complexity, naming and why-not-what comments had
+# no owner either, so a correct implementation of the wrong shape passed.
+check "a lens asks whether the change is the right shape" \
+      "grep -q 'is the abstraction earned' '$SK'"
+check "…and whether it is more complex than the problem needs" \
+      "grep -q 'more complex than the problem needs' '$SK'"
+check "…and reads names and why-not-what comments" \
+      "grep -q 'instead of .why.' '$SK'"
+# EVERY LINE. A lens count says nothing about which files were opened.
+check "the report names the diff files no lens read" \
+      "grep -q 'Not read:' '$SK'"
+check "…and requires every file to be read or named" \
+      "grep -q 'read by at least one lens or named' '$SK'"
+# GOOD THINGS. Step 0 admits only harm, so nothing done well had anywhere to
+# go and the author could not tell which parts of the approach to repeat.
+check "the report may name one thing done well" \
+      "grep -q 'specific enough to repeat' '$SK'"
 check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
 # THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
 # lint rounds went on the link. The skill must say the new shape everywhere it
@@ -1174,8 +1297,97 @@ check "…nor links a report file from the comment" \
       "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
 check "…so the canonical resolved line ends at approved" \
       "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
-check "a re-review reads the previous round from the PR thread" \
-      "grep -q 'json comments' '$SK'"
+# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
+# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
+# the suite red. A guard's title is a claim; this one claimed the mechanism was
+# right while its body enforced the broken one.
+check "a re-review reads the reviews, where the verdict now lands" \
+      "grep -q 'json reviews,comments' '$SK'"
+check "…and still reads comments, for rounds posted before the change" \
+      "grep -q '.comments\[\]?' '$SK'"
+# The guard used to match ONLY the filter clause. The binding that defines
+# $me sat in a separate span of the same 260-character line and was pinned by
+# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
+# 317 green while the documented command died on a jq compile error, which the
+# skill reads as no previous round. That is the P0 this line exists to fix,
+# restored silently, under a guard whose title said the opposite. Pin the whole
+# mechanism: the login is resolved into pr.env, bound on the command line, and
+# compared against the author.
+# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
+# instance each of a single class: a check that pins a STRING while its title
+# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
+# so an inverted mapping passed. Round 2, the --arg me binding pinned by
+# nothing. Round 3, five single-edit mutations on this very block green at 392:
+# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
+# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
+# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
+# from the skill and EXECUTED against fixtures; what it returns is the
+# assertion. A string check cannot see any of those five edits; running it sees
+# four, and the fifth is the append operator, pinned literally below.
+det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
+det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
+det_prog=${det_prog%\'}
+check "the detector's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#det_prog} -gt 80 ]"
+
+# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
+# is a review and the oldest a comment. Correct answer: MY review.
+# The third comment is MINE and NEWEST of all, and its body does not open with
+# the attribution line: it is the author's own reply to the last round, which
+# is a real shape on a real PR. Without it the startswith filter is never the
+# reason anything is excluded, and deleting that filter stays green while the
+# detector starts returning the author's reply as "the previous round".
+det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and run, it returns MY newest round, not another account's newer one" \
+      "[ \"\$det_out_a\" = WANT-REVIEW ]"
+
+# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
+# This is the half fixture A cannot see - it is what fails when the comments
+# arm stops carrying an author, or when the arms' timestamps are swapped.
+det_b='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and when my newest round is a comment, it returns the comment" \
+      "[ \"\$det_out_b\" = WANT-COMMENT ]"
+
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+append_pat='>> {OUTPUT_DIR}/pr.env'
+check "the login is APPENDED to pr.env, never written over it" \
+      "grep -qF \"$append_pat\" '$SK'"
+check "…and refuses to guess when it is missing" \
+      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
+
+# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
+# touched: inverting the test, binding .name instead of .login, returning an
+# empty binding instead of nothing, and renaming the key all stayed green, and
+# the first of those is this commit's own defect restored verbatim.
+me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
+me_prog=${me_line#*--jq \'}
+me_prog=${me_prog%%\' >>*}
+check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#me_prog} -gt 30 ]"
+me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
+check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
+me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on an error body it emits NOTHING, not the string null" \
+      "[ -z \"\$me_err\" ]"
+# The success body and the 401 body differ in more than the login, so neither
+# asserts WHICH field the guard reads. A producer keyed on the error message
+# instead passes both, and then writes PR_ME=null on any failure body that
+# carries no message, a 404 among them. This third body differs from the
+# success body ONLY in the login, so the field is what the assertion turns on.
+me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on a body differing ONLY in the missing login, still nothing" \
+      "[ -z \"\$me_nul\" ]"
+check "…so the positional concatenation is gone" \
+      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
+check "…so the comments-only detector is gone" \
+      "! grep -q -- '--json comments --jq' '$SK'"
 check "…and the report template carries no emdash, since it is posted now" \
       "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
 check "…and that template range is non-empty (anti-vacuity floor)" \
@@ -1186,8 +1398,14 @@ for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-le
             jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff \
             jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines; do
   check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+  # "Ships" means tracked, so ASK GIT rather than walking the directory. The
+  # walk read gitignored working files too — a developer's own
+  # .claude/settings.local.json, which had allow rules naming these tools,
+  # reddened three of these on their machine and nowhere else. That is the
+  # "different verdict on a different machine" this file's header forbids, and
+  # it was reached through untracked state rather than through $HOME.
   check "nothing that ships mentions the deleted $gone" \
-        "! grep -rq --exclude-dir=.git --exclude-dir=docs --exclude=smoke.sh --exclude=CHANGELOG.md '$gone' '$DIR'"
+        "! git -C '$DIR' grep -qI --untracked -e '$gone' -- . ':!docs' ':!test/smoke.sh' ':!CHANGELOG.md' ':!*.local.json'"
 done
 
 echo "== 9b. the author side says what it does =="
@@ -1441,6 +1659,324 @@ for t in jjstack-review-preflight jjstack-review-tooling-sweep \
         "! grep -qE '^(set -o|set -u|YEL=|CYA=|GRN=|HERE=|SRC=)' '$HLP'"
   check "$t --help is non-empty" "[ -s '$HLP' ]"
 done
+
+echo "== 11. the permission gate (floor, policy, and what is installed) =="
+# The gate this replaces asked a model to rate every command and woke a person
+# whenever the answer was not LOW. It woke one 183 times in 48 hours and was
+# approved 183 times. What is asserted here is the shape of the replacement:
+# the floor refuses a fixed set outright, the PermissionRequest hook cannot
+# approve anything at all, and the policy carries no rule that reintroduces a
+# prompt.
+for f in "$HOOKS"/auto-approve-safe.sh "$DIR"/test/settings-lint.sh; do
+  check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
+done
+check "python -m py_compile permission-floor.py" \
+      "python3 -m py_compile '$HOOKS/permission-floor.py' 2>/dev/null"
+
+# The policy table and the mutation proof are whole suites of their own. Run
+# them and read their exit status: 1 is a mismatch, 2 is "the table cannot
+# fail", which is the louder failure and must not be collapsed into it.
+pol_out=$(python3 "$DIR/test/permission-policy-check.py" 2>&1); pol_rc=$?
+check "permission-policy fixtures pass (rc=0; 2 would mean the table is vacuous)" \
+      "[ \"$pol_rc\" = 0 ]"
+[ "$pol_rc" = 0 ] || printf '     %s\n' "$pol_out"
+check "every rule the hook declares has a fixture" \
+      "printf '%s' \"\$pol_out\" | grep -qE 'CASES=[0-9]+ RULES=[0-9]+'"
+
+mut_out=$(python3 "$DIR/test/permission-floor-mutation.py" 2>&1); mut_rc=$?
+check "mutation proof: every rule is load-bearing" "[ \"$mut_rc\" = 0 ]"
+[ "$mut_rc" = 0 ] || printf '     %s\n' "$mut_out"
+check "...and each rule reddens only its OWN rows (no rule covered by a neighbour)" \
+      "printf '%s' \"\$mut_out\" | grep -q 'survived=0 misattributed=0'"
+
+# ── the PermissionRequest hook cannot approve anything ───────────────────────
+# It used to be the whole policy. A hook that can still emit `allow` is a hook
+# that can still be a bypass, and the point of the rewrite is that it observes.
+hookout=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"permission_mode":"bypassPermissions"}' \
+          | JJSTACK_HOOK_LOG=/dev/null TM_WORKER_NAME= bash "$HOOKS/auto-approve-safe.sh" 2>&1)
+check "PermissionRequest hook emits nothing at all (it decides nothing)" "[ -z \"\$hookout\" ]"
+check "PermissionRequest hook has no 'allow' branch left" \
+      "! grep -q '\"behavior\": *\"allow\"' '$HOOKS/auto-approve-safe.sh'"
+# The rater is gone, and gone means the credential path with it. A hook that
+# still reads the API key file is a hook that can still be rate-limited into
+# waking somebody at 3am.
+for needle in 'api.anthropic.com' 'anthropic_api_key' 'ANTHROPIC_API_KEY' 'curl '; do
+  check "no '$needle' remains in the PermissionRequest hook" \
+        "! grep -q '$needle' '$HOOKS/auto-approve-safe.sh'"
+done
+
+# ── the policy file ──────────────────────────────────────────────────────────
+POL="$HOOKS/permissions.policy.json"
+check "the policy is valid JSON" "jq -e . '$POL' >/dev/null 2>&1"
+check "the policy sets bypassPermissions" \
+      "[ \"\$(jq -r '.permissions.defaultMode' '$POL')\" = bypassPermissions ]"
+# THE regression. One Bash ask rule prompts in every mode, bypass included, and
+# no allow rule anywhere can lift it. This single assertion is what stands
+# between the fix and 183 interruptions coming back one rule at a time.
+n_ask=$(jq -r '[.permissions.ask[] | select(startswith("Bash("))] | length' "$POL")
+check "the policy carries no Bash ask rule (an ask rule prompts in EVERY mode)" \
+      "[ \"\$n_ask\" = 0 ]"
+check "the policy still denies something (a policy that denies nothing is not one)" \
+      "[ \"\$(jq '.permissions.deny | length' '$POL')\" -ge 10 ]"
+
+# ── settings-lint, driven both ways ──────────────────────────────────────────
+# A lint is worth what its negative control is worth. Build a settings file the
+# lint must PASS, then break it one way at a time and require a failure each
+# time — otherwise "0 failed" only means the lint never looks.
+LINTDIR=$(tmp lint)
+good="$LINTDIR/good.json"
+jq --arg h "$HOOKS" '{
+     permissions: .permissions,
+     hooks: {
+       PreToolUse: [{matcher:"Bash", hooks:[{type:"command", command:($h + "/permission-floor.py")}]}],
+       PermissionRequest: [{matcher:"", hooks:[{type:"command", command:($h + "/auto-approve-safe.sh")}]}]
+     }}' "$POL" | sed "s|{{HOME}}|${HOME#/}|g" > "$good"
+bash "$DIR/test/settings-lint.sh" "$good" >/dev/null 2>&1
+check "settings-lint PASSES a settings file that matches the policy (control)" "[ \$? -eq 0 ]"
+
+jq '.permissions.ask += ["Bash(git push *)"]' "$good" > "$LINTDIR/ask.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/ask.json" >/dev/null 2>&1
+check "settings-lint FAILS on a single reintroduced Bash ask rule" "[ \$? -ne 0 ]"
+
+jq '.permissions.defaultMode = "auto"' "$good" > "$LINTDIR/mode.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/mode.json" >/dev/null 2>&1
+check "settings-lint FAILS when the mode is not bypassPermissions" "[ \$? -ne 0 ]"
+
+jq '.permissions.deny = []' "$good" > "$LINTDIR/deny.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/deny.json" >/dev/null 2>&1
+check "settings-lint FAILS when a policy deny rule is missing" "[ \$? -ne 0 ]"
+
+jq '.hooks.PreToolUse = []' "$good" > "$LINTDIR/nofloor.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/nofloor.json" >/dev/null 2>&1
+check "settings-lint FAILS when the floor hook is not registered" "[ \$? -ne 0 ]"
+
+# The symlink check is the one that was silently false for months: the gate was
+# aliased into a working checkout, so `git checkout` changed machine-wide
+# policy. Drive it with a real symlink rather than trusting the branch exists.
+SLDIR=$(tmp slhooks)
+cp "$HOOKS/auto-approve-safe.sh" "$SLDIR/auto-approve-safe.sh"
+ln -sfn "$HOOKS/permission-floor.py" "$SLDIR/permission-floor.py"
+jq --arg h "$SLDIR" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/symlink.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/symlink.json" >/dev/null 2>&1
+check "settings-lint FAILS when a hook is installed as a symlink" "[ \$? -ne 0 ]"
+
+# An installed-but-inert hook passes every structural check above.
+INERT=$(tmp inert)
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$INERT/permission-floor.py"
+chmod +x "$INERT/permission-floor.py"
+cp "$HOOKS/auto-approve-safe.sh" "$INERT/auto-approve-safe.sh"
+jq --arg h "$INERT" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/inert.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/inert.json" >/dev/null 2>&1
+check "settings-lint FAILS on a registered but inert floor (the positive control)" "[ \$? -ne 0 ]"
+
+echo "== 12. skill namespace: shadows are declared, checked, and the check runs =="
+# The class: a jjstack skill takes a name Claude Code also ships, and the user
+# typing it silently gets the other thing. PR #12 shipped a detector for it
+# that (a) missed the second live collision, (b) no automation ran, and (c)
+# no test covered — delete it and everything stayed green. The rules here are
+# DERIVED: the set of declared shadows comes from the skills themselves, and
+# every branch of check 5 has a fixture that must fail it.
+#
+# ROUND 2. Three guards in this section were satisfied by a COMMENT and one
+# positive control could not fail, so they are rewritten here to drive the
+# thing they name. The workflow guards read a comment-stripped copy and anchor
+# to the YAML keys; the prune guard runs the prune; and every fixture repo now
+# satisfies check 4 so a non-zero exit really is check 5's verdict.
+VS="$BIN/jjstack-verify-skills"
+check "the skill-tree checks pass on this tree" "bash '$VS' >/dev/null 2>&1"
+
+# The workflow guards. A substring grep over the whole file passed on a
+# workflow that ran neither command, both strings sitting inside a comment.
+WF="$SANDBOX/verify-nocomments.yml"
+sed 's/#.*//' "$DIR/.github/workflows/verify.yml" > "$WF"
+check "the workflow triggers on pull requests (key, not prose)" \
+      "grep -qE '^on:' '$WF' && grep -qE '^[[:space:]]+pull_request:[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the skill-tree checks" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash bin/jjstack-verify-skills[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the smoke suite" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash test/smoke.sh[[:space:]]*$' '$WF'"
+
+# A fixture repo is a copy of bin/ + references/ with a synthetic skills/.
+# Each case mutates one thing and names the check-5 branch it must trip.
+# mkskill emits BOTH YAML block styles: reading only `|` measured 2 bytes for
+# the 25 skills that use `>`, so check 6 passed them unconditionally and
+# check 5's alt-name rule read those same 2 bytes.
+mkskill() {  # mkskill <root> <name> [shadows-entry] [description] [block-style]
+  mkdir -p "$1/skills/$2"
+  { printf -- '---\nname: %s\ndescription: %s\n  %s\n' "$2" "${5:-|}" "${4:-A test skill; the other name is /$2-alt.}"
+    [ -n "${3:-}" ] && printf 'shadows:\n  - "%s"\n' "$3"
+    printf -- '---\n# %s\n' "$2"; } > "$1/skills/$2/SKILL.md"
+}
+mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt, gamma]
+  local r; r=$(tmp nsfix)
+  cp -r "$BIN" "$r/bin"; mkdir -p "$r/references" "$r/skills"
+  printf '# claude-code-version: 2.1.266\nalpha\nalpha-alt\ngamma\n' > "$r/references/claude-code-builtins.txt"
+  # Satisfy check 4 so the run's EXIT CODE is check 5's verdict and nothing
+  # else. Without this every fixture already failed check 4, and the exit-code
+  # control below passed whatever check 5 did.
+  printf 'Dedup check before writing\n' > "$r/references/memory-sweep.md"
+  echo "$r"
+}
+vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt'; mkskill "$F" beta
+check "declared shadow with a live built-in and a reachable alt passes" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and a name that collides with nothing is not mentioned by check 5" \
+      "! vs_out '$F' | grep -q 'beta shadows'"
+check "…and the fixture is otherwise clean, so exit 0 (control for the exit codes below)" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" alpha
+check "undeclared collision FAILS and names the fix" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha and does not declare it'"
+check "…and the script exits non-zero (meaningful now that check 4 passes)" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" beta 'claude-code:/beta -> /alpha-alt'
+check "stale declaration (no built-in behind it) FAILS" \
+      "vs_out '$F' | grep -q 'beta declares a shadow of /beta but no such built-in is listed'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /nowhere'
+check "an alt that is not a listed built-in FAILS (the reachability claim is false)" \
+      "vs_out '$F' | grep -q 'but /nowhere is not a listed built-in'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /gamma'; mkskill "$F" gamma 'claude-code:/gamma -> /alpha-alt'
+check "an alt that jjstack shadows too FAILS (the other name is taken as well)" \
+      "vs_out '$F' | grep -q 'but jjstack shadows /gamma too'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A test skill that never names the other command.'
+check "a declaration whose description never names the alt FAILS" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt within its first 1400 chars'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt"
+check "a description over the ceiling FAILS check 6" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+
+# THE FOLDED-SCALAR PAIR. Same two assertions, `>` instead of `|`. Before the
+# parser was widened both passed vacuously: the description read as 2 bytes,
+# so it was under any ceiling and contained no alt name to find.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt" '>'
+check "a folded-scalar description over the ceiling FAILS check 6 too" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill that never names the other command.' '>'
+check "…and a folded-scalar description that omits the alt FAILS check 5 too" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill; the other name is /alpha-alt.' '>'
+check "…and a well-formed folded-scalar skill still passes (not just always-fail)" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and its measured length is the real one, not the 2 bytes after the colon" \
+      "! vs_out '$F' | grep -qE 'ok  alpha \(2\)'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
+check "a skill declaring a shadow of a different name FAILS" \
+      "vs_out '$F' | grep -q 'a skill can only shadow its own name'"
+
+F=$(mkfix); mkskill "$F" alpha 'shadows /alpha'
+check "a malformed shadows entry FAILS with the expected shape" \
+      "vs_out '$F' | grep -q \"is not 'claude-code:/<name> -> /<other-name>'\""
+
+F=$(mkfix); sed -i '/^# claude-code-version/d' "$F/references/claude-code-builtins.txt"; mkskill "$F" beta
+check "a built-in list with no version header FAILS check 7" \
+      "vs_out '$F' | grep -q 'carries no .# claude-code-version:. header'"
+
+# THE LIST IS HAND-EDITED, so it must be read tolerantly. One trailing space on
+# a name dropped it out of the collision set and the check reported success —
+# the exact hole this section exists to close, reopened by whitespace.
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/^alpha$/alpha /' "$F/references/claude-code-builtins.txt"
+check "a trailing space on a built-in name does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/$/\r/' "$F/references/claude-code-builtins.txt"
+check "a CRLF built-in list does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+check "…and its version header still parses (check 7 does not report a missing header)" \
+      "! vs_out '$F' | grep -q 'carries no'"
+
+# THE VERIFIER'S OWN OUTPUT IS NOT WRITABLE BY A SKILL. Check 5 is the first
+# path that feeds SKILL.md text into the print helpers; `echo -e` there let a
+# contributed file emit cursor movement and repaint a FAIL line green.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt\033[2K\033[1A'
+check "escape sequences from a SKILL.md are printed literally, not interpreted" \
+      "vs_out '$F' | grep -qF '033['"
+
+# THE PRUNE, EXERCISED. The previous guard grepped `setup` for the text of a
+# comment: deleting the whole loop left the comment and the suite stayed green.
+# It is its own script now precisely so this can drive it.
+PR="$BIN/jjstack-prune-stale-links"
+prunefix() {   # prunefix → <root> with repo/skills/{stays} and links/{stays,gone,foreign}
+  local r; r=$(tmp prune)
+  mkdir -p "$r/repo/skills/stays" "$r/links" "$r/elsewhere/other"
+  printf -- '---\nname: stays\n---\n' > "$r/repo/skills/stays/SKILL.md"
+  ln -s "$r/repo/skills/stays" "$r/links/stays"
+  ln -s "$r/repo/skills/gone"  "$r/links/gone"      # dangling: renamed away
+  ln -s "$r/elsewhere/other"   "$r/links/foreign"   # not ours
+  echo "$r"
+}
+# `-L`, never `-e`: the link under test points at a path that does not exist,
+# so `-e` is false whether the link is there or not and the assertion cannot
+# fail. A mutation that deleted the prune loop entirely left both green.
+P=$(prunefix); out=$(bash "$PR" "$P/links" "$P/repo")
+check "the prune removes a link this repo no longer backs" "[ ! -L '$P/links/gone' ]"
+check "…and says so" "printf '%s' \"\$out\" | grep -q 'gone (removed)'"
+check "…and keeps the link that still resolves to a skill" "[ -L '$P/links/stays' ]"
+check "…and does not touch a link pointing outside this repo" "[ -L '$P/links/foreign' ]"
+
+# With a manifest, a gstack original is RESTORED rather than removed.
+P=$(prunefix); mkdir -p "$P/gstack/gone"; printf -- '---\n---\n' > "$P/gstack/gone/SKILL.md"
+printf '# manifest\ngone|%s|x\n' "$P/gstack/gone" > "$P/manifest"
+out=$(bash "$PR" "$P/links" "$P/repo" "$P/manifest")
+check "with a manifest the gstack original is restored, not removed" \
+      "[ \"\$(readlink '$P/links/gone')\" = '$P/gstack/gone' ]"
+check "…and says restored" "printf '%s' \"\$out\" | grep -q 'gone (restored to'"
+
+# THE REGRESSION THAT MOTIVATED THE EXTRACTION: keyed on the install manifest,
+# the prune iterated zero times when no manifest existed — which is the case on
+# a worktree install, the one whose link the rename orphans.
+P=$(prunefix); bash "$PR" "$P/links" "$P/repo" "$P/no-such-manifest" >/dev/null
+check "the prune works with NO manifest (the install that needed it had none)" \
+      "[ ! -L '$P/links/gone' ]"
+# COMMENT-STRIPPED, like the workflow guards above. The first version of this
+# grepped the whole file, and the comment three lines above the call satisfied
+# it: a mutation that replaced the invocation with a no-op left the suite green.
+SETUP_NC="$SANDBOX/setup-nocomments.sh"
+sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
+check "setup invokes the prune script (code, not a comment)" \
+      "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
+printf '%s\n' '"$SKILLS_DIR" "$JJSTACK_DIR"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and this repo" \
+      "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+
+# A blank line inside a markdown table ENDS it, and the rows below render as
+# raw pipe text. Editing the /review row in this PR introduced exactly that on
+# the repo's front page. The class, not the instance: no blank line may sit
+# between two table rows anywhere in the docs this repo ships.
+for f in README.md TUTORIAL.md CHANGELOG.md; do
+  split=$(awk '/^\|/{if(blank&&prev){print FILENAME": "NR}; prev=1; blank=0; next}
+               /^[[:space:]]*$/{if(prev)blank=1; next}
+               {prev=0; blank=0}' "$DIR/$f")
+  check "$f has no blank line splitting a markdown table" "[ -z \"\$split\" ]"
+done
+
+# DERIVE, DON'T ENUMERATE: every shadow the real tree declares must be one
+# the real built-in list contains, and every real collision must be declared.
+check "every declared shadow in the real tree is reported as declared" \
+      "! vs_out '$DIR' | grep -q 'does not declare it'"
+check "no skill in the real tree reports a 2-byte description" \
+      "! vs_out '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+check "the real built-in list carries a version header" \
+      "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
+check "the real built-in list contains the two names that collided on main (review, security-review)" \
+      "grep -qx review '$DIR/references/claude-code-builtins.txt' && grep -qx security-review '$DIR/references/claude-code-builtins.txt'"
+check "the refresh script reproduces the binary-derived block's shape (header lines present)" \
+      "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
+check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
+      "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

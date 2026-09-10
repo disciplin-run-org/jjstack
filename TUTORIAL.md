@@ -239,7 +239,7 @@ Claude: Stage 1 spec compliance vs the approved eng-review plan:
 ```
 
 ```
-You:    /security-review
+You:    /jj-security-review
 Claude: [loads Anthropic + Sentry + OWASP + jjstack MCP-specific CWE]
         [10-phase assessment: STRIDE summary, 14+ secret patterns,
          insecure defaults, MCP-specific risks]

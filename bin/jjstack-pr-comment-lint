@@ -43,7 +43,7 @@
 #   - at most N findings visible, counted as OCCURRENCES not lines
 #   - a findings comment, or a resolved approve, carries exactly one collapsed
 #     `<details>` report block, closed, not `open`, and not empty
-#   - a declared residual: "N blocking, M total" plus "M-shown more"
+#   - a declared residual: "N blocking, K non-blocking" plus "N+K-shown more"
 #   - no emdash "—"            (hard rule, the critical differentiator)
 #   - a whole-body cap under GitHub's comment limit
 #
@@ -128,7 +128,7 @@ done
 # vendors we listed", which is the round-3 defect this rule exists to fix.
 #
 # A credential gate may not degrade. Exit 2 here stops the `&&` chain before
-# `gh pr comment`, so an unsupported grep means "will not post", never "posts
+# `gh pr review`, so an unsupported grep means "will not post", never "posts
 # your key".
 # The probe must MATCH something, and must exercise a lookahead. `grep -qP ''`
 # against empty input returns 1 on a machine with full PCRE - no line to match -
@@ -393,25 +393,30 @@ localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$
 [ -n "$localp" ] && fail "local-path" "\`$localp\` is a path on the reviewer's machine. Nothing local goes in a public comment, above or below the fold; cite repo-relative paths."
 
 # --- the residual: the count that proves nothing was dropped ---
-# "N blocking, M total" lived only as prose in the voice reference, so a comment
-# could show three findings, declare nothing, and pass clean. That is precisely
-# how "be brief" turns into "drop findings". The arithmetic is checkable, so it
-# is checked: M-N must be stated, and it must equal total minus shown.
-# The report is in the same file now, so the visible half is answerable to it.
-# Before the fold this check COULD not see the report; now it can, and until
-# this fix it still did not. A one-line "all issues resolved - lgtm - approved"
-# over a report reading REJECT with two unfixed P0s linted clean and posted:
-# the author reads the top of the comment and merges, with the blocking
-# findings one click below, unread.
+# The count lived only as prose in the voice reference, so a comment could show
+# three findings, declare nothing, and pass clean. That is precisely how "be
+# brief" turns into "drop findings". The arithmetic is checkable, so it is
+# checked: the residual must be stated, and it must equal total minus shown.
+#
+# The form is "N blocking, K non-blocking", not "N blocking, M total". An
+# APPROVE that lists findings reads as a contradiction until the reader works
+# out from the P-numbers that none of them block; the word says it for them.
+# The old form is refused, not accepted alongside: two forms is one more thing
+# for a reader to decode.
+#
+# And the declared count is answerable to the report beneath it. Before the
+# fold this check COULD not see the report; after it, it still did not, so a
+# one-line "all issues resolved - lgtm - approved" over a report reading REJECT
+# with two unfixed P0s linted clean and posted - the author reads the top of
+# the comment and merges, the blocking findings one click below, unread.
+#
 # The report's findings are its TABLE ROWS, not its P-tokens. Phase 4's
 # template puts each finding in a row and expands it beneath, so a token sweep
 # counts every finding at least twice and a Guardrails line mentioning P0
 # counts a third. Floored against that, a comment declaring its true total was
-# REFUSED and only an inflated one passed - the rule exists so a reader is
-# never told there are fewer findings than there are, and it made the reviewer
-# tell them there are more. Introduced by the fix for the opposite defect, and
-# invisible to every fixture, because a fixture of flat bullets carries one
-# token per finding and the two counts coincide.
+# REFUSED and only an inflated one passed: the rule exists so a reader is never
+# told there are fewer findings than there are, and it made the reviewer tell
+# them there are more.
 n_rep=$(sed -n '/^### Findings/,/^### /p' "$REP" 2>/dev/null | grep -cE '^\|[[:space:]]*P[0-3][[:space:]]*\|')
 # ANTI-VACUITY FLOOR. The range above is anchored on a literal heading, so a
 # report that lists its findings anywhere else yields an empty range, n_rep=0,
@@ -432,24 +437,29 @@ if [ "$VERDICT" = "approve" ]; then
     fail "verdict-contradicts-report" "the visible line approves while the report beneath it does not. The reader takes the top of the comment as the answer and never opens the block."
   fi
 else
-  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$VIS" 2>/dev/null | head -1)
+  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ non-blocking' "$VIS" 2>/dev/null | head -1)
   if [ -z "$decl" ]; then
-    fail "no-residual" "no \"N blocking, M total\" declared. Without the total, a reader cannot tell a short comment from a dropped finding."
+    fail "no-residual" "no \"N blocking, K non-blocking\" declared. Without both counts, a reader cannot tell a short comment from a dropped finding, or an approve-with-notes from a contradiction."
   else
     n_block=$(echo "$decl" | grep -oE '^[0-9]+')
-    n_tot=$(echo "$decl" | grep -oE '[0-9]+ total' | grep -oE '^[0-9]+')
-    if [ "$n_tot" -lt "$n_block" ]; then
-      fail "bad-residual" "$decl: the total cannot be smaller than the blocking count."
-    elif [ "$n_rep" -gt "$n_tot" ]; then
-      # The declared total is a FLOOR, not a free variable. It may exceed what
+    # -i, because the declaration above matched case-insensitively: a
+    # legitimate "9 Non-blocking" re-grepped case-sensitively returned empty,
+    # bash read the empty operand as 0, and nine findings sat in the report
+    # with nothing in the visible part pointing at them - clean, exit 0. And
+    # base 10 explicitly, or "09" aborts the arithmetic, leaves n_tot unset,
+    # and skips the whole check below just as silently.
+    n_nonblock=$(echo "$decl" | grep -oiE '[0-9]+ non-blocking' | grep -oE '^[0-9]+')
+    n_tot=$((10#${n_block:-0} + 10#${n_nonblock:-0}))
+    if [ "$n_rep" -gt "$n_tot" ]; then
+      # The declared count is a FLOOR, not a free variable. It may exceed what
       # the report enumerates, but never fall below it: that is a finding the
       # reader is never told exists.
-      fail "bad-residual" "$n_tot declared, but the report beneath carries $n_rep. The declared total is what the reader trusts; it cannot be smaller than the report it sits on."
+      fail "bad-residual" "$n_tot declared, but the report beneath carries $n_rep. The declared count is what the reader trusts; it cannot be smaller than the report it sits on."
     elif [ "$n_tot" -gt "$n_find" ]; then
       want=$((n_tot - n_find))
       got=$(grep -oiE '[0-9]+ more\b' "$VIS" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
       [ "${got:-x}" = "$want" ] || \
-        fail "bad-residual" "$n_tot total, $n_find shown: say \"$want more\" and point at the report beneath. Findings move into the report, they never disappear."
+        fail "bad-residual" "$n_tot findings declared, $n_find shown: say \"$want more\" and point at the report beneath. Findings move into the report, they never disappear."
     fi
   fi
 fi
