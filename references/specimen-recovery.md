@@ -155,6 +155,40 @@ that assertion alone.
 contaminated three results in that same session. `git reset --hard` to a known
 commit between mutants, or mutate a copy and throw it away.
 
+## An exception list is a guard too — and is usually derivable
+
+The last surface, and the one that hides best: every guard eventually grows a
+set of things it must NOT flag, and that set is trusted rather than tested.
+
+`bin/jjstack-verify-skills` check 8 needed one. Its rows grep for the
+mechanisms that hand work to a successor, and two files legitimately contain
+those strings without calling anything: the check's own table, and this
+document, which quotes a pattern while explaining it. The first version was a
+hand-written list of the two — which made that list the one place a real call
+site could hide, watched by an assertion instead of closed.
+
+It was derivable, and the derivation is worth the shape rather than the
+instance:
+
+> **A call site contains text the pattern MATCHES. A file that states the
+> guard contains the pattern ITSELF**, metacharacters and all.
+
+So a match does not count when the matching LINE quotes some row's pattern
+literally. Line-scoped, never file-scoped: a real call site three lines below a
+quoted pattern still counts, and this document is now caught if it ever calls
+the mechanism it describes — there is a fixture that plants exactly that.
+
+The quotable set is itself derived from the table: a pattern is quotable only
+if it carries a metacharacter. **The residual is provable rather than a gap.**
+For a literal pattern, quoting it and using the mechanism are the same text, so
+nothing can separate them — which is why the checker still matches its own two
+literal rows, and why the one remaining exception is computed from the file's
+own path (`bin/$(basename "${BASH_SOURCE[0]}")`) rather than written down.
+
+Before adding a name to an exception list, ask what property put it there. If
+you can state that property, derive it; if you cannot, you are about to trust
+something.
+
 ## Durability: a recovered specimen outlives its commit only if you make it
 
 CI is a shallow clone. `actions/checkout` fetches depth 1 by default, so

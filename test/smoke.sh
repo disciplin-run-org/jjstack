@@ -2435,15 +2435,25 @@ c8tree() {   # c8tree -> a copy of the parts check 8 inspects
 }
 c8() { bash "$1/bin/jjstack-verify-skills" 2>&1 | sed -n '/== 8/,$p'; }
 
-# THE EXCLUSION LIST IS PINNED. Check 8 skips two files that DOCUMENT the
-# mechanisms rather than using them — its own table, and the reference that
-# teaches how these guards are written. That list is the one place a real call
-# site could hide, so its membership is asserted rather than trusted, and a
-# third entry has to be added here on purpose.
-check "check 8 excludes exactly two documentation files, named" \
-      "[ \"\$(grep -c . <(sed -n '/^cat > \"\$TMP\/notcarriers\"/,/^NOTC\$/p' '$DIR/bin/jjstack-verify-skills' | sed '1d;\$d'))\" = 1 ]"
-check "…and the reference is one of them (the other is the checker itself)" \
-      "grep -q '^references/specimen-recovery.md\$' <(sed -n '/^cat > \"\$TMP\/notcarriers\"/,/^NOTC\$/p' '$DIR/bin/jjstack-verify-skills')"
+# NO EXCLUSION LIST AT ALL. Check 8 used to carry a hand-written list of files
+# that DOCUMENT the mechanisms rather than using them, and that list was the one
+# place a real call site could have hidden. It is derived now: a match does not
+# count when the matching LINE quotes some row's pattern literally, because a
+# call site contains text the pattern MATCHES while documentation contains the
+# pattern ITSELF.
+check "check 8 carries no hand-written exclusion list any more" \
+      "! grep -q 'notcarriers' '$DIR/bin/jjstack-verify-skills'"
+check "…and the reference that quotes the patterns is not reported as a carrier" \
+      "! bash '$DIR/bin/jjstack-verify-skills' | grep -q 'specimen-recovery'"
+# THE DIRECTION THAT MATTERS. A rule that discounts quoted patterns must not
+# discount a REAL call site sitting in the very file that quotes them.
+C=$(c8tree)
+printf '\nRun `jjstack-rollover-slot --cwd "$PWD" write` to hand the work on.\n' \
+  >> "$C/references/specimen-recovery.md"
+check "…but a real call site planted IN that reference is still caught" \
+      "c8 '$C' | grep -q 'references/specimen-recovery.md'"
+check "…and the mutation really added one (the fixture is not a no-op)" \
+      "grep -qE 'jjstack-rollover-slot[^;|&]*[[:space:]]write' '$C/references/specimen-recovery.md'"
 
 C=$(c8tree)
 check "check 8 passes on an unmutated copy of this tree (control)" \

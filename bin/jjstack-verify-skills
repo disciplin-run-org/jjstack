@@ -254,21 +254,26 @@ printf '%s\t%s\t%s\n' \
     '-' \
     'references/rollover-handover.md bin/jjstack-rollover-slot skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
   > "$TMP/continuation"
-# DOCUMENTATION ABOUT THE GUARD IS NOT A CARRIER. Two files state the patterns
-# this check looks for: the check's own table, and the reference that teaches
-# how these guards are written and shows one of them being mutated. Scanning
-# them makes each row find a description of itself and report a leak that is
-# its own example — the self-pollution class.
+# DOCUMENTATION ABOUT THE GUARD IS NOT A CARRIER, and the difference is
+# DERIVED rather than listed. A call site contains text the pattern MATCHES;
+# a file that states the guard contains the pattern ITSELF, metacharacters and
+# all. So a match does not count when the matching LINE quotes some row's
+# pattern literally — line-scoped, not file-scoped, so a real call site three
+# lines below a quoted pattern still counts.
 #
-# The list is deliberately TINY and enumerated, because there is no derivable
-# property that separates "documents the mechanism" from "uses it". The
-# assertion in test/smoke.sh pins its exact membership, so it cannot grow
-# quietly into a place to hide a real call site.
+# The quotable set is derived from the table: a pattern can only be quoted
+# distinguishably if it carries a metacharacter. For a literal pattern,
+# quoting it and using the mechanism are THE SAME TEXT, and no rule can
+# separate them — which is why bin/jjstack-verify-skills still matches its own
+# two literal rows, and why $SELF exists. That is computed from this file's own
+# path, so it cannot drift and cannot be added to.
+#
+# This replaced a hand-written exclusion list. Its one entry — the reference
+# that teaches how these guards are written — now comes out derivably, so the
+# one place a real call site could have hidden is closed rather than watched.
 SELF="bin/$(basename "${BASH_SOURCE[0]}")"
-cat > "$TMP/notcarriers" <<'NOTC'
-references/specimen-recovery.md
-NOTC
-printf '%s\n' "$SELF" >> "$TMP/notcarriers"
+cut -d"$(printf '\t')" -f1 "$TMP/continuation" \
+  | grep -E '[][^$*+?(){}|\\]|\.\*' > "$TMP/quotable" || :
 while IFS=$'\t' read -r pat primary allowed; do
   [ -n "$pat" ] || continue
   # CODE ROWS READ A COMMENT-STRIPPED COPY. hooks/shared-memory.sh is the one
@@ -293,8 +298,11 @@ while IFS=$'\t' read -r pat primary allowed; do
       done
     done
   fi
-  grep -rlE "$pat" "$scan_root/skills" "$scan_root/references" "$scan_root/hooks" "$scan_root/bin" 2>/dev/null \
-    | sed "s|^$scan_root/||" | grep -vxF -f "$TMP/notcarriers" | sort -u > "$TMP/carriers"
+  # -n, not -l: the discount is per LINE, so a file may quote a pattern in one
+  # place and still be caught calling the mechanism in another.
+  grep -rnE "$pat" "$scan_root/skills" "$scan_root/references" "$scan_root/hooks" "$scan_root/bin" 2>/dev/null \
+    | sed "s|^$scan_root/||" | grep -vF -f "$TMP/quotable" \
+    | cut -d: -f1 | grep -vxF "$SELF" | sort -u > "$TMP/carriers"
   if ! [ -s "$TMP/carriers" ]; then
     bad "'$pat' matches nothing in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
     continue
