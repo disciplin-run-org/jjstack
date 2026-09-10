@@ -48,7 +48,10 @@ Adapted from `obra/superpowers`' `receiving-code-review`.
 - You were asked "can you address these findings?"
 
 **Skip for:**
-- Self-review (use `/review` directly — you're the reviewer, not the receiver)
+- Reviewing someone else's PR (use `/review` directly — you're the reviewer,
+  not the receiver). A round you run on your own PR does not satisfy
+  done-done rung 4, which needs a session that did not write the code; see
+  `references/independent-review.md`.
 - Trivial nits on throwaway code (fix or ignore, no ceremony)
 - Feedback that is entirely out of scope (that's a new task, open an issue)
 

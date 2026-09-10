@@ -50,6 +50,21 @@ stale declaration; the built-in list it reads is data in
 by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
 is newer than the list. It runs on every pull request.
 
+### Who reviews it
+
+Nothing merges on the author's say-so. Rung 4 of the Definition of Done is an
+independent review: a Claude Code session that did not write the code, in its
+own directory and under its own GitHub identity, runs `/review` on the pull
+request and approves it. Every push that answers findings is followed by a
+re-request, and the merge waits for an approval newer than the last commit.
+A review you run on your own PR still runs, and still helps before you hand
+the change over; it just does not satisfy the rung, and `/review` says so.
+On InboundSavvy repositories a human (Andre or Santiago) is asked after the AI
+round is clean; on disciplin.run and personal repositories one AI review is
+enough. `references/independent-review.md` has the table, both sides of the
+protocol, and the branch-protection settings that make the rule a floor rather
+than prose.
+
 ---
 
 ## The Three Pillars
@@ -191,7 +206,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 17 reference documents — the encoded knowledge each skill
+jjstack ships 18 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -209,7 +224,8 @@ loads. Read them directly or let skills load them for you.
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
 | `spec-cleanup-playbook.md` | Five smell tests for capability-level spec cleanup before the QA loop |
 | `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
-| `definition-of-done.md` | The canonical 10-rung "done-done" Definition of Done + reporting rule |
+| `definition-of-done.md` | The canonical 11-rung "done-done" Definition of Done + reporting rule |
+| `independent-review.md` | Rung 4: who reviews a PR before merge (the AI reviewer session, then a human on InboundSavvy repos), why the author never reviews their own, the reviewer identity, and the branch-protection settings |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |

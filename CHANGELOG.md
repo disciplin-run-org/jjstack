@@ -43,6 +43,35 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
+- **"Done" now means someone else reviewed it.** The Definition of Done has an
+  eleventh rung: before a pull request is merged, a Claude Code session that did
+  not write the code reviews it and approves it on GitHub. The reporting form is
+  now "done N/11". Until now every review on this repo was run by the session
+  that wrote the change, and eight merged pull requests in a row carried no
+  review at all.
+
+  Review is a loop, not one gate. Every push that answers findings gets a fresh
+  review request, and the merge waits for an approval newer than the last
+  commit. An approval from the round that asked for the changes does not cover
+  the changes it asked for.
+
+  Who must approve depends on whose repository it is. On InboundSavvy
+  repositories the AI review goes first and then Andre or Santiago is asked, so
+  they see a converged change rather than a draft. On disciplin.run and personal
+  repositories one AI review is enough. The table, the protocol for both sides,
+  and the branch-protection settings are in `references/independent-review.md`,
+  including the two commands that repeatedly went wrong by hand: requesting a
+  reviewer over REST, because `gh pr edit --add-reviewer` fails whole against a
+  repo with Projects classic retired, and turning on
+  `require_code_owner_reviews`, without which a `CODEOWNERS` file is requested
+  but never required.
+
+  A review you run on your own pull request still runs and is still worth
+  running before you hand it over. It just does not satisfy the rung, and
+  `/review` now says so in its close-out instead of leaving you to notice the
+  missing green check. Branch protection requiring an approval is set per repo
+  once the reviewer account has approved something there; it is not on yet.
+
 - **Long-running work no longer stops to ask you for permission.** Over a
   measured 48 hours, sessions on this machine interrupted a person 430 times,
   about nine times an hour, and every single interruption was approved. That

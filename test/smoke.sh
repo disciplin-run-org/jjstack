@@ -1284,6 +1284,105 @@ check "…and requires every file to be read or named" \
 check "the report may name one thing done well" \
       "grep -q 'specific enough to repeat' '$SK'"
 check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
+# ── done-done rung 4: the review the merge waits on ──────────────────────────
+# The skill already refuses to set a STATE on the author's own PR (GitHub does
+# too, with a 422). The rung adds what that costs beyond the green check: a
+# self-authored round does not satisfy it. The skill has to SAY so, because the
+# author is the one reading the close-out.
+IRV="$DIR/references/independent-review.md"
+DOD="$DIR/references/definition-of-done.md"
+check "the self-authored branch names the rung it does not satisfy" \
+      "grep -q 'does not satisfy' '$SK'"
+# THE WHOLE DOCUMENT HAS TO AGREE WITH THE SKILL. An earlier round of this PR
+# carried a SELF_REVIEW refusal and removed it, because the previous-round
+# detector's account filter prevents the corruption the refusal existed for -
+# a better fix than a refusal. The prose that ARGUED for the refusal did not
+# move with it: five sentences across the two documents that govern the rung
+# still told the reader the skill refuses, and one of them was the canonical
+# Definition of Done. A reader reaches whichever they find first.
+# The guard is absence, because presence of the new wording could not catch a
+# surviving sibling: that is how the same class was missed at four sites while
+# a review named three.
+for _gov in "$DOD" "$IRV"; do
+  _n=$(basename "$_gov")
+  check "$_n does not claim /review refuses a self-review" \
+        "! grep -qE '\`?/review\`? (now )?refuses' '$_gov'"
+  check "…nor names the removed SELF_REVIEW stop" \
+        "! grep -q 'SELF_REVIEW' '$_gov'"
+  check "…nor tells the reader never to run it on their own PR" \
+        "! grep -qiE 'never run .{0,3}/review' '$_gov'"
+done
+# …and the skill it describes really has no such refusal, or the guards above
+# are asserting agreement with a file that never changed (anti-vacuity floor).
+check "the skill itself carries no SELF_REVIEW stop" "! grep -q 'SELF_REVIEW' '$SK'"
+check "…and the governing docs say what DOES prevent the corruption" \
+      "grep -q 'filters on the posting account' '$IRV'"
+check "…and points at the protocol rather than restating it" \
+      "grep -q 'references/independent-review.md' '$SK'"
+check "…which ships" "test -f '$IRV'"
+check "…and does not become a refusal to run (the author filter makes it safe)" \
+      "grep -q 'not a refusal to run' '$SK'"
+# THE STALE-APPROVAL CHECK IS EXECUTED, NOT QUOTED. Rung 4 merges on an APPROVED
+# review NEWER than the last commit: the round that raised the findings does not
+# cover the commits that answered them. The reference hands the author a jq
+# one-liner for repos without branch protection, and a one-liner nobody runs is
+# where this repo's last several defects lived. Pull the program OUT OF THE DOC
+# and run it, so the doc and the test cannot drift.
+STALE="$DIR/test/fixtures/pr-stale-approval.json"
+sed -n "s/.*--json reviews,commits --jq '\(.*\)'$/\1/p" "$IRV" > "$SANDBOX/stale.jq"
+check "the stale-approval jq was recovered from the reference (anti-vacuity floor)" \
+      "[ -s '$SANDBOX/stale.jq' ]"
+check "…and it is one program, not several" \
+      "[ \$(grep -c . '$SANDBOX/stale.jq') -eq 1 ]"
+jq -r "$(cat "$SANDBOX/stale.jq")" "$STALE" > "$SANDBOX/stale.out" 2>"$SANDBOX/stale.err"; _rc=$?
+check "the reference's own command runs against a PR shape" "[ $_rc -eq 0 ]"
+check "…printing the newest review, not the first" \
+      "grep -q 'last review: ai-assistant-2026 APPROVED 2026-09-10T11:00:00Z' '$SANDBOX/stale.out'"
+check "…and the newest commit" \
+      "grep -q 'last commit: 2026-09-10T12:00:00Z' '$SANDBOX/stale.out'"
+# The fixture is the STALE case BY CONSTRUCTION: approval 11:00, commit 12:00.
+# Without this floor the two greps above would pass on a fixture proving nothing.
+check "…on a fixture whose commit is newer than its approval (the stale case)" \
+      "[ \"\$(jq -r '.commits | last | .committedDate' '$STALE')\" \> \"\$(jq -r '.reviews | last | .submittedAt' '$STALE')\" ]"
+# A PR with no reviews yet is the common case on a first request, and an
+# unguarded `.reviews | last | .author.login` errors there rather than printing.
+printf '{"reviews":[],"commits":[{"committedDate":"2026-09-10T12:00:00Z"}]}\n' > "$SANDBOX/noreview.json"
+jq -r "$(cat "$SANDBOX/stale.jq")" "$SANDBOX/noreview.json" > "$SANDBOX/noreview.out" 2>&1; _rc=$?
+check "…and survives a PR with no reviews yet" "[ $_rc -eq 0 ]"
+check "…reporting none rather than erroring" "grep -q 'last review: none' '$SANDBOX/noreview.out'"
+# Read the rung as PROSE, not as lines: a reflow must not decide whether the
+# rule is present.
+tr '\n' ' ' < "$DOD" | tr -s ' ' > "$SANDBOX/dod.flat"
+check "rung 4 requires a re-request after every push that answers findings" \
+      "grep -q 'every push that answers findings is followed by a re-request' '$SANDBOX/dod.flat'"
+check "…and names the condition the merge waits on" \
+      "grep -q 'APPROVED review newer than the last commit' '$SANDBOX/dod.flat'"
+check "…inside rung 4, not elsewhere in the file (anti-vacuity floor)" \
+      "grep -q '4. \*\*Independently reviewed\*\*.*APPROVED review newer than the last commit' '$SANDBOX/dod.flat'"
+# The rung keys on the review STATE. It once demanded a literal 'lgtm - approved'
+# line, which /review does not emit when it approves WITH non-blocking findings -
+# a verdict the skill legitimately returns - so the rung was unsatisfiable by its
+# own reviewer on any PR that had ever had a finding.
+check "…and keys on the review state, not on a literal verdict line" \
+      "! grep -q 'newest verdict on the thread is .lgtm - approved.' '$SANDBOX/dod.flat'"
+check "…saying so, so the literal is not re-added" \
+      "grep -q 'The state is the condition, not any particular wording' '$SANDBOX/dod.flat'"
+# gh pr edit --add-reviewer resolves the PR through GraphQL, and that query reads
+# projectCards - retired with Projects classic. It fails WHOLE on this repo, so a
+# protocol step built on it never lands the request.
+check "the request step avoids the GraphQL path that Projects-classic broke" \
+      "! grep -q 'gh pr edit .* --add-reviewer' '$IRV'"
+check "…using the REST requested_reviewers route instead" \
+      "grep -q 'pulls/<PR>/requested_reviewers' '$IRV'"
+check "…and records why, so it is not helpfully simplified back" \
+      "grep -q 'projectCards' '$IRV'"
+# CODEOWNERS is the carrier named for the human half of the InboundSavvy rule.
+# Without require_code_owner_reviews GitHub REQUESTS code owners and requires
+# nothing, so two AI approvals would satisfy a count of 2.
+check "the InboundSavvy protection turns CODEOWNERS into a requirement" \
+      "grep -q 'require_code_owner_reviews' '$IRV'"
+check "…and says what is inert without it" \
+      "grep -q 'a .CODEOWNERS. file is inert' '$IRV'"
 # THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
 # lint rounds went on the link. The skill must say the new shape everywhere it
 # used to say the old one, or a reader follows whichever they reach first.
