@@ -583,7 +583,8 @@ fi
 
 # ─── Step 11: Summary ────────────────────────────────────────
 echo ""
-echo -e "${CYAN}jjstack v$(cat "$JJSTACK_DIR/VERSION" | tr -d '[:space:]') installed${NC}"
+_jjver="$("$JJSTACK_DIR/bin/jjstack-version" "$JJSTACK_DIR" 2>/dev/null || true)"
+echo -e "${CYAN}jjstack ${_jjver:+v$_jjver }installed${NC}"
 echo ""
 
 if [ ${#REPLACED[@]} -gt 0 ]; then

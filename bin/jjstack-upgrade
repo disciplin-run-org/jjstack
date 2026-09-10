@@ -41,7 +41,7 @@ if [ "$SOURCE_DIR" != "$JJSTACK_DIR" ]; then
 fi
 JJSTACK_DIR="$SOURCE_DIR"
 MARKER_FILE="$STATE_DIR/just-upgraded-from"
-VERSION_FILE="$JJSTACK_DIR/VERSION"
+VERBIN="$(cd "$(dirname "$0")" && pwd)/jjstack-version"
 
 CHECK_ONLY=false
 for arg in "$@"; do
@@ -152,18 +152,14 @@ if [ "$CHECK_ONLY" = true ]; then
 fi
 
 # ─── Stash the pre-upgrade version for the JUST_UPGRADED marker ─
-OLD_VERSION=""
-if [ -f "$VERSION_FILE" ]; then
-  OLD_VERSION="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
-fi
+OLD_VERSION="$("$VERBIN" "$JJSTACK_DIR" 2>/dev/null || true)"
 
 # ─── Fast-forward pull ────────────────────────────────────────
-git pull --ff-only --quiet origin "$DEFAULT_BRANCH"
+# --tags: the release is a tag, and it can be created after the commit it
+# names was already fetched, so the pull must bring tags as well as commits.
+git pull --ff-only --quiet --tags origin "$DEFAULT_BRANCH"
 
-NEW_VERSION=""
-if [ -f "$VERSION_FILE" ]; then
-  NEW_VERSION="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
-fi
+NEW_VERSION="$("$VERBIN" "$JJSTACK_DIR" 2>/dev/null || true)"
 
 # Drop the marker so the next update-check can say "JUST_UPGRADED"
 mkdir -p "$STATE_DIR"

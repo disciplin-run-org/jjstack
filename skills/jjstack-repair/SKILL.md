@@ -61,7 +61,7 @@ Report what happened:
 - `UPGRADED <old> → <new>` — pulled cleanly; skills re-symlinked;
   statusline path refreshed
 - `UPGRADED (version unchanged)` — doc-only or chore commits merged;
-  no VERSION bump (still worth the pull)
+  no new release tag (still worth the pull)
 - `already up-to-date` — jjstack-update-check was stale; nothing to do
 - `ABORT: ...` — a safety precondition failed. Surface the exact reason
   (working tree dirty, on non-default branch, diverged from origin)
@@ -74,7 +74,11 @@ step entirely.
 ## Step 4: Show status
 
 ```bash
-cat ~/.claude/skills/jjstack/VERSION
+~/.claude/skills/jjstack/bin/jjstack-version
 ```
+
+It prints the release tag the live tree is at. Empty means the tree has no
+release tag to report (a tarball install, or a clone that has not fetched its
+tags): say "version unknown", not "broken".
 
 Report the jjstack version and confirm all skills are operational.

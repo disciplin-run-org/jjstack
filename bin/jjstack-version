@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# jjstack-version — the version of a jjstack tree, read from its release tags.
+#
+# Usage: jjstack-version [<dir> [<ref>]]
+#   <dir>  a jjstack tree (default: the tree this script lives in)
+#   <ref>  a commit in it (default HEAD), e.g. origin/main
+#
+# Prints the nearest vX.Y.Z tag reachable from <ref>, without the leading v.
+# Prints nothing and exits 0 when there is none: a tarball install, or a clone
+# that has not fetched its tags. An unknown version is not an error, and every
+# caller reads empty as "cannot tell".
+#
+# Why tags and not a VERSION file: a release is a tag on main, cut by
+# .github/workflows/version-bump.yml with bin/jjstack-release-version. Branch
+# protection on main refuses any commit that did not come through a reviewed
+# pull request, so no bot can commit a VERSION bump; a tag needs no commit.
+#
+# REACHABLE, not highest. A tag can sit on a commit that never reached main
+# (v0.42.1 and v0.43.0 did, pushed by runs whose main push was refused), and a
+# tree does not contain a release it cannot reach.
+set -euo pipefail
+
+dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+ref="${2:-HEAD}"
+
+# The tree must be its own repository. A tarball unpacked inside some other
+# git repository would otherwise answer with THAT repository's tags.
+top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$top" ] || exit 0
+[ "$(cd "$top" && pwd -P)" = "$(cd "$dir" && pwd -P)" ] || exit 0
+
+tag="$(git -C "$dir" describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null || true)"
+if grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tag"; then
+  printf '%s\n' "${tag#v}"
+fi

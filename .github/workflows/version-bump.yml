@@ -1,5 +1,16 @@
 name: Version Bump
 
+# A release is a TAG on the merged commit, never a commit. Branch protection on
+# main requires every change to arrive through a reviewed pull request with a
+# passing `verify`, so a bot commit that bumps a VERSION file is refused. It was,
+# on every merge from #41 onwards, and because the old step ran
+# `git push origin main --tags` the tag landed while main was refused, leaving
+# v0.42.1 and v0.43.0 on commits that never reached main. Tags are not branches
+# and protection does not cover them, so pushing only the tag needs no bypass.
+#
+# The version logic lives in bin/jjstack-release-version, where test/smoke.sh
+# runs it, instead of inline here where nothing does.
+
 on:
   push:
     branches: [main]
@@ -8,57 +19,37 @@ on:
 permissions:
   contents: write
 
+# One release at a time: two merges close together must not both count from
+# the same highest tag and race for the same number.
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
 jobs:
   bump:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine bump type from commits
-        id: bump
+      - name: Tag the release
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LAST_TAG" ]; then
-            COMMITS=$(git log --format="%s" HEAD)
-          else
-            COMMITS=$(git log --format="%s" "$LAST_TAG"..HEAD)
+          # Release main's tip and nothing else. A manual run on a branch, or a
+          # re-run of an older run after main has moved, checks out a commit
+          # that is not main's tip, and tagging it would put a release on a
+          # branch or a higher number on an ancestor. Asked of the remote, so
+          # it holds however the job was started.
+          MAIN="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$(git rev-parse HEAD)" != "$MAIN" ]; then
+            echo "HEAD is not main's tip; nothing to release"
+            exit 0
           fi
-
-          BUMP="none"
-
-          if echo "$COMMITS" | grep -qiE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
-            BUMP="major"
-          elif echo "$COMMITS" | grep -qE '^feat(\(.+\))?:'; then
-            BUMP="minor"
-          elif echo "$COMMITS" | grep -qE '^fix(\(.+\))?:'; then
-            BUMP="patch"
+          NEW="$(bash bin/jjstack-release-version .)"
+          if [ -z "$NEW" ]; then
+            echo "nothing to release"
+            exit 0
           fi
-
-          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-
-      - name: Bump version
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          BUMP="${{ steps.bump.outputs.bump }}"
-          CURRENT=$(cat VERSION 2>/dev/null || echo "0.0.0")
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-
-          case "$BUMP" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-
-          NEW="$MAJOR.$MINOR.$PATCH"
-          echo "$NEW" > VERSION
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore: bump version to $NEW [skip ci]"
-          git tag "v$NEW"
-          git push origin main --tags
+          git tag "$NEW" HEAD
+          git push origin "refs/tags/$NEW"
+          echo "released $NEW"

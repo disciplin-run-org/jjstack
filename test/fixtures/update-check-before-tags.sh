@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
+# bin/jjstack-update-check as shipped at efb789d, the last version that read
+# a VERSION file. Every install that has not upgraded past #48 runs this. It
+# reads origin/<default>:VERSION, falls back to a raw URL, and treats anything
+# it cannot parse as "up to date" - so deleting VERSION would silence it for
+# good, and the upgrade notice is the only way it ever gets replaced.
+#
+# Re-derive:  git show efb789d:bin/jjstack-update-check
 # jjstack-update-check — periodic version check.
 #
 # Output (one line, or nothing):
 #   JUST_UPGRADED <old> <new>       — marker found from recent upgrade
-#   UPGRADE_AVAILABLE <old> <new>   — origin's default branch carries a newer
-#                                     release tag than this tree
+#   UPGRADE_AVAILABLE <old> <new>   — remote VERSION differs from local
 #   (nothing)                       — up to date, snoozed, disabled, or check skipped
-#
-# A version is a release tag, read by bin/jjstack-version: the nearest vX.Y.Z
-# reachable from a commit. Local is this tree's HEAD, remote is
-# origin/<default>. A tag on a commit that never reached main is not reachable
-# from either, so it can never be announced as an upgrade.
 #
 # Env overrides (for testing):
 #   JJSTACK_DIR          — override auto-detected jjstack root
+#   JJSTACK_REMOTE_URL   — override remote VERSION URL
 #   JJSTACK_STATE_DIR    — override ~/.jjstack state directory
 set -euo pipefail
 
@@ -22,7 +24,8 @@ STATE_DIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}"
 CACHE_FILE="$STATE_DIR/last-update-check"
 MARKER_FILE="$STATE_DIR/just-upgraded-from"
 SNOOZE_FILE="$STATE_DIR/update-snoozed"
-VERBIN="$(cd "$(dirname "$0")" && pwd)/jjstack-version"
+VERSION_FILE="$JJSTACK_DIR/VERSION"
+REMOTE_URL="${JJSTACK_REMOTE_URL:-https://raw.githubusercontent.com/Disciplin-run-org/jjstack/main/VERSION}"
 
 # ─── Force flag (busts cache for upgrade flow) ──────────────
 if [ "${1:-}" = "--force" ]; then
@@ -78,8 +81,10 @@ check_snooze() {
 "$JJSTACK_DIR/bin/jjstack-fix-symlinks" 2>/dev/null || true
 
 # ─── Step 1: Read local version ──────────────────────────────
-# Empty for a tarball install or a clone with no tags: nothing to compare.
-LOCAL="$("$VERBIN" "$JJSTACK_DIR" 2>/dev/null || true)"
+LOCAL=""
+if [ -f "$VERSION_FILE" ]; then
+  LOCAL="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
 if [ -z "$LOCAL" ]; then
   exit 0
 fi
@@ -132,24 +137,34 @@ if [ -f "$CACHE_FILE" ]; then
   fi
 fi
 
-# ─── Step 4: Slow path — read the remote release ─────────────
-# Fetch the default branch AND its tags: the release is a tag, and a fetch of
-# the branch alone does not bring a tag created after the commit it points at.
-# There is no curl fallback any more. It read a raw VERSION file for tarball
-# installs, but a tarball install has no local version either and left at
-# Step 1, so that path could not be reached.
+# ─── Step 4: Slow path — fetch remote version ────────────────
+# Strategy: prefer `git show origin/<default>:VERSION` over the raw
+# URL so private repos work too (curl to raw.githubusercontent.com
+# 404s for private repos). Fall back to curl if the jjstack directory
+# isn't a git clone (e.g. someone installed from a tarball).
 mkdir -p "$STATE_DIR"
 
-DEFAULT_BRANCH="$(git -C "$JJSTACK_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
-[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main
-git -C "$JJSTACK_DIR" fetch --quiet --tags origin "$DEFAULT_BRANCH" 2>/dev/null || true
-# Read LOCAL again: the fetch can bring a tag for the commit this tree already
-# sits on. Compared with the version read before the fetch, that tree would be
-# told to upgrade to itself, and the upgrade would then say it is up to date.
-LOCAL="$("$VERBIN" "$JJSTACK_DIR" 2>/dev/null || echo "$LOCAL")"
-REMOTE="$("$VERBIN" "$JJSTACK_DIR" "origin/$DEFAULT_BRANCH" 2>/dev/null || true)"
+REMOTE=""
 
-if [ -z "$REMOTE" ] || [ "$LOCAL" = "$REMOTE" ]; then
+if git -C "$JJSTACK_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  DEFAULT_BRANCH="$(git -C "$JJSTACK_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
+  git -C "$JJSTACK_DIR" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
+  REMOTE="$(git -C "$JJSTACK_DIR" show "origin/$DEFAULT_BRANCH:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+fi
+
+# Fall back to curl (works for public repos installed by tarball)
+if [ -z "$REMOTE" ]; then
+  REMOTE="$(curl -sf --max-time 5 "$REMOTE_URL" 2>/dev/null || true)"
+  REMOTE="$(echo "$REMOTE" | tr -d '[:space:]')"
+fi
+
+# Validate: must look like a version number (reject HTML error pages)
+if ! echo "$REMOTE" | grep -qE '^[0-9]+\.[0-9.]+$'; then
+  echo "UP_TO_DATE $LOCAL" > "$CACHE_FILE"
+  exit 0
+fi
+
+if [ "$LOCAL" = "$REMOTE" ]; then
   echo "UP_TO_DATE $LOCAL" > "$CACHE_FILE"
   exit 0
 fi

@@ -2631,11 +2631,11 @@ mkdir -p "$PINSB/work/skills/alpha" "$PINSB/work/bin"
 # The fixture carries the real scripts, because the behaviour under test is
 # how they answer each other. A fixture without them proved only that a
 # missing resolver falls back - which is the fallback, not the feature.
-cp "$BIN/jjstack-skills-pin" "$BIN/jjstack-fix-symlinks" "$PINSB/work/bin/"
-echo "0.1.0" > "$PINSB/work/VERSION"
+cp "$BIN/jjstack-skills-pin" "$BIN/jjstack-fix-symlinks" "$BIN/jjstack-version" "$PINSB/work/bin/"
 printf -- '---\nname: alpha\n---\nRELEASE\n' > "$PINSB/work/skills/alpha/SKILL.md"
 git -C "$PINSB/work" add -A
 git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm init
+git -C "$PINSB/work" tag v0.1.0
 git -C "$PINSB/work" branch -q -M main
 git -C "$PINSB/work" push -q -u origin main 2>/dev/null
 pin() { JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" "$@"; }
@@ -2644,8 +2644,9 @@ pin main >/dev/null 2>&1; _rc=$?
 check "the pin is created from a clone" "[ $_rc -eq 0 ]"
 SERVED="$(pin --resolve)"
 check "…and --resolve names it, not the checkout" "[ \"$SERVED\" != \"$PINSB/work\" ]"
-check "…and it is a real git tree, so VERSION and update-check still work" \
-      "git -C '$SERVED' rev-parse --git-dir >/dev/null 2>&1 && [ -f '$SERVED/VERSION' ]"
+check "…and it is a real git tree, so its release tag and update-check still work" \
+      "git -C '$SERVED' rev-parse --git-dir >/dev/null 2>&1 && [ \"\$('$BIN/jjstack-version' '$SERVED')\" = 0.1.0 ]"
+check "…and --status reports that release" "pin --status | grep -q 'version 0.1.0'"
 check "…reported by --status with a sha" "pin --status | grep -qE 'pinned [0-9a-f]{7}'"
 
 # THE LOAD-BEARING ASSERTION. Everything else in this section is scaffolding
@@ -2727,7 +2728,7 @@ check "…nor iterates the checkout's skills" \
 # All three are about the UPGRADE path, which is the only way a pinned install
 # ever moves. A pin nobody can advance is worse than no pin: it freezes the
 # machine on one commit and the freeze is invisible.
-cp "$BIN/jjstack-upgrade" "$PINSB/work/bin/"
+cp "$BIN/jjstack-upgrade" "$BIN/jjstack-version" "$PINSB/work/bin/"
 git -C "$PINSB/work" add -A
 git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm tools
 git -C "$PINSB/work" push -q origin main 2>/dev/null
@@ -3250,6 +3251,280 @@ check "…the removal of the tree, which is what stops them piling up" \
       "grep -q '^git -C <clone> worktree remove ' '$HDREF'"
 check "…and the prune" \
       "grep -q '^git -C <clone> worktree prune' '$HDREF'"
+
+echo "== 17. a release is a tag, cut without writing to main =="
+# THE INCIDENT. From #41 on, every merge to main failed its release. Branch
+# protection refuses any change to main that did not come through a reviewed
+# pull request, and the old step committed VERSION as a bot and ran
+# `git push origin main --tags`. GitHub refused main PER REF and accepted the
+# tag, so v0.42.1 and v0.43.0 landed on commits that never reached main. Every
+# run after that counted from VERSION, still 0.42.0, computed v0.43.0 again, and
+# died at `git tag` because it existed. VERSION stayed 0.42.0 through six merges
+# and no install was ever told there was an upgrade.
+#
+# The fixture is that repository in miniature: a bare origin whose `update`
+# hook refuses refs/heads/main per ref, as GitHub does, so a push of main plus a
+# tag lands the tag and refuses main. The old step, frozen from af74fb1, must
+# reproduce both failures there; the shipped step must release on the same
+# origin without touching main.
+RVBIN="$BIN/jjstack-release-version"; VBIN="$BIN/jjstack-version"
+WF="$DIR/.github/workflows/version-bump.yml"
+wf_step() {   # wf_step <workflow> <step name>: that step's `run: |` block, dedented
+  awk -v name="$2" '
+    $0 ~ "- name: "name"$" {found=1; next}
+    found && /run: \|/ {inrun=1; match($0,/^ */); ind=RLENGTH; next}
+    inrun { match($0,/^ */); if (NF && RLENGTH<=ind) exit; print substr($0, ind+3) }
+  ' "$1"
+}
+rv_origin() {   # rv_origin <dir> <yes|no: orphan tags> [extra] -> prints main's sha
+  local d="$1"
+  git init -q --bare "$d/origin"
+  git -C "$d/origin" symbolic-ref HEAD refs/heads/main
+  git init -q "$d/src"
+  git -C "$d/src" config user.email t@t
+  git -C "$d/src" config user.name t
+  echo 0.42.0 > "$d/src/VERSION"
+  git -C "$d/src" add VERSION
+  git -C "$d/src" commit -qm "chore: init"
+  git -C "$d/src" branch -q -M main
+  git -C "$d/src" tag v0.42.0
+  if [ "$2" = yes ]; then
+    git -C "$d/src" checkout -q --detach v0.42.0
+    git -C "$d/src" commit -q --allow-empty -m "chore: bump version to 0.42.1 [skip ci]"
+    git -C "$d/src" tag v0.42.1
+    git -C "$d/src" commit -q --allow-empty -m "chore: bump version to 0.43.0 [skip ci]"
+    git -C "$d/src" tag v0.43.0
+    git -C "$d/src" checkout -q main
+  fi
+  git -C "$d/src" commit -q --allow-empty -m "feat(review): something (#42)"
+  [ "${3-}" != extra ] || git -C "$d/src" commit -q --allow-empty -m "feat(rollover): later (#43)"
+  git -C "$d/src" push -q "$d/origin" main --tags
+  # An `update` hook is per ref, like GitHub's protection. A pre-receive hook
+  # would refuse the whole push and hide the half of the incident that
+  # orphaned the tags. It also logs every ref it is asked about, so a check can
+  # say what a step TRIED to push - the refusal alone holds main still whatever
+  # the code does, and a check reading only that cannot fail.
+  printf '#!/bin/sh\necho "$1" >> "%s"\ncase "$1" in refs/heads/main) echo "GH006: Protected branch update failed for refs/heads/main." >&2; exit 1 ;; esac\n' "$d/pushed" > "$d/origin/hooks/update"
+  chmod +x "$d/origin/hooks/update"
+  git -C "$d/origin" rev-parse main
+}
+rv_ci() {   # rv_ci <dir> <step script> [setup]: run it as CI would, in a fresh full clone; prints its exit code
+  rm -rf "$1/ci" "$1/pushed"
+  git clone -q "$1/origin" "$1/ci" 2>/dev/null
+  git -C "$1/ci" config user.email t@t
+  git -C "$1/ci" config user.name t
+  mkdir -p "$1/ci/bin"; cp "$RVBIN" "$1/ci/bin/"
+  [ -z "${3-}" ] || ( cd "$1/ci" && eval "$3" ) >/dev/null 2>&1
+  ( cd "$1/ci" && bash -e -c "$2" ) >/dev/null 2>&1; echo $?
+}
+
+RVNEW=$(wf_step "$WF" 'Tag the release')
+check "the workflow's release step extracts (anti-vacuity floor)" "[ -n \"\$RVNEW\" ]"
+RVOLD=$(grep -v '^#' "$DIR/test/fixtures/version-bump-commits-to-main.sh")
+RVOLD="${RVOLD//'${{ steps.bump.outputs.bump }}'/minor}"
+check "the frozen af74fb1 step is present (anti-vacuity floor)" \
+      "grep -q 'git push origin main --tags' <<<\"\$RVOLD\""
+
+# THE INCIDENT, REPRODUCED: the #41 moment, before any orphan existed.
+RV1=$(tmp rv-before); RV1_MAIN=$(rv_origin "$RV1" no)
+rv_rc=$(rv_ci "$RV1" "$RVOLD")
+check "the old step fails on a protected main (the incident, reproduced)" "[ \"$rv_rc\" != 0 ]"
+check "…and its tag landed anyway, on a commit that is not on main (the orphan)" \
+      "git -C '$RV1/origin' rev-parse -q --verify v0.43.0 >/dev/null && ! git -C '$RV1/origin' merge-base --is-ancestor v0.43.0 main"
+
+# THE FIX, on the repository as it actually is: both orphans present.
+RV2=$(tmp rv-after); RV2_MAIN=$(rv_origin "$RV2" yes)
+rv_tags2=$(git -C "$RV2/origin" tag | sort | tr '\n' ' ')
+rv_rc=$(rv_ci "$RV2" "$RVOLD")
+check "the old step stays broken once an orphan exists (the stuck state)" "[ \"$rv_rc\" != 0 ]"
+check "…dying on the tag collision before it pushes anything, not merely refused" \
+      "[ \"\$(git -C '$RV2/origin' tag | sort | tr '\\n' ' ')\" = '$rv_tags2' ] && [ ! -s '$RV2/pushed' ]"
+rv_rc=$(rv_ci "$RV2" "$RVNEW")
+check "the shipped step succeeds on the same protected origin" "[ \"$rv_rc\" = 0 ]"
+check "…tagging main's own commit, numbered past the orphans (v0.44.0)" \
+      "[ \"\$(git -C '$RV2/origin' rev-parse 'v0.44.0^{commit}' 2>/dev/null)\" = '$RV2_MAIN' ]"
+check "…pushing the tag and never main (the hook saw every ref)" \
+      "grep -qx 'refs/tags/v0.44.0' '$RV2/pushed' && ! grep -qx 'refs/heads/main' '$RV2/pushed'"
+rv_rc=$(rv_ci "$RV2" "$RVNEW")
+check "…and a re-run on the same commit releases nothing a second time" \
+      "[ \"$rv_rc\" = 0 ] && [ \$(git -C '$RV2/origin' tag --points-at main | grep -c .) = 1 ]"
+
+# ONLY MAIN'S TIP. A manual run on a branch, or a re-run of an older run after
+# main moved on, checks out a commit that is not main's tip. Tagging it would
+# put a release on a branch, or a higher number on an ancestor.
+RV3=$(tmp rv-tip); rv_origin "$RV3" yes extra >/dev/null
+rv_tags3=$(git -C "$RV3/origin" tag | sort | tr '\n' ' ')
+rv_rc=$(rv_ci "$RV3" "$RVNEW" "git checkout -q --detach HEAD~1")
+check "a re-run of an older run, after main moved on, releases nothing" \
+      "[ \"$rv_rc\" = 0 ] && [ \"\$(git -C '$RV3/origin' tag | sort | tr '\\n' ' ')\" = '$rv_tags3' ]"
+rv_rc=$(rv_ci "$RV3" "$RVNEW" "git checkout -q -b topic && git commit -q --allow-empty -m 'feat(topic): unmerged'")
+check "a manual run on a branch releases nothing" \
+      "[ \"$rv_rc\" = 0 ] && [ \"\$(git -C '$RV3/origin' tag | sort | tr '\\n' ' ')\" = '$rv_tags3' ]"
+rv_rc=$(rv_ci "$RV3" "$RVNEW")
+check "…while main's tip on the same origin does release (control)" \
+      "[ \"$rv_rc\" = 0 ] && git -C '$RV3/origin' rev-parse -q --verify v0.44.0 >/dev/null"
+
+# THE NUMBERING RULES, one isolated fixture each.
+rv_repo() {   # rv_repo <dir> <head subject> <plain|orphans|notags>
+  git init -q "$1"
+  git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: init"
+  git -C "$1" branch -q -M main
+  [ "$3" = notags ] || git -C "$1" tag v0.42.0
+  if [ "$3" = orphans ]; then
+    git -C "$1" checkout -q --detach HEAD
+    git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: bump version to 0.42.1 [skip ci]"
+    git -C "$1" tag v0.42.1
+    git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: bump version to 0.43.0 [skip ci]"
+    git -C "$1" tag v0.43.0
+    git -C "$1" checkout -q main
+  fi
+  git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$2"
+}
+rv_next() { local d; d=$(tmp rvn); rv_repo "$d/r" "$1" "$2"; "$RVBIN" "$d/r"; }
+check "a feat after the orphans releases past them: v0.44.0, not a colliding v0.43.0" \
+      "[ \"\$(rv_next 'feat(x): y' orphans)\" = v0.44.0 ]"
+check "…and with no orphans it is the next minor (control)" "[ \"\$(rv_next 'feat(x): y' plain)\" = v0.43.0 ]"
+check "a fix is a patch on the highest tag" "[ \"\$(rv_next 'fix(x): y' orphans)\" = v0.43.1 ]"
+check "a breaking change is a major" "[ \"\$(rv_next 'feat(x)!: y' plain)\" = v1.0.0 ]"
+check "a chore releases nothing" "[ -z \"\$(rv_next 'chore: y' orphans)\" ]"
+check "the first release of a repository with no tags is v0.1.0" "[ \"\$(rv_next 'feat: y' notags)\" = v0.1.0 ]"
+# A LONG HISTORY STILL RELEASES. With `printf | grep -q` under pipefail, grep
+# exits on its first match, printf dies of SIGPIPE once the subjects outgrow the
+# pipe buffer, and the release silently becomes nothing. The feat is the newest
+# subject and 2000 older ones follow it, about 130 KiB.
+RVL=$(tmp rv-long)
+git init -q "$RVL/r"
+git -C "$RVL/r" symbolic-ref HEAD refs/heads/main   # fast-import writes main; init may leave HEAD on master
+{ printf 'commit refs/heads/main\ncommitter t <t@t> 0 +0000\ndata 12\nchore: init\n\n'
+  for i in $(seq 1 2000); do
+    printf 'commit refs/heads/main\ncommitter t <t@t> %d +0000\ndata 65\nchore: padding padding padding padding padding padding pad %05d\n\n' "$i" "$i"
+  done
+  printf 'commit refs/heads/main\ncommitter t <t@t> 9999 +0000\ndata 23\nfeat(x): newest change\n\n'
+} | git -C "$RVL/r" fast-import --quiet
+git -C "$RVL/r" tag v0.42.0 "$(git -C "$RVL/r" rev-list --max-parents=0 main)"
+check "the long-history fixture really is past the pipe buffer (anti-vacuity floor)" \
+      "[ \$(git -C '$RVL/r' log --format=%s v0.42.0..HEAD | wc -c) -gt 65536 ]"
+check "a feat on top of a long history is still a minor (no SIGPIPE false negative)" \
+      "[ \"\$('$RVBIN' '$RVL/r')\" = v0.43.0 ]"
+
+# READING A VERSION. Nearest REACHABLE release, never the highest tag: an
+# orphan is not a release this tree contains.
+VF=$(tmp vfix)
+git init -q "$VF/r"
+git -C "$VF/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+git -C "$VF/r" branch -q -M main
+git -C "$VF/r" tag v0.1.0
+git -C "$VF/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+git -C "$VF/r" tag v0.2.0
+git -C "$VF/r" checkout -q --detach v0.1.0
+git -C "$VF/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m orphan
+git -C "$VF/r" tag v0.9.0
+git -C "$VF/r" checkout -q main
+git -C "$VF/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
+mkdir -p "$VF/plain" "$VF/r/nested"
+check "a tree reports the nearest release it can reach" "[ \"\$('$VBIN' '$VF/r')\" = 0.2.0 ]"
+check "…though a higher tag exists on a commit it cannot reach (control)" \
+      "git -C '$VF/r' rev-parse -q --verify v0.9.0 >/dev/null"
+check "…and an older commit reports its own release" "[ \"\$('$VBIN' '$VF/r' v0.1.0)\" = 0.1.0 ]"
+printf '9.9.9\n' > "$VF/r/VERSION"
+check "…and a VERSION file changes nothing: the tag answers" "[ \"\$('$VBIN' '$VF/r')\" = 0.2.0 ]"
+check "a directory that is not a repository reports nothing, and succeeds" \
+      "vout=\$('$VBIN' '$VF/plain'); [ \$? = 0 ] && [ -z \"\$vout\" ]"
+check "a tree unpacked inside another repository does not borrow its tags" \
+      "[ -z \"\$('$VBIN' '$VF/r/nested')\" ]"
+
+# THE UPDATE CHECK. The release tag is cut AFTER the commit it names, so an
+# install that already fetched the commit must still see the tag: the check
+# fetches tags, not only the branch. And an orphan above the release must not
+# be announced.
+UC=$(tmp uc)
+git init -q --bare "$UC/origin"
+git -C "$UC/origin" symbolic-ref HEAD refs/heads/main
+git init -q "$UC/src"
+git -C "$UC/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+git -C "$UC/src" branch -q -M main
+git -C "$UC/src" tag v0.1.0
+git -C "$UC/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "feat: two"
+git -C "$UC/src" checkout -q --detach v0.1.0
+git -C "$UC/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m orphan
+git -C "$UC/src" tag v0.9.0
+git -C "$UC/src" checkout -q main
+git -C "$UC/src" push -q "$UC/origin" main --tags
+git clone -q "$UC/origin" "$UC/local" 2>/dev/null
+git -C "$UC/local" reset -q --hard v0.1.0
+git -C "$UC/src" tag v0.2.0 main
+git -C "$UC/src" push -q "$UC/origin" v0.2.0
+uc() { JJSTACK_DIR="$UC/local" JJSTACK_STATE_DIR="$UC/state" "$BIN/jjstack-update-check" 2>/dev/null; }
+check "an install one release behind is told, by a tag cut after its last fetch" \
+      "[ \"\$(uc)\" = 'UPGRADE_AVAILABLE 0.1.0 0.2.0' ]"
+git -C "$UC/local" reset -q --hard origin/main
+rm -f "$UC/state/last-update-check"
+uc_out=$(uc); uc_rc=$?
+check "an install at the release is told nothing, though a higher orphan tag exists" \
+      "[ $uc_rc = 0 ] && [ -z \"\$uc_out\" ] && grep -qx 'UP_TO_DATE 0.2.0' '$UC/state/last-update-check'"
+# NO PHANTOM UPGRADE. The fetch can bring a tag for the commit the tree already
+# sits on. Compared with the version read before the fetch, the tree would be
+# told to upgrade to itself.
+git -C "$UC/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "feat: three"
+git -C "$UC/src" push -q "$UC/origin" main
+git -C "$UC/local" fetch -q origin
+git -C "$UC/local" reset -q --hard origin/main
+git -C "$UC/src" tag v0.3.0 main
+git -C "$UC/src" push -q "$UC/origin" v0.3.0
+rm -f "$UC/state/last-update-check"
+uc_out=$(uc); uc_rc=$?
+check "a tree whose own commit is tagged after it was pulled is not told to upgrade to itself" \
+      "[ $uc_rc = 0 ] && [ -z \"\$uc_out\" ] && grep -qx 'UP_TO_DATE 0.3.0' '$UC/state/last-update-check'"
+
+# THE UPGRADE, same timing as the update check: the release tag is cut after
+# the commit, so a pull that brings only the branch reports "version unchanged"
+# for a real release. The tools run from a directory with no skills-pin beside
+# them, so the upgrade's served-tree sync is skipped and no pin or link is
+# touched: this measures the version logic alone.
+UP=$(tmp up)
+git init -q --bare "$UP/origin"
+git -C "$UP/origin" symbolic-ref HEAD refs/heads/main
+git init -q "$UP/src"
+git -C "$UP/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+git -C "$UP/src" branch -q -M main
+git -C "$UP/src" tag v0.1.0
+git -C "$UP/src" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "feat: two"
+git -C "$UP/src" push -q "$UP/origin" main --tags
+git clone -q "$UP/origin" "$UP/local" 2>/dev/null
+git -C "$UP/local" reset -q --hard v0.1.0
+git -C "$UP/src" tag v0.2.0 main
+git -C "$UP/src" push -q "$UP/origin" v0.2.0
+mkdir -p "$UP/tools"; cp "$BIN/jjstack-upgrade" "$VBIN" "$UP/tools/"
+up_out=$(JJSTACK_DIR="$UP/local" JJSTACK_STATE_DIR="$UP/state" "$UP/tools/jjstack-upgrade" 2>&1)
+check "an upgrade reports the release it pulled, though the tag came after the commit" \
+      "grep -qF 'UPGRADED 0.1.0 → 0.2.0' <<<\"\$up_out\""
+
+# THE MIGRATION. Every install that has not upgraded runs the checker frozen
+# here from efb789d. It reads origin's VERSION and caches anything it cannot
+# parse as "up to date", for good - and the upgrade notice is the only road to
+# the new checker. So main keeps VERSION, frozen, for that one reader: an
+# install from before #48, facing main as this tree ships it, must be told.
+VSHIP=$(tr -d '[:space:]' < "$DIR/VERSION" 2>/dev/null || true)
+OC=$(tmp oldchecker)
+git init -q --bare "$OC/origin"
+git -C "$OC/origin" symbolic-ref HEAD refs/heads/main
+git init -q "$OC/src"
+echo 0.42.0 > "$OC/src/VERSION"
+git -C "$OC/src" add VERSION
+git -C "$OC/src" -c user.email=t@t -c user.name=t commit -qm "chore: an install from before #48"
+git -C "$OC/src" branch -q -M main
+git -C "$OC/src" push -q "$OC/origin" main
+git clone -q "$OC/origin" "$OC/install" 2>/dev/null
+if [ -n "$VSHIP" ]; then printf '%s\n' "$VSHIP" > "$OC/src/VERSION"; else git -C "$OC/src" rm -q VERSION; fi
+git -C "$OC/src" add -A
+git -C "$OC/src" -c user.email=t@t -c user.name=t commit -qm "fix(release): main as this tree ships it"
+git -C "$OC/src" push -q "$OC/origin" main
+# JJSTACK_REMOTE_URL points nowhere local, so the old checker's curl fallback
+# cannot reach the network from this suite.
+oc_out=$(JJSTACK_DIR="$OC/install" JJSTACK_STATE_DIR="$OC/state" JJSTACK_REMOTE_URL="file://$OC/nowhere" \
+         bash "$DIR/test/fixtures/update-check-before-tags.sh" 2>/dev/null)
+check "an install still on the old checker is told to upgrade to what main ships" \
+      "[ -n '$VSHIP' ] && [ \"\$oc_out\" = 'UPGRADE_AVAILABLE 0.42.0 $VSHIP' ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
