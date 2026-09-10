@@ -35,6 +35,16 @@ jobs:
 
       - name: Tag the release
         run: |
+          # Release main's tip and nothing else. A manual run on a branch, or a
+          # re-run of an older run after main has moved, checks out a commit
+          # that is not main's tip, and tagging it would put a release on a
+          # branch or a higher number on an ancestor. Asked of the remote, so
+          # it holds however the job was started.
+          MAIN="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$(git rev-parse HEAD)" != "$MAIN" ]; then
+            echo "HEAD is not main's tip; nothing to release"
+            exit 0
+          fi
           NEW="$(bash bin/jjstack-release-version .)"
           if [ -z "$NEW" ]; then
             echo "nothing to release"

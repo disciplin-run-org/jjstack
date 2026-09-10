@@ -30,6 +30,6 @@ top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
 [ "$(cd "$top" && pwd -P)" = "$(cd "$dir" && pwd -P)" ] || exit 0
 
 tag="$(git -C "$dir" describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null || true)"
-if printf '%s\n' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+if grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tag"; then
   printf '%s\n' "${tag#v}"
 fi

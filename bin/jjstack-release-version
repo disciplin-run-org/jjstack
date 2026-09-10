@@ -16,15 +16,16 @@
 #     were pushed by runs whose push to main was refused. Counting from the
 #     reachable tag instead would compute v0.43.0 again and collide with it on
 #     every run, which is how the old workflow stayed broken.
+#
+# Every pattern test reads a here-string, never `printf | grep -q`. Under
+# pipefail, grep -q exits on its first match, printf dies of SIGPIPE once the
+# input outgrows the pipe buffer, and the test reads as "no match": a long
+# enough history would release nothing.
 set -euo pipefail
 
 dir="${1:-.}"
 g() { git -C "$dir" "$@"; }
 semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
-
-if g tag --points-at HEAD --list 'v[0-9]*' | grep -qE "$semver"; then
-  exit 0
-fi
 
 last="$(g describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
 if [ -n "$last" ]; then
@@ -33,11 +34,11 @@ else
   subjects="$(g log --format=%s HEAD)"
 fi
 
-if printf '%s\n' "$subjects" | grep -qiE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+if grep -qiE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE' <<<"$subjects"; then
   bump=major
-elif printf '%s\n' "$subjects" | grep -qE '^feat(\(.+\))?:'; then
+elif grep -qE '^feat(\(.+\))?:' <<<"$subjects"; then
   bump=minor
-elif printf '%s\n' "$subjects" | grep -qE '^fix(\(.+\))?:'; then
+elif grep -qE '^fix(\(.+\))?:' <<<"$subjects"; then
   bump=patch
 else
   exit 0
