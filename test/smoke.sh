@@ -1293,6 +1293,30 @@ IRV="$DIR/references/independent-review.md"
 DOD="$DIR/references/definition-of-done.md"
 check "the self-authored branch names the rung it does not satisfy" \
       "grep -q 'does not satisfy' '$SK'"
+# THE WHOLE DOCUMENT HAS TO AGREE WITH THE SKILL. An earlier round of this PR
+# carried a SELF_REVIEW refusal and removed it, because the previous-round
+# detector's account filter prevents the corruption the refusal existed for -
+# a better fix than a refusal. The prose that ARGUED for the refusal did not
+# move with it: five sentences across the two documents that govern the rung
+# still told the reader the skill refuses, and one of them was the canonical
+# Definition of Done. A reader reaches whichever they find first.
+# The guard is absence, because presence of the new wording could not catch a
+# surviving sibling: that is how the same class was missed at four sites while
+# a review named three.
+for _gov in "$DOD" "$IRV"; do
+  _n=$(basename "$_gov")
+  check "$_n does not claim /review refuses a self-review" \
+        "! grep -qE '\`?/review\`? (now )?refuses' '$_gov'"
+  check "…nor names the removed SELF_REVIEW stop" \
+        "! grep -q 'SELF_REVIEW' '$_gov'"
+  check "…nor tells the reader never to run it on their own PR" \
+        "! grep -qiE 'never run .{0,3}/review' '$_gov'"
+done
+# …and the skill it describes really has no such refusal, or the guards above
+# are asserting agreement with a file that never changed (anti-vacuity floor).
+check "the skill itself carries no SELF_REVIEW stop" "! grep -q 'SELF_REVIEW' '$SK'"
+check "…and the governing docs say what DOES prevent the corruption" \
+      "grep -q 'filters on the posting account' '$IRV'"
 check "…and points at the protocol rather than restating it" \
       "grep -q 'references/independent-review.md' '$SK'"
 check "…which ships" "test -f '$IRV'"

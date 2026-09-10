@@ -13,13 +13,17 @@ Three reasons, the second of which is mechanical rather than taste:
    reasoning that produced the code, so its judgement passes rationalise
    what a reviewer would question. AR-3 measured this: three green rounds of
    self-review could not certify the phases they ran on.
-2. **A posted self-review corrupts the real review.** `/review`'s preamble
-   treats the newest attribution-line comment or review on the thread as
-   "the previous round". A self-review posted first makes the independent
-   reviewer's pass a *re-review*: it then raises nothing below P1 and
-   verifies only the prior P0/P1. The author's own verdict becomes the
-   review of record. `/review` now refuses to run when the token holder is
-   the PR author (`SELF_REVIEW`) for exactly this reason.
+2. **A posted self-review would once have corrupted the real review.**
+   `/review`'s preamble treats the newest attribution-lined round on the
+   thread as "the previous round". When that detector matched on the body
+   prefix alone, a self-review posted first made the independent reviewer's
+   pass a *re-review*: nothing below the blocking tier raised, only the
+   author's own findings re-verified, the author's verdict the review of
+   record. The detector now filters on the posting account as well
+   (`select(.who == $me and ...)`), so a round posted by another account is
+   invisible to the reviewer's lookup and the corruption cannot happen. This
+   is why a self-check is allowed rather than refused - the mechanical
+   objection was answered by a better fix than a refusal.
 3. **The deterministic half is already free.** Phase 0 pre-flight and
    `verify.yml` give the author every fact a reviewer would get, at no model
    cost. What the author needs before requesting review is CI green and a
@@ -59,8 +63,8 @@ classified here before its first PR, not guessed at merge time.
 
    A tubemail message to the reviewer worker naming the PR number and repo
    works as the dispatch too. Either way the reviewer's `gh` must hold the
-   reviewer token: without it the skill refuses to post as the author, and
-   the PR is blocked on rung 4 until the identity exists.
+   reviewer token: without it the round posts under the author's account,
+   GitHub refuses the approving state, and the PR stays blocked on rung 4.
 5. On findings, run `/receiving-code-review`: triage, fix or answer each
    one on the thread, push, and **re-request**. Every push that answers
    findings gets a fresh round; the round that raised them never counts as
@@ -81,7 +85,9 @@ classified here before its first PR, not guessed at merge time.
    If the commit line is later than the review line, the approval is stale
    and the merge waits.
 
-Never run `/review` on your own PR. It refuses, and the reason is above.
+Do not treat a round you ran on your own PR as satisfying rung 4. It is
+allowed, `/review` runs it, and it is useful before you hand the change
+over - it just is not the review the merge waits on, for the reasons above.
 
 ## The reviewer side
 

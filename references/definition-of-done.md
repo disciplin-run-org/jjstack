@@ -22,10 +22,12 @@ done — this is the one checklist. ALL rungs, no exceptions.
    it raised is fixed or answered on the
    thread, and **every push that answers findings is followed by a
    re-request**: the merge waits for an APPROVED review newer than the last commit,
-   never for the round that raised the findings. The author never runs
-   `/review` on their own PR: the same context that wrote the code cannot
-   audit it, and a self-review posted to the thread becomes "the previous
-   round" for the real reviewer, silently downgrading it to a re-review. Who must approve depends on the
+   never for the round that raised the findings. A round the author runs on
+   their own PR does not satisfy this rung, whatever it concludes: the same
+   context that wrote the code cannot audit it. It is not forbidden and
+   `/review` does not refuse it - the reviewer's previous-round detector
+   filters on the posting account, so a self-check costs the real reviewer
+   nothing. It is simply not the review the merge waits on. Who must approve depends on the
    repo's class — the table and the protocol are in
    `references/independent-review.md`:
    - **InboundSavvy repos** (`codebase`, `web-checks`,
@@ -78,9 +80,11 @@ its own working directory (a worktree or clone), launched fresh — not a
 reviewer session holds the reviewer identity's token, so the review lands
 as a GitHub review that branch protection can require. The identity is a
 prerequisite, not a nicety: a PR whose author holds the only token on the
-machine cannot pass this rung at all. `/review` refuses to post as the
-author, and GitHub would refuse the approval anyway. Until the identity
-exists, such a PR is "done 3/11 — blocked on rung 4".
+machine cannot pass this rung at all: GitHub refuses an approving review on
+your own PR (HTTP 422), so the round can only ever post as a comment and
+`reviewDecision` never moves. `/review` still runs and still says so in its
+close-out. Until the identity exists, such a PR is "done 3/11 — blocked on
+rung 4".
 
 ## Scope
 
