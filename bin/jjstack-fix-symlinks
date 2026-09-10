@@ -47,7 +47,14 @@ _is_ours() {
   case "$t" in */skills/*) ;; *) return 1 ;; esac
   d="${t%/skills/*}"
   [ -d "$d/skills" ] || return 1
-  [ -e "$d/VERSION" ] || [ -d "$d/.git" ] || [ -f "$d/.git" ] || return 1
+  # A JJSTACK tree, not merely a git repo full of skills. The earlier test
+  # accepted any <root>/skills/<name> carrying a .git or a VERSION, which is
+  # every skills repo anyone has cloned - getsentry-skills on this machine
+  # satisfies it. It was harmless only because no such repo happens to share a
+  # skill name with jjstack, which is a fact about the disk rather than about
+  # the code. These two files are jjstack's own and are present in the
+  # checkout and in every pin of it.
+  [ -f "$d/jjstack.config.yaml" ] || [ -f "$d/bin/jjstack-skills-pin" ] || return 1
   return 0
 }
 

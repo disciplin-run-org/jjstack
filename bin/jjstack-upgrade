@@ -115,9 +115,20 @@ sync_served_tree() {
   JJSTACK_DIR="$JJSTACK_DIR" "$PINBIN" --link || \
     echo "WARNING: root link not moved; sessions still load the previous tree"
   if [ -x "$JJSTACK_DIR/bin/jjstack-fix-symlinks" ]; then
-    JJSTACK_DIR="$JJSTACK_DIR" JJSTACK_REPIN_LINKS=1 \
-      "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
+    # Not >/dev/null. Re-pinning moves links the user can see, and this is the
+    # only call that sets JJSTACK_REPIN_LINKS, so discarding the output meant
+    # the announcement it prints existed for a reader who never got it. Show
+    # what moved and what was refused; stay quiet when nothing happened.
+    local _fx
+    _fx="$(JJSTACK_DIR="$JJSTACK_DIR" JJSTACK_REPIN_LINKS=1 \
+      "$JJSTACK_DIR/bin/jjstack-fix-symlinks" 2>/dev/null || true)"
+    if [ -n "$_fx" ]; then printf '%s\n' "$_fx"; fi
   fi
+  # Explicit, because this is the last statement of the function and the
+  # script runs under `set -e`: a bare `[ -n "$x" ] && ...` returns 1 when
+  # there is nothing to print, which propagated out and killed the upgrade
+  # before its own `exit 0`. Nothing to say is not a failure.
+  return 0
 }
 
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then

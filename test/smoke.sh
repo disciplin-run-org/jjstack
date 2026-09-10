@@ -2335,13 +2335,6 @@ check "…and for a directory that is not a repo at all" \
 # manifest, and the rewritten one carries no gstack originals - so `uninstall`
 # REMOVES the gstack skills it should RESTORE. Destructive, and it fires on the
 # first setup after the pin ships.
-SUSB="$SANDBOX/setup-run"; mkdir -p "$SUSB/skills" "$SUSB/gstack/review"
-printf -- '---\nname: review\n---\ngstack original\n' > "$SUSB/gstack/review/SKILL.md"
-mkdir -p "$SUSB/pinsrc"
-cp -r "$PINSB/work/." "$SUSB/pinsrc/" 2>/dev/null
-# A manifest recording that `alpha` replaced a gstack original.
-mkdir -p "$SUSB/skills/jjstack"
-printf '# jjstack install manifest\nalpha|%s|old\n' "$SUSB/gstack/review" > "$SUSB/skills/jjstack/.install-manifest"
 check "the manifest read happens before the link is re-pointed" \
       "[ \$(grep -n 'EXISTING_ORIGINALS\[' '$DIR/setup' | head -1 | cut -d: -f1) -lt \$(grep -n 'ln -snf \"\$SKILL_SRC\" \"\$SKILLS_DIR/jjstack\"' '$DIR/setup' | cut -d: -f1) ]"
 printf '%s\n' 'EXISTING_ORIGINALS["$name"]=' > "$SANDBOX/manif-assign.txt"
@@ -2385,6 +2378,27 @@ JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1
   "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
 check "…including one laid out as <root>/skills/<name> but not a jjstack tree" \
       "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/otherpkg/skills/alpha' ]"
+# The case the earlier gate could not refuse: a real GIT REPO of skills that
+# is not jjstack. Every skills repo anyone has cloned satisfies "has a .git and
+# a skills/ directory" - getsentry-skills on this machine does - so the old
+# test rested on no such repo happening to share a skill name with jjstack,
+# which is a fact about the disk, not about the code.
+mkdir -p "$PINSB/gitpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother skills repo\n' > "$PINSB/gitpkg/skills/alpha/SKILL.md"
+echo "9.9.9" > "$PINSB/gitpkg/VERSION"
+git init -q "$PINSB/gitpkg"
+ln -snf "$PINSB/gitpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and a git repo of skills that is not jjstack (has .git AND VERSION)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/gitpkg/skills/alpha' ]"
+# The upgrade is the only caller that sets JJSTACK_REPIN_LINKS, and it used to
+# send this script's output to /dev/null - so the line announcing a moved link
+# was written for a reader who never received it.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+RP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "the upgrade surfaces a re-pinned link instead of discarding it" \
+      "printf '%s' \"$RP_OUT\" | grep -q REPINNED"
 # …and still moves one that IS ours, or the gate has disabled the feature.
 ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
 JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
