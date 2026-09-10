@@ -85,6 +85,31 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
+- **A review can no longer be published against code that has since changed.**
+  Every finding in a round is measured against one commit. If the author pushes
+  while the round runs, the report describes code that is no longer there — and
+  nothing checked. Two rounds on this repo were published that way. `/review` now
+  asks GitHub what the pull request head is before it posts, compares it to the
+  sha the round started from, and refuses to publish a stale report instead of
+  hand-patching it. If it cannot find out — no network, a token without access —
+  it says so, rather than telling you the author pushed and sending the reviewer
+  round the loop again.
+
+  The check asks GitHub about the pull request itself, not about a branch in a
+  local clone, because the obvious local shortcuts answer a different question:
+  a fork's branch does not exist in your clone at all, and `FETCH_HEAD` is
+  overwritten by the next fetch of anything. It also means the check works from
+  the reviewer's own directory, which is not a clone of anything.
+
+- **The reviewer's checkout is written down.** The independent reviewer runs
+  from its own directory and holds no checkout of anything, so every round has
+  to materialise the pull request head and then remove it. That was being
+  retyped from memory, which is why stale worktrees accumulated from rounds that
+  had ended weeks earlier. `references/independent-review.md` now carries the
+  commands, and `/review` points at them when it starts with no tree to work
+  from, so the procedure is reachable from the skill rather than only from the
+  reference.
+
 - **`/receiving-code-review` refuses to merge a pull request with something
   unread on it.** GitHub's "mergeable" answers whether the branches conflict,
   not whether anyone has reviewed you, and a review that lands in the gap

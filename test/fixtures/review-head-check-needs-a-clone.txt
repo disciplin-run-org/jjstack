@@ -1,0 +1,10 @@
+# The head-moved check as /review shipped it at 9f42eeb (PR #42, first push).
+#
+# It asks `git ls-remote origin` with no -C, so it needs the current directory
+# to be a clone with an origin. The independent reviewer works from its own
+# directory, which is not a repository, so there it cannot answer at all, and
+# `|| echo HEAD_MOVED` turned that into "the author pushed" on every round.
+# This line IS the failure - it is not a line written to be wrong.
+#
+# Re-derive:  git show 9f42eeb:skills/review/SKILL.md | grep -F HEAD_UNCHANGED | grep -F HEAD_MOVED
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && git ls-remote origin "refs/pull/$PR_NUM/head" | cut -f1 | grep -qx "$PR_SHA" && echo HEAD_UNCHANGED || echo HEAD_MOVED

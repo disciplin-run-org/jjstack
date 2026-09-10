@@ -3029,6 +3029,122 @@ done > "$SANDBOX/adr_ids_bad.txt"
 check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
       "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
 
+echo "== 16. the round refuses to publish against a moved head =="
+# The rule is "every finding was measured at PR_SHA; do not post if the head has
+# moved." Asserting that SKILL.md contains the word "moved" would survive
+# deleting the command, so this section EXTRACTS the shipped command line and
+# EXECUTES it against a stubbed GitHub, in every state it can answer.
+#
+# WHERE IT RUNS is part of the contract, and the first version of this section
+# got it wrong. The independent reviewer works from its own directory, which is
+# not a git repository. The line shipped at 9f42eeb asked `git ls-remote origin`,
+# which cannot answer there, and this section `cd`-ed into a clone before
+# running it: the harness supplied the one precondition the skill never
+# establishes, and CI went green on a command that could not work where the
+# skill says the reviewer lives. So every run below starts in a directory that
+# is NOT a repository, a control proves it is not one, and the 9f42eeb line is
+# frozen as a fixture and run the same way to prove this harness now reproduces
+# that failure instead of hiding it.
+#
+# Extraction keys on the output contract (one line answering HEAD_UNCHANGED and
+# HEAD_MOVED), not on the plumbing, so an equally correct rewrite still runs
+# here and a wrong one fails on the fixture instead of on a regex.
+HDSK="$DIR/skills/review/SKILL.md"
+HDCMD=$(grep -F 'HEAD_UNCHANGED' "$HDSK" | grep -F 'HEAD_MOVED')
+hdn=$(printf '%s\n' "$HDCMD" | grep -c .)
+check "the skill ships exactly one head check (anti-vacuity floor)" "[ \"\$hdn\" = 1 ]"
+
+HDFIX=$(tmp hdfix); HDBIN="$HDFIX/bin"; HDOUT="$HDFIX/out"; HDCWD="$HDFIX/reviewer"
+mkdir -p "$HDBIN" "$HDOUT" "$HDCWD"
+check "the reviewer's directory in this fixture is not a git repository (control)" \
+      "! git -C '$HDCWD' rev-parse --git-dir >/dev/null 2>&1"
+
+# Three shas: the head the round measured, the head after a force-push, and the
+# base. The object the stub serves carries the base too, so a check that reads
+# the wrong field gets a real, wrong sha rather than nothing.
+HD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+HD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+HD_BASE=cccccccccccccccccccccccccccccccccccccccc
+# The stub answers the way the real API does in the respects the check depends
+# on. It serves a RAW pull-request object and applies --jq to it with real jq,
+# so the check's own field path is exercised rather than handed the answer. And
+# any path but this one pull request is a 404, so asking the wrong repo or the
+# wrong number cannot land on the right sha by accident.
+hd_gh() {   # hd_gh <head-sha|FAIL|EMPTY>
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '[ "$1" = api ] || { echo "stub: unexpected gh $1" >&2; exit 2; }\n'
+    printf '[ "$2" = repos/o/r/pulls/7 ] || { echo "HTTP 404: Not Found ($2)" >&2; exit 1; }\n'
+    case "$1" in
+      FAIL)  printf 'echo "HTTP 502: Bad Gateway" >&2; exit 1\n' ;;
+      EMPTY) printf 'exit 0\n' ;;
+      *)     printf 'q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done\n'
+             printf 'o='"'"'{"number":7,"head":{"sha":"%s"},"base":{"sha":"%s"}}'"'"'\n' "$1" "$HD_BASE"
+             printf 'if [ -n "$q" ]; then printf %%s "$o" | jq -r "$q"; else printf %%s "$o"; fi\n' ;;
+    esac
+  } > "$HDBIN/gh"
+  chmod +x "$HDBIN/gh"
+}
+# Run a head check exactly as the reviewer would: from its own directory, with
+# only the documented placeholder substituted. $2 defaults to the shipped line.
+hd_run() {   # hd_run <sha the round recorded> [command]
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$1" > "$HDOUT/pr.env"
+  local c="${2-$HDCMD}"
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${c//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
+}
+
+hd_gh "$HD_B"
+check "a round measured at the current head publishes" "[ \"\$(hd_run $HD_B)\" = HEAD_UNCHANGED ]"
+# NEGATIVE CONTROL. Same command, same stub, one input different: the sha the
+# round recorded. A check that only ever says HEAD_UNCHANGED is no check.
+check "a round measured at an older commit is refused" "[ \"\$(hd_run $HD_A)\" = HEAD_MOVED ]"
+
+# The incident itself: the reviewer records the sha, the author force-pushes,
+# and the report is now about code that is not there.
+hd_gh "$HD_A"
+check "…and the same recorded sha flips to refused when the author force-pushes" \
+      "[ \"\$(hd_run $HD_B)\" = HEAD_MOVED ]"
+check "…while a round measured at the new head is fine (control)" \
+      "[ \"\$(hd_run $HD_A)\" = HEAD_UNCHANGED ]"
+
+# NOT KNOWING IS NOT MOVING. Each of these used to read as HEAD_MOVED, which
+# told the reviewer the author had pushed and to re-run - wrong advice for a
+# failure re-running cannot fix, so the round never published and the author
+# was blamed for it.
+hd_gh FAIL
+check "a failing API call is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh EMPTY
+check "an API call that answers nothing is HEAD_UNKNOWN" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh "$HD_A"
+check "an empty recorded sha is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run '')\" = HEAD_UNKNOWN ]"
+
+# THE DEFECT, REPRODUCED. The 9f42eeb line, frozen from the blob, run exactly
+# like the shipped one. Against a head that has NOT moved it must fail to say
+# so - if it answers HEAD_UNCHANGED here, this harness is supplying a clone
+# again and every assertion above is measuring the harness, not the skill.
+HDOLD=$(grep -v '^#' "$DIR/test/fixtures/review-head-check-needs-a-clone.txt" | grep -v '^$' | head -1)
+check "the frozen 9f42eeb line is present (anti-vacuity floor)" \
+      "grep -qF 'HEAD_MOVED' <<<\"\$HDOLD\""
+check "the 9f42eeb line cannot confirm a current head from the reviewer's directory (the defect, reproduced)" \
+      "[ \"\$(hd_run $HD_A \"\$HDOLD\")\" != HEAD_UNCHANGED ]"
+
+# The reference the skill sends a treeless reviewer to must actually carry the
+# procedure - the /review-stack failure was text naming a procedure documented
+# nowhere. The routing is keyed on the fetch the preamble tells the reviewer to
+# run: main's SKILL.md already cited independent-review.md for the SELF_REVIEW
+# close-out, so asserting that citation fired on the tree before this change.
+HDREF="$DIR/references/independent-review.md"
+check "the review skill tells a reviewer with no tree to fetch the pull request head" \
+      "grep -q 'pull/<PR>/head' '$HDSK'"
+check "…and the reference carries that fetch" \
+      "grep -q 'fetch origin pull/<PR>/head' '$HDREF'"
+check "…the detached worktree" \
+      "grep -q 'worktree add --detach' '$HDREF'"
+check "…the head question aimed at the pull ref" \
+      "grep -q 'ls-remote origin refs/pull/<PR>/head' '$HDREF'"
+check "…and the removal that ends the round" \
+      "grep -q 'worktree prune' '$HDREF'"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
