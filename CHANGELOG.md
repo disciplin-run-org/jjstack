@@ -13,14 +13,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 - **Review requests now open their own review session.** Start
   `jjstack-review-daemon` in the reviewer directory and leave it running.
-  When someone requests a review from `ai-assistant-2026`, or @-mentions it on
-  a pull request, the daemon opens a new window with a worker session named
+  When someone requests a review from `ai-assistant-2026`, or someone with
+  write access @-mentions it on a pull request, the daemon opens a new window with a worker session named
   after that PR. It checks the session is running on Opus, then sends it
   `/review`. When the author fixes things and re-requests, the next round goes
   to the same session, so it remembers the last one. When the PR is merged or
   closed, the session saves its lessons and exits on its own. Requests from
-  repositories you do not own are ignored, so nobody else can use the reviewer
-  for free. Four sessions run at once at most; the rest wait their turn. This
+  repositories you do not own are ignored, and so is a mention from anyone
+  without write access, so nobody else can use the reviewer for free. Four sessions run at once at most; the rest wait their turn. This
   replaces typing `claude-tm --role=...` and `/review ...` by hand for every
   pull request. `/review-daemon` explains how to start and check it.
 

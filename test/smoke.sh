@@ -3656,7 +3656,7 @@ case " \$* " in
   *"notifications/threads/"*) exit 0 ;;
   *"notifications?"*) cat "$RDF/notifications-200.txt" ;;
   *" search/issues "*) cat "$RDF/search-empty.json" ;;
-  *"/pulls/"*) cat "$RDF/pull-open.json" ;;
+  *"/pulls/"*) cat "$RDF/pull-pending.json" ;;
   *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
 esac
 STUB

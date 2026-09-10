@@ -1,8 +1,8 @@
 # The review daemon: one review session per pull request, opened for you
 
 `bin/jjstack-review-daemon` automates the reviewer side of rung 4. It watches
-GitHub as `ai-assistant-2026`. For every review request or @-mention on a pull
-request it opens a Claude Code worker session in `~/PycharmProjects/Code-Review`
+GitHub as `ai-assistant-2026`. For every review request, or @-mention by someone
+with write access, on a pull request it opens a Claude Code worker session in `~/PycharmProjects/Code-Review`
 and sends that session `/review <owner>/<repo> pr <N>`. The session stays open
 for later rounds and ends with `/save-and-exit` once the PR is merged or
 closed. Before the daemon, a person did each of those steps by hand. This file
@@ -38,9 +38,27 @@ background.
   after it (default 15), one search also catches requests the feed missed:
   `is:pr is:open review-requested:ai-assistant-2026`.
 - **Reasons.** Only a notification with reason `review_requested` or `mention`
-  on a `PullRequest` counts. An @-mention is treated exactly like a review
-  request, and the comment text is not passed on. Comment, subscription and
-  Issue notifications are left alone and stay unread.
+  on a `PullRequest` counts. Comment, subscription and Issue notifications are
+  left alone and stay unread.
+- **A thread update is not a request.** GitHub moves a thread's update time on
+  a merge and on a comment too, and the reason stays the same. So before it
+  acts, the daemon confirms the request behind the notification:
+  - A review request on a PR with no session counts only while GitHub still
+    lists `ai-assistant-2026` in the PR's `requested_reviewers`.
+  - A review request on a PR that has a session counts only if the PR's
+    events hold a `review_requested` event for the reviewer that is newer
+    than the last round.
+  - A mention counts only if a comment, a review, or the PR description,
+    written after the last round, mentions `@ai-assistant-2026` and was
+    written by someone with write or admin access to the repo. GitHub
+    already puts that gate on a review request. Anyone can mention an
+    account on a public repo, but only a writer can request its review.
+    Without the gate, a stranger's mention would open a session that runs
+    the PR's own tooling. A permission lookup that fails counts as no
+    access. The mention's text is not passed on.
+
+  An update that confirms nothing is marked read and written to `daemon.log`.
+  A mention from someone without write access also goes to `ignored.jsonl`.
 - **Owners.** Only repos whose owner is on `--owners` are served. The default
   list is `JesperJurcenoks,disciplin-run-org`, compared without case. A
   request from anyone else is written to `ignored.jsonl` and nowhere else.
@@ -50,9 +68,10 @@ background.
 - **Drafts.** A draft is reviewed if someone requested it.
 - **Closed PRs.** A request on a PR that is already merged or closed is
   skipped. The daemon says so once and marks the thread read.
-- **Once per request.** Each notification the daemon acts on is marked read on
-  GitHub. It is also recorded in the ledger by thread id and update time. A
-  thread that comes back with a newer update time is a new request.
+- **Once per update.** Each notification the daemon handles is marked read on
+  GitHub. It is also recorded in the ledger by thread id and update time, so
+  the same update is never handled twice. A newer update is checked again as
+  described above; the newer time alone proves nothing.
 
 ## The session
 
@@ -88,8 +107,8 @@ background.
 - **Dispatch.** Once the model passes and the worker is idle, the daemon sends
   `/review <owner>/<repo> pr <N>`. It never sends to a worker that is not
   online, because a message to an unknown name creates a ghost row on the hub.
-- **Next rounds.** A re-request or a new mention on the same PR goes to the
-  same worker, so the round knows what the last one found. If the worker is
+- **Next rounds.** A re-request, or a new mention by someone with write
+  access, on the same PR goes to the same worker, so the round knows what the last one found. If the worker is
   busy, the daemon waits for idle. It never interrupts.
 - **Long rounds.** A round over an hour is normal. The daemon prints one note
   an hour and does nothing else.
@@ -161,6 +180,13 @@ posted as the PR's author cannot approve it, so rung 4 could never be met.
 - `review-requested:` lists only requests still pending. A request clears as
   soon as the reviewer posts any review. So the sweep finds only real
   backlog, and a round after fixes needs the author's re-request.
+- A merge moves a `review_requested` thread's update time and marks it
+  unread again, with the reason unchanged. This was measured on five threads.
+  A comment does the same for a subscribed reviewer.
+- On gh 2.4.0, `--paginate` prints one JSON array per page, back to back, with
+  nothing between them. The daemon reads that as a stream of arrays.
+- The permission endpoint answers `read`, not 404, for an account with no
+  access to a public repo.
 - The notification feed carries `X-Poll-Interval: 60`. The daemon never polls
   faster than that. Two minutes costs about 30 core calls an hour, plus two
   per open session.
@@ -172,7 +198,8 @@ posted as the PR's author cannot approve it, so rung 4 could never be met.
   session.
 - It never posts on GitHub. It only marks threads read. The review is the
   session's work.
-- It never serves an owner off the allowlist.
+- It never serves an owner off the allowlist, and never acts on a mention from
+  someone without write access.
 - It never sends a round to a session whose model it has not checked.
 
 The frozen specimens behind these rules are in

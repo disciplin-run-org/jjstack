@@ -142,13 +142,15 @@ and watch. When it lands, `/receiving-code-review` is the other half of the loop
 
 `jjstack-review-daemon` does it for you. Start it in a terminal in the reviewer
 directory and leave it running. It watches GitHub for review requests and
-@-mentions for the reviewer account. Each PR gets its own worker session,
+@-mentions for the reviewer account. A mention counts only from someone with
+write access to the repository. Each PR gets its own worker session,
 named after it, for example `Code-Review-jjstack-pr12-tm`, in its own window.
 The daemon checks the session is on Opus, then sends `/review`. Later rounds go
 to the same session, so it knows what it found last time. When the PR merges
 or closes, the session gets `/save-and-exit`. Only repositories owned by
 `JesperJurcenoks` or `disciplin-run-org` are served. A stranger who adds the
-reviewer to their own repository gets nothing. At most four sessions run at
+reviewer to their own repository gets nothing, and so does a stranger who
+mentions it on one of yours. At most four sessions run at
 once and the rest wait their turn. `/review-daemon` covers starting and
 checking it, and `references/review-daemon.md` is the full contract.
 

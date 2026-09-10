@@ -33,13 +33,15 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # REVIEW_DAEMON_BIN points the suite at a mutant copy; the mutation proof uses it.
 BIN = os.environ.get("REVIEW_DAEMON_BIN") or os.path.join(REPO, "bin", "jjstack-review-daemon")
 FIX = os.path.join(REPO, "test", "fixtures", "review-daemon")
-MIN_TESTS = 62
+MIN_TESTS = 74
 FIXTURES = (
     "notifications-200.txt", "notifications-304.txt", "search.json",
     "search-empty.json", "pull-open.json", "pull-merged.json",
     "pull-closed.json", "reviews.json", "workers.json",
     "transcript-mixed.jsonl", "transcript-fable-last.jsonl",
     "transcript-boot.jsonl", "transcript-synthetic.jsonl",
+    "pull-cleared.json", "pull-pending.json", "events.json", "events-paginated.txt",
+    "comments.json", "permission-admin.json", "permission-read.json",
 )
 _MISSING = [f for f in FIXTURES if not os.path.exists(os.path.join(FIX, f))]
 if _MISSING:  # before the module-level loads below, which would crash on it
@@ -74,6 +76,13 @@ PULL_OPEN = fxj("pull-open.json")
 PULL_MERGED = fxj("pull-merged.json")
 PULL_CLOSED = fxj("pull-closed.json")
 REVIEWS = fxj("reviews.json")
+PULL_CLEARED = fxj("pull-cleared.json")    # open, the reviewer's request already cleared
+PULL_PENDING = fxj("pull-pending.json")    # open, the reviewer still requested
+EVENTS = fxj("events.json")
+COMMENTS = fxj("comments.json")
+PERM_ADMIN = fxj("permission-admin.json")
+PERM_READ = fxj("permission-read.json")
+MENTION_BODY = "@ai-assistant-2026 please take a look"
 T0 = rd.parse_iso("2026-09-10T18:00:00Z")
 MIN = 60.0
 HOUR = 3600.0
@@ -119,6 +128,11 @@ class FakeGH:
         self.pulls = {}            # "owner/repo/N" -> pull object
         self.reviews = {}          # "owner/repo/N" -> list
         self.search = {"total_count": 0, "incomplete_results": False, "items": []}
+        self.events = {}           # "owner/repo/N" -> issue events
+        self.comments = {}         # "owner/repo/N" -> issue comments
+        self.review_comments = {}  # "owner/repo/N" -> pull review comments
+        self.writers = {"JesperJurcenoks"}
+        self.permission_error = False
         self.login_as = rd.REVIEWER
         self.login_calls = 0
 
@@ -126,8 +140,28 @@ class FakeGH:
         self.login_calls += 1
         return self.login_as
 
-    def api(self, path, method="GET", fields=(), headers=(), include=False):
+    def api(self, path, method="GET", fields=(), headers=(), include=False, paginate=False):
         self.calls.append((method, path, tuple(fields), tuple(headers)))
+        m = re.match(r"repos/([^/]+)/([^/]+)/collaborators/([^/]+)/permission$", path)
+        if m:
+            if self.permission_error:
+                raise rd.GHError("HTTP 502")
+            p = copy.deepcopy(PERM_ADMIN if m.group(3) in self.writers else PERM_READ)
+            p["user"]["login"] = m.group(3)
+            return 200, {}, json.dumps(p)
+        m = re.match(r"repos/([^/]+)/([^/]+)/(issues|pulls)/(\d+)/(events|comments|reviews)(?:\?.*)?$", path)
+        if m:
+            key = "%s/%s/%s" % (m.group(1), m.group(2), m.group(4))
+            table = {("issues", "events"): self.events, ("issues", "comments"): self.comments,
+                     ("pulls", "comments"): self.review_comments,
+                     ("pulls", "reviews"): self.reviews}.get((m.group(3), m.group(5)))
+            if table is None:
+                raise AssertionError("unexpected gh call %s %s" % (method, path))
+            items = table.get(key, [])
+            if paginate and len(items) > 1:  # gh 2.4.0: one array per page, back to back
+                half = len(items) // 2
+                return 200, {}, json.dumps(items[:half]) + json.dumps(items[half:])
+            return 200, {}, json.dumps(items)
         if path.startswith("notifications?"):
             if self.not_modified:
                 return rd.parse_gh_include(NOTIF_304)
@@ -136,11 +170,9 @@ class FakeGH:
             return 205, {}, ""
         if path == "search/issues":
             return 200, {}, json.dumps(self.search)
-        m = re.match(r"repos/([^/]+)/([^/]+)/pulls/(\d+)(/reviews)?", path)
+        m = re.match(r"repos/([^/]+)/([^/]+)/pulls/(\d+)$", path)
         if m:
             key = "%s/%s/%s" % (m.group(1), m.group(2), m.group(3))
-            if m.group(4):
-                return 200, {}, json.dumps(self.reviews.get(key, []))
             if key not in self.pulls:
                 raise AssertionError("no pull stubbed for " + key)
             return 200, {}, json.dumps(self.pulls[key])
@@ -238,12 +270,30 @@ class World:
     def text(self):
         return "\n".join(t for (_, t) in self.lines)
 
-    def request(self, repo, number, reason="review_requested", pr=None, updated="2026-09-10T18:00:00Z"):
+    def request(self, repo, number, reason="review_requested", pr=None, updated=None,
+                by="JesperJurcenoks", new_event=True):
+        """Something happens on GitHub now. The thread moves; with new_event,
+        what really backs a request moves too: a review_requested event (and
+        the reviewer on requested_reviewers), or a comment that mentions it."""
         t = thread_for(repo, number)
         t["reason"] = reason
-        t["updated_at"] = updated
+        t["updated_at"] = updated or rd.iso(self.clock.t + 1)
         self.gh.threads = [x for x in self.gh.threads if x["id"] != t["id"]] + [t]
-        self.gh.pulls["disciplin-run-org/%s/%d" % (repo, number)] = pr or pull(PULL_OPEN, number)
+        key = "disciplin-run-org/%s/%d" % (repo, number)
+        if pr is not None:
+            self.gh.pulls[key] = pr
+        elif key not in self.gh.pulls:
+            self.gh.pulls[key] = pull(PULL_PENDING if reason == "review_requested" and new_event
+                                      else PULL_CLEARED, number)
+        if new_event and reason == "review_requested":
+            ev = copy.deepcopy(EVENTS[-1])
+            ev.update(created_at=rd.iso(self.clock.t + 1), actor={"login": by})
+            self.gh.events.setdefault(key, []).append(ev)
+        if new_event and reason == "mention":
+            c = copy.deepcopy(COMMENTS[0])
+            c.update(id=len(self.gh.comments.get(key, [])) + 1, created_at=rd.iso(self.clock.t + 1),
+                     user={"login": by}, body=MENTION_BODY)
+            self.gh.comments.setdefault(key, []).append(c)
         return t
 
     def record(self, repo, number):
@@ -885,6 +935,127 @@ class Polling(unittest.TestCase):
             self.assertTrue(any("[dry-run]" in t and "Code-Review-jjstack-pr48-tm" in t for _, t in out))
         finally:
             w.close()
+
+
+class RoundOneFindings(unittest.TestCase):
+    """The two blocking findings from the independent review of PR #49.
+
+    P0: an @-mention was accepted from anyone. GitHub lets any account mention
+    the reviewer on a public repo; only an account with write access can
+    request a review. P1: a thread whose updated_at moved was read as a new
+    request, and GitHub moves it on a merge and on a comment."""
+
+    def setUp(self):
+        self.w = World()
+
+    def tearDown(self):
+        self.w.close()
+
+    def spawned(self):
+        return len(self.w.spawner.argvs)
+
+    def ignored(self):
+        path = os.path.join(self.w.cwd, ".review-daemon", "ignored.jsonl")
+        return open(path).read() if os.path.exists(path) else ""
+
+    def test_paginated_output_is_every_page(self):
+        events = rd.parse_json_stream(fx("events-paginated.txt"))
+        self.assertEqual([e["event"] for e in events],
+                         ["review_requested", "referenced", "review_requested",
+                          "merged", "closed", "head_ref_deleted"])
+
+    def test_mention_regex(self):
+        self.assertTrue(rd.mentions_reviewer("hi @ai-assistant-2026, please look"))
+        self.assertTrue(rd.mentions_reviewer("@AI-Assistant-2026"))
+        self.assertFalse(rd.mentions_reviewer("@ai-assistant-20260"))
+        self.assertFalse(rd.mentions_reviewer("mail me at x@ai-assistant-2026.dev"))
+        self.assertFalse(rd.mentions_reviewer(None))
+
+    def test_p1_a_bump_without_a_new_request_sends_nothing(self):
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.request("jjstack", 48, updated="2026-09-10T19:00:00Z", new_event=False)
+        out = self.w.poll()
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 1)
+        self.assertFalse(self.w.record("jjstack", 48)["pending_dispatch"])
+        self.assertEqual([t for _, t in out if "again" in t], [])
+        self.assertEqual(len(self.w.gh.patched()), 2)  # still marked read
+
+    def test_p1_a_merge_bump_is_not_read_as_a_request(self):
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        merged = pull(PULL_MERGED, 48)
+        self.w.request("jjstack", 48, pr=merged, new_event=False)
+        out = self.w.poll()
+        self.assertEqual([t for _, t in out if "again" in t or "ignored" in t], [])
+        self.assertEqual(self.w.record("jjstack", 48)["status"], "ending")
+
+    def test_p1_a_new_pr_needs_the_reviewer_still_requested(self):
+        self.w.request("jjstack", 50, pr=pull(PULL_CLEARED, 50), new_event=False)
+        out = self.w.poll()
+        self.assertEqual(out, [])
+        self.assertEqual(self.spawned(), 0)
+        self.assertIsNone(self.w.record("jjstack", 50))
+        self.assertEqual(len(self.w.gh.patched()), 1)
+
+    def test_p0_a_strangers_fork_pr_mentioning_the_reviewer_opens_nothing(self):
+        fork = pull(PULL_CLEARED, 777, user={"login": "stranger"}, body=MENTION_BODY,
+                    created_at=rd.iso(self.w.clock.t + 1),
+                    head={"sha": "c" * 40, "repo": {"full_name": "stranger/jjstack"}})
+        self.w.request("jjstack", 777, reason="mention", pr=fork, new_event=False)
+        out = self.w.poll()
+        self.assertEqual(out, [])
+        self.assertEqual(self.spawned(), 0)
+        self.assertIsNone(self.w.record("jjstack", 777))
+        self.assertIn('"stranger"', self.ignored())
+
+    def test_p0_a_strangers_comment_mention_opens_nothing(self):
+        self.w.request("jjstack", 51, reason="mention", by="stranger")
+        self.w.poll()
+        self.assertEqual(self.spawned(), 0)
+        self.assertIn("stranger", self.ignored())
+
+    def test_p0_a_writers_mention_in_the_pr_body_opens_a_session(self):
+        mine = pull(PULL_CLEARED, 60, user={"login": "JesperJurcenoks"}, body=MENTION_BODY,
+                    created_at=rd.iso(self.w.clock.t + 1))
+        self.w.request("jjstack", 60, reason="mention", pr=mine, new_event=False)
+        self.w.poll()
+        self.assertEqual(self.spawned(), 1)
+
+    def test_p0_a_strangers_mention_after_a_round_sends_nothing(self):
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.request("jjstack", 48, reason="mention", by="stranger", updated="2026-09-10T19:00:00Z")
+        self.w.poll()
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 1)
+        self.assertIn("stranger", self.ignored())
+
+    def test_p0_a_writers_mention_counts_even_with_a_stranger_after_it(self):
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.request("jjstack", 48, reason="mention", by="JesperJurcenoks", updated="2026-09-10T19:00:00Z")
+        self.w.request("jjstack", 48, reason="mention", by="stranger", updated="2026-09-10T19:01:00Z")
+        self.w.poll()
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 2)
+
+    def test_p0_an_old_writers_mention_does_not_carry_a_strangers_new_one(self):
+        self.w.request("jjstack", 53, reason="mention", by="JesperJurcenoks")
+        self.w.poll()
+        rec = self.w.record("jjstack", 53)
+        self.w.hub.set(rec["worker"])
+        self.w.poll()  # handshake
+        self.w.say(rec["session_uuid"], "claude-opus-5")
+        self.w.poll()  # round 1, asked for by the writer
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 53"), 1)
+        self.w.request("jjstack", 53, reason="mention", by="stranger", updated="2026-09-10T19:00:00Z")
+        self.w.poll()
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 53"), 1)
+
+    def test_p0_a_permission_that_cannot_be_read_fails_closed(self):
+        self.w.gh.permission_error = True
+        self.w.request("jjstack", 52, reason="mention", by="someone")
+        self.w.poll()
+        self.assertEqual(self.spawned(), 0)
 
 
 class Console(unittest.TestCase):
