@@ -185,44 +185,65 @@ echo "== 8. continuation mechanisms live only where a session may resume =="
 # describes, and every skill here legitimately NAMES the others in its
 # comparison table.
 #
-# The patterns are REGEXES, not fixed strings, because the first version was
-# fixed strings and the script's own documented calling convention walked past
-# it in both directions: `jjstack-rollover-slot --cwd "$PWD" write` does not
-# contain "jjstack-rollover-slot write" (options are parsed before the verb),
-# and the hook calls it through a variable. A planted bypass in
-# /save-and-clear passed both gates. The last row closes the variable form by
-# keying on the script NAME alone: whatever a file does with it, it has to
-# name it once.
+# THE PATTERNS HAVE BEEN WRONG TWICE, both times by encoding one spelling of
+# an invocation rather than the invocation:
+#   - fixed strings missed the documented option form, because options are
+#     parsed before the verb: `…-slot --cwd DIR write` does not contain
+#     `…-slot write`. A bypass planted in /save-and-clear passed every gate.
+#   - a trailing `([[:space:]]|$)` then missed the BACKTICKED form, which is
+#     how markdown writes a command. Three of the four real `status`
+#     invocations on this tree are backticked, and the row saw only the
+#     fourth. The trailing anchor is now "anything that cannot continue an
+#     identifier", so a backtick, a full stop or a comma all close the verb
+#     while `writeups` still does not match `write`.
 #
-# Three ways to fail, and only the first is the obvious one:
+# ONE PRIMARY PER ROW. An earlier version listed three primaries in one row
+# and set `hit` if ANY matched — a disjunction, not three assertions. It could
+# say "at least one of these still uses it" and never "which", so a primary
+# could go dark forever behind its neighbours. Rows repeat a pattern instead,
+# once per file that must carry it. A primary that CANNOT be matched by
+# pattern is not listed as one: the hook reaches the script through a
+# variable, so it gets its own row keyed on what it does contain. A named
+# primary that cannot fire is a claim the check does not check, which is the
+# thing this whole check exists to stop being acceptable.
+#
+# Three ways to fail:
 #   leak    — a carrier outside the allowed set: the mechanism escaped
 #   absent  — no carrier at all: the guard is watching something this repo no
 #             longer has, and would pass forever without inspecting anything
-#   hollow  — carriers exist but none in the PRIMARY set: the mechanism left
-#             the skill that must have it, and only prose about it remains.
-#             The reference doc names every mechanism, so without this rule
+#   hollow  — carriers exist but not the primary one: the mechanism left the
+#             file that must have it and only prose about it remains. The
+#             contract reference names every mechanism, so without this rule
 #             deleting /rollover's slot write entirely kept the tree green.
 #
-# TAB-separated: pattern <TAB> primary <TAB> also-allowed. The patterns carry
-# `|` themselves, both as alternation and inside a negated class, so it cannot
-# also be the field separator — the first draft split every slot pattern at its
-# own `[^;|&]` and reported three phantom "matches nothing" failures.
+# TAB-separated: pattern <TAB> the ONE file that must carry it ('-' for a row
+# that is only a leak boundary) <TAB> everything else allowed to mention it.
+# The patterns carry `|` themselves, so it cannot also be the separator.
+V='([^A-Za-z0-9_-]|$)'          # a verb ends at anything that is not identifier
+S='jjstack-rollover-slot[^;|&]*[[:space:]]'
+ALL='references/rollover-handover.md bin/jjstack-rollover-slot skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh'
 printf '%s\t%s\t%s\n' \
   'mcp__quartermaster__qm_queue_add' \
     'skills/rollover/SKILL.md' \
     'references/rollover-handover.md' \
-  'jjstack-rollover-slot[^;|&]*[[:space:]]write([[:space:]]|$)' \
+  "${S}write${V}" \
     'skills/rollover/SKILL.md' \
     'references/rollover-handover.md bin/jjstack-rollover-slot' \
-  'jjstack-rollover-slot[^;|&]*[[:space:]]consume([[:space:]]|$)' \
+  "${S}consume${V}" \
     'skills/resume-from-clear/SKILL.md' \
     'references/rollover-handover.md bin/jjstack-rollover-slot' \
-  'jjstack-rollover-slot[^;|&]*[[:space:]]status([[:space:]]|$)' \
-    'skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
-    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+  "${S}status${V}" \
+    'skills/rollover/SKILL.md' \
+    "$ALL" \
+  "${S}status${V}" \
+    'skills/resume-from-clear/SKILL.md' \
+    "$ALL" \
+  'RSLOT=.*jjstack-rollover-slot' \
+    'hooks/shared-memory.sh' \
+    '' \
   'jjstack-rollover-slot' \
-    'skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
-    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+    '-' \
+    "$ALL" \
   > "$TMP/continuation"
 # The guard is not a carrier. This file states every pattern it looks for, so
 # scanning bin/ without this exclusion makes each row find itself and report a
@@ -236,23 +257,24 @@ while IFS=$'\t' read -r pat primary allowed; do
     bad "'$pat' matches nothing in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
     continue
   fi
-  # Print what was MEASURED, never the allowed list. The first version printed
-  # the allowed list under the words "carried only by", so it cheerfully named
+  # Print what was MEASURED, never the allowed list. An earlier version printed
+  # the allowed list under the words "carried only by", so it named
   # hooks/shared-memory.sh as a carrier of a string that file has never
-  # contained — which is what hid the leak above for a whole review round.
+  # contained — which hid a leak for a whole review round.
   found=$(tr '\n' ' ' < "$TMP/carriers"); found="${found% }"
   stray=""; hit=""
+  [ "$primary" = "-" ] && hit=n/a
   while read -r f; do
     [ -n "$f" ] || continue
-    case " $primary " in *" $f "*) hit=y ;; esac
+    [ "$f" = "$primary" ] && hit=y
     case " $primary $allowed " in *" $f "*) ;; *) stray="${stray:+$stray, }$f" ;; esac
   done < "$TMP/carriers"
   if [ -n "$stray" ]; then
     bad "$pat is carried by $stray — only /rollover hands work to a successor; a clear or an exit that carries this makes the next session resume work nobody asked it to"
   elif [ -z "$hit" ]; then
-    bad "$pat is mentioned ($found) but no longer USED in any of: $primary — the mechanism is gone and only prose about it is left"
+    bad "$pat is mentioned ($found) but no longer USED in $primary — the mechanism left the file that must have it and only prose about it is left"
   else
-    ok "$pat — carried by: $found"
+    ok "$pat [$primary] — carried by: $found"
   fi
 done < "$TMP/continuation"
 
