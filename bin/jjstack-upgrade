@@ -21,6 +21,25 @@ set -euo pipefail
 
 JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 STATE_DIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}"
+
+# UPGRADE THE CLONE, NOT THE TREE WE WERE REACHED THROUGH.
+#
+# The normal way to run this is through the served link, and the served tree is
+# a DETACHED worktree. Every precondition below wants a branch, so reached that
+# way the script aborted with "on branch 'DETACHED'" and a pinned install could
+# never be upgraded at all - including by /jjstack-repair, whose whole job is
+# to fix an install without the user knowing where the clone lives.
+PINBIN="$(dirname "$0")/jjstack-skills-pin"
+if [ -x "$PINBIN" ]; then
+  SOURCE_DIR="$(JJSTACK_DIR="$JJSTACK_DIR" "$PINBIN" --source 2>/dev/null || echo "$JJSTACK_DIR")"
+else
+  SOURCE_DIR="$JJSTACK_DIR"
+fi
+[ -n "$SOURCE_DIR" ] || SOURCE_DIR="$JJSTACK_DIR"
+if [ "$SOURCE_DIR" != "$JJSTACK_DIR" ]; then
+  echo "note: reached through a pinned worktree; upgrading the clone at $SOURCE_DIR"
+fi
+JJSTACK_DIR="$SOURCE_DIR"
 MARKER_FILE="$STATE_DIR/just-upgraded-from"
 VERSION_FILE="$JJSTACK_DIR/VERSION"
 
@@ -70,8 +89,27 @@ git fetch --quiet origin "$DEFAULT_BRANCH" || {
 LOCAL_SHA=$(git rev-parse HEAD)
 REMOTE_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH")
 
+# Advancing the served tree is not part of "did the clone move". A pin can be
+# behind a current clone - that is exactly the state after installing this
+# change, or after any manual `git pull` - so this runs on the up-to-date path
+# too, and the message says which of the two it is talking about.
+sync_served_tree() {
+  [ -x "$PINBIN" ] || return 0
+  JJSTACK_DIR="$JJSTACK_DIR" "$PINBIN" "$1" || \
+    echo "WARNING: skills pin not advanced; sessions still load the previous release"
+  # The root link is how references/ and bin/ are reached and fix-symlinks
+  # skips it by name, so it is moved here or by nothing.
+  JJSTACK_DIR="$JJSTACK_DIR" "$PINBIN" --link || \
+    echo "WARNING: root link not moved; sessions still load the previous tree"
+  if [ -x "$JJSTACK_DIR/bin/jjstack-fix-symlinks" ]; then
+    JJSTACK_DIR="$JJSTACK_DIR" JJSTACK_REPIN_LINKS=1 \
+      "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
+  fi
+}
+
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-  echo "already up-to-date"
+  echo "clone already up-to-date"
+  sync_served_tree "$REMOTE_SHA"
   exit 0
 fi
 
@@ -109,21 +147,11 @@ if [ -n "$OLD_VERSION" ]; then
   echo "$OLD_VERSION" > "$MARKER_FILE"
 fi
 
-# ─── Advance the skills pin to what was just pulled ───────────
-# The pull moved this checkout; the live tree is a separate pinned worktree
-# and does not move with it. Without this an upgrade would report success and
-# change nothing any session loads - the pin is the thing being upgraded.
-if [ -x "$JJSTACK_DIR/bin/jjstack-skills-pin" ]; then
-  "$JJSTACK_DIR/bin/jjstack-skills-pin" "$REMOTE_SHA" ||     echo "WARNING: skills pin not advanced; sessions still load the previous release"
-fi
-
-# ─── Re-symlink skills so any new skills become active ────────
-# JJSTACK_REPIN_LINKS moves links left pointing at a previous source onto the
-# pin. Set only here, where a version change is the deliberate moment for it,
-# never in the per-session preamble path.
-if [ -x "$JJSTACK_DIR/bin/jjstack-fix-symlinks" ]; then
-  JJSTACK_REPIN_LINKS=1 "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
-fi
+# ─── Advance the served tree to what was just pulled ──────────
+# The pull moved this clone; the live tree is a separate pinned worktree and
+# does not move with it. Without this an upgrade would report success and
+# change nothing any session loads.
+sync_served_tree "$REMOTE_SHA"
 
 # Also refresh the statusline path (handles relocated clones)
 if [ -x "$JJSTACK_DIR/bin/jjstack-statusline-install" ]; then

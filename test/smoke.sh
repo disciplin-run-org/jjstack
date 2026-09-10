@@ -2197,8 +2197,86 @@ check "…and never writes a link target under the checkout" \
       "! grep -q 'jj_target=\"\$JJSTACK_DIR/skills' '$BIN/jjstack-fix-symlinks'"
 check "…nor iterates the checkout's skills" \
       "! grep -q 'for skill_dir in \"\$JJSTACK_DIR\"/skills' '$BIN/jjstack-fix-symlinks'"
-check "the upgrade advances the pin, or an upgrade changes nothing served" \
-      "grep -q 'jjstack-skills-pin\" \"\$REMOTE_SHA\"' '$BIN/jjstack-upgrade'"
+# ── the three blocking findings from PR #41 round 1, each as its repro ──
+# All three are about the UPGRADE path, which is the only way a pinned install
+# ever moves. A pin nobody can advance is worse than no pin: it freezes the
+# machine on one commit and the freeze is invisible.
+cp "$BIN/jjstack-upgrade" "$PINSB/work/bin/"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm tools
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" remote set-head origin main >/dev/null 2>&1
+pin main >/dev/null 2>&1
+UPG="$PINSB/state/skills-pin/bin/jjstack-upgrade"
+
+# FINDING 1. Run through the served link, $JJSTACK_DIR is the DETACHED pin and
+# every branch precondition fails: `ABORT: on branch 'DETACHED'`. A pinned
+# install could not be upgraded at all, including by /jjstack-repair, whose
+# job is to fix an install without the user knowing where the clone is.
+UP_OUT="$(JJSTACK_STATE_DIR="$PINSB/state" "$UPG" 2>&1)"; _rc=$?
+check "upgrade run through the served (detached) tree does not abort" "[ $_rc -eq 0 ]"
+check "…and says nothing about a DETACHED branch" "! printf '%s' \"$UP_OUT\" | grep -q DETACHED"
+check "…because it resolves the source clone and says which" \
+      "printf '%s' \"$UP_OUT\" | grep -q 'upgrading the clone at'"
+check "--source names the clone when asked from inside the worktree" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+check "…and is a no-op when already given the clone" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+
+# FINDING 2. The pin is a separate tree and can be behind a CURRENT clone -
+# the state every install is in right after this change lands, and after any
+# manual `git pull`. `already up-to-date` spoke for the clone and exited
+# before the pin was touched.
+printf -- '---\nname: alpha\n---\nUPGRADED\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam upgraded
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+check "the pin starts behind the clone (anti-vacuity floor)" \
+      "! grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+UP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "a current clone with a stale pin still advances the pin" \
+      "grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+# The old message claimed something it had not checked. It must scope itself.
+check "…and the up-to-date message speaks only for the clone" \
+      "! printf '%s' \"$UP_OUT\" | grep -qx 'already up-to-date'"
+
+# FINDING 3. The ROOT link is how ~74 runtime references reach references/ and
+# bin/. jjstack-fix-symlinks skips it by name and always has, so an upgrade
+# moved the fifty skill links to the pin and left the root link on the
+# checkout: half migrated, and the half left behind is the one carrying the
+# reference library.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+check "the migration fixture starts with BOTH links on the checkout (floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "an upgrade moves the ROOT link onto the pin, not only the skill links" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+check "…and the skill links too, so the install is not half migrated" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+check "…so references/ resolves into the served tree" \
+      "[ -d '$HOME/.claude/skills/jjstack/skills' ]"
+# --link must not eat a real directory: a user who cloned jjstack straight to
+# ~/.claude/skills/jjstack has no link to move, and rm -rf on that is the
+# user's whole install.
+mkdir -p "$PINSB/realdir/jjstack"
+echo keep > "$PINSB/realdir/jjstack/marker"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" --link "$PINSB/realdir" >/dev/null 2>&1
+check "--link refuses to replace a real directory with a symlink" \
+      "[ -d '$PINSB/realdir/jjstack' ] && [ ! -L '$PINSB/realdir/jjstack' ]"
+check "…and leaves its contents alone" "[ -f '$PINSB/realdir/jjstack/marker' ]"
+# The assertions above BOTH pass with the guard deleted, because `ln -snf`
+# onto an existing directory writes a link INSIDE it rather than replacing it.
+# The directory survives, its marker survives, and the install is silently
+# wrong: $dir/jjstack/skills-pin now exists and nothing resolves through it.
+# Mutation found this; reading the assertions did not.
+check "…and creates nothing inside it (the guard, not ln's behaviour)" \
+      "[ \$(ls -A '$PINSB/realdir/jjstack' | wc -l) -eq 1 ]"
+check "--link is idempotent and says so on a second run" \
+      "JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --link '$HOME/.claude/skills' | grep -q 'already at'"
+
+check "the upgrade advances the served tree on both exits" \
+      "[ \$(grep -c 'sync_served_tree' '$BIN/jjstack-upgrade') -ge 3 ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

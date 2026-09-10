@@ -22,6 +22,8 @@
 #   jjstack-skills-pin --status         # print the current pin, exit 0
 #   jjstack-skills-pin --path           # print the pin directory, exit 0
 #   jjstack-skills-pin --resolve        # print the tree that SHOULD be served
+#   jjstack-skills-pin --link [dir]     # point <dir>/jjstack at the served tree
+#   jjstack-skills-pin --source         # print the source clone of this tree
 #
 # --resolve is the single answer to "which directory do the links point at":
 # the pin when there is a usable one, the checkout when there is not. Every
@@ -59,6 +61,40 @@ is_usable_pin() {
 
 case "${1:-}" in
   --path)   echo "$PIN_DIR"; exit 0 ;;
+  --source)
+    # The clone a worktree hangs off. Invoked through the served link,
+    # $JJSTACK_DIR is the DETACHED PIN, and anything that needs a branch -
+    # jjstack-upgrade's whole precondition set - has to reach the real clone
+    # instead. --git-common-dir names the shared .git for every worktree; its
+    # parent is the main worktree. Prints $JJSTACK_DIR unchanged when it is
+    # already the clone, or when there is no git at all.
+    _cd="$(git -C "$JJSTACK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -n "$_cd" ] && [ "$(basename "$_cd")" = ".git" ]; then
+      echo "$(dirname "$_cd")"
+    else
+      echo "$JJSTACK_DIR"
+    fi
+    exit 0 ;;
+  --link)
+    # The ROOT link, $SKILLS_DIR/jjstack, is how ~98 runtime references reach
+    # references/ and bin/. jjstack-fix-symlinks skips it by name and always
+    # has, so nothing but `setup` ever moved it: an upgrade could re-point all
+    # fifty skill links at the pin and leave the root link on the checkout,
+    # which is the half-migrated state a reviewer of PR #41 measured.
+    _sd="${2:-$HOME/.claude/skills}"
+    if is_usable_pin; then _served="$PIN_DIR"; else _served="$JJSTACK_DIR"; fi
+    mkdir -p "$_sd"
+    if [ -d "$_sd/jjstack" ] && [ ! -L "$_sd/jjstack" ]; then
+      warn "$_sd/jjstack is a real directory; leaving it alone"
+      exit 0
+    fi
+    if [ "$(readlink "$_sd/jjstack" 2>/dev/null)" = "$_served" ]; then
+      echo "root link already at $_served"
+    else
+      ln -snf "$_served" "$_sd/jjstack"
+      ok "root link → $_served"
+    fi
+    exit 0 ;;
   --resolve)
     if is_usable_pin; then echo "$PIN_DIR"; else echo "$JJSTACK_DIR"; fi
     exit 0 ;;
