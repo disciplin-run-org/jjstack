@@ -165,6 +165,18 @@ cat ~/.claude/skills/jjstack/jjstack.config.yaml
 Store `OUTPUT_DIR` (default `{repo}/jjstack`) and the DNA paths. `mkdir -p`
 the output dir. Note the start time — the 60-minute clock runs from here.
 
+**If there is no tree to review from, make one before resolving anything.** The
+independent reviewer runs from its own directory, which is not a git repository,
+so the `gh pr view` below cannot find a pull request from there: it stops with
+`could not determine base repo`. Fetch `pull/<PR>/head` into a detached worktree
+in the session scratchpad, never inside a clone, and put `OUTPUT_DIR` beside the
+tree rather than in it, because `worktree remove` refuses a tree holding the
+round's files. `references/independent-review.md` has the commands and the
+removal. Then work from inside the tree for the rest of the round, passing the
+PR number to `gh pr view`. If a tree from an earlier round of the same PR is still
+at that path, remove it first: `worktree add` refuses a path that exists, and
+carrying on in the old tree reviews code that is no longer the head.
+
 Resolve the PR once, into a file — the **base** repo, not a fork:
 
 ```bash
@@ -203,6 +215,21 @@ PR number.
 - exit 0 → continue. `no pull requests found` → **NO_PR**: there is nowhere
   to post; note it for Phase 5. Anything else → **GH_ERROR**: report stderr
   verbatim and stop. Never read an auth or network failure as "no PR".
+
+**Then bind the tree to the sha.** `PR_SHA` is what GitHub says the head is,
+and every finding will be measured against the tree you are standing in. They
+must be the same commit, and nothing else in this skill checks that they are:
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_SHA" ] && git rev-parse HEAD 2>/dev/null | grep -qxF "$PR_SHA" && echo TREE_AT_HEAD || echo TREE_STALE
+```
+
+`TREE_STALE` → the code in front of you is not the head under review: a tree
+left over from an earlier round, a branch with commits not yet pushed, or no
+tree at all. Do not review it. Push, or remove the tree and make it again from
+`pull/<PR>/head`, then resolve again. Phase 5 re-asks GitHub before posting;
+this is the step that ties what you read to what it asks about. On **NO_PR**
+skip it: there is no head to bind to.
 
 Then decide **first review or re-review**. The previous round is on the PR:
 every comment this skill posts opens with its attribution line and carries
@@ -596,15 +623,52 @@ allowed, and the author filter above keeps that round out of the reviewer's
 previous-round detector, so it costs the reviewer nothing. It is not the
 review the merge waits on.
 
+**Before posting, check the head has not moved.** Every finding was measured at
+`PR_SHA`, which the preamble recorded. Ask GitHub what the pull request head is
+now:
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_REPO" ] && [ -n "$PR_NUM" ] && [ -n "$PR_SHA" ] && gh api "repos/$PR_REPO/pulls/$PR_NUM" --jq .head.sha > {OUTPUT_DIR}/head-now 2> {OUTPUT_DIR}/head-now.err && grep -qxE '[0-9a-f]{40}' {OUTPUT_DIR}/head-now && { grep -qxF "$PR_SHA" {OUTPUT_DIR}/head-now && echo HEAD_UNCHANGED || echo HEAD_MOVED; } || echo HEAD_UNKNOWN
+```
+
+This needs no clone and runs from wherever the reviewer is. That matters: the
+independent reviewer's directory is not a git repository, so anything that asks
+`origin` fails there. `PR_REPO` is the base repo, so a pull request from a fork
+answers the same way as one from a branch. Not `git rev-parse origin/<branch>`,
+because a fork's branch does not exist on `origin`; and not `FETCH_HEAD`, which
+any later fetch overwrites. `references/independent-review.md` asks the same
+question for a reviewer that does hold a clone.
+
+Three answers, and each means something different:
+
+- `HEAD_UNCHANGED` → post.
+- `HEAD_MOVED` → the author pushed while the round ran and the report describes
+  code that is no longer there. Do not post it, and do not hand-patch it: re-run
+  against the new head. Say so in the close-out so the round is visibly void
+  rather than silently missing.
+- `HEAD_UNKNOWN` → the check could not find out: a value is missing from
+  `pr.env`, or `gh` failed, or it answered with something that is not a sha.
+  Real `gh` asked for a field the object lacks exits 0 and prints a bare
+  newline, so the test is "is this a sha", not "is this file non-empty". None
+  of those is evidence the author pushed, and re-running the round will not
+  change them. Do not post: report **GH_ERROR** with
+  `{OUTPUT_DIR}/head-now.err` verbatim, and stop.
+
 <HARD-GATE>
-Do NOT run `gh pr review` unless `jjstack-pr-comment-lint` exited 0 on
-{OUTPUT_DIR}/pr-comment.md in the SAME shell command as the post, with the
-PR identity sourced in that same command. This applies to EVERY invocation.
+Do NOT run `gh pr review` unless, in the SAME shell command as the post, the PR
+identity was sourced, the head check's answer in {OUTPUT_DIR}/head-now is
+`PR_SHA`, and `jjstack-pr-comment-lint` exited 0 on {OUTPUT_DIR}/pr-comment.md.
+This applies to EVERY invocation.
 </HARD-GATE>
 
 ```bash
-. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr review "$PR_NUM" --repo "$PR_REPO" <EVENT> --body-file {OUTPUT_DIR}/pr-comment.md
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && [ -n "$PR_SHA" ] && grep -qxF "$PR_SHA" {OUTPUT_DIR}/head-now && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr review "$PR_NUM" --repo "$PR_REPO" <EVENT> --body-file {OUTPUT_DIR}/pr-comment.md
 ```
+
+The `head-now` match is what makes "do not post a stale round" a gate rather
+than advice. Skip the head check, run it against another `OUTPUT_DIR`, or misread
+its answer, and this line still refuses, because the file it reads is missing or
+holds a different sha.
 
 **Then replace the pending status the preamble posted.** It answers one
 question — does anything block this merge — so it is binary where the verdict

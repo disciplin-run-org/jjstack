@@ -128,6 +128,69 @@ re-request it re-reviews under AR-3's rules: only the prior P0/P1 are
 re-verified, nothing below P1 is raised, and `STOP` is returned if the
 finding count did not fall.
 
+### Materialising the head, and taking it away again
+
+The reviewer directory is not a checkout, so each round makes what it needs and
+removes it at the end. Work from a clone the reviewer owns, not the author's
+working checkout: the fetch overwrites that clone's `FETCH_HEAD` and the
+worktree lands in its worktree list, and on the author's checkout both of those
+belong to the author.
+
+```bash
+git -C <clone> fetch origin pull/<PR>/head
+git -C <clone> worktree add --detach <scratchpad>/pr<PR> FETCH_HEAD
+```
+
+Detached, and in the session scratchpad, never inside the clone: a worktree
+nested in the main tree breaks `rg`, `find`, and the repo's own tree-walking
+checks, which is the first anti-pattern in `/worktrees`. Record the head sha,
+because it is what every finding is measured against.
+
+Before publishing, ask the remote what the head is now:
+
+```bash
+git -C <clone> ls-remote origin refs/pull/<PR>/head
+```
+
+Ask the **remote**, and ask it for the **pull request ref**. Both halves matter,
+and getting either wrong silently answers a different question than the one you
+asked:
+
+- `git rev-parse origin/<branch>` fails outright on a cross-repository pull
+  request, because the fork's branch does not exist on `origin` — and the
+  tempting repair, substituting `origin/main`, compares the base against itself
+  and always says nothing moved.
+- `FETCH_HEAD` is not a record of anything. Any later fetch overwrites it, so a
+  `fetch origin --prune` between the checkout and the check leaves it pointing at
+  whatever was fetched last, usually the default branch.
+
+`ls-remote` reads the pull request ref itself. It needs no fetch, cannot be
+clobbered by one, and works the same whether the head lives in this repo or in a
+fork.
+
+If the sha it prints differs from the one the round was measured at, the head
+moved and the findings are void. Re-run the round; do not hand-patch the report.
+If it prints nothing, you could not find out. That is **GH_ERROR**, not a moved
+head, and re-running will not change it.
+
+Then take the tree away:
+
+```bash
+git -C <clone> worktree remove <scratchpad>/pr<PR>
+git -C <clone> worktree prune
+```
+
+`worktree remove` refuses a tree holding untracked files, which is why the
+round's own output belongs beside the tree and not in it. If it refuses,
+something wrote into the tree: read what before reaching for `--force`, which
+deletes it unseen. Remove the tree before re-running a void round as well:
+`worktree add` refuses a path that already exists, and carrying on in the old
+tree reviews exactly the code the round was voided for.
+
+A round that leaves a tree behind makes the next one measure the wrong thing,
+and they accumulate silently — `git worktree list` on this machine has carried
+several at a time from rounds that ended weeks earlier.
+
 ## The reviewer identity
 
 A GitHub machine user, not a GitHub App: one reviewer on a handful of orgs

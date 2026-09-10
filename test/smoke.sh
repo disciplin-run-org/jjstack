@@ -3029,6 +3029,199 @@ done > "$SANDBOX/adr_ids_bad.txt"
 check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
       "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
 
+echo "== 16. the round refuses to publish against a moved head =="
+# The rule is "every finding was measured at PR_SHA; do not post if the head has
+# moved." Asserting that SKILL.md contains the word "moved" would survive
+# deleting the command, so this section EXTRACTS the shipped command lines and
+# EXECUTES them, in every state they can answer, from where the skill says they
+# run.
+#
+# WHERE IT RUNS is part of the contract, and the first version of this section
+# got it wrong. The independent reviewer works from its own directory, which is
+# not a git repository. The line shipped at 9f42eeb asked `git ls-remote origin`,
+# which cannot answer there, and this section `cd`-ed into a clone before
+# running it: the harness supplied the one precondition the skill never
+# establishes, and CI went green on a command that could not work where the
+# skill says the reviewer lives. So the head check runs from a directory that is
+# NOT a repository, a control proves it is not one, and the 9f42eeb line is
+# frozen as a fixture and run the same way, to prove this harness reproduces
+# that failure instead of hiding it.
+#
+# Three lines are executed, because the rule has three parts and each was once
+# missing: the head check (asks GitHub), the gated post (refuses a stale round
+# mechanically, not by advice), and the tree binding (ties the tree being read to
+# the sha GitHub is asked about - without it the check vouches for GitHub
+# against GitHub, and an approval can land on code nobody read).
+#
+# Extraction keys on each line's output contract, not on its plumbing, so an
+# equally correct rewrite still runs here and a wrong one fails on the fixture
+# instead of on a regex.
+HDSK="$DIR/skills/review/SKILL.md"
+HDCMD=$(grep -F 'HEAD_UNCHANGED' "$HDSK" | grep -F 'HEAD_MOVED')
+hdn=$(printf '%s\n' "$HDCMD" | grep -c .)
+check "the skill ships exactly one head check (anti-vacuity floor)" "[ \"\$hdn\" = 1 ]"
+
+HDFIX=$(tmp hdfix); HDBIN="$HDFIX/bin"; HDOUT="$HDFIX/out"; HDCWD="$HDFIX/reviewer"
+mkdir -p "$HDBIN" "$HDOUT" "$HDCWD"
+check "the reviewer's directory in this fixture is not a git repository (control)" \
+      "! git -C '$HDCWD' rev-parse --git-dir >/dev/null 2>&1"
+
+# Three shas: the head the round measured, the head after a force-push, and the
+# base. The object the stub serves carries the base too, so a check that reads
+# the wrong field gets a real, wrong sha rather than nothing.
+HD_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+HD_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+HD_BASE=cccccccccccccccccccccccccccccccccccccccc
+# The stub answers the way the real API does in the respects the check depends
+# on. It serves a RAW pull-request object and applies --jq to it with real jq,
+# so the check's own field path is exercised rather than handed the answer. Any
+# path but this one pull request is a 404, so asking the wrong repo or number
+# cannot land on the right sha by accident. NEWLINE is what real gh prints for a
+# field the object lacks - exit 0 and one newline, measured - which a
+# "non-empty file" test would read as an answer. `gh pr review` records that it
+# was called, so the gated post can be observed posting or refusing.
+hd_gh() {   # hd_gh <head-sha|FAIL|EMPTY|NEWLINE>
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$1" = pr ] && [ "$2" = review ]; then printf "%%s\\n" "$*" > %q; exit 0; fi\n' "$HDOUT/posted"
+    printf '[ "$1" = api ] || { echo "stub: unexpected gh $1" >&2; exit 2; }\n'
+    printf '[ "$2" = repos/o/r/pulls/7 ] || { echo "HTTP 404: Not Found ($2)" >&2; exit 1; }\n'
+    case "$1" in
+      FAIL)    printf 'echo "HTTP 502: Bad Gateway" >&2; exit 1\n' ;;
+      EMPTY)   printf 'exit 0\n' ;;
+      NEWLINE) printf 'echo; exit 0\n' ;;
+      *)       printf 'q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done\n'
+               printf 'o='"'"'{"number":7,"head":{"sha":"%s"},"base":{"sha":"%s"}}'"'"'\n' "$1" "$HD_BASE"
+               printf 'if [ -n "$q" ]; then printf %%s "$o" | jq -r "$q"; else printf %%s "$o"; fi\n' ;;
+    esac
+  } > "$HDBIN/gh"
+  chmod +x "$HDBIN/gh"
+}
+# Run a head check exactly as the reviewer would: from its own directory, with
+# only the documented placeholder substituted. $2 defaults to the shipped line.
+hd_run() {   # hd_run <sha the round recorded> [command]
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$1" > "$HDOUT/pr.env"
+  local c="${2-$HDCMD}"
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${c//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
+}
+
+hd_gh "$HD_B"
+check "a round measured at the current head publishes" "[ \"\$(hd_run $HD_B)\" = HEAD_UNCHANGED ]"
+# NEGATIVE CONTROL. Same command, same stub, one input different: the sha the
+# round recorded. A check that only ever says HEAD_UNCHANGED is no check.
+check "a round measured at an older commit is refused" "[ \"\$(hd_run $HD_A)\" = HEAD_MOVED ]"
+
+# The incident itself: the reviewer records the sha, the author force-pushes,
+# and the report is now about code that is not there.
+hd_gh "$HD_A"
+check "…and the same recorded sha flips to refused when the author force-pushes" \
+      "[ \"\$(hd_run $HD_B)\" = HEAD_MOVED ]"
+check "…while a round measured at the new head is fine (control)" \
+      "[ \"\$(hd_run $HD_A)\" = HEAD_UNCHANGED ]"
+
+# NOT KNOWING IS NOT MOVING. Each of these used to read as HEAD_MOVED, which
+# told the reviewer the author had pushed and to re-run - wrong advice for a
+# failure re-running cannot fix, so the round never published and the author
+# was blamed for it.
+hd_gh FAIL
+check "a failing API call is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh EMPTY
+check "an API call that answers nothing is HEAD_UNKNOWN" "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh NEWLINE
+check "an API call that answers a bare newline is HEAD_UNKNOWN (what real gh prints for a missing field)" \
+      "[ \"\$(hd_run $HD_A)\" = HEAD_UNKNOWN ]"
+hd_gh "$HD_A"
+check "an empty recorded sha is HEAD_UNKNOWN, not a moved head" "[ \"\$(hd_run '')\" = HEAD_UNKNOWN ]"
+
+# THE DEFECT, REPRODUCED. The 9f42eeb line, frozen from the blob, run exactly
+# like the shipped one. Against a head that has NOT moved it must fail to say
+# so - if it answers HEAD_UNCHANGED here, this harness is supplying a clone
+# again and every assertion above is measuring the harness, not the skill.
+HDOLD=$(grep -v '^#' "$DIR/test/fixtures/review-head-check-needs-a-clone.txt" | grep -v '^$' | head -1)
+check "the frozen 9f42eeb line is present (anti-vacuity floor)" \
+      "grep -qF 'HEAD_MOVED' <<<\"\$HDOLD\""
+check "the 9f42eeb line cannot confirm a current head from the reviewer's directory (the defect, reproduced)" \
+      "[ \"\$(hd_run $HD_A \"\$HDOLD\")\" != HEAD_UNCHANGED ]"
+
+# THE GATE. The head check prints an answer; what the reviewer does with it is
+# prose, and prose is the step a reviewer gets wrong. The gated post is the one
+# line the skill forbids splitting, so the refusal belongs in it. Run the shipped
+# post line with a lint that passes and a gh that records the post: it must post
+# when head-now holds PR_SHA, and refuse when it holds anything else or nothing.
+HDGATE=$(grep -F 'gh pr review' "$HDSK" | grep -F 'jjstack-pr-comment-lint')
+hdg=$(printf '%s\n' "$HDGATE" | grep -c .)
+check "the skill ships exactly one gated post (anti-vacuity floor)" "[ \"\$hdg\" = 1 ]"
+HDHOME="$HDFIX/fakehome"; mkdir -p "$HDHOME/.claude/skills/jjstack/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
+chmod +x "$HDHOME/.claude/skills/jjstack/bin/jjstack-pr-comment-lint"
+: > "$HDOUT/pr-comment.md"
+hd_post() {   # hd_post <what head-now holds|ABSENT>  ->  POSTED | REFUSED
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$HD_B" > "$HDOUT/pr.env"
+  rm -f "$HDOUT/posted" "$HDOUT/head-now"
+  [ "$1" = ABSENT ] || printf '%s\n' "$1" > "$HDOUT/head-now"
+  local c="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; c="${c//<EVENT>/--approve}"
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$c" ) >/dev/null 2>&1
+  [ -e "$HDOUT/posted" ] && echo POSTED || echo REFUSED
+}
+check "the gate posts when the head check answered PR_SHA (control: the harness can post)" \
+      "[ \"\$(hd_post $HD_B)\" = POSTED ]"
+check "the gate refuses when the head moved, whatever the reviewer did with the answer" \
+      "[ \"\$(hd_post $HD_A)\" = REFUSED ]"
+check "the gate refuses when the head check was never run" \
+      "[ \"\$(hd_post ABSENT)\" = REFUSED ]"
+
+# THE TREE BINDING. The head check compares GitHub with GitHub; this line is
+# what compares the tree being read with the sha. The case that bit: a void
+# round leaves its tree behind, `worktree add` refuses the path on the re-run,
+# the reviewer carries on in the old tree, PR_SHA re-resolves to the new head,
+# and the approval lands on code nobody read. The skill says to run this from
+# inside the tree, so here - and only here - the harness does cd into a repo.
+HDTREECMD=$(grep -F 'TREE_AT_HEAD' "$HDSK" | grep -F 'TREE_STALE')
+hdt=$(printf '%s\n' "$HDTREECMD" | grep -c .)
+check "the skill ships exactly one tree binding (anti-vacuity floor)" "[ \"\$hdt\" = 1 ]"
+HDREPO="$HDFIX/tree"
+git init -q "$HDREPO"
+git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+HDT_A=$(git -C "$HDREPO" rev-parse HEAD)
+git -C "$HDREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+HDT_B=$(git -C "$HDREPO" rev-parse HEAD)
+hd_tree() {   # hd_tree <dir to stand in> <sha the round recorded>
+  printf 'PR_REPO=o/r\nPR_NUM=7\nPR_SHA=%s\n' "$2" > "$HDOUT/pr.env"
+  ( cd "$1" && eval "${HDTREECMD//\{OUTPUT_DIR\}/$HDOUT}" ) 2>/dev/null
+}
+check "a tree at the recorded head binds" "[ \"\$(hd_tree '$HDREPO' $HDT_B)\" = TREE_AT_HEAD ]"
+check "a tree left at an older commit is stale (the re-run the reviewer found)" \
+      "[ \"\$(hd_tree '$HDREPO' $HDT_A)\" = TREE_STALE ]"
+check "standing in no tree at all is stale, not bound" "[ \"\$(hd_tree '$HDCWD' $HDT_B)\" = TREE_STALE ]"
+check "an empty recorded sha binds nothing" "[ \"\$(hd_tree '$HDREPO' '')\" = TREE_STALE ]"
+
+# ORDER. A treeless reviewer's first command, the PR resolution, fails where it
+# stands ("could not determine base repo"), so the instruction to make a tree has
+# to come before it, not after. Keyed on the fetch the instruction gives and the
+# resolution command itself, so a reworded paragraph still counts.
+hd_fetch_ln=$(grep -n 'pull/<PR>/head' "$HDSK" | head -1 | cut -d: -f1)
+hd_resolve_ln=$(grep -n 'gh pr view --json number,url,commits' "$HDSK" | head -1 | cut -d: -f1)
+check "a reviewer with no tree is told to make one before the command that needs one" \
+      "[ -n \"\$hd_fetch_ln\" ] && [ -n \"\$hd_resolve_ln\" ] && [ \"\$hd_fetch_ln\" -lt \"\$hd_resolve_ln\" ]"
+
+# The reference the skill sends a treeless reviewer to must actually carry the
+# procedure - the /review-stack failure was text naming a procedure documented
+# nowhere. Keyed on the COMMAND lines, `git -C <clone> …`, not on the words: the
+# reference also explains `worktree remove` in prose, and a check keyed on the
+# words stayed green with the removal command deleted (mutant ref-drop-remove,
+# 0 FAIL, before this was keyed on the command).
+HDREF="$DIR/references/independent-review.md"
+check "the reference carries the fetch the skill sends the reviewer for" \
+      "grep -q 'fetch origin pull/<PR>/head' '$HDREF'"
+check "…the detached worktree" \
+      "grep -q 'worktree add --detach' '$HDREF'"
+check "…the head question aimed at the pull ref" \
+      "grep -q 'ls-remote origin refs/pull/<PR>/head' '$HDREF'"
+check "…the removal of the tree, which is what stops them piling up" \
+      "grep -q '^git -C <clone> worktree remove ' '$HDREF'"
+check "…and the prune" \
+      "grep -q '^git -C <clone> worktree prune' '$HDREF'"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
