@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# jjstack-skills-pin — the live skill tree is a pinned worktree, never a
+# working checkout.
+#
+# ~/.claude/skills/jjstack is what every Claude Code session on this machine
+# loads. Pointed at a development clone, it serves whatever branch that clone
+# happens to sit on: a `git checkout` silently changes what every session
+# executes, and a file left mid-edit is the live skill. That is the same
+# argument `setup` already makes for installing hooks by copy - this is the
+# skills half of it.
+#
+# A copy would have solved it and cost too much: skills are edited constantly
+# during development, and an install step between every edit and every test
+# gets worked around. A detached worktree keeps both properties. The live tree
+# only moves when someone runs this script, and it is still a git tree, so
+# VERSION, `git show origin/main:VERSION` and jjstack-update-check all keep
+# working.
+#
+# Usage:
+#   jjstack-skills-pin                  # pin to the default ref (origin/main)
+#   jjstack-skills-pin <ref>            # pin to a branch, tag or sha
+#   jjstack-skills-pin --status         # print the current pin, exit 0
+#   jjstack-skills-pin --path           # print the pin directory, exit 0
+#   jjstack-skills-pin --resolve        # print the tree that SHOULD be served
+#   jjstack-skills-pin --link [dir]     # point <dir>/jjstack at the served tree
+#   jjstack-skills-pin --source         # print the source clone of this tree
+#
+# --resolve is the single answer to "which directory do the links point at":
+# the pin when there is a usable one, the checkout when there is not. Every
+# caller that writes a link asks it, so the pin cannot be honoured in one
+# place and silently undone in another. jjstack-fix-symlinks runs on every
+# session preamble and used to re-point the links at the checkout by itself.
+#
+# Env overrides (for testing):
+#   JJSTACK_DIR         — the source clone (default: this script's repo)
+#   JJSTACK_STATE_DIR   — where the pin lives (default: ~/.jjstack)
+#
+# Exit: 0 pinned or reported · 2 usage · 3 not a git clone · 4 ref not found.
+set -euo pipefail
+
+JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${JJSTACK_STATE_DIR:-$HOME/.jjstack}"
+PIN_DIR="$STATE_DIR/skills-pin"
+
+YEL='\033[0;33m'; GRN='\033[0;32m'; CYA='\033[0;36m'; NC='\033[0m'
+info() { echo -e "${CYA}[jjstack]${NC} $1"; }
+ok()   { echo -e "${GRN}[jjstack]${NC} $1"; }
+warn() { echo -e "${YEL}[jjstack]${NC} $1"; }
+
+REF=""
+# is_usable_pin — a pin that exists, is a git worktree, and actually holds
+# skills. The last clause matters: an interrupted `worktree add` leaves a
+# directory that satisfies the first two and would be served as an empty
+# skill tree.
+is_usable_pin() {
+  [ -d "$PIN_DIR" ] || return 1
+  git -C "$PIN_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  [ -d "$PIN_DIR/skills" ] || return 1
+  return 0
+}
+
+case "${1:-}" in
+  --path)   echo "$PIN_DIR"; exit 0 ;;
+  --source)
+    # The clone a worktree hangs off. Invoked through the served link,
+    # $JJSTACK_DIR is the DETACHED PIN, and anything that needs a branch -
+    # jjstack-upgrade's whole precondition set - has to reach the real clone
+    # instead. --git-common-dir names the shared .git for every worktree; its
+    # parent is the main worktree. Prints $JJSTACK_DIR unchanged when it is
+    # already the clone, or when there is no git at all.
+    # --path-format arrived in git 2.31; without it the flag is an error and
+    # older git would fall through to the checkout - which is the old abort,
+    # loud rather than wrong, but needlessly so. The fallback asks without the
+    # flag and resolves the answer, which may be relative, against the tree.
+    _cd="$(git -C "$JJSTACK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -z "$_cd" ]; then
+      _cd="$(git -C "$JJSTACK_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+      case "$_cd" in
+        ""|/*) ;;
+        *) _cd="$(cd "$JJSTACK_DIR" && cd "$(dirname "$_cd")" 2>/dev/null && pwd)/$(basename "$_cd")" ;;
+      esac
+    fi
+    # Only a common dir literally named .git names a main worktree one level
+    # up. A bare repo, a submodule's .git file, or any other layout takes the
+    # else branch and returns the tree unchanged - the caller then behaves
+    # exactly as it did before --source existed.
+    if [ -n "$_cd" ] && [ "$(basename "$_cd")" = ".git" ] && [ -d "$(dirname "$_cd")" ]; then
+      echo "$(dirname "$_cd")"
+    else
+      echo "$JJSTACK_DIR"
+    fi
+    exit 0 ;;
+  --link)
+    # The ROOT link, $SKILLS_DIR/jjstack, is how ~98 runtime references reach
+    # references/ and bin/. jjstack-fix-symlinks skips it by name and always
+    # has, so nothing but `setup` ever moved it: an upgrade could re-point all
+    # fifty skill links at the pin and leave the root link on the checkout,
+    # which is the half-migrated state a reviewer of PR #41 measured.
+    _sd="${2:-$HOME/.claude/skills}"
+    if is_usable_pin; then _served="$PIN_DIR"; else _served="$JJSTACK_DIR"; fi
+    mkdir -p "$_sd"
+    if [ -d "$_sd/jjstack" ] && [ ! -L "$_sd/jjstack" ]; then
+      warn "$_sd/jjstack is a real directory; leaving it alone"
+      exit 0
+    fi
+    if [ "$(readlink "$_sd/jjstack" 2>/dev/null)" = "$_served" ]; then
+      echo "root link already at $_served"
+    else
+      ln -snf "$_served" "$_sd/jjstack"
+      ok "root link → $_served"
+    fi
+    exit 0 ;;
+  --resolve)
+    if is_usable_pin; then echo "$PIN_DIR"; else echo "$JJSTACK_DIR"; fi
+    exit 0 ;;
+  --status)
+    if is_usable_pin; then
+      sha="$(git -C "$PIN_DIR" rev-parse --short HEAD)"
+      ver="$(cat "$PIN_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo '?')"
+      echo "pinned $sha (VERSION $ver) at $PIN_DIR"
+    else
+      echo "no pin at $PIN_DIR"
+    fi
+    exit 0 ;;
+  -h|--help)
+    sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
+    exit 0 ;;
+  -*) echo "unknown arg: ${1} (use --help)" >&2; exit 2 ;;
+  "") ;;
+  *)  REF="$1" ;;
+esac
+
+# A worktree needs a git clone to hang off. A tarball install has none, and
+# that is a supported way to install jjstack - the caller decides what to do
+# with exit 3 rather than being failed on.
+if ! git -C "$JJSTACK_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  warn "$JJSTACK_DIR is not a git clone; cannot pin a worktree"
+  exit 3
+fi
+
+# Default ref: whatever origin's HEAD points at, fetched first so a pin made
+# right after a release does not serve yesterday's commit. A fetch failure is
+# not fatal - pinning to a stale-but-real ref beats refusing to pin at all -
+# but the ref itself must exist, or the pin would silently serve the wrong
+# tree, which is the whole failure this script exists to prevent.
+if [ -z "$REF" ]; then
+  git -C "$JJSTACK_DIR" fetch --quiet origin 2>/dev/null || \
+    warn "fetch failed; pinning against local refs"
+  DEFAULT_BRANCH="$(git -C "$JJSTACK_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
+  REF="origin/$DEFAULT_BRANCH"
+fi
+
+if ! git -C "$JJSTACK_DIR" rev-parse --verify --quiet "${REF}^{commit}" >/dev/null; then
+  warn "ref not found: $REF"
+  exit 4
+fi
+SHA="$(git -C "$JJSTACK_DIR" rev-parse "${REF}^{commit}")"
+
+mkdir -p "$STATE_DIR"
+
+# Advance an existing pin in place. `git -C <worktree> checkout --detach <sha>`
+# moves only this worktree; the source clone's own HEAD is untouched, which is
+# the property that lets a developer keep working while the pin moves.
+if is_usable_pin; then
+  OLD="$(git -C "$PIN_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  git -C "$PIN_DIR" checkout --quiet --detach "$SHA"
+  NEW="$(git -C "$PIN_DIR" rev-parse --short HEAD)"
+  if [ "$OLD" = "$NEW" ]; then
+    ok "skills pin already at $NEW ($REF)"
+  else
+    ok "skills pin $OLD → $NEW ($REF)"
+  fi
+  exit 0
+fi
+
+# No usable pin. Remove a leftover directory and any worktree registration
+# pointing at it, or `git worktree add` refuses with "already exists".
+if [ -e "$PIN_DIR" ]; then
+  git -C "$JJSTACK_DIR" worktree remove --force "$PIN_DIR" 2>/dev/null || rm -rf "$PIN_DIR"
+fi
+git -C "$JJSTACK_DIR" worktree prune 2>/dev/null || true
+
+info "creating skills pin at $PIN_DIR"
+git -C "$JJSTACK_DIR" worktree add --quiet --detach "$PIN_DIR" "$SHA"
+ok "skills pin created at $(git -C "$PIN_DIR" rev-parse --short HEAD) ($REF)"

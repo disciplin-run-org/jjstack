@@ -1,3 +1,9 @@
+<!-- SPECIMEN, not documentation. Recovered from a74c8cc:skills/resume-from-clear/SKILL.md
+     The boundary read via the droppable since_boundary flag, which fails OPEN when a client strips the kwarg.
+     That commit is a branch commit discarded by the squash merge of
+     PR #43, so this file is the only remaining copy. Nothing here was
+     written to match a pattern; it is what the repo shipped.
+     See references/specimen-recovery.md. -->
 ---
 name: resume-from-clear
 description: >
@@ -89,36 +95,21 @@ report is above you — use it. Otherwise read your own timeline from the
 last settled point:
 
 ```
-mcp__tubemail__tm_receive_since_boundary(worker="<name from step 2>", limit=20)
+mcp__tubemail__tm_receive(worker="<name from step 2>",
+                          since_boundary=True, limit=20)
 ```
-
-**The dedicated verb, never the droppable flag on the general read.** The flag
-form fails OPEN: a client holding a stale tool schema strips an unknown kwarg
-and the call still succeeds, quietly returning the full tail and re-running
-work a finished session already did — the exact defect the marker exists to
-close, while looking closed. A missing TOOL errors loudly and tells you to
-refresh; a missing PARAMETER does not. Measured on this machine after an
-explicit `refresh_tools`: the dedicated tool is served, and `tm_receive`'s
-advertised schema still lists only `{worker, since, limit}`.
 
 Never `tm_my_inbox` — it resolves identity hub-side and returns a
 misleading "TM_WORKER_NAME not set" in the standard topology (tubemail QM
 #555; the tool is deprecated for this use).
 
-The read starts strictly after the newest `session_boundary` event.
-Everything at or above that marker belongs to a session that has ended and
-is settled by definition — do not re-execute it, and do not go looking
-above it. With no marker anywhere the read degrades to the ordinary tail,
-and only the TRAILING inbounds are live: an inbound with a later event of
-any other kind after it was already being worked on by the session that is
-now gone.
-
-**Check the result, not just the call.** A boundary-scoped read begins
-after the marker, so it can never contain a `session_boundary` event. If
-one appears in what you got back, the filter did not apply and you are
-looking at the full tail — treat everything up to and including that marker
-as settled yourself. This costs nothing and needs no cooperation from the
-schema.
+`since_boundary=True` starts the window strictly after the newest
+`session_boundary` event. Everything at or above that marker belongs to a
+session that has ended and is settled by definition — do not re-execute
+it, and do not go looking above it. With no marker anywhere the read
+degrades to the ordinary tail, and only the TRAILING inbounds are live:
+an inbound with a later event of any other kind after it was already
+being worked on by the session that is now gone.
 
 ### 4. Find your resume order in QM (worker)
 

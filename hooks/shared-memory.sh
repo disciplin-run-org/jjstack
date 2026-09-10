@@ -16,6 +16,14 @@
 #           rule whose check currently fires (e.g. dirty/unpushed tree -> "commit and
 #           push before new work"). Adding a rule = adding a row, not writing a hook.
 #
+#   Gap C — a rollover handover nobody is told about. /rollover writes a handover slot
+#           and, in a worker, has two more carriers (the QM resume order, a tubemail
+#           self-message). A PLAIN session has neither, so if the user types anything
+#           other than /resume-from-clear after their /clear, the handover sits unread.
+#           This hook is that session's second carrier: a live slot is announced on the
+#           first prompt whatever it says. Deterministic — the slot is a file that
+#           exists or does not, never a guess about "unfinished work".
+#
 # Philosophy: deterministic surfacing, NEVER blocks. Always exit 0. Anything printed to
 # stdout is injected into the model's context (UserPromptSubmit contract). All injected
 # text is wrapped in a do-not-interpret envelope (prompt-injection defense), and decision
@@ -34,11 +42,29 @@ SESSION=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$PROMPT" ] && exit 0
 [ -z "$CWD" ] && CWD="$PWD"
 
+# ── Gap C: a rollover handover waiting in this directory ─────────────────────
+# Computed BEFORE the prompt-shape filters below, because the prompt that most
+# needs this notice is the short one a user types before remembering to run
+# /resume-from-clear. The slot script exits non-zero when there is nothing to
+# say, so silence is the default and this costs one stat on a normal prompt.
+ROLLOVER_OUT=""
+RSLOT="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"
+if [ -x "$RSLOT" ]; then
+  ROLLOVER_SLOT=$(timeout 2 "$RSLOT" --cwd "$CWD" status 2>/dev/null)
+  if [ -n "$ROLLOVER_SLOT" ]; then
+    ROLLOVER_OUT="- A rollover handover is waiting at ${ROLLOVER_SLOT}. Run /resume-from-clear before anything else; it reads the handover and the previous transcript, then retires the slot."
+  fi
+fi
+
 # Skip non-task prompts: orchestration/system blocks (start with '<') and very short ones.
-case "$PROMPT" in
-  '<'*) exit 0 ;;
-esac
-[ "${#PROMPT}" -lt 12 ] && exit 0
+# A waiting handover overrides both filters — it is the one thing worth saying
+# on a two-word prompt.
+if [ -z "$ROLLOVER_OUT" ]; then
+  case "$PROMPT" in
+    '<'*) exit 0 ;;
+  esac
+  [ "${#PROMPT}" -lt 12 ] && exit 0
+fi
 
 GSTACK_BIN="$HOME/.claude/skills/gstack/bin"
 RULES_FILE="$HOME/.claude/memory/always-rules.md"
@@ -174,6 +200,7 @@ GBR_PAN_F=$(printf '%s\n' "$GBR_PAN" | _filter_items)
 
 # ── Assemble (skip silently if nothing to say) ───────────────────────────────
 BODY=""
+[ -n "$ROLLOVER_OUT" ] && BODY="${BODY}${NL}Unfinished session handover (deterministic — a handover slot exists on disk):${NL}${ROLLOVER_OUT}${NL}"
 [ -n "${RULES_OUT//[$' \t\n']/}" ] && BODY="${BODY}${NL}Always-rules in effect (deterministic — surfaced because their condition currently holds):${NL}${RULES_OUT}"
 [ -n "$DEC_F" ] && BODY="${BODY}${NL}Decisions on this branch (recalled from gstack decision memory):${NL}${DEC_F}${NL}"
 [ -n "$GBR_NATIVE_F" ] && BODY="${BODY}${NL}Relevant notes from THIS project's memory (semantic recall):${NL}${GBR_NATIVE_F}${NL}"

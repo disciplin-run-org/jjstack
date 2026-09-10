@@ -25,6 +25,14 @@
 # review rounds precisely because the suite listed the cases it knew about
 # instead of asking the implementation which cases exist.
 #
+# DERIVE THE SPECIMEN, TOO. The same idea one level up, and the harder half:
+# an assertion about text some other artifact produces must be written from
+# that text, not from your memory of it. Five guards in PR #43 could not fire
+# for exactly that reason, and each fix was authored the same way as the
+# defect. references/specimen-recovery.md is the rule and the checklist; the
+# short form is that a guard must exhibit text it matches, recovered from the
+# commit where the defect lived or from the program with the defect restored.
+#
 # Usage: test/smoke.sh   (exit 0 = all pass, 1 = a failure)
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -151,6 +159,7 @@ for f in "$BIN"/jjstack-memory-bridge "$BIN"/jjstack-memory-to-learnings \
          "$BIN"/jjstack-review-preflight "$BIN"/jjstack-review-tooling-sweep \
          "$BIN"/jjstack-review-blast-radius "$BIN"/jjstack-review-intent \
          "$BIN"/jjstack-review-argcheck.sh "$BIN"/jjstack-pr-comment-lint \
+         "$BIN"/jjstack-rollover-slot "$BIN"/jjstack-verify-skills \
          "$HOOKS"/shared-memory.sh "$HOOKS"/capture-on-end.sh; do
   check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
 done
@@ -626,60 +635,100 @@ check "intent.md quarantines untrusted text" \
 # Every value-taking flag in the family refuses a missing value instead of
 # spinning forever. preflight is the FIRST command /review runs.
 for t in jjstack-review-preflight jjstack-review-tooling-sweep \
-         jjstack-review-blast-radius jjstack-review-intent jjstack-pr-comment-lint; do
+         jjstack-review-blast-radius jjstack-review-intent jjstack-pr-comment-lint \
+         jjstack-pr-comment-assemble; do
   timeout 5 "$BIN/$t" --out >/dev/null 2>&1
   rc=$?
   check "$t --out with no value exits 2, never hangs" "[ \"\$rc\" = 2 ]"
 done
 
-echo "== 8. pr-comment-lint (safety, budget, link) =="
+echo "== 8. pr-comment-lint (safety, budget, the collapsed report) =="
 PCL="$SANDBOX/pcl"; mkdir -p "$PCL"
-printf '# report\n' > "$PCL/review-2026-01-01.md"
+# The report rides INSIDE the comment, collapsed under <details>. It used to be
+# a file committed to the reviewed repository and linked: three lint rounds
+# went on that link - missing, then pointing at the reviewer's scratchpad, then
+# on a side branch because the reviewer would not push to the author's branch
+# - and each was the same defect, the delivery stored where the reader is not.
+# No fixture here needs a repository, a committed file, or a path that exists.
 lint() { "$BIN/jjstack-pr-comment-lint" "$1" >/dev/null 2>&1; echo $?; }
 body() { printf '%b' "$2" > "$PCL/$1.md"; }
+# The smallest block the lint accepts as a report: one collapsed <details>
+# carrying the heading the report template opens with.
+RPT='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT - fixture\n\n</details>\n'
+# The approve-form fixtures need a report that does NOT block. Sharing one
+# REJECT report across every fixture was harmless while nothing read the
+# report; now that the visible verdict answers to it, a resolved line over a
+# REJECT body is the contradiction under test, not a neutral backdrop.
+RPT_OK='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
 
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
-body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n`review-2026-01-01.md`\n'
+body sec_id '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
-body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\n`review-2026-01-01.md`\n'
+# The two shapes a security finding routinely quotes, both of which published
+# clean until the report moved inside the comment and made them routine.
+body sec_bearer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `api.py:4` hardcoded\nAuthorization: Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba\n'"$RPT"
+check "a bearer token after a word is a credential (exit 4)" "[ \$(lint '$PCL/sec_bearer.md') = 4 ]"
+body sec_urlnouser '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.ini:2` cache at\nredis://:S3cretPassw0rdValue@cache.internal:6379/0\n'"$RPT"
+check "…and a password-only URL, with no username before the colon" "[ \$(lint '$PCL/sec_urlnouser.md') = 4 ]"
+# THE QUOTED HALF OF THE SAME CLASS. The optional quote sat AFTER the word
+# group, so a quote could precede the value but not the word - which excludes
+# exactly the JSON and YAML forms a security finding quotes from source. Three
+# members published clean while the bare forms were caught, so the rule read as
+# covered. No fixture distinguished the two regexes; these do.
+body sec_json '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:3` hardcoded\n"Authorization": "Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "a JSON-quoted bearer token is a credential (exit 4)" "[ \$(lint '$PCL/sec_json.md') = 4 ]"
+body sec_yaml '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.yml:3` hardcoded\nauthorization: '"'"'Bearer sk1QhRt9WmZx4Lp8Vn2CdE7Ba'"'"'\n'"$RPT"
+check "…and a single-quoted YAML one" "[ \$(lint '$PCL/sec_yaml.md') = 4 ]"
+body sec_jsonkey '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `cfg.json:4` hardcoded\n"api_key": "live sk1QhRt9WmZx4Lp8Vn2CdE7Ba"\n'"$RPT"
+check "…and a quoted key whose value carries a word first" "[ \$(lint '$PCL/sec_jsonkey.md') = 4 ]"
+# Control: the ordinary prose these two must not start refusing.
+body sec_prose 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` set the auth: header from the environment, never inline\n'"$RPT"
+check "…while ordinary prose about auth is not a credential (control)" "[ \$(lint '$PCL/sec_prose.md') = 0 ]"
+body sec_key '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
-body sec_generic '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n\n`review-2026-01-01.md`\n'
+body sec_generic '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n'"$RPT"
 check "a vendor-less assigned credential is blocked (shape, not vendor list)" \
       "[ \$(lint '$PCL/sec_generic.md') = 4 ]"
 # One fixture per vendor row. A row with no fixture can be deleted silently -
 # and the whole enumeration WAS collapsed into the shape rule once, which let a
 # JWT, a Google key, a Stripe key and a fine-grained PAT lint clean and publish.
-body sec_jwt '**REJECT** - 1 blocking, 1 total.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n\n`review-2026-01-01.md`\n'
+body sec_jwt '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n'"$RPT"
 check "a bare JWT is blocked" "[ \$(lint '$PCL/sec_jwt.md') = 4 ]"
-body sec_goog '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n\n`review-2026-01-01.md`\n'
+body sec_goog '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n'"$RPT"
 check "a Google API key is blocked" "[ \$(lint '$PCL/sec_goog.md') = 4 ]"
-body sec_stripe '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n\n`review-2026-01-01.md`\n'
+body sec_stripe '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n'"$RPT"
 check "a Stripe live key is blocked" "[ \$(lint '$PCL/sec_stripe.md') = 4 ]"
-body sec_pat '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n\n`review-2026-01-01.md`\n'
+body sec_pat '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n'"$RPT"
 check "a fine-grained GitHub PAT is blocked" "[ \$(lint '$PCL/sec_pat.md') = 4 ]"
-body sec_azure '**REJECT** - 1 blocking, 1 total.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n\n`review-2026-01-01.md`\n'
+body sec_azure '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n'"$RPT"
 check "an Azure connection-string key is blocked" "[ \$(lint '$PCL/sec_azure.md') = 4 ]"
-body sec_slash '**REJECT** - 1 blocking, 1 total.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n\n`review-2026-01-01.md`\n'
+body sec_slash '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'"$RPT"
 check "an AWS SECRET key is blocked even though it holds slashes" \
       "[ \$(lint '$PCL/sec_slash.md') = 4 ]"
-body sec_rocket '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n\n`review-2026-01-01.md`\n'
+body sec_rocket '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n'"$RPT"
 check "a hashrocket assignment is blocked" "[ \$(lint '$PCL/sec_rocket.md') = 4 ]"
+# The report is public too. "The value stays in the report" was the old rule's
+# escape hatch; the report is now in the same comment, so a secret behind the
+# fold is a secret on the PR.
+body sec_inrep 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key leaked, see report.\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n</details>\n'
+check "a credential INSIDE the collapsed report is blocked (exit 4)" \
+      "[ \$(lint '$PCL/sec_inrep.md') = 4 ]"
 
 # The ENTROPY gate, both directions. Without it a review comment ABOUT
 # credential handling exits 4 - unsilenceable - and cannot be posted at all.
-body fp_docpath '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n\n`review-2026-01-01.md`\n'
+body fp_docpath '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n'"$RPT"
 check "a doc path after a credential word is NOT a secret" \
       "[ \$(lint '$PCL/fp_docpath.md') != 4 ]"
-body fp_adr '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n\n`review-2026-01-01.md`\n'
+body fp_adr '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n'"$RPT"
 check "…nor a mixed-case path with a digit that ends in .md" \
       "[ \$(lint '$PCL/fp_adr.md') != 4 ]"
-body fp_k8s '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n\n`review-2026-01-01.md`\n'
+body fp_k8s '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n'"$RPT"
 check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 
-body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n\n`review-2026-01-01.md`\n'
+body sec_pem '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n'"$RPT"
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
 body clean_ok 'Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved\n'
@@ -688,13 +737,13 @@ check "a clean approve passes (control: the secret rule discriminates)" \
 # A bare vendor token carries no `name = value` shape, so the generic rule
 # cannot see it. The prefix list is the backstop and needs its own fixture:
 # narrowing it to AWS alone left this whole section green.
-body sec_ghp '**REJECT** - 1 blocking, 1 total.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n`review-2026-01-01.md`\n'
+body sec_ghp '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'"$RPT"
 check "a bare GitHub token is blocked (the prefix backstop earns its place)" \
       "[ \$(lint '$PCL/sec_ghp.md') = 4 ]"
-body sec_sk '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n\n`review-2026-01-01.md`\n'
+body sec_sk '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n'"$RPT"
 check "a bare openai-style key is blocked too" "[ \$(lint '$PCL/sec_sk.md') = 4 ]"
 
-body nolink '**REJECT** - 1 blocking, 1 total.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
+body noreport '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
 # --quiet must not silence the credential rule, and the EXIT CODE alone cannot
 # prove that: silencing the message leaves rc=4 untouched. Assert the output.
 q_out=$("$BIN/jjstack-pr-comment-lint" "$PCL/sec_key.md" --quiet 2>&1); q_rc=$?
@@ -702,7 +751,7 @@ check "--quiet cannot silence the credential rule (exit)" "[ \$q_rc -eq 4 ]"
 check "…and cannot silence its MESSAGE either" "grep -q secret <<<\"\$q_out\""
 # Control: --quiet DOES silence an ordinary rule, or the assertion above is
 # only observing a flag that does nothing at all.
-qn_out=$("$BIN/jjstack-pr-comment-lint" "$PCL/nolink.md" --quiet 2>&1)
+qn_out=$("$BIN/jjstack-pr-comment-lint" "$PCL/noreport.md" --quiet 2>&1)
 check "…while an ordinary violation IS silenced by --quiet (control)" "[ -z \"\$qn_out\" ]"
 # The tool never echoes what it caught.
 out_sec=$("$BIN/jjstack-pr-comment-lint" "$PCL/sec_key.md" 2>&1)
@@ -710,46 +759,162 @@ check "…and it never prints the value it found" "! grep -q 'wJalrXUtnFEMI' <<<
 
 # BUDGET. Findings are counted as OCCURRENCES and in every severity spelling
 # SKILL.md sanctions - six findings written **HIGH** posted under a cap of three.
-body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 # Assert the RULE that fired, not merely a non-zero exit. Every one of these
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
 # dropping HIGH from the severity class left this section fully green.
-why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-link|no-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical' | sort -u | tr '\n' ' '; }
+why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path|verdict-contradicts-report' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
-body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` risk here is **low** but real.\n'"$RPT"
 check "the word **low** in prose is not counted as a second finding" \
       "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
-body apbelow '**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x. Details below:\n'"$RPT"
 check "…nor the word below: in a citation" \
       "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
-body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total. `review-2026-01-01.md`\n'
+body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline '**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n`review-2026-01-01.md`\n\nClaude jjstack/skills/review/SKILL.md\n'
+body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 0 non-blocking.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n'"$RPT"
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
+# RESIDUAL. The verdict line says "N blocking, K non-blocking": an APPROVE that
+# lists findings is a contradiction to a reader until the word tells them none
+# block. The old "M total" form is refused rather than accepted alongside.
+body res_old 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n'"$RPT"
+check "the old \"N blocking, M total\" form is refused (no-residual)" \
+      "grep -q no-residual <<<\"\$(why '$PCL/res_old.md')\""
+body res_new 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "…and the same comment in the new form passes" "[ \$(lint '$PCL/res_new.md') = 0 ]"
+body res_more 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n5 more in the report below.\n'"$RPT"
+check "blocking + non-blocking minus shown must equal the \"more\" count" "[ \$(lint '$PCL/res_more.md') = 0 ]"
+body res_wrong 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n4 more in the report below.\n'"$RPT"
+check "…and a wrong \"more\" count is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_wrong.md')\""
+# CASE AND BASE. The declaration is matched case-insensitively, so `K` was
+# re-grepped out of it case-sensitively, came back empty, and bash read the
+# empty operand as 0: nine findings in the report, nothing in the visible part
+# pointing at them, clean and exit 0. A leading zero aborted the arithmetic
+# instead, leaving n_tot unset and skipping the whole check - silently.
+body res_case 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 9 Non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "a capital N in Non-blocking does not disable the residual gate" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_case.md')\""
+body res_zero 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 09 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n'"$RPT"
+check "…nor does a leading zero, which used to abort the arithmetic" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_zero.md')\""
 # A budget that cannot be evaluated is not a budget: an empty flag value must
 # fail closed, not report clean.
-big=$(printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a:1` x\n`review-2026-01-01.md`\n%.0sfiller line\n' $(seq 40))
-printf '%b' "$big" > "$PCL/big.md"
+big=$(printf '**REJECT** - 1 blocking, 0 non-blocking.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
+printf '%b' "$big$RPT" > "$PCL/big.md"
 "$BIN/jjstack-pr-comment-lint" "$PCL/big.md" --max-lines '' >/dev/null 2>&1
 # Exactly 2 - refused at PARSE time. `-ne 0` was not enough: this body also
 # blows the character budget, so it exits 1 whether or not the empty value was
 # ever caught, and accepting '' left the assertion green.
 check "an empty --max-lines is refused as a usage error (exit 2)" "[ \$? -eq 2 ]"
+check "…and forty visible filler lines are too-long (control)" \
+      "grep -q too-long <<<\"\$(why '$PCL/big.md')\""
 
-# LINK. A finding's own subject file is not a report link, and a named report
-# that does not exist is the same as no link at all.
-check "a .md in a finding is not a report link" "[ \$(lint '$PCL/nolink.md') = 1 ]"
-body ghost '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`jjstack/does-not-exist-anywhere.md`\n'
-check "a link to a report that does not exist fails" "[ \$(lint '$PCL/ghost.md') = 1 ]"
+# THE FOLD. Budgets judge the VISIBLE part only; the report beneath is as long
+# as the review needed. A budget that counted the block would refuse every
+# comment carrying a real report, and the reviewer would trim the evidence to
+# fit - the exact failure the block exists to end.
+longrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n%.0s- **P2** `f:1` a finding in the report, one of many\n' $(seq 200))
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 199 non-blocking.\n\n**P1** `a:1` x\n\n199 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
+check "a 200-line report beneath the fold passes the visible budget" \
+      "[ \$(lint '$PCL/fold.md') = 0 ]"
+check "…and its 200 P-tokens do not count against the visible cap" \
+      "! grep -q too-many <<<\"\$(why '$PCL/fold.md')\""
+check "…and the declared total covers them, so the residual holds" \
+      "! grep -q bad-residual <<<\"\$(why '$PCL/fold.md')\""
+# THE FLOOR THIS PINS. The same report under a total that does not cover it is
+# the shape that shipped: a visible "1 blocking, 1 total" over 200 findings the
+# reader is never told exist. The old fixture declared exactly that and an
+# assertion certified it clean, so the hole was not missed by the tests - it
+# was ratified by them.
+# TEMPLATE SHAPE. Phase 4's report puts each finding in a table ROW and expands
+# it beneath, so a finding carries at least two P-tokens. Every fixture here was
+# flat bullets - one token per finding - so occurrences and findings coincided
+# and no fixture could tell a row count from a token sweep. Counting tokens
+# refused the honest comment and passed only an inflated one; these two shapes
+# are what distinguishes the two rules, so both are pinned.
+tmplrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n\n**P1 `a:1`** - the expansion, carrying the token a second time.\n\n**P2 `b:2`** - and so does this one.\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` one\n\n1 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_true.md"
+check "a template-shaped report declaring its TRUE total lints clean" \
+      "[ \$(lint '$PCL/fold_true.md') = 0 ]"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tmplrep" > "$PCL/fold_under.md"
+check "…and one declaring fewer than its table shows is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_under.md')\""
+# ANTI-VACUITY. The row count is scoped by a `sed` range anchored on a literal
+# heading, so a report that lists findings under ANY other heading yielded an
+# empty range, a floor of zero, and five findings declared as one lint clean.
+# Every fixture above either uses the table or has no findings at all, so none
+# of them could see it. This one has findings and no table.
+bulletrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### What I found\n\n- **P1** `a:1` one\n- **P2** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n- **P3** `e:5` five\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead.md"
+check "findings listed under another heading still floor the declared total" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_nohead.md')\""
+# ...and the same report declaring its true total passes, so the floor counts
+# five and not the Guardrails line that merely mentions P0.
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 4 non-blocking.\n\n**P1** `a:1` one\n\n4 more in the report below.\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$bulletrep" > "$PCL/fold_nohead_ok.md"
+check "…and the same report declaring five lints clean, so P0 in prose is not a finding" \
+      "[ \$(lint '$PCL/fold_nohead_ok.md') = 0 ]"
+# EACH COUNTER EARNS ITS PLACE. The two are a max, and until this fixture the
+# table count could be deleted with the suite still green: every template
+# report also expands each finding beneath the table, and an expansion line
+# opens with its severity, so the anchor count reached the same answer. A table
+# with no expansions is where they differ, and it is a legal short report.
+tableonly=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n\n### Findings\n\n| Sev | Conf | Location | Finding |\n|---|---|---|---|\n| P1 | 90 | `a:1` | one |\n| P2 | 70 | `b:2` | two |\n| P2 | 70 | `c:3` | three |\n\n### Guardrails\nHolds while no P0 is added.\n')
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` one\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$tableonly" > "$PCL/fold_tableonly.md"
+check "a table with no expansions is counted by its rows, not missed" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/fold_tableonly.md')\""
+# ...and the approve path has the same hole in its own vocabulary: one visible
+# line saying approved, over a report that rejects.
+body att_contra "Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved\n$RPT"
+check "a resolved verdict over a REJECT report is refused" \
+      "grep -q verdict-contradicts-report <<<\"\$(why '$PCL/att_contra.md')\""
+# The whole body has a cap of its own: GitHub refuses a comment over 65536
+# characters, AFTER the lint said clean. Refuse it here and name the cause.
+"$BIN/jjstack-pr-comment-lint" "$PCL/fold.md" --max-total-chars 500 >/dev/null 2>&1
+check "the whole-body cap refuses a report over GitHub's limit (exit 1)" "[ \$? -eq 1 ]"
+check "…under the too-long rule" \
+      "\"$BIN/jjstack-pr-comment-lint\" '$PCL/fold.md' --max-total-chars 500 2>&1 | grep -q 'whole body'"
+
+# THE BLOCK. A block in the comment cannot point at nothing, and it can still
+# be missing, empty, doubled, unclosed, or rendered open. One fixture each.
+check "a findings comment with no report block is refused" \
+      "grep -q no-report <<<\"\$(why '$PCL/noreport.md')\""
+body rp_open 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details open><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n</details>\n'
+check "a <details open> block is refused: the report renders expanded" \
+      "grep -q report-expanded <<<\"\$(why '$PCL/rp_open.md')\""
+body rp_empty 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n\n</details>\n'
+check "an empty block is refused (anti-vacuity: no report heading inside)" \
+      "grep -q empty-report <<<\"\$(why '$PCL/rp_empty.md')\""
+check "…and is NOT reported as a missing block" \
+      "! grep -q no-report <<<\"\$(why '$PCL/rp_empty.md')\""
+body rp_two 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT$RPT"
+check "two report blocks are refused" \
+      "grep -q report-shape <<<\"\$(why '$PCL/rp_two.md')\""
+body rp_unclosed 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n'
+check "an unclosed block is refused" \
+      "grep -q report-shape <<<\"\$(why '$PCL/rp_unclosed.md')\""
+body rp_inverted 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n</details>\n\n## /review: fixture (commit 0000000, 1 min)\n\n<details>\n'
+check "a close before its open is refused" \
+      "grep -q report-shape <<<\"\$(why '$PCL/rp_inverted.md')\""
+body rp_findok 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
+check "a findings comment with one closed, collapsed, non-empty block passes" \
+      "[ \$(lint '$PCL/rp_findok.md') = 0 ]"
+# No repository is needed any more: the comment file can live anywhere. That
+# was the class the old resolver refused (no-repo), and it is now the point.
+NOREPO="$SANDBOX/norepo"; mkdir -p "$NOREPO"
+printf '%b' 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT" > "$NOREPO/c.md"
+check "a comment outside any git repository passes (nothing on disk is linked)" \
+      "[ \$(lint '$NOREPO/c.md') = 0 ]"
 
 # A credential gate may not DEGRADE. Every fixture above runs on a grep with
 # PCRE, so a rule that silently stops working without one is invisible to all
@@ -774,52 +939,123 @@ check "without PCRE the lint REFUSES to run (exit 2), never reports clean" "[ \$
 # say a machine wrote it - every comment this skill posted before this rule
 # read as its apparent author's own words.
 ATT='Claude jjstack/skills/review/SKILL.md'
-body att_ok "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n"
-check "the canonical resolved line passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
+body att_ok "$ATT: all issues resolved - lgtm - approved\n$RPT_OK"
+check "the canonical resolved line, with its report beneath, passes" "[ \$(lint '$PCL/att_ok.md') = 0 ]"
 # A resolved verdict asserts findings existed and were fixed, so it carries the
 # report. Without it the approve path is the one place brevity DELETES evidence.
-body att_nolink "$ATT: all issues resolved - lgtm - approved\n"
-check "a resolved line with no report path is refused" \
-      "grep -q not-canonical <<<\"\$(why '$PCL/att_nolink.md')\""
-# Prose appended AFTER a canonical line WITH a valid path: the shape check
-# greps per line, so it matched and the failure surfaced as a nonsense filename
-# under the wrong rule. Fails closed either way; the message has to be right.
-body att_wordypath "$ATT: all issues resolved - lgtm - approved - review-2026-01-01.md\n\nAnd prose nobody asked for.\n"
+body att_norep "$ATT: all issues resolved - lgtm - approved\n"
+check "a resolved line with no report block is refused" \
+      "grep -q no-report <<<\"\$(why '$PCL/att_norep.md')\""
+# The old form carried a file path after the verdict. There is no file now;
+# the path is refused as prose after the canonical line.
+body att_oldpath "$ATT: all issues resolved - lgtm - approved - jjstack/review-2026-01-01.md\n$RPT_OK"
+check "the old path-carrying resolved line is refused as not-canonical" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_oldpath.md')\""
+# Prose appended AFTER a canonical line, with the block present: the block is
+# fine, the visible part is not, and the message has to say which.
+body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAnd prose nobody asked for.\n$RPT_OK"
 check "prose after a valid resolved line is refused as not-canonical" \
-      "grep -q not-canonical <<<\"\$(why '$PCL/att_wordypath.md')\""
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_wordy.md')\""
 check "…and is NOT misdiagnosed as a missing report" \
-      "! grep -q no-report <<<\"\$(why '$PCL/att_wordypath.md')\""
-body att_ghost "$ATT: all issues resolved - lgtm - approved - review-9999-99-99.md\n"
-check "…and one naming a report that does not exist" \
-      "grep -q no-report <<<\"\$(why '$PCL/att_ghost.md')\""
+      "! grep -q no-report <<<\"\$(why '$PCL/att_wordy.md')\""
 body att_clean "$ATT: no findings - lgtm - approved\n"
 check "…and the first-clean-review variant" "[ \$(lint '$PCL/att_clean.md') = 0 ]"
-body att_none '**APPROVE** - no findings. `review-2026-01-01.md`\n'
+# A clean review has nothing to carry: a block under it is padding.
+body att_cleanrep "$ATT: no findings - lgtm - approved\n$RPT_OK"
+check "a clean approve with a report block is refused as not-canonical" \
+      "grep -q not-canonical <<<\"\$(why '$PCL/att_cleanrep.md')\""
+body att_none '**APPROVE** - no findings.\n'
 check "an approve with no attribution is refused" "[ \$(lint '$PCL/att_none.md') != 0 ]"
 check "…and the message names attribution, not just length" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_none.md')\""
-body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n'
+body att_find '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "a findings comment without attribution is refused too" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_find.md')\""
-body att_findok '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n`review-2026-01-01.md`\n\n'"$ATT"'\n'
-check "…and passes once it carries the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
+body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
+check "…and passes once it opens with the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
+# FIRST, not merely present. A footer is read after the verdict has already
+# been taken as the account holder's opinion.
+body att_footer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"'\n'"$ATT"'\n'
+check "attribution as a FOOTER is refused" \
+      "grep -q attribution-not-first <<<\"\$(why '$PCL/att_footer.md')\""
+# And a block ABOVE the attribution puts a collapsed "Full report" on top of
+# the byline: the first thing on screen must be who wrote this.
+body att_blockfirst "$RPT"'\n'"$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'
+check "a report block above the attribution is refused" \
+      "grep -q attribution-not-first <<<\"\$(why '$PCL/att_blockfirst.md')\""
+
+# LOCAL PATHS. Nothing on the reviewer's machine goes in a public comment - and
+# the pre-flight artifacts the report is built from print `repo: /home/...`
+# lines by design, so the rule reads the whole body, fold included.
+body lp_vis "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md\n'"$RPT"
+check "a local machine path in the visible part is refused" \
+      "grep -q local-path <<<\"\$(why '$PCL/lp_vis.md')\""
+body lp_home "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x, see ~/scratch/notes.md\n'"$RPT"
+check "…and so is a home-relative one" \
+      "grep -q local-path <<<\"\$(why '$PCL/lp_home.md')\""
+body lp_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n- repo: `/tmp/claude-1000/x/pin`\n\n</details>\n'
+check "a local path INSIDE the collapsed report is refused too" \
+      "grep -q local-path <<<\"\$(why '$PCL/lp_rep.md')\""
+# The emdash rule reads the whole body for the same reason: the report is
+# posted under the same account, in the same voice.
+body em_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT — one P0\n\n</details>\n'
+check "an emdash inside the collapsed report is refused" \
+      "grep -q emdash <<<\"\$(why '$PCL/em_rep.md')\""
 
 # The resolved verdict is a FIXED form, not merely a short one: a budget leaves
 # room to fill, and it got filled - 25 lines of evidence proving a review had
 # nothing to say, then an 11-paragraph reply restating three closed findings.
-body att_wordy "$ATT: all issues resolved - lgtm - approved\n\nAlso some prose nobody asked for.\n"
-check "a resolved verdict with anything appended is refused" \
-      "grep -q not-canonical <<<\"\$(why '$PCL/att_wordy.md')\""
-body att_reworded "$ATT: everything looks great now, approved!\n"
-check "…and so is a reworded one carrying the attribution" \
+body att_reworded "$ATT: everything looks great now, approved!\n$RPT"
+check "a reworded resolved line carrying the attribution is refused" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_reworded.md')\""
 # `lgtm` specifically: it is the human idiom and the shape a model does NOT
 # reach for. The formal register an AI defaults to is itself the tell.
-body att_formal "$ATT: Looks good to me! No issues found - approved.\n"
+body att_formal "$ATT: Looks good to me! No issues found - approved.\n$RPT"
 check "the AI-register rewrite without lgtm is refused" \
       "grep -q not-canonical <<<\"\$(why '$PCL/att_formal.md')\""
 check "the canonical line carries lgtm verbatim" \
       "grep -qF 'lgtm' '$PCL/att_ok.md'"
+
+# THE ASSEMBLER. The join between the visible part and the report is three
+# lines of markup GitHub is particular about; one tool writes it, and the lint
+# is the acceptance test for what it writes.
+ASM="$SANDBOX/asm"; mkdir -p "$ASM"
+printf '%s\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` x\n\n1 more in the report below.\n' "$ATT" > "$ASM/head.md"
+printf '## /review: fixture (commit 0000000, 3 min)\n\n**Verdict:** CAUTION - fixture\n\n| Sev | Conf |\n|---|---|\n| P1 | 90 |\n| P2 | 70 |\n' > "$ASM/report.md"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/comment.md"
+check "assemble writes a comment (exit 0)" "[ \$? -eq 0 ]"
+check "…that the lint accepts" "[ \$(lint '$ASM/comment.md') = 0 ]"
+check "…with exactly one collapsed block" \
+      "[ \$(grep -c '^<details>' '$ASM/comment.md') -eq 1 ] && [ \$(grep -c '^</details>' '$ASM/comment.md') -eq 1 ]"
+check "…a blank line after <summary>, or GitHub renders the report as one paragraph" \
+      "sed -n '/<summary>/{n;p;}' '$ASM/comment.md' | grep -q '^$'"
+check "…and the report verbatim inside it" \
+      "grep -qF '| P2 | 70 |' '$ASM/comment.md'"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" > "$ASM/stdout.md"
+check "…and to stdout when --out is omitted" "cmp -s '$ASM/comment.md' '$ASM/stdout.md'"
+: > "$ASM/empty.md"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/empty.md" >/dev/null 2>&1
+check "an empty report is refused at assembly (exit 3), not at the lint" "[ \$? -eq 3 ]"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/absent.md" >/dev/null 2>&1
+check "…and so is a missing one" "[ \$? -eq 3 ]"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" >/dev/null 2>&1
+check "a missing --report is a usage error (exit 2)" "[ \$? -eq 2 ]"
+timeout 5 "$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report >/dev/null 2>&1
+check "a value-less trailing flag is refused, not spun on (exit 2)" "[ \$? -eq 2 ]"
+
+# ALIASING. `> "$OUT"` truncates before `cat` reads, so --out naming an input
+# destroyed it and exited 0. The report is never committed by design, so there
+# is no copy: one mistyped flag at the end of an hour cost the hour, and the
+# tool reported success. Both directions, and the file must survive intact.
+cp "$ASM/report.md" "$ASM/report.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/report.md" >/dev/null 2>&1
+check "--out naming the report is refused (exit 4)" "[ \$? -eq 4 ]"
+check "…and the report is left byte-for-byte intact" \
+      "cmp -s '$ASM/report.md' '$ASM/report.keep'"
+cp "$ASM/head.md" "$ASM/head.keep"
+"$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/head.md" >/dev/null 2>&1
+check "--out naming the head is refused too" "[ \$? -eq 4 ]"
+check "…and the head survives" "cmp -s '$ASM/head.md' '$ASM/head.keep'"
 
 echo "== 9. the review skill says what it does =="
 SK="$DIR/skills/review/SKILL.md"
@@ -954,19 +1190,488 @@ check "the evidence pack the skill reads includes the test baseline"       "grep
 # The post and its lint must be ONE command: Claude Code does not persist shell
 # state, so a sourced PR identity in a separate call expands empty.
 check "the PR post is chained to the lint in one command" \
-      "grep -q 'jjstack-pr-comment-lint .* && gh pr comment' '$SK'"
+      "grep -q 'jjstack-pr-comment-lint .* && gh pr review' '$SK'"
 check "…and the PR identity is sourced in that same command" \
-      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr comment' '$SK'"
+      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr review' '$SK'"
+# GITHUB MECHANICS. The verdict was posted as an issue comment, so the PR's
+# Reviews box stayed empty through twelve rounds on this skill's own PR:
+# reviewDecision "" and reviews []. A review attaches the verdict to the head
+# commit and satisfies a branch rule that requires one; a comment does neither.
+check "the verdict is posted as a review, not an issue comment" \
+      "! grep -q 'gh pr comment' '$SK'"
+# The mapping is PINNED as a table, not grepped as a word: `--request-changes`
+# also appears in the self-authored paragraph, so a grep for it stayed green
+# with the table gutted. Anti-vacuity floor first, then the exact row set.
+# BOTH cells, not the value column: pinning only the right-hand side let the
+# rows be transposed - APPROVE to --request-changes, REJECT to --approve - with
+# ALL 312 PASS. A row set needs both halves of the row.
+sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/events.txt"
+check "the verdict-to-event table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/events.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`--approve`' '`CAUTION`|`--comment`' '`REJECT`, `STOP`|`--request-changes`' \
+  | sort > "$SANDBOX/events-want.txt"
+check "…and maps every verdict to one of the three review events" \
+      "diff -q '$SANDBOX/events.txt' '$SANDBOX/events-want.txt' >/dev/null"
+# Verified against the API, not assumed: POST .../reviews with event=APPROVE or
+# REQUEST_CHANGES on a self-authored PR returns 422; event=COMMENT is accepted.
+check "…and the self-authored refusal is named, since only --comment works there" \
+      "grep -q 'Can not approve your own pull request' '$SK'"
+# Read-back is pinned to the COMMAND, not the word: `reviewDecision` also
+# appears in the sentence about the twelve rounds that left it empty, so a
+# bare grep survived deleting the read-back entirely.
+check "…and the posted state is read back rather than assumed" \
+      "grep -q -- '--json reviewDecision,reviews' '$SK'"
+# gh pr edit --add-reviewer dies on a Projects-classic GraphQL error before it
+# reaches the request, and the REST endpoint returns 200 for a login it
+# silently drops - so the request is read back too.
+# Same class again: the prose says to read `requested_reviewers` back, so the
+# word survives deleting the call that does it. Pin the endpoint invocation.
+check "the reviewer-request trap is recorded with the working call" \
+      "grep -q 'requested_reviewers --input -' '$SK'"
+# Named as the CLASS, not the one flag it was first met on: `gh pr edit` dies
+# on the Projects-classic read whatever it was asked to do, verified on
+# --add-reviewer and on a title/body edit. Pinning the flag would have let the
+# skill keep recommending `gh pr edit` for everything else.
+check "…and names the broken subcommand as wholly broken, not one flag" \
+      "grep -q 'gh pr edit. does not work' '$SK'"
+# UNDER REVIEW. GitHub has no such state, and the one that looks like it -
+# a review left unsubmitted - is PENDING and visible only to its author, so it
+# signals to nobody. A commit status is visible to everyone and can gate the
+# merge, and unlike --approve it is not refused on a self-authored PR.
+check "the review announces itself with a pending commit status" \
+      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+check "…and the pr identity carries the head sha the status needs" \
+      "grep -q 'PR_SHA=' '$SK'"
+check "…and names why an unsubmitted review is not that signal" \
+      "grep -q 'visible only to the' '$SK'"
+# A required check left pending blocks the merge forever and the run that
+# stranded it is gone, so every exit path owes a terminal status.
+check "…and a run that ends any other way still posts a terminal status" \
+      "grep -q 'A pending status is a promise to replace it' '$SK'"
+# The hazard without the recovery is a scare, not an instruction: a stranded
+# check is cleared by one POST, because a status is keyed by commit+context and
+# the newest wins. Someone meeting this at merge time needs the way out.
+check "…and says how a stranded check is cleared" \
+      "grep -q 'keyed by commit and context' '$SK'"
+check "…naming the call that clears it" \
+      "grep -q 'the same POST above with .state=success' '$SK'"
+# Named so nobody reaches for the richer API and finds out in production.
+check "…and records that Check Runs refuse a personal token" \
+      "grep -q 'authenticate via a GitHub App' '$SK'"
+# The mapping is PINNED as a table, like the event table: `success` and
+# `failure` both appear in prose nearby, so a word-grep would survive gutting
+# it. Anti-vacuity floor first.
+sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/status.txt"
+check "the verdict-to-status table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/status.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`success`' '`CAUTION`, `REJECT`|`failure`' '`STOP`|`error`' \
+  | sort > "$SANDBOX/status-want.txt"
+check "…and maps every verdict to one of the three terminal states" \
+      "diff -q '$SANDBOX/status.txt' '$SANDBOX/status-want.txt' >/dev/null"
+# CAUTION carries a P1 and a P1 blocks, so a green check beside it is the same
+# contradiction as an approval that lists blocking findings.
+check "…with CAUTION failing the check, not passing it" \
+      "grep -q 'CAUTION. fails the check' '$SK'"
+# GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
+# and no lens asked for it; complexity, naming and why-not-what comments had
+# no owner either, so a correct implementation of the wrong shape passed.
+check "a lens asks whether the change is the right shape" \
+      "grep -q 'is the abstraction earned' '$SK'"
+check "…and whether it is more complex than the problem needs" \
+      "grep -q 'more complex than the problem needs' '$SK'"
+check "…and reads names and why-not-what comments" \
+      "grep -q 'instead of .why.' '$SK'"
+# EVERY LINE. A lens count says nothing about which files were opened.
+check "the report names the diff files no lens read" \
+      "grep -q 'Not read:' '$SK'"
+check "…and requires every file to be read or named" \
+      "grep -q 'read by at least one lens or named' '$SK'"
+# GOOD THINGS. Step 0 admits only harm, so nothing done well had anywhere to
+# go and the author could not tell which parts of the approach to repeat.
+check "the report may name one thing done well" \
+      "grep -q 'specific enough to repeat' '$SK'"
 check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
+# ── done-done rung 4: the review the merge waits on ──────────────────────────
+# The skill already refuses to set a STATE on the author's own PR (GitHub does
+# too, with a 422). The rung adds what that costs beyond the green check: a
+# self-authored round does not satisfy it. The skill has to SAY so, because the
+# author is the one reading the close-out.
+IRV="$DIR/references/independent-review.md"
+DOD="$DIR/references/definition-of-done.md"
+check "the self-authored branch names the rung it does not satisfy" \
+      "grep -q 'does not satisfy' '$SK'"
+# THE WHOLE DOCUMENT HAS TO AGREE WITH THE SKILL. An earlier round of this PR
+# carried a SELF_REVIEW refusal and removed it, because the previous-round
+# detector's account filter prevents the corruption the refusal existed for -
+# a better fix than a refusal. The prose that ARGUED for the refusal did not
+# move with it: five sentences across the two documents that govern the rung
+# still told the reader the skill refuses, and one of them was the canonical
+# Definition of Done. A reader reaches whichever they find first.
+# The guard is absence, because presence of the new wording could not catch a
+# surviving sibling: that is how the same class was missed at four sites while
+# a review named three.
+for _gov in "$DOD" "$IRV"; do
+  _n=$(basename "$_gov")
+  check "$_n does not claim /review refuses a self-review" \
+        "! grep -qE '\`?/review\`? (now )?refuses' '$_gov'"
+  check "…nor names the removed SELF_REVIEW stop" \
+        "! grep -q 'SELF_REVIEW' '$_gov'"
+  check "…nor tells the reader never to run it on their own PR" \
+        "! grep -qiE 'never run .{0,3}/review' '$_gov'"
+done
+# …and the skill it describes really has no such refusal, or the guards above
+# are asserting agreement with a file that never changed (anti-vacuity floor).
+check "the skill itself carries no SELF_REVIEW stop" "! grep -q 'SELF_REVIEW' '$SK'"
+check "…and the governing docs say what DOES prevent the corruption" \
+      "grep -q 'filters on the posting account' '$IRV'"
+check "…and points at the protocol rather than restating it" \
+      "grep -q 'references/independent-review.md' '$SK'"
+check "…which ships" "test -f '$IRV'"
+check "…and does not become a refusal to run (the author filter makes it safe)" \
+      "grep -q 'not a refusal to run' '$SK'"
+# THE STALE-APPROVAL CHECK IS EXECUTED, NOT QUOTED. Rung 4 merges on an APPROVED
+# review NEWER than the last commit: the round that raised the findings does not
+# cover the commits that answered them. The reference hands the author a jq
+# one-liner for repos without branch protection, and a one-liner nobody runs is
+# where this repo's last several defects lived. Pull the program OUT OF THE DOC
+# and run it, so the doc and the test cannot drift.
+STALE="$DIR/test/fixtures/pr-stale-approval.json"
+sed -n "s/.*--json reviews,commits --jq '\(.*\)'$/\1/p" "$IRV" > "$SANDBOX/stale.jq"
+check "the stale-approval jq was recovered from the reference (anti-vacuity floor)" \
+      "[ -s '$SANDBOX/stale.jq' ]"
+check "…and it is one program, not several" \
+      "[ \$(grep -c . '$SANDBOX/stale.jq') -eq 1 ]"
+jq -r "$(cat "$SANDBOX/stale.jq")" "$STALE" > "$SANDBOX/stale.out" 2>"$SANDBOX/stale.err"; _rc=$?
+check "the reference's own command runs against a PR shape" "[ $_rc -eq 0 ]"
+check "…printing the newest review, not the first" \
+      "grep -q 'last review: ai-assistant-2026 APPROVED 2026-09-10T11:00:00Z' '$SANDBOX/stale.out'"
+check "…and the newest commit" \
+      "grep -q 'last commit: 2026-09-10T12:00:00Z' '$SANDBOX/stale.out'"
+# The fixture is the STALE case BY CONSTRUCTION: approval 11:00, commit 12:00.
+# Without this floor the two greps above would pass on a fixture proving nothing.
+check "…on a fixture whose commit is newer than its approval (the stale case)" \
+      "[ \"\$(jq -r '.commits | last | .committedDate' '$STALE')\" \> \"\$(jq -r '.reviews | last | .submittedAt' '$STALE')\" ]"
+# A PR with no reviews yet is the common case on a first request, and an
+# unguarded `.reviews | last | .author.login` errors there rather than printing.
+printf '{"reviews":[],"commits":[{"committedDate":"2026-09-10T12:00:00Z"}]}\n' > "$SANDBOX/noreview.json"
+jq -r "$(cat "$SANDBOX/stale.jq")" "$SANDBOX/noreview.json" > "$SANDBOX/noreview.out" 2>&1; _rc=$?
+check "…and survives a PR with no reviews yet" "[ $_rc -eq 0 ]"
+check "…reporting none rather than erroring" "grep -q 'last review: none' '$SANDBOX/noreview.out'"
+# Read the rung as PROSE, not as lines: a reflow must not decide whether the
+# rule is present.
+tr '\n' ' ' < "$DOD" | tr -s ' ' > "$SANDBOX/dod.flat"
+check "rung 4 requires a re-request after every push that answers findings" \
+      "grep -q 'every push that answers findings is followed by a re-request' '$SANDBOX/dod.flat'"
+check "…and names the condition the merge waits on" \
+      "grep -q 'APPROVED review newer than the last commit' '$SANDBOX/dod.flat'"
+check "…inside rung 4, not elsewhere in the file (anti-vacuity floor)" \
+      "grep -q '4. \*\*Independently reviewed\*\*.*APPROVED review newer than the last commit' '$SANDBOX/dod.flat'"
+# The rung keys on the review STATE. It once demanded a literal 'lgtm - approved'
+# line, which /review does not emit when it approves WITH non-blocking findings -
+# a verdict the skill legitimately returns - so the rung was unsatisfiable by its
+# own reviewer on any PR that had ever had a finding.
+check "…and keys on the review state, not on a literal verdict line" \
+      "! grep -q 'newest verdict on the thread is .lgtm - approved.' '$SANDBOX/dod.flat'"
+check "…saying so, so the literal is not re-added" \
+      "grep -q 'The state is the condition, not any particular wording' '$SANDBOX/dod.flat'"
+# gh pr edit --add-reviewer resolves the PR through GraphQL, and that query reads
+# projectCards - retired with Projects classic. It fails WHOLE on this repo, so a
+# protocol step built on it never lands the request.
+check "the request step avoids the GraphQL path that Projects-classic broke" \
+      "! grep -q 'gh pr edit .* --add-reviewer' '$IRV'"
+check "…using the REST requested_reviewers route instead" \
+      "grep -q 'pulls/<PR>/requested_reviewers' '$IRV'"
+check "…and records why, so it is not helpfully simplified back" \
+      "grep -q 'projectCards' '$IRV'"
+# CODEOWNERS is the carrier named for the human half of the InboundSavvy rule.
+# Without require_code_owner_reviews GitHub REQUESTS code owners and requires
+# nothing, so two AI approvals would satisfy a count of 2.
+check "the InboundSavvy protection turns CODEOWNERS into a requirement" \
+      "grep -q 'require_code_owner_reviews' '$IRV'"
+check "…and says what is inert without it" \
+      "grep -q 'a .CODEOWNERS. file is inert' '$IRV'"
+# THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
+# lint rounds went on the link. The skill must say the new shape everywhere it
+# used to say the old one, or a reader follows whichever they reach first.
+check "the skill posts the report inside the comment, collapsed" \
+      "grep -q 'Full report' '$SK'"
+check "…through the assembler, not hand-typed markup" \
+      "grep -q 'jjstack-pr-comment-assemble' '$SK'"
+check "…and no longer commits the report" \
+      "! grep -qi 'commit the report' '$SK'"
+check "…nor links a report file from the comment" \
+      "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
+check "…so the canonical resolved line ends at approved" \
+      "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
+# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
+# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
+# the suite red. A guard's title is a claim; this one claimed the mechanism was
+# right while its body enforced the broken one.
+check "a re-review reads the reviews, where the verdict now lands" \
+      "grep -q 'json reviews,comments' '$SK'"
+check "…and still reads comments, for rounds posted before the change" \
+      "grep -q '.comments\[\]?' '$SK'"
+# The guard used to match ONLY the filter clause. The binding that defines
+# $me sat in a separate span of the same 260-character line and was pinned by
+# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
+# 317 green while the documented command died on a jq compile error, which the
+# skill reads as no previous round. That is the P0 this line exists to fix,
+# restored silently, under a guard whose title said the opposite. Pin the whole
+# mechanism: the login is resolved into pr.env, bound on the command line, and
+# compared against the author.
+# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
+# instance each of a single class: a check that pins a STRING while its title
+# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
+# so an inverted mapping passed. Round 2, the --arg me binding pinned by
+# nothing. Round 3, five single-edit mutations on this very block green at 392:
+# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
+# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
+# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
+# from the skill and EXECUTED against fixtures; what it returns is the
+# assertion. A string check cannot see any of those five edits; running it sees
+# four, and the fifth is the append operator, pinned literally below.
+det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
+det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
+det_prog=${det_prog%\'}
+check "the detector's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#det_prog} -gt 80 ]"
+
+# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
+# is a review and the oldest a comment. Correct answer: MY review.
+# The third comment is MINE and NEWEST of all, and its body does not open with
+# the attribution line: it is the author's own reply to the last round, which
+# is a real shape on a real PR. Without it the startswith filter is never the
+# reason anything is excluded, and deleting that filter stays green while the
+# detector starts returning the author's reply as "the previous round".
+det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and run, it returns MY newest round, not another account's newer one" \
+      "[ \"\$det_out_a\" = WANT-REVIEW ]"
+
+# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
+# This is the half fixture A cannot see - it is what fails when the comments
+# arm stops carrying an author, or when the arms' timestamps are swapped.
+det_b='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and when my newest round is a comment, it returns the comment" \
+      "[ \"\$det_out_b\" = WANT-COMMENT ]"
+
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+append_pat='>> {OUTPUT_DIR}/pr.env'
+check "the login is APPENDED to pr.env, never written over it" \
+      "grep -qF \"$append_pat\" '$SK'"
+check "…and refuses to guess when it is missing" \
+      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
+
+# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
+# touched: inverting the test, binding .name instead of .login, returning an
+# empty binding instead of nothing, and renaming the key all stayed green, and
+# the first of those is this commit's own defect restored verbatim.
+me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
+me_prog=${me_line#*--jq \'}
+me_prog=${me_prog%%\' >>*}
+check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#me_prog} -gt 30 ]"
+me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
+check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
+me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on an error body it emits NOTHING, not the string null" \
+      "[ -z \"\$me_err\" ]"
+# The success body and the 401 body differ in more than the login, so neither
+# asserts WHICH field the guard reads. A producer keyed on the error message
+# instead passes both, and then writes PR_ME=null on any failure body that
+# carries no message, a 404 among them. This third body differs from the
+# success body ONLY in the login, so the field is what the assertion turns on.
+me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on a body differing ONLY in the missing login, still nothing" \
+      "[ -z \"\$me_nul\" ]"
+check "…so the positional concatenation is gone" \
+      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
+check "…so the comments-only detector is gone" \
+      "! grep -q -- '--json comments --jq' '$SK'"
+check "…and the report template carries no emdash, since it is posted now" \
+      "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
+check "…and that template range is non-empty (anti-vacuity floor)" \
+      "[ \$(sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -c .) -gt 10 ]"
 # Nothing may reference a tool this branch deleted.
 for gone in jjstack-review-baseline jjstack-review-calibration jjstack-review-ledger \
             jjstack-review-run-report jjstack-review-normalize jjstack-review-vocab.sh \
             jjstack-review-dep-inventory jjstack-review-sweep jjstack-review-autofix-diff \
             jjstack-review-prior-dismissals jjstack-capture-review-refs jjstack-number-lines; do
   check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
+  # "Ships" means tracked, so ASK GIT rather than walking the directory. The
+  # walk read gitignored working files too — a developer's own
+  # .claude/settings.local.json, which had allow rules naming these tools,
+  # reddened three of these on their machine and nowhere else. That is the
+  # "different verdict on a different machine" this file's header forbids, and
+  # it was reached through untracked state rather than through $HOME.
   check "nothing that ships mentions the deleted $gone" \
-        "! grep -rq --exclude-dir=.git --exclude-dir=docs --exclude=smoke.sh --exclude=CHANGELOG.md '$gone' '$DIR'"
+        "! git -C '$DIR' grep -qI --untracked -e '$gone' -- . ':!docs' ':!test/smoke.sh' ':!CHANGELOG.md' ':!*.local.json'"
 done
+
+echo "== 9b. the author side says what it does =="
+# /receiving-code-review had NO assertions at all, so both rules added to it
+# shipped untested - including the one added because a fix that changed only
+# the sentence a finding named kept handing the reviewer the next round.
+RCR="$DIR/skills/receiving-code-review/SKILL.md"
+check "the author sweeps the whole document before committing a fix" \
+      "grep -q 'the whole document agrees with the change' '$RCR'"
+check "…by grepping the concept, not the wording the finding used" \
+      "grep -q 'grep the concept, not the' '$RCR'"
+# MERGEABLE is not unreviewed. The review of #29 posted CAUTION with three
+# blocking findings at 13:12; the PR was merged at 13:21 on a mergeability
+# check read before the review existed, and all three shipped in a release.
+check "the merge is preceded by a fresh read of the thread" \
+      "grep -q 'Re-read the thread in the same breath as the merge' '$RCR'"
+check "…because a mergeability check answers a different question" \
+      "grep -qF 'is not \`unreviewed\`' '$RCR'"
+# The first version of this guard asserted the `gh pr view` line, which exits 0
+# whether or not anything is unread - so it certified a chain that gated on
+# nothing. The mechanism is the EXIT CODE, so the guard names the tool that has
+# one and the merge it gates.
+check "…and the read is a check that exits non-zero, chained to the merge" \
+      "grep -q 'jjstack-pr-unread-check .* && gh pr merge' '$RCR'"
+check "…and that check ships" "[ -x '$DIR/bin/jjstack-pr-unread-check' ]"
+check "…and never reads an unreadable thread as nothing new" \
+      "grep -q 'never treated as nothing' '$RCR'"
+
+# The check is EXERCISED, not greped. A guard on the word `submittedAt` passed
+# with the reviews arm deleted, because the word is also in the file's header
+# comment - the sixth time in this engagement that a guard matched vocabulary
+# instead of the mechanism it named. `gh` is stubbed so the thread is a fixture
+# and the exit code is the assertion.
+UNR=$(tmp unread); UNRBIN="$UNR/bin"; mkdir -p "$UNRBIN"
+# The stub dispatches, because the tool asks TWO endpoints: `gh pr view` for
+# issue comments and submitted reviews, and `gh api .../pulls/N/comments` for
+# replies inside inline review threads, which `gh pr view` cannot return at all.
+# A stub that answered both with one blob could not tell the surfaces apart.
+# The stub answers the API the way the real one does, in two respects that the
+# tool's correctness depends on. It PAGINATES only when asked: without
+# --paginate it returns the first page and stops, which is what let a newest
+# reply past item 30 go unseen. And it returns RAW API objects, so the tool's
+# own field mapping (.user.login, .created_at) is exercised rather than handed
+# the already-mapped shape it expects.
+gh_stub() {   # gh_stub <pr-view-json|FAIL|EMPTY> [page1-json|FAIL] [page2-json]
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$1" = api ]; then\n'
+    case "${2-[]}" in
+      FAIL)  printf '  echo "HTTP 502" >&2; exit 1\n' ;;
+      EMPTY) printf '  exit 0\n' ;;
+      *)    printf '  cat <<%s\n%s\n%s\n' 'P1EOF' "${2-[]}" 'P1EOF'
+            if [ -n "${3-}" ]; then
+              printf '  case " $* " in *" --paginate "*)\n'
+              printf '  cat <<%s\n%s\n%s\n' 'P2EOF' "$3" 'P2EOF'
+              printf '  ;; esac\n'
+            fi
+            printf '  exit 0\n' ;;
+    esac
+    printf 'fi\n'
+    case "$1" in
+      FAIL)  printf 'echo "could not resolve host" >&2; exit 1\n' ;;
+      EMPTY) printf 'exit 0\n' ;;
+      *)     printf 'cat <<%s\n%s\n%s\n' 'PVEOF' "$1" 'PVEOF' ;;
+    esac
+  } > "$UNRBIN/gh"
+  chmod +x "$UNRBIN/gh"
+}
+unread_rc() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" >/dev/null 2>&1; echo $?; }
+unread_out() { PATH="$UNRBIN:$PATH" "$BIN/jjstack-pr-unread-check" --pr 1 --repo o/r --since "$1" 2>&1; }
+
+# A REVIEW newer than --since, and no comment at all: the surface a "Request
+# changes" click lands on, and the one a comments-only reader cannot see.
+gh_stub '{"comments":[],"reviews":[{"author":{"login":"r"},"submittedAt":"2026-09-09T19:00:00Z","state":"CHANGES_REQUESTED"}]}'
+check "the unread check sees a REVIEW newer than the last read (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that same review is older than the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# A COMMENT newer, with no reviews: the other surface, other field.
+gh_stub '{"comments":[{"author":{"login":"r"},"createdAt":"2026-09-09T19:00:00Z"}],"reviews":[]}'
+check "…and sees a COMMENT newer than the last read" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+# An empty thread is the only case that may pass.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and an empty thread is the only quiet one" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 0 ]"
+# A thread that cannot be read is NOT nothing new. Distinct code, so a caller
+# chaining `check && merge` refuses either way, and the operator can tell why.
+gh_stub FAIL
+check "…and an unreadable thread exits 3, never 0" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A --since that is not an instant cannot be compared; refuse at parse time
+# rather than string-compare something that sorts wrong.
+gh_stub '{"comments":[],"reviews":[]}'
+check "…and a malformed --since is a usage error, not a pass" \
+      "[ \$(unread_rc yesterday) -eq 2 ]"
+# THE THIRD SURFACE. A reply inside an inline review thread is neither an issue
+# comment nor a submitted review, and `gh pr view` does not return it, so a
+# reader of the other two calls the thread quiet while it is not.
+gh_stub '{"comments":[],"reviews":[]}' '[{"user":{"login":"r"},"created_at":"2026-09-09T19:00:00Z"}]'
+check "…and sees a reply inside an INLINE review thread" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 1 ]"
+check "…and passes when that inline reply predates the last read" \
+      "[ \$(unread_rc 2026-09-09T23:00:00Z) -eq 0 ]"
+# The exit code alone does not pin the MAPPING: reading the wrong author field
+# yields "?" and still exits 1. The reported line has to name the person, or a
+# renamed field is invisible.
+check "…and names the author it read from the raw API object" \
+      "unread_out 2026-09-09T12:00:00Z | grep -q 'inline by r'"
+# ...and a failure to ASK the inline endpoint is a refusal, not an empty list.
+gh_stub '{"comments":[],"reviews":[]}' FAIL
+check "…and refuses when the inline surface cannot be read (exit 3)" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A SUCCESSFUL inline read that prints nothing is refused the same way the
+# thread read is. Handling the same condition two ways in one file is what this
+# pins: the other call exits 3, so this one does too.
+gh_stub '{"comments":[],"reviews":[]}' EMPTY
+check "…and an inline read that succeeds with no output is exit 3, not quiet" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# A command that SUCCEEDS and prints nothing is not an empty thread. Without
+# this the empty output parsed to an empty list and the gate said quiet, which
+# is the reading the tool's own header promises never to make.
+gh_stub EMPTY
+check "…and a successful read that returns nothing is exit 3, not quiet" \
+      "[ \$(unread_rc 2026-09-09T12:00:00Z) -eq 3 ]"
+# PAGE TWO. The endpoint returns OLDEST first and an unpaginated read stops at
+# 30, so the NEWEST reply is precisely the item that falls off - the one item
+# this gate exists to catch. Page 1 here is entirely older than the last read;
+# page 2 carries the only thing newer. A tool that reads one page deep calls
+# this thread quiet.
+p1=$(printf '[%s{"user":{"login":"r"},"created_at":"2026-09-09T04:00:00Z"}]' "$(for i in $(seq 29); do printf '{"user":{"login":"r"},"created_at":"2026-09-09T03:00:00Z"},'; done)")
+p2='[{"user":{"login":"r"},"created_at":"2026-09-09T06:00:00Z"}]'
+gh_stub '{"comments":[],"reviews":[]}' "$p1" "$p2"
+check "the newest inline reply on PAGE TWO is still seen (exit 1)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# Control: with the newest item on page 1 the same stub exits 1 too, so the
+# assertion above is about REACH and not about the stub being broken.
+gh_stub '{"comments":[],"reviews":[]}' "$p2" '[]'
+check "…and the same tool sees it when it is on page one (control)" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 1 ]"
+# ...and page 1 alone, all of it older, is genuinely quiet.
+gh_stub '{"comments":[],"reviews":[]}' "$p1" '[]'
+check "…and a first page that is entirely older stays quiet" \
+      "[ \$(unread_rc 2026-09-09T05:00:00Z) -eq 0 ]"
+check "…with the incident that produced the rule named" \
+      "grep -q 'All three shipped in a release\|shipped in a release' '$RCR'"
+# The process diagram is a second place the step list is stated, so it drifts.
+# The diagram is a SECOND statement of the step list, so it drifts from the
+# headings. Pin it structurally - the box count - rather than by a phrase
+# inside one box, which a partial edit walks straight past.
+rcr_boxes=$(sed -n '/^```$/,/^```$/p' "$RCR" | grep -c '^┌')
+rcr_steps=$(grep -c '^## Step [0-9]' "$RCR")
+check "the process diagram has boxes to count (anti-vacuity floor)" \
+      "[ \"\$rcr_boxes\" -ge 5 ]"
+check "…and one box per step, plus the inbound 'review received'" \
+      "[ \"\$rcr_boxes\" -eq \$(( rcr_steps + 1 )) ]"
+check "…and the anti-patterns name merging on a mergeability check" \
+      "grep -q 'Merging on a mergeability check' '$RCR'"
 
 echo "== 10. the guards the round-1 review found missing =="
 # Each of these three behaviours shipped with no test: the mutation that
@@ -1052,7 +1757,8 @@ check "…and a linter that FAILED is not: the category stays IN SCOPE" \
 # Derive the check: help must not leak shell source, and must not end mid-header.
 HLP="$SANDBOX/help.txt"
 for t in jjstack-review-preflight jjstack-review-tooling-sweep \
-         jjstack-review-blast-radius jjstack-review-intent jjstack-pr-comment-lint; do
+         jjstack-review-blast-radius jjstack-review-intent jjstack-pr-comment-lint \
+         jjstack-pr-comment-assemble; do
   timeout 10 "$BIN/$t" --help > "$HLP" 2>/dev/null
   # Grep a FILE: a herestring built through check()'s own quoting could not
   # carry this pattern intact, so the assertion failed on its own escaping
@@ -1061,6 +1767,1267 @@ for t in jjstack-review-preflight jjstack-review-tooling-sweep \
         "! grep -qE '^(set -o|set -u|YEL=|CYA=|GRN=|HERE=|SRC=)' '$HLP'"
   check "$t --help is non-empty" "[ -s '$HLP' ]"
 done
+
+echo "== 11. the permission gate (floor, policy, and what is installed) =="
+# The gate this replaces asked a model to rate every command and woke a person
+# whenever the answer was not LOW. It woke one 183 times in 48 hours and was
+# approved 183 times. What is asserted here is the shape of the replacement:
+# the floor refuses a fixed set outright, the PermissionRequest hook cannot
+# approve anything at all, and the policy carries no rule that reintroduces a
+# prompt.
+for f in "$HOOKS"/auto-approve-safe.sh "$DIR"/test/settings-lint.sh; do
+  check "bash -n $(basename "$f")" "bash -n '$f' 2>/dev/null"
+done
+check "python -m py_compile permission-floor.py" \
+      "python3 -m py_compile '$HOOKS/permission-floor.py' 2>/dev/null"
+
+# The policy table and the mutation proof are whole suites of their own. Run
+# them and read their exit status: 1 is a mismatch, 2 is "the table cannot
+# fail", which is the louder failure and must not be collapsed into it.
+pol_out=$(python3 "$DIR/test/permission-policy-check.py" 2>&1); pol_rc=$?
+check "permission-policy fixtures pass (rc=0; 2 would mean the table is vacuous)" \
+      "[ \"$pol_rc\" = 0 ]"
+[ "$pol_rc" = 0 ] || printf '     %s\n' "$pol_out"
+check "every rule the hook declares has a fixture" \
+      "printf '%s' \"\$pol_out\" | grep -qE 'CASES=[0-9]+ RULES=[0-9]+'"
+
+mut_out=$(python3 "$DIR/test/permission-floor-mutation.py" 2>&1); mut_rc=$?
+check "mutation proof: every rule is load-bearing" "[ \"$mut_rc\" = 0 ]"
+[ "$mut_rc" = 0 ] || printf '     %s\n' "$mut_out"
+check "...and each rule reddens only its OWN rows (no rule covered by a neighbour)" \
+      "printf '%s' \"\$mut_out\" | grep -q 'survived=0 misattributed=0'"
+
+# ── the PermissionRequest hook cannot approve anything ───────────────────────
+# It used to be the whole policy. A hook that can still emit `allow` is a hook
+# that can still be a bypass, and the point of the rewrite is that it observes.
+hookout=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"permission_mode":"bypassPermissions"}' \
+          | JJSTACK_HOOK_LOG=/dev/null TM_WORKER_NAME= bash "$HOOKS/auto-approve-safe.sh" 2>&1)
+check "PermissionRequest hook emits nothing at all (it decides nothing)" "[ -z \"\$hookout\" ]"
+check "PermissionRequest hook has no 'allow' branch left" \
+      "! grep -q '\"behavior\": *\"allow\"' '$HOOKS/auto-approve-safe.sh'"
+# The rater is gone, and gone means the credential path with it. A hook that
+# still reads the API key file is a hook that can still be rate-limited into
+# waking somebody at 3am.
+for needle in 'api.anthropic.com' 'anthropic_api_key' 'ANTHROPIC_API_KEY' 'curl '; do
+  check "no '$needle' remains in the PermissionRequest hook" \
+        "! grep -q '$needle' '$HOOKS/auto-approve-safe.sh'"
+done
+
+# ── the policy file ──────────────────────────────────────────────────────────
+POL="$HOOKS/permissions.policy.json"
+check "the policy is valid JSON" "jq -e . '$POL' >/dev/null 2>&1"
+check "the policy sets bypassPermissions" \
+      "[ \"\$(jq -r '.permissions.defaultMode' '$POL')\" = bypassPermissions ]"
+# THE regression. One Bash ask rule prompts in every mode, bypass included, and
+# no allow rule anywhere can lift it. This single assertion is what stands
+# between the fix and 183 interruptions coming back one rule at a time.
+n_ask=$(jq -r '[.permissions.ask[] | select(startswith("Bash("))] | length' "$POL")
+check "the policy carries no Bash ask rule (an ask rule prompts in EVERY mode)" \
+      "[ \"\$n_ask\" = 0 ]"
+check "the policy still denies something (a policy that denies nothing is not one)" \
+      "[ \"\$(jq '.permissions.deny | length' '$POL')\" -ge 10 ]"
+
+# ── settings-lint, driven both ways ──────────────────────────────────────────
+# A lint is worth what its negative control is worth. Build a settings file the
+# lint must PASS, then break it one way at a time and require a failure each
+# time — otherwise "0 failed" only means the lint never looks.
+LINTDIR=$(tmp lint)
+good="$LINTDIR/good.json"
+jq --arg h "$HOOKS" '{
+     permissions: .permissions,
+     hooks: {
+       PreToolUse: [{matcher:"Bash", hooks:[{type:"command", command:($h + "/permission-floor.py")}]}],
+       PermissionRequest: [{matcher:"", hooks:[{type:"command", command:($h + "/auto-approve-safe.sh")}]}]
+     }}' "$POL" | sed "s|{{HOME}}|${HOME#/}|g" > "$good"
+bash "$DIR/test/settings-lint.sh" "$good" >/dev/null 2>&1
+check "settings-lint PASSES a settings file that matches the policy (control)" "[ \$? -eq 0 ]"
+
+jq '.permissions.ask += ["Bash(git push *)"]' "$good" > "$LINTDIR/ask.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/ask.json" >/dev/null 2>&1
+check "settings-lint FAILS on a single reintroduced Bash ask rule" "[ \$? -ne 0 ]"
+
+jq '.permissions.defaultMode = "auto"' "$good" > "$LINTDIR/mode.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/mode.json" >/dev/null 2>&1
+check "settings-lint FAILS when the mode is not bypassPermissions" "[ \$? -ne 0 ]"
+
+jq '.permissions.deny = []' "$good" > "$LINTDIR/deny.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/deny.json" >/dev/null 2>&1
+check "settings-lint FAILS when a policy deny rule is missing" "[ \$? -ne 0 ]"
+
+jq '.hooks.PreToolUse = []' "$good" > "$LINTDIR/nofloor.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/nofloor.json" >/dev/null 2>&1
+check "settings-lint FAILS when the floor hook is not registered" "[ \$? -ne 0 ]"
+
+# The symlink check is the one that was silently false for months: the gate was
+# aliased into a working checkout, so `git checkout` changed machine-wide
+# policy. Drive it with a real symlink rather than trusting the branch exists.
+SLDIR=$(tmp slhooks)
+cp "$HOOKS/auto-approve-safe.sh" "$SLDIR/auto-approve-safe.sh"
+ln -sfn "$HOOKS/permission-floor.py" "$SLDIR/permission-floor.py"
+jq --arg h "$SLDIR" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/symlink.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/symlink.json" >/dev/null 2>&1
+check "settings-lint FAILS when a hook is installed as a symlink" "[ \$? -ne 0 ]"
+
+# An installed-but-inert hook passes every structural check above.
+INERT=$(tmp inert)
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$INERT/permission-floor.py"
+chmod +x "$INERT/permission-floor.py"
+cp "$HOOKS/auto-approve-safe.sh" "$INERT/auto-approve-safe.sh"
+jq --arg h "$INERT" '.hooks.PreToolUse[0].hooks[0].command = ($h + "/permission-floor.py")
+                     | .hooks.PermissionRequest[0].hooks[0].command = ($h + "/auto-approve-safe.sh")' \
+   "$good" > "$LINTDIR/inert.json"
+bash "$DIR/test/settings-lint.sh" "$LINTDIR/inert.json" >/dev/null 2>&1
+check "settings-lint FAILS on a registered but inert floor (the positive control)" "[ \$? -ne 0 ]"
+
+echo "== 12. skill namespace: shadows are declared, checked, and the check runs =="
+# The class: a jjstack skill takes a name Claude Code also ships, and the user
+# typing it silently gets the other thing. PR #12 shipped a detector for it
+# that (a) missed the second live collision, (b) no automation ran, and (c)
+# no test covered — delete it and everything stayed green. The rules here are
+# DERIVED: the set of declared shadows comes from the skills themselves, and
+# every branch of check 5 has a fixture that must fail it.
+#
+# ROUND 2. Three guards in this section were satisfied by a COMMENT and one
+# positive control could not fail, so they are rewritten here to drive the
+# thing they name. The workflow guards read a comment-stripped copy and anchor
+# to the YAML keys; the prune guard runs the prune; and every fixture repo now
+# satisfies check 4 so a non-zero exit really is check 5's verdict.
+VS="$BIN/jjstack-verify-skills"
+check "the skill-tree checks pass on this tree" "bash '$VS' >/dev/null 2>&1"
+
+# The workflow guards. A substring grep over the whole file passed on a
+# workflow that ran neither command, both strings sitting inside a comment.
+WF="$SANDBOX/verify-nocomments.yml"
+sed 's/#.*//' "$DIR/.github/workflows/verify.yml" > "$WF"
+check "the workflow triggers on pull requests (key, not prose)" \
+      "grep -qE '^on:' '$WF' && grep -qE '^[[:space:]]+pull_request:[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the skill-tree checks" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash bin/jjstack-verify-skills[[:space:]]*$' '$WF'"
+check "…and a run: step invokes the smoke suite" \
+      "grep -qE '^[[:space:]]+run:[[:space:]]*bash test/smoke.sh[[:space:]]*$' '$WF'"
+
+# A fixture repo is a copy of bin/ + references/ with a synthetic skills/.
+# Each case mutates one thing and names the check-5 branch it must trip.
+# mkskill emits BOTH YAML block styles: reading only `|` measured 2 bytes for
+# the 25 skills that use `>`, so check 6 passed them unconditionally and
+# check 5's alt-name rule read those same 2 bytes.
+mkskill() {  # mkskill <root> <name> [shadows-entry] [description] [block-style]
+  mkdir -p "$1/skills/$2"
+  { printf -- '---\nname: %s\ndescription: %s\n  %s\n' "$2" "${5:-|}" "${4:-A test skill; the other name is /$2-alt.}"
+    [ -n "${3:-}" ] && printf 'shadows:\n  - "%s"\n' "$3"
+    printf -- '---\n# %s\n' "$2"; } > "$1/skills/$2/SKILL.md"
+}
+mkfix() {    # mkfix → a fixture root whose built-in list is [alpha, alpha-alt, gamma]
+  local r; r=$(tmp nsfix)
+  cp -r "$BIN" "$r/bin"; mkdir -p "$r/references" "$r/skills"
+  printf '# claude-code-version: 2.1.266\nalpha\nalpha-alt\ngamma\n' > "$r/references/claude-code-builtins.txt"
+  # Satisfy check 4 so the run's EXIT CODE is check 5's verdict and nothing
+  # else. Without this every fixture already failed check 4, and the exit-code
+  # control below passed whatever check 5 did.
+  printf 'Dedup check before writing\n' > "$r/references/memory-sweep.md"
+  # …and check 8, for the same reason: the rollover mechanisms must live
+  # somewhere allowed, or every fixture fails on the marker that matches
+  # nothing and the exit-code controls above stop meaning anything.
+  mkskill "$r" rollover
+  printf 'mcp__quartermaster__qm_queue_add(\njjstack-rollover-slot write\n' \
+      >> "$r/skills/rollover/SKILL.md"
+  printf 'jjstack-rollover-slot status\n' >> "$r/skills/rollover/SKILL.md"
+  mkskill "$r" resume-from-clear
+  printf 'jjstack-rollover-slot consume\njjstack-rollover-slot status\n' \
+      >> "$r/skills/resume-from-clear/SKILL.md"
+  # The hook reaches the script through a variable, so check 8 has a row keyed
+  # on the assignment. A fixture without one fails on "matches nothing".
+  mkdir -p "$r/hooks"
+  printf 'RSLOT="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"\n' \
+      > "$r/hooks/shared-memory.sh"
+  echo "$r"
+}
+vs_out() { bash "$1/bin/jjstack-verify-skills" 2>&1; }
+# The verifier prints `  <green>ok<reset>  <message>`, so the literal string
+# "ok  " never appears in its output and every assertion that matched on one
+# was reading past the label it meant to anchor to — the two negatives below
+# could not have failed. Strip the escapes and the anchor becomes real.
+vs_plain() { vs_out "$1" | sed 's/\x1b\[[0-9;]*m//g'; }
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt'; mkskill "$F" beta
+check "declared shadow with a live built-in and a reachable alt passes" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and a name that collides with nothing is not mentioned by check 5" \
+      "! vs_out '$F' | grep -q 'beta shadows'"
+check "…and the fixture is otherwise clean, so exit 0 (control for the exit codes below)" \
+      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" alpha
+check "undeclared collision FAILS and names the fix" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha and does not declare it'"
+check "…and the script exits non-zero (meaningful now that check 4 passes)" \
+      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+F=$(mkfix); mkskill "$F" beta 'claude-code:/beta -> /alpha-alt'
+check "stale declaration (no built-in behind it) FAILS" \
+      "vs_out '$F' | grep -q 'beta declares a shadow of /beta but no such built-in is listed'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /nowhere'
+check "an alt that is not a listed built-in FAILS (the reachability claim is false)" \
+      "vs_out '$F' | grep -q 'but /nowhere is not a listed built-in'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /gamma'; mkskill "$F" gamma 'claude-code:/gamma -> /alpha-alt'
+check "an alt that jjstack shadows too FAILS (the other name is taken as well)" \
+      "vs_out '$F' | grep -q 'but jjstack shadows /gamma too'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A test skill that never names the other command.'
+check "a declaration whose description never names the alt FAILS" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt within its first 1400 chars'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt"
+check "a description over the ceiling FAILS check 6" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+
+# THE FOLDED-SCALAR PAIR. Same two assertions, `>` instead of `|`. Before the
+# parser was widened both passed vacuously: the description read as 2 bytes,
+# so it was under any ceiling and contained no alt name to find.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' "$(printf 'x%.0s' $(seq 1 1401)) /alpha-alt" '>'
+check "a folded-scalar description over the ceiling FAILS check 6 too" \
+      "vs_out '$F' | grep -q 'alpha description is 14[0-9][0-9] chars'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill that never names the other command.' '>'
+check "…and a folded-scalar description that omits the alt FAILS check 5 too" \
+      "vs_out '$F' | grep -q 'the description must name /alpha-alt'"
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt' 'A folded skill; the other name is /alpha-alt.' '>'
+check "…and a well-formed folded-scalar skill still passes (not just always-fail)" \
+      "vs_out '$F' | grep -q 'alpha shadows /alpha (declared'"
+check "…and its measured length is the real one, not the 2 bytes after the colon" \
+      "! vs_plain '$F' | grep -qE 'ok  alpha \(2\)'"
+# CONTROL for that negative and its twin on the real tree further down. A
+# negative is worth nothing unless the pattern can match SOMETHING, and the
+# current parser cannot emit a 2-byte description at all — so the specimen is
+# the line the OLD parser printed, in the exact shape check 6 formats it,
+# colors included. The second assertion is why vs_plain exists: with the
+# escapes left in, the literal "ok  " the pattern anchors to is not there.
+printf '  \033[32mok\033[0m  alpha (2)\n' > "$SANDBOX/desc2.raw"
+check "the 2-byte-description pattern matches the line the old parser produced (control)" \
+      "sed 's/\x1b\[[0-9;]*m//g' '$SANDBOX/desc2.raw' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+check "…and misses that same line while the color escapes are still in it" \
+      "! grep -qE 'ok  [a-z0-9-]+ \(2\)' '$SANDBOX/desc2.raw'"
+
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/other -> /alpha-alt'
+check "a skill declaring a shadow of a different name FAILS" \
+      "vs_out '$F' | grep -q 'a skill can only shadow its own name'"
+
+F=$(mkfix); mkskill "$F" alpha 'shadows /alpha'
+check "a malformed shadows entry FAILS with the expected shape" \
+      "vs_out '$F' | grep -q \"is not 'claude-code:/<name> -> /<other-name>'\""
+
+F=$(mkfix); sed -i '/^# claude-code-version/d' "$F/references/claude-code-builtins.txt"; mkskill "$F" beta
+check "a built-in list with no version header FAILS check 7" \
+      "vs_out '$F' | grep -q 'carries no .# claude-code-version:. header'"
+
+# THE LIST IS HAND-EDITED, so it must be read tolerantly. One trailing space on
+# a name dropped it out of the collision set and the check reported success —
+# the exact hole this section exists to close, reopened by whitespace.
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/^alpha$/alpha /' "$F/references/claude-code-builtins.txt"
+check "a trailing space on a built-in name does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+F=$(mkfix); mkskill "$F" alpha
+sed -i 's/$/\r/' "$F/references/claude-code-builtins.txt"
+check "a CRLF built-in list does not hide the collision" \
+      "vs_out '$F' | grep -q 'alpha shadows the Claude Code built-in /alpha'"
+check "…and its version header still parses (check 7 does not report a missing header)" \
+      "! vs_out '$F' | grep -q 'carries no'"
+
+# THE VERIFIER'S OWN OUTPUT IS NOT WRITABLE BY A SKILL. Check 5 is the first
+# path that feeds SKILL.md text into the print helpers; `echo -e` there let a
+# contributed file emit cursor movement and repaint a FAIL line green.
+F=$(mkfix); mkskill "$F" alpha 'claude-code:/alpha -> /alpha-alt\033[2K\033[1A'
+check "escape sequences from a SKILL.md are printed literally, not interpreted" \
+      "vs_out '$F' | grep -qF '033['"
+
+# THE PRUNE, EXERCISED. The previous guard grepped `setup` for the text of a
+# comment: deleting the whole loop left the comment and the suite stayed green.
+# It is its own script now precisely so this can drive it.
+PR="$BIN/jjstack-prune-stale-links"
+prunefix() {   # prunefix → <root> with repo/skills/{stays} and links/{stays,gone,foreign}
+  local r; r=$(tmp prune)
+  mkdir -p "$r/repo/skills/stays" "$r/links" "$r/elsewhere/other"
+  printf -- '---\nname: stays\n---\n' > "$r/repo/skills/stays/SKILL.md"
+  ln -s "$r/repo/skills/stays" "$r/links/stays"
+  ln -s "$r/repo/skills/gone"  "$r/links/gone"      # dangling: renamed away
+  ln -s "$r/elsewhere/other"   "$r/links/foreign"   # not ours
+  echo "$r"
+}
+# `-L`, never `-e`: the link under test points at a path that does not exist,
+# so `-e` is false whether the link is there or not and the assertion cannot
+# fail. A mutation that deleted the prune loop entirely left both green.
+P=$(prunefix); out=$(bash "$PR" "$P/links" "$P/repo")
+check "the prune removes a link this repo no longer backs" "[ ! -L '$P/links/gone' ]"
+check "…and says so" "printf '%s' \"\$out\" | grep -q 'gone (removed)'"
+check "…and keeps the link that still resolves to a skill" "[ -L '$P/links/stays' ]"
+check "…and does not touch a link pointing outside this repo" "[ -L '$P/links/foreign' ]"
+
+# With a manifest, a gstack original is RESTORED rather than removed.
+P=$(prunefix); mkdir -p "$P/gstack/gone"; printf -- '---\n---\n' > "$P/gstack/gone/SKILL.md"
+printf '# manifest\ngone|%s|x\n' "$P/gstack/gone" > "$P/manifest"
+out=$(bash "$PR" "$P/links" "$P/repo" "$P/manifest")
+check "with a manifest the gstack original is restored, not removed" \
+      "[ \"\$(readlink '$P/links/gone')\" = '$P/gstack/gone' ]"
+check "…and says restored" "printf '%s' \"\$out\" | grep -q 'gone (restored to'"
+
+# THE REGRESSION THAT MOTIVATED THE EXTRACTION: keyed on the install manifest,
+# the prune iterated zero times when no manifest existed — which is the case on
+# a worktree install, the one whose link the rename orphans.
+P=$(prunefix); bash "$PR" "$P/links" "$P/repo" "$P/no-such-manifest" >/dev/null
+check "the prune works with NO manifest (the install that needed it had none)" \
+      "[ ! -L '$P/links/gone' ]"
+# COMMENT-STRIPPED, like the workflow guards above. The first version of this
+# grepped the whole file, and the comment three lines above the call satisfied
+# it: a mutation that replaced the invocation with a no-op left the suite green.
+SETUP_NC="$SANDBOX/setup-nocomments.sh"
+sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
+check "setup invokes the prune script (code, not a comment)" \
+      "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
+printf '%s\n' '"$SKILLS_DIR" "$prune_root"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and a repo root" \
+      "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+# The roots are what decide whether the prune matches anything at all: it
+# recognises a link by whether the target resolves inside the root it is
+# given. With the live tree pinned, links resolve into the PIN, so a prune
+# handed only the checkout matches nothing and reports success having done
+# nothing - the exact no-op this script was extracted from `setup` to prevent.
+check "…and the roots include the served tree" \
+      "grep -q 'PRUNE_ROOTS=(\"\$SKILL_SRC\")' '$SETUP_NC'"
+check "…and the checkout too, for links left by an install before the pin" \
+      "grep -q 'PRUNE_ROOTS+=(\"\$JJSTACK_DIR\")' '$SETUP_NC'"
+
+# A blank line inside a markdown table ENDS it, and the rows below render as
+# raw pipe text. Editing the /review row in this PR introduced exactly that on
+# the repo's front page. The class, not the instance: no blank line may sit
+# between two table rows anywhere in the docs this repo ships.
+for f in README.md TUTORIAL.md CHANGELOG.md; do
+  split=$(awk '/^\|/{if(blank&&prev){print FILENAME": "NR}; prev=1; blank=0; next}
+               /^[[:space:]]*$/{if(prev)blank=1; next}
+               {prev=0; blank=0}' "$DIR/$f")
+  check "$f has no blank line splitting a markdown table" "[ -z \"\$split\" ]"
+done
+
+# DERIVE, DON'T ENUMERATE: every shadow the real tree declares must be one
+# the real built-in list contains, and every real collision must be declared.
+check "every declared shadow in the real tree is reported as declared" \
+      "! vs_out '$DIR' | grep -q 'does not declare it'"
+check "no skill in the real tree reports a 2-byte description" \
+      "! vs_plain '$DIR' | grep -qE 'ok  [a-z0-9-]+ \(2\)'"
+check "the real built-in list carries a version header" \
+      "grep -q '^# claude-code-version: [0-9]' '$DIR/references/claude-code-builtins.txt'"
+check "the real built-in list contains the two names that collided on main (review, security-review)" \
+      "grep -qx review '$DIR/references/claude-code-builtins.txt' && grep -qx security-review '$DIR/references/claude-code-builtins.txt'"
+check "the refresh script reproduces the binary-derived block's shape (header lines present)" \
+      "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
+check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
+      "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
+
+echo "== 13. the handover slot: the only artifact that resumes work =="
+# THE DEFECT THIS CLOSES. /save-and-clear filed a QM resume order whenever
+# "multi-turn work continues past this session" — true of every mid-task
+# session — so asking for a clean context handed the successor the previous
+# task instead. Continuation is an explicit artifact now: /rollover writes the
+# slot, /resume-from-clear consumes it, and neither save-and-* skill may touch
+# it. The script is deterministic on purpose — whether a session resumes is a
+# file that exists or does not, never a judgement call about "unfinished work".
+RS="$BIN/jjstack-rollover-slot"
+slotcwd()  { local r; r=$(tmp slotwork); mkdir -p "$r/repo"; printf '%s' "$r/repo"; }
+# The harness dashes every non-alphanumeric character, not just the slash.
+# Stated independently of the script on purpose — if the two disagree, one of
+# them is wrong and the assertions below say which. `dash` above keys the
+# memory directory and is a separate question; do not merge them.
+slot_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '-'; }
+slot_dir() { printf '%s' "$HOME/.claude/projects/$(slot_key "$1")/rollover"; }
+
+W=$(slotcwd)
+check "with no worker name the slot is the plain-session one" \
+      "[ \"\$(TM_WORKER_NAME= bash '$RS' --cwd '$W' path)\" = \"\$(slot_dir '$W')/session.md\" ]"
+check "a worker's slot is named for the worker, not the directory" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' path)\" = \"\$(slot_dir '$W')/alpha-tm.md\" ]"
+# iris-qa hosts three workers in ONE directory. Keying the slot on the cwd
+# alone would have them overwrite each other's handovers.
+check "two workers sharing one directory do not share a slot" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' path)\" != \"\$(TM_WORKER_NAME=beta-tm bash '$RS' --cwd '$W' path)\" ]"
+p=$(TM_WORKER_NAME='../../escape' bash "$RS" --cwd "$W" path)
+check "a worker name cannot walk the slot out of its own directory" \
+      "[ \"\${p%/*}\" = \"\$(slot_dir '$W')\" ]"
+
+# THE LIFECYCLE, driven end to end.
+W=$(slotcwd)
+check "status exits 1 when nothing was handed over" \
+      "! bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+sout=$(printf 'HANDOVER BODY\n' | TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" write)
+check "write prints the slot path it created" "[ -f \"\$sout\" ]"
+check "…and the body is what was handed in" "grep -q 'HANDOVER BODY' \"\$sout\""
+check "…and status now reports that path" \
+      "[ \"\$(TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status)\" = \"\$sout\" ]"
+check "…and another worker in the same directory still sees nothing" \
+      "! TM_WORKER_NAME=beta-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+cons=$(TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" consume)
+check "consume reports the slot it retired" "[ \"\$cons\" = \"\$sout\" ]"
+check "…and the live slot is gone" "[ ! -f \"\$sout\" ]"
+check "…so a second clear cannot resume the same work twice" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+check "…and the handover text is kept, not deleted" \
+      "grep -rqs 'HANDOVER BODY' \"\$(slot_dir '$W')\""
+check "consume on an empty slot exits 1 rather than inventing one" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' consume >/dev/null 2>&1"
+
+# A slot nobody consumed would otherwise inject into every prompt forever.
+W=$(slotcwd)
+printf 'OLD\n' | TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" write >/dev/null
+touch -d '30 days ago' "$(TM_WORKER_NAME=alpha-tm bash "$RS" --cwd "$W" path)"
+check "a handover nobody consumed for weeks stops nagging" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+check "…and a wider window still reaches it deliberately" \
+      "TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status --max-age-days 90 >/dev/null 2>&1"
+
+W=$(slotcwd)
+check "an empty handover is refused (a slot that says nothing resumes nothing)" \
+      "! printf '' | TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' write >/dev/null 2>&1"
+check "…and the refusal leaves no slot behind" \
+      "! TM_WORKER_NAME=alpha-tm bash '$RS' --cwd '$W' status >/dev/null 2>&1"
+
+# The predecessor transcript is the authoritative handover source, so finding
+# it is code, not a guess the successor makes about which log is whose.
+W=$(slotcwd); PD="$HOME/.claude/projects/$(slot_key "$W")"; mkdir -p "$PD"
+printf '{}\n' > "$PD/older.jsonl"; touch -d '2 hours ago' "$PD/older.jsonl"
+printf '{}\n' > "$PD/newer.jsonl"
+check "transcript names the newest session log" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript)\" = '$PD/newer.jsonl' ]"
+check "…and --exclude skips your own, naming the predecessor" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript --exclude newer)\" = '$PD/older.jsonl' ]"
+check "…and it exits 1 rather than printing a path that is not there" \
+      "! bash '$RS' --cwd '$W' transcript --exclude newer --exclude older >/dev/null 2>&1"
+
+# P1-3: THE PROJECT-DIRECTORY KEY. The harness dashes a cwd's punctuation, not
+# only its slashes, and the first version of this script replaced only `/`. It
+# therefore looked in a directory with no session logs and `transcript` printed
+# nothing, silently, for `.../inboundsavvy.com/webmaster` and for any path with
+# a space in it — both real directories on this machine. The old fixture used a
+# name with neither, so it could not see the class.
+for odd in 'has.dots' 'has spaces' 'both.kinds here'; do
+  W=$(tmp slotodd); W="$W/$odd"; mkdir -p "$W"
+  PD="$HOME/.claude/projects/$(printf '%s' "$W" | tr -c 'A-Za-z0-9' '-')"
+  mkdir -p "$PD"; printf '{"cwd":"%s"}\n' "$W" > "$PD/only.jsonl"
+  check "transcript finds the log for a cwd containing '$odd'" \
+        "[ \"\$(bash '$RS' --cwd \"$W\" transcript)\" = '$PD/only.jsonl' ]"
+  check "…and the slot for '$odd' lands in that same directory" \
+        "[ \"\$(dirname \"\$(TM_WORKER_NAME= bash '$RS' --cwd \"$W\" path)\")\" = '$PD/rollover' ]"
+done
+
+# …and the derived key is NOT load-bearing. The observed data cannot fully pin
+# the harness's rule (no recorded cwd carries punctuation beyond / . space -),
+# so `transcript` asks the logs when the derived directory has none: this
+# fixture puts the log somewhere the rule would never name.
+W=$(tmp slotmiss); W="$W/proj"; mkdir -p "$W"
+ELSEWHERE="$HOME/.claude/projects/a-key-no-rule-would-derive"
+mkdir -p "$ELSEWHERE"
+printf '{"type":"summary","summary":"no cwd on this line"}\n{"cwd":"%s"}\n' "$W" \
+  > "$ELSEWHERE/found.jsonl"
+check "transcript falls back to the logs when the derived directory has none" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript)\" = '$ELSEWHERE/found.jsonl' ]"
+check "…and it reads past a first line that carries no cwd" \
+      "head -1 '$ELSEWHERE/found.jsonl' | grep -qv '\"cwd\"'"
+# ANTI-VACUITY: the fallback must not answer for a cwd nobody logged, or the
+# assertion above would pass for any input at all.
+W2=$(tmp slotmiss2); W2="$W2/nolog"; mkdir -p "$W2"
+check "…and it still exits 1 for a directory no log mentions" \
+      "! bash '$RS' --cwd '$W2' transcript >/dev/null 2>&1"
+
+# THE PLAIN-SESSION CARRIER. A worker gets three carriers (slot, QM resume
+# order, tubemail self-message); a plain session gets the slot and this hook,
+# which announces a waiting handover on the FIRST prompt whatever it says.
+# Driven both ways on purpose: a capability probe that was reasoned about
+# rather than run has shipped inverted in this repo before.
+SMH="$HOOKS/shared-memory.sh"
+mkdir -p "$HOME/.claude/skills"
+ln -sfn "$DIR" "$HOME/.claude/skills/jjstack"
+hook_out() {  # hook_out <cwd> <prompt-json> [worker]
+  printf '{"prompt":%s,"cwd":"%s","session_id":"smoke"}' "$2" "$1" \
+    | env -u TM_WORKER_NAME ${3:+TM_WORKER_NAME="$3"} \
+          JJSTACK_STATE_DIR="$HOME/.jjstack-hooktest" bash "$SMH" 2>/dev/null
+}
+W=$(slotcwd)
+check "with no handover the hook says nothing about one" \
+      "! hook_out '$W' '\"a long enough prompt about something else entirely\"' | grep -qi handover"
+check "…and a two-letter prompt produces no output at all (the normal path)" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"')\" ]"
+printf 'the handover body\n' | TM_WORKER_NAME= bash "$RS" --cwd "$W" write >/dev/null
+check "a waiting handover is announced even on a two-letter prompt" \
+      "hook_out '$W' '\"hi\"' | grep -q '/resume-from-clear'"
+check "…and even on a prompt the hook would normally skip as a system block" \
+      "hook_out '$W' '\"<system block>\"' | grep -q 'rollover handover is waiting'"
+check "…and it names the slot, so the successor does not have to guess" \
+      "hook_out '$W' '\"hi\"' | grep -qF \"\$(TM_WORKER_NAME= bash '$RS' --cwd '$W' path)\""
+# The slot is per-worker, so a worker session must not be shown the plain
+# session's handover — that is how two workers in one cwd stay separate.
+check "a worker session is not shown the plain session's handover" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"' alpha-tm)\" ]"
+TM_WORKER_NAME= bash "$RS" --cwd "$W" consume >/dev/null
+check "…and once consumed the hook goes quiet again" \
+      "[ -z \"\$(hook_out '$W' '\"hi\"')\" ]"
+
+# THE ORDERING RULE, checked by line number rather than by reading the prose.
+# A fresh successor treats everything at or above the newest session-boundary
+# marker as settled and never reads it, so /rollover posting its marker AFTER
+# the self-message would hide the very message that bootstraps the successor.
+# Caught by tubemail-tm on QM #615 against the first draft of this PR, which
+# also used tm_send for the marker — and tm_send DELIVERS, so the marker
+# arrived in the still-live session as a work order saying its own work was
+# settled.
+ROLL="$DIR/skills/rollover/SKILL.md"
+# The injection is the tm_send addressed to the BARE worker name; the restart
+# signal three steps later goes to <name>-manager. Anchoring on the prose
+# instead matched the QM resume order, which carries the same sentence, so the
+# first version of this guard read the wrong step's line number and failed on a
+# correct file. That is also why it gets a control below.
+bl_order() {  # bl_order <skill file> -> prints "ok" | "reversed" | "missing"
+  local f="$1" m i
+  m=$(grep -n 'tm_session_boundary' "$f" | head -1 | cut -d: -f1)
+  i=$(grep -n 'tm_send(worker="<TM_WORKER_NAME>",' "$f" | head -1 | cut -d: -f1)
+  if [ -z "$m" ] || [ -z "$i" ]; then printf 'missing\n'
+  elif [ "$m" -lt "$i" ]; then printf 'ok\n'
+  else printf 'reversed\n'; fi
+}
+check "/rollover posts the boundary marker before its injection message" \
+      "[ \"\$(bl_order '$ROLL')\" = ok ]"
+# CONTROL, from the shipped file rather than an invented one: swap the two
+# blocks and the guard must say so. Without this, wrong anchors read as a pass
+# — which is exactly how the first version of this check behaved.
+awk '/^Then mark the timeline settled/,/^Now mail your successor/' "$ROLL" > "$SANDBOX/bl_mark.txt"
+awk '/^Now mail your successor/,/^The hub persists this/' "$ROLL" > "$SANDBOX/bl_inj.txt"
+{ sed '/^Then mark the timeline settled/,$d' "$ROLL"; cat "$SANDBOX/bl_inj.txt" "$SANDBOX/bl_mark.txt"; } \
+  > "$SANDBOX/rollover-reversed.md"
+check "…and the guard says 'reversed' when those two blocks are swapped (control)" \
+      "[ \"\$(bl_order '$SANDBOX/rollover-reversed.md')\" = reversed ]"
+check "…and 'missing' when a step is absent, rather than passing on an empty compare" \
+      "[ \"\$(bl_order '$DIR/skills/save-and-exit/SKILL.md')\" = missing ]"
+# That file never HAD an injection step, so it would also read "missing" if the
+# marker anchor itself broke. Pin it with the shipped file minus one line.
+grep -v 'tm_session_boundary' "$ROLL" > "$SANDBOX/rollover-nomarker.md"
+check "…and 'missing' on the real file with only the marker line removed (harder control)" \
+      "[ \"\$(bl_order '$SANDBOX/rollover-nomarker.md')\" = missing ]"
+# The marker tool, not the delivering one. Every close posts a boundary now.
+for s in rollover save-and-clear save-and-exit; do
+  check "/$s marks the timeline settled with tm_session_boundary" \
+        "grep -qF 'tm_session_boundary' '$DIR/skills/$s/SKILL.md'"
+  check "…and /$s never posts a boundary through tm_send, which would deliver it" \
+        "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
+done
+# KEYED ON THE ARGUMENT, WHICH IS THE MECHANISM. Only a DELIVERING call takes
+# `message=`; the marker tool takes `reason=`. The guard asks what the call
+# does, not how its tokens happen to be spaced.
+#
+# Two earlier spellings failed, and the second is the instructive one.
+# `tm_send\(.*SESSION-BOUNDARY` missed the defect because the call wraps across
+# lines — that is how these files write an MCP call. Flattening the file and
+# using `tm_send\([^)]*SESSION-BOUNDARY` fixed that ONE spelling and stayed
+# blind to two others, because `[^)]*` cannot cross a `)`: a nested call or a
+# parenthetical inside the arguments — ordinary prose here — hid the same
+# defect. It also FIRED on a documentation line warning against the call, so a
+# prose edit turned the suite red.
+#
+# That is references/specimen-recovery.md's second half. Recovering the
+# specimen fixes what you test the pattern against; it does not fix what the
+# pattern keys on. Derive the specimen from the artifact AND the pattern from
+# the mechanism.
+#
+# ONE BOUND, CHOSEN NOT MISSED: the pattern assumes a double quote, so
+# `message='SESSION-BOUNDARY'` is silent. Every MCP argument in this tree is
+# double-quoted without exception, and keying on the mechanism is meant to
+# remove the spelling that MATTERED, not every spelling that could exist.
+GSPEC="$DIR/test/fixtures/guard-tm-send-boundary.md"
+check "…and that guard FIRES on the defect this repo actually shipped (control)" \
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$GSPEC'"
+# A BATTERY, not one specimen — but the battery does TWO jobs and they need
+# different specimens. A set assembled only from "spellings that defeated the
+# old pattern" drifts toward invention by construction, because the old pattern
+# was defeated precisely by spellings this tree has never written.
+BAT="$SANDBOX/boundary-battery"; mkdir -p "$BAT"
+
+# JOB 1 — DERIVED POSITIVE: does the guard catch what this codebase actually
+# writes? Built the way the invariant recipe says: a REAL shipped call, put in
+# the forbidden state. Nothing here is authored — the call is /rollover's own
+# restart signal with its message replaced.
+sed -n '/^mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>-manager",$/,/^ *meta=/p' \
+    "$DIR/skills/rollover/SKILL.md" \
+  | sed 's/message="restart fresh"/message="SESSION-BOUNDARY - settled"/' > "$BAT/shipped-shape.md"
+check "the derived specimen really came out of the shipped skill (not authored)" \
+      "grep -q 'meta={\"kind\": \"restart\"' '$BAT/shipped-shape.md'"
+check "…and the guard FIRES on a REAL shipped call put in the forbidden state" \
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/shipped-shape.md'"
+
+# JOB 2 — DISCRIMINATING SPECIMENS: do they prove the REPAIR, not just the
+# guard? Each must be caught by the new pattern and MISSED by the old one, or
+# it certifies nothing about what changed. These two spellings do NOT occur in
+# this tree — `grep -rnE 'mcp__[a-z_]*__[a-z_]*\([^)]*[a-z_]+\('` over skills/
+# and references/ returns nothing — and that is stated rather than implied:
+# they are here because the previous pattern was blind to them, which is a
+# claim a reader can check. A third specimen (`meta={…}` with a parenthesis in
+# the MESSAGE BODY) was dropped: the old pattern caught it too, because
+# `[^)]*` never had to cross that paren, so it was inert.
+printf 'tm_send(worker=resolve_name($TM_WORKER_NAME),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/nested.md"
+printf 'tm_send(worker="<name>" (the bare name, not the manager),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/paren.md"
+for spelling in nested paren; do
+  check "…and on the same defect spelled with a $spelling in its arguments" \
+        "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/$spelling.md'"
+  check "…and that specimen DISCRIMINATES: the pattern it replaced was blind to it" \
+        "! tr '\n' ' ' < '$BAT/$spelling.md' | grep -qE 'tm_send\([^)]*SESSION-BOUNDARY'"
+done
+# THE MIRROR: a guard that fires on prose FORBIDDING the call turns a
+# documentation edit red. The flattened form did exactly that.
+cp "$DIR/skills/save-and-exit/SKILL.md" "$BAT/prohibition.md"
+printf '\nNever post the marker with `tm_send(` — it delivers, and the SESSION-BOUNDARY\nwould arrive as a work order.\n' >> "$BAT/prohibition.md"
+check "…and stays SILENT on prose that spells the call in order to forbid it" \
+      "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/prohibition.md'"
+# The entry read must be the DEDICATED verb. The flag form fails open: a client
+# holding a stale schema strips an unknown kwarg and the call still succeeds,
+# returning the full tail and re-running settled work while looking correct.
+# Measured on this machine after an explicit refresh_tools — the dedicated tool
+# is served and tm_receive still advertises only {worker, since, limit}.
+RFC="$DIR/skills/resume-from-clear/SKILL.md"
+check "the entry side reads from the boundary with the dedicated verb" \
+      "grep -qF 'mcp__tubemail__tm_receive_since_boundary(' '$RFC'"
+# The previous version of this assertion grepped for 'since_boundary=True',
+# which the file still contains — inside the sentence saying never to use it.
+# A vocabulary match passes on prose that says the opposite; pin the CALL.
+check "…and does not call tm_receive with the droppable flag instead" \
+      "! grep -qE 'since_boundary[[:space:]]*=' '$RFC'"
+# Same mechanism-keying. `since_boundary=` is the flag being PASSED; the
+# dedicated verb `tm_receive_since_boundary(` does not contain it, so there is
+# no collision with the call this skill must make. Scoped to the ENTRY skill on
+# purpose: this guards which call that file makes, not whether a string appears
+# somewhere in the tree.
+FSPEC="$DIR/test/fixtures/guard-since-boundary-flag.md"
+check "…and that guard FIRES on the call this repo actually shipped (control)" \
+      "grep -qE 'since_boundary[[:space:]]*=' '$FSPEC'"
+printf 'mcp__tubemail__tm_receive(worker=pick($X),\n    since_boundary=True)\n' > "$BAT/flag-nested.md"
+check "…and on the same call with a nested call in its arguments" \
+      "grep -qE 'since_boundary[[:space:]]*=' '$BAT/flag-nested.md'"
+printf 'mcp__tubemail__tm_receive_since_boundary(worker="x", limit=20)\n' > "$BAT/dedicated.md"
+check "…and stays SILENT on the dedicated verb, which the entry skill must call" \
+      "! grep -qE 'since_boundary[[:space:]]*=' '$BAT/dedicated.md'"
+check "…and says why, so the next editor does not switch back" \
+      "grep -qF 'fails OPEN' '$RFC'"
+
+# THE GUARD THAT KEEPS IT THIS WAY (verify-skills check 8). The markers are
+# MECHANISMS — the QM call, the slot verbs — never the word "rollover": a grep
+# for a name survives deleting the code that name describes.
+#
+# These fixtures COPY THE REAL TREE and mutate one thing. The previous version
+# built a synthetic skills/ instead, and that shape difference is what let both
+# P1s through a green suite: the synthetic tree had no reference doc, so the
+# "matches nothing" branch fired there and could never fire on the real tree
+# where the reference doc names every mechanism.
+#
+# Never `cp -a` a worktree — the .git pointer file makes the copy share the
+# REAL index, and a git-invoking mutation leaks out of the sandbox. Only the
+# four directories check 8 reads are copied.
+c8tree() {   # c8tree -> a copy of the parts check 8 inspects
+  local d; d=$(tmp c8)
+  cp -r "$DIR/bin" "$DIR/skills" "$DIR/references" "$DIR/hooks" "$d/"
+  echo "$d"
+}
+c8() { bash "$1/bin/jjstack-verify-skills" 2>&1 | sed -n '/== 8/,$p'; }
+
+# NO EXCLUSION LIST AT ALL. Check 8 used to carry a hand-written list of files
+# that DOCUMENT the mechanisms rather than using them, and that list was the one
+# place a real call site could have hidden. It is derived now: a match does not
+# count when the matching LINE quotes some row's pattern literally, because a
+# call site contains text the pattern MATCHES while documentation contains the
+# pattern ITSELF.
+check "check 8 carries no hand-written exclusion list any more" \
+      "! grep -q 'notcarriers' '$DIR/bin/jjstack-verify-skills'"
+check "…and the reference that quotes the patterns is not reported as a carrier" \
+      "! bash '$DIR/bin/jjstack-verify-skills' | grep -q 'specimen-recovery'"
+# THE DIRECTION THAT MATTERS. A rule that discounts quoted patterns must not
+# discount a REAL call site sitting in the very file that quotes them.
+C=$(c8tree)
+printf '\nRun `jjstack-rollover-slot --cwd "$PWD" write` to hand the work on.\n' \
+  >> "$C/references/specimen-recovery.md"
+check "…but a real call site planted IN that reference is still caught" \
+      "c8 '$C' | grep -q 'references/specimen-recovery.md'"
+check "…and the mutation really added one (the fixture is not a no-op)" \
+      "grep -qE 'jjstack-rollover-slot[^;|&]*[[:space:]]write' '$C/references/specimen-recovery.md'"
+
+C=$(c8tree)
+check "check 8 passes on an unmutated copy of this tree (control)" \
+      "bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
+# P2-3. The first version of this negative anchored on `status` AFTER
+# "carried by:", but `status` is part of the pattern LABEL, which prints
+# BEFORE it — so the assertion could never fail. Same class as the `ok  `
+# defect fixed last round: an assertion reading a rendering it had not looked
+# at. Anchored the other way round now, and driven BOTH ways below.
+check "…and it reports the files it MEASURED, not the files it allows" \
+      "! c8 '$C' | grep -q 'status.*carried by:.*hooks/shared-memory\.sh'"
+# CONTROL: restore the exact regression — print the allowed list instead of the
+# carriers — and the guard must fire. Without this the assertion above is a
+# sentence, not a test.
+C=$(c8tree)
+sed -i 's|ok "$pat \[$primary\] — carried by: $found"|ok "$pat [$primary] — carried by: $primary $allowed"|' \
+    "$C/bin/jjstack-verify-skills"
+check "…and that guard FIRES when the allowed list is printed again (control)" \
+      "c8 '$C' | grep -q 'status.*carried by:.*hooks/shared-memory\.sh'"
+check "…and the control really changed the script (the sed is not a no-op)" \
+      "! diff -q '$C/bin/jjstack-verify-skills' '$DIR/bin/jjstack-verify-skills' >/dev/null"
+
+# P1-4. THE BACKTICKED SPELLING. These two mutations differ ONLY by a pair of
+# backticks, and markdown is where these files live, so the backticked form is
+# the NORMAL one: three of the four real `status` invocations on this tree are
+# written that way. A trailing `([[:space:]]|$)` anchor saw only the fourth,
+# and an infinite rollover — the ENTRY verb told to write a handover again —
+# shipped green.
+C=$(c8tree)
+printf '...with `jjstack-rollover-slot --cwd "$PWD" write` when done.\n' \
+  >> "$C/skills/resume-from-clear/SKILL.md"
+check "a BACKTICKED slot write in /resume-from-clear FAILS (the infinite rollover)" \
+      "c8 '$C' | grep -q 'skills/resume-from-clear/SKILL.md'"
+C=$(c8tree)
+printf '...with jjstack-rollover-slot --cwd "$PWD" write\n' \
+  >> "$C/skills/resume-from-clear/SKILL.md"
+check "…and so does the same line without the backticks (the pair differs only in those)" \
+      "c8 '$C' | grep -q 'skills/resume-from-clear/SKILL.md'"
+# FALSE-POSITIVE CONTROL: widening the anchor must not make a word that merely
+# STARTS with the verb into an invocation.
+C=$(c8tree)
+printf 'See the jjstack-rollover-slot writeups in the archive.\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+# Name the rows rather than counting the word FAIL: the summary line
+# "1 FAILURE(S)" contains it too, so the count read 2 and measured nothing.
+check "…and 'slot writeups' is caught by the name row (a save-and-* skill may not name the script)" \
+      "c8 '$C' | grep -q 'jjstack-rollover-slot is carried by skills/save-and-clear'"
+check "…and NOT by the write row — widening the anchor added no false positive" \
+      "! c8 '$C' | grep -q 'write(\[\^A-Za-z0-9_-\]|\$) is carried by'"
+
+# LEAK, the plain form.
+C=$(c8tree)
+printf 'jjstack-rollover-slot write\n' >> "$C/skills/save-and-clear/SKILL.md"
+check "a handover written by /save-and-clear FAILS" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+
+# LEAK, the form the script itself documents. Options are parsed BEFORE the
+# verb, so `--cwd DIR write` does not contain the string "slot write" — a
+# fixed-string marker walked straight past this and both gates stayed green
+# with /save-and-clear instructed to hand work on.
+C=$(c8tree)
+printf 'Run `jjstack-rollover-slot --cwd "$PWD" write` with the handover on stdin.\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+check "…and so does the documented option form, which a fixed string misses" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the script exits non-zero for it" \
+      "! bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+# LEAK, through a variable — how the hook itself calls the script.
+C=$(c8tree)
+printf 'RS="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"; "$RS" write\n' \
+  >> "$C/skills/save-and-exit/SKILL.md"
+check "…and the variable form too (an exit resumes nothing)" \
+      "c8 '$C' | grep -q 'skills/save-and-exit/SKILL.md'"
+
+# HOLLOW. Absence of a leak is not presence of the mechanism: deleting the sole
+# slot write from /rollover left the old check green, because the reference doc
+# still mentioned it.
+C=$(c8tree)
+sed -i '/^jjstack-rollover-slot write /d' "$C/skills/rollover/SKILL.md"
+check "/rollover losing its only slot write FAILS, even though prose still names it" \
+      "c8 '$C' | grep -q 'no longer USED'"
+check "…and the mutation really removed it (the fixture is not a no-op)" \
+      "! grep -qE 'jjstack-rollover-slot[[:space:]]+write' '$C/skills/rollover/SKILL.md'"
+
+C=$(c8tree)
+sed -i 's/mcp__quartermaster__qm_queue_add(/QM_ADD_CALL(/' "$C/skills/rollover/SKILL.md"
+check "/rollover losing its resume order FAILS too" \
+      "! bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+# The real tree, asserted directly rather than only through fixtures.
+check "the real /save-and-clear files no resume order" \
+      "! grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/save-and-clear/SKILL.md'"
+check "the real /save-and-exit files no resume order" \
+      "! grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/save-and-exit/SKILL.md'"
+check "…and neither of them mentions the slot script at all" \
+      "! grep -qF 'jjstack-rollover-slot' '$DIR/skills/save-and-clear/SKILL.md' '$DIR/skills/save-and-exit/SKILL.md'"
+check "the real /rollover writes the slot (the mechanism this PR is named after)" \
+      "grep -qE 'jjstack-rollover-slot[[:space:]]+write' '$DIR/skills/rollover/SKILL.md'"
+check "…and files the resume order" \
+      "grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/rollover/SKILL.md'"
+check "…and no longer delegates its close to /save-and-clear" \
+      "! grep -qiE 'Run /save-and-clear|Execute the /save-and-clear skill' '$DIR/skills/rollover/SKILL.md'"
+
+# FINDING 3: A COMMENTED-OUT CARRIER IS NOT A CARRIER. hooks/shared-memory.sh
+# is the one file in check 8's table that is CODE rather than prose, and the
+# row was satisfied by the assignment existing at all. Disabling the plain
+# session's handover notice entirely — comment the assignment, make the guard
+# `if false` — left the row green while the carrier it names was dead.
+C=$(c8tree)
+sed -i 's|^RSLOT=|#RSLOT=|' "$C/hooks/shared-memory.sh"
+sed -i 's|if \[ -x "\$RSLOT" \]|if false|' "$C/hooks/shared-memory.sh"
+check "a commented-out hook carrier FAILS check 8 (it used to pass)" \
+      "c8 '$C' | grep -q 'RSLOT'"
+check "…and the mutation really disabled it (the fixture is not a no-op)" \
+      "! grep -qE '^RSLOT=' '$C/hooks/shared-memory.sh'"
+
+# FINDING 4: THE SHARED ALLOW-LIST, MEASURED. Widening it by one file and
+# planting the variable form there used to keep check 8 green: the NAME row is
+# the only detector of that class and it was reading the same shared string, so
+# one edit to one variable silently widened the one row where widening is
+# dangerous. The name row carries its own literal list now; the read-only
+# status rows keep the union, where uniformity costs nothing.
+C=$(c8tree)
+sed -i "s|^ALL='references/rollover-handover.md|ALL='skills/save-and-clear/SKILL.md references/rollover-handover.md|" \
+    "$C/bin/jjstack-verify-skills"
+printf 'RS="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"; "$RS" write\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+check "widening the shared list no longer hides a planted variable form" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the widening really applied (the sed is not a no-op)" \
+      "grep -q \"^ALL='skills/save-and-clear\" '$C/bin/jjstack-verify-skills'"
+
+# THE EVERY-PROMPT PATH FORKS NOTHING. Shadow every external command the script
+# could reach and assert the silent path executed none of them. The shim list is
+# DERIVED from the script rather than enumerated, per this file's own rule.
+SHIM=$(tmp shim); REAL_PATH="$PATH"; FORKLOG="$SHIM/execs"
+: > "$FORKLOG"
+grep -ohE '\b(sed|find|grep|date|mktemp|cat|head|sort|tr|awk|cut|basename|dirname)\b' "$RS" \
+  | sort -u > "$SHIM/cmds"
+check "the shim list is derived from the script and is not empty" "[ -s '$SHIM/cmds' ]"
+while read -r c; do
+  printf '#!/bin/bash\nprintf "%%s\\n" %s >> "%s"\nPATH="%s" exec %s "$@"\n' \
+      "$c" "$FORKLOG" "$REAL_PATH" "$c" > "$SHIM/$c"
+  chmod +x "$SHIM/$c"
+done < "$SHIM/cmds"
+W=$(slotcwd)
+PATH="$SHIM:$REAL_PATH" TM_WORKER_NAME= bash "$RS" --cwd "$W" status >/dev/null 2>&1
+check "the every-prompt path (status, no handover) forks nothing" "[ ! -s '$FORKLOG' ]"
+# CONTROL: the probe must be able to SEE a fork, or the assertion above passes
+# on a broken shim just as happily.
+printf 'x\n' | TM_WORKER_NAME= bash "$RS" --cwd "$W" write >/dev/null
+: > "$FORKLOG"
+# TM_WORKER_NAME= on BOTH calls: the suite runs inside a worker, so leaving it
+# set reads a different slot than the one just written and the probe records
+# nothing — which would read as "the control passed".
+PATH="$SHIM:$REAL_PATH" TM_WORKER_NAME= bash "$RS" --cwd "$W" status >/dev/null 2>&1
+check "…and the probe does see one when a handover exists (control)" "[ -s '$FORKLOG' ]"
+echo "== 14. the skills pin: the live tree is not a working checkout =="
+# ~/.claude/skills/jjstack is what every session on the machine loads. Linked
+# at a development clone it serves whatever branch that clone sits on. Measured
+# on 2026-09-10: an in-flight PR branch was this machine's /review for hours,
+# and the reviewer of that very PR had to pin a worktree by hand to produce a
+# verdict that could say which reviewer produced it.
+#
+# Driven END TO END against a throwaway origin+clone inside the sandbox, not
+# by grepping the scripts: the defect this prevents is a BEHAVIOUR (a branch
+# reaching the served tree), and the two previous attempts in this area were
+# both scripts that read correctly and did nothing.
+PINBIN="$BIN/jjstack-skills-pin"
+PINSB="$SANDBOX/pin"; mkdir -p "$PINSB"
+git init -q --bare "$PINSB/origin"
+git clone -q "$PINSB/origin" "$PINSB/work" 2>/dev/null
+mkdir -p "$PINSB/work/skills/alpha" "$PINSB/work/bin"
+# The fixture carries the real scripts, because the behaviour under test is
+# how they answer each other. A fixture without them proved only that a
+# missing resolver falls back - which is the fallback, not the feature.
+cp "$BIN/jjstack-skills-pin" "$BIN/jjstack-fix-symlinks" "$PINSB/work/bin/"
+echo "0.1.0" > "$PINSB/work/VERSION"
+printf -- '---\nname: alpha\n---\nRELEASE\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm init
+git -C "$PINSB/work" branch -q -M main
+git -C "$PINSB/work" push -q -u origin main 2>/dev/null
+pin() { JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" "$@"; }
+
+pin main >/dev/null 2>&1; _rc=$?
+check "the pin is created from a clone" "[ $_rc -eq 0 ]"
+SERVED="$(pin --resolve)"
+check "…and --resolve names it, not the checkout" "[ \"$SERVED\" != \"$PINSB/work\" ]"
+check "…and it is a real git tree, so VERSION and update-check still work" \
+      "git -C '$SERVED' rev-parse --git-dir >/dev/null 2>&1 && [ -f '$SERVED/VERSION' ]"
+check "…reported by --status with a sha" "pin --status | grep -qE 'pinned [0-9a-f]{7}'"
+
+# THE LOAD-BEARING ASSERTION. Everything else in this section is scaffolding
+# for it: a developer switches branch and edits a skill, and the served tree
+# must not change. This is the exact scenario that occurred on 2026-09-10.
+git -C "$PINSB/work" checkout -q -b wip
+printf -- '---\nname: alpha\n---\nIN-FLIGHT\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam wip
+check "a branch checked out in the clone does not reach the served tree" \
+      "! grep -q IN-FLIGHT '$SERVED/skills/alpha/SKILL.md'"
+check "…and the served tree still holds the release text (not merely absent)" \
+      "grep -q RELEASE '$SERVED/skills/alpha/SKILL.md'"
+check "…while the developer's checkout really did change (anti-vacuity floor)" \
+      "grep -q IN-FLIGHT '$PINSB/work/skills/alpha/SKILL.md'"
+
+# jjstack-fix-symlinks runs from the update-check that almost every skill
+# preamble calls, so it is the most frequently executed writer of these links.
+# Writing the checkout path there would undo the pin within one session.
+mkdir -p "$HOME/.claude/skills"
+ln -snf "$SERVED/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "the per-session symlink repairer leaves a pinned link alone" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+# …and still does the job it exists for: a link pointing into gstack is ours
+# to repair, and repairing it must land on the PIN, not on the checkout.
+ln -snf "$HOME/.claude/skills/gstack/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still repairs a gstack-clobbered link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" != '$HOME/.claude/skills/gstack/alpha' ]"
+check "…onto the pin rather than the checkout" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+
+# Advancing is deliberate and idempotent.
+git -C "$PINSB/work" checkout -q main
+printf -- '---\nname: alpha\n---\nRELEASE2\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam r2
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+pin main >/dev/null 2>&1
+check "advancing the pin moves the served tree" "grep -q RELEASE2 '$SERVED/skills/alpha/SKILL.md'"
+pin main 2>&1 | grep -q 'already at'; _rc=$?
+check "…and a second advance to the same ref says so rather than churning" "[ $_rc -eq 0 ]"
+
+# Error paths. Each must be DISTINCT, because setup branches on them: 3 means
+# serve the checkout and say so, 4 means the ref was wrong.
+pin no-such-ref >/dev/null 2>&1; _rc=$?
+check "a ref that does not exist exits 4, and does not pin" "[ $_rc -eq 4 ]"
+mkdir -p "$PINSB/nogit"
+JJSTACK_DIR="$PINSB/nogit" JJSTACK_STATE_DIR="$PINSB/state2" "$PINBIN" >/dev/null 2>&1; _rc=$?
+check "a non-clone install exits 3 (tarball installs are supported)" "[ $_rc -eq 3 ]"
+check "…and --resolve then names the checkout, so links still work" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state2' '$PINBIN' --resolve)\" = '$PINSB/nogit' ]"
+pin --bogus >/dev/null 2>&1; _rc=$?
+check "an unknown flag exits 2, distinct from both" "[ $_rc -eq 2 ]"
+# An interrupted `worktree add` leaves a directory that is a git tree with no
+# skills in it. Served, that is an empty skill tree and every skill vanishes.
+rm -rf "$PINSB/state/skills-pin/skills"
+check "a pin with no skills/ is not resolved as usable" \
+      "[ \"\$(pin --resolve)\" = '$PINSB/work' ]"
+
+# setup and fix-symlinks must ASK the resolver rather than each deciding.
+check "setup points the live links at the resolved tree, not the checkout" \
+      "grep -q 'jj_target=\"\$SKILL_SRC/skills/\$skill_name\"' '$DIR/setup'"
+check "…and iterates the resolved tree's skills" \
+      "grep -q 'for skill_dir in \"\$SKILL_SRC\"/skills' '$DIR/setup'"
+check "…and prunes against it, or the prune matches nothing and is silent" \
+      "grep -q 'PRUNE_ROOTS=' '$DIR/setup'"
+# Spelling-independent, because the first version of this guard grepped for
+# the literal call and went red when the executed tests above forced the call
+# to change shape - a guard that tracked the wording rather than the property.
+# What must hold: it consults a resolver, and it never writes a link that
+# points into the checkout's own skills directory.
+check "fix-symlinks consults the resolver" \
+      "grep -q -- '--resolve' '$BIN/jjstack-fix-symlinks'"
+check "…and never writes a link target under the checkout" \
+      "! grep -q 'jj_target=\"\$JJSTACK_DIR/skills' '$BIN/jjstack-fix-symlinks'"
+check "…nor iterates the checkout's skills" \
+      "! grep -q 'for skill_dir in \"\$JJSTACK_DIR\"/skills' '$BIN/jjstack-fix-symlinks'"
+# ── the three blocking findings from PR #41 round 1, each as its repro ──
+# All three are about the UPGRADE path, which is the only way a pinned install
+# ever moves. A pin nobody can advance is worse than no pin: it freezes the
+# machine on one commit and the freeze is invisible.
+cp "$BIN/jjstack-upgrade" "$PINSB/work/bin/"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm tools
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" remote set-head origin main >/dev/null 2>&1
+pin main >/dev/null 2>&1
+UPG="$PINSB/state/skills-pin/bin/jjstack-upgrade"
+
+# FINDING 1. Run through the served link, $JJSTACK_DIR is the DETACHED pin and
+# every branch precondition fails: `ABORT: on branch 'DETACHED'`. A pinned
+# install could not be upgraded at all, including by /jjstack-repair, whose
+# job is to fix an install without the user knowing where the clone is.
+UP_OUT="$(JJSTACK_STATE_DIR="$PINSB/state" "$UPG" 2>&1)"; _rc=$?
+check "upgrade run through the served (detached) tree does not abort" "[ $_rc -eq 0 ]"
+check "…and says nothing about a DETACHED branch" "! printf '%s' \"$UP_OUT\" | grep -q DETACHED"
+check "…because it resolves the source clone and says which" \
+      "printf '%s' \"$UP_OUT\" | grep -q 'upgrading the clone at'"
+check "--source names the clone when asked from inside the worktree" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+check "…and is a no-op when already given the clone" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+
+# FINDING 2. The pin is a separate tree and can be behind a CURRENT clone -
+# the state every install is in right after this change lands, and after any
+# manual `git pull`. `already up-to-date` spoke for the clone and exited
+# before the pin was touched.
+printf -- '---\nname: alpha\n---\nUPGRADED\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam upgraded
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+check "the pin starts behind the clone (anti-vacuity floor)" \
+      "! grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+UP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "a current clone with a stale pin still advances the pin" \
+      "grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+# The old message claimed something it had not checked. It must scope itself.
+check "…and the up-to-date message speaks only for the clone" \
+      "! printf '%s' \"$UP_OUT\" | grep -qx 'already up-to-date'"
+
+# FINDING 3. The ROOT link is how ~74 runtime references reach references/ and
+# bin/. jjstack-fix-symlinks skips it by name and always has, so an upgrade
+# moved the fifty skill links to the pin and left the root link on the
+# checkout: half migrated, and the half left behind is the one carrying the
+# reference library.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+check "the migration fixture starts with BOTH links on the checkout (floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "an upgrade moves the ROOT link onto the pin, not only the skill links" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+check "…and the skill links too, so the install is not half migrated" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+check "…so references/ resolves into the served tree" \
+      "[ -d '$HOME/.claude/skills/jjstack/skills' ]"
+# --link must not eat a real directory: a user who cloned jjstack straight to
+# ~/.claude/skills/jjstack has no link to move, and rm -rf on that is the
+# user's whole install.
+mkdir -p "$PINSB/realdir/jjstack"
+echo keep > "$PINSB/realdir/jjstack/marker"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" --link "$PINSB/realdir" >/dev/null 2>&1
+check "--link refuses to replace a real directory with a symlink" \
+      "[ -d '$PINSB/realdir/jjstack' ] && [ ! -L '$PINSB/realdir/jjstack' ]"
+check "…and leaves its contents alone" "[ -f '$PINSB/realdir/jjstack/marker' ]"
+# The assertions above BOTH pass with the guard deleted, because `ln -snf`
+# onto an existing directory writes a link INSIDE it rather than replacing it.
+# The directory survives, its marker survives, and the install is silently
+# wrong: $dir/jjstack/skills-pin now exists and nothing resolves through it.
+# Mutation found this; reading the assertions did not.
+check "…and creates nothing inside it (the guard, not ln's behaviour)" \
+      "[ \$(ls -A '$PINSB/realdir/jjstack' | wc -l) -eq 1 ]"
+check "--link is idempotent and says so on a second run" \
+      "JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --link '$HOME/.claude/skills' | grep -q 'already at'"
+
+check "the upgrade advances the served tree on both exits" \
+      "[ \$(grep -c 'sync_served_tree' '$BIN/jjstack-upgrade') -ge 3 ]"
+
+# ── PR #41 round 2: a dry run may not write ─────────────────────────────────
+# The equal-sha exit ran the sync before --check was ever consulted, so
+# `jjstack-upgrade --check` advanced the pin and moved the root and skill
+# links. A dry run that writes is worse than one that lies: it is the command
+# a person runs precisely because they are not ready to change anything.
+# Executed, not read: set the state up so a write would be VISIBLE in two
+# independent places, run --check, and require both to be untouched.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+printf -- '---\nname: alpha\n---\nDRYRUN\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam dryrun
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+# The floor: the pin must actually be behind, and the root link must actually
+# be on the checkout, or "nothing changed" is true of a state where there was
+# nothing to change.
+check "the dry-run fixture has a stale pin (anti-vacuity floor)" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and a root link still on the checkout (second floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+DRY_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" --check 2>&1)"
+check "--check does not advance the pin" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…does not move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+check "…does not move the skill links either" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/work/skills/alpha' ]"
+# Silence would also pass the three assertions above. It must still REPORT.
+check "…and still says what it would have done" \
+      "printf '%s' \"$DRY_OUT\" | grep -q WOULD_SYNC"
+# And the real run, from the same state, must still do it - or the guard has
+# simply disabled the feature.
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "…while a real run from the same state does advance the pin" \
+      "grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and does move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+
+# --source degrades to the checkout on any layout it cannot read, which is the
+# pre-existing abort: loud, never a wrong directory. A bare repo is the case
+# reachable without a submodule fixture.
+git init -q --bare "$PINSB/bare.git"
+check "--source returns the tree unchanged for a layout it cannot read" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/bare.git' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/bare.git' ]"
+check "…and for a directory that is not a repo at all" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/nogit' ]"
+
+# ── PR #41 round 1 P2s: the paths that were never executed ──────────────────
+# setup was covered only by greps, and the reviewer showed four mutants
+# surviving because of it - including the resolver-beside-itself bug that AR-7
+# credits an executed test with catching. These run the real thing.
+
+# The manifest is read through $SKILLS_DIR/jjstack, and Step 2 re-points that
+# link. Read after the move it resolves into the served tree, finds no
+# manifest, and the rewritten one carries no gstack originals - so `uninstall`
+# REMOVES the gstack skills it should RESTORE. Destructive, and it fires on the
+# first setup after the pin ships.
+check "the manifest read happens before the link is re-pointed" \
+      "[ \$(grep -n 'EXISTING_ORIGINALS\[' '$DIR/setup' | head -1 | cut -d: -f1) -lt \$(grep -n 'ln -snf \"\$SKILL_SRC\" \"\$SKILLS_DIR/jjstack\"' '$DIR/setup' | cut -d: -f1) ]"
+printf '%s\n' 'EXISTING_ORIGINALS["$name"]=' > "$SANDBOX/manif-assign.txt"
+check "…and setup no longer reads it a second time, after the move" \
+      "[ \$(grep -cFf '$SANDBOX/manif-assign.txt' '$DIR/setup') -eq 1 ]"
+check "…and that pattern matches something at all (anti-vacuity floor)" \
+      "grep -qFf '$SANDBOX/manif-assign.txt' '$DIR/setup'"
+
+# setup must ASK what is served. Exit 1 (dirty) and exit 4 (bad ref) leave a
+# healthy pin in place that --resolve still names; inferring "serve the
+# checkout" from the exit code moved 51 links there while fix-symlinks kept
+# answering the pin.
+check "setup asks the resolver rather than inferring from the exit code" \
+      "grep -q 'SKILL_SRC=\"\$(\"\$JJSTACK_DIR/bin/jjstack-skills-pin\" --resolve' '$DIR/setup'"
+check "…and no longer assigns the pin path from its own variable" \
+      "! grep -q 'SKILL_SRC=\"\$PIN_DIR\"' '$DIR/setup'"
+check "…and distinguishes a served-but-unadvanced pin from no pin at all" \
+      "grep -q 'could not be advanced' '$DIR/setup'"
+check "…naming the tarball case separately from any other failure" \
+      "grep -q 'No git clone here' '$DIR/setup'"
+
+# REPIN must not take a link the user chose. setup refuses that same link by
+# name and says to remove it manually; the upgrade discards this script's
+# output, so a silent re-point would be an unannounced replacement.
+mkdir -p "$PINSB/foreign/alpha"
+printf -- '---\nname: alpha\n---\nsomeone else\n' > "$PINSB/foreign/alpha/SKILL.md"
+ln -snf "$PINSB/foreign/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "REPIN leaves a foreign link alone (it is not ours to move)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/foreign/alpha' ]"
+# The fixture above has no `skills/` segment, so it is rejected by the cheapest
+# clause and proves only that one. Another package that DOES lay itself out as
+# <root>/skills/<name> - the obvious shape for anything shipping Claude skills -
+# reaches the rest of the test, and gutting those clauses survived a mutation
+# run against the fixture above alone.
+mkdir -p "$PINSB/otherpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother package\n' > "$PINSB/otherpkg/skills/alpha/SKILL.md"
+ln -snf "$PINSB/otherpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…including one laid out as <root>/skills/<name> but not a jjstack tree" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/otherpkg/skills/alpha' ]"
+# The case the earlier gate could not refuse: a real GIT REPO of skills that
+# is not jjstack. Every skills repo anyone has cloned satisfies "has a .git and
+# a skills/ directory" - getsentry-skills on this machine does - so the old
+# test rested on no such repo happening to share a skill name with jjstack,
+# which is a fact about the disk, not about the code.
+mkdir -p "$PINSB/gitpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother skills repo\n' > "$PINSB/gitpkg/skills/alpha/SKILL.md"
+echo "9.9.9" > "$PINSB/gitpkg/VERSION"
+git init -q "$PINSB/gitpkg"
+ln -snf "$PINSB/gitpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and a git repo of skills that is not jjstack (has .git AND VERSION)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/gitpkg/skills/alpha' ]"
+# The upgrade is the only caller that sets JJSTACK_REPIN_LINKS, and it used to
+# send this script's output to /dev/null - so the line announcing a moved link
+# was written for a reader who never received it.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+RP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "the upgrade surfaces a re-pinned link instead of discarding it" \
+      "printf '%s' \"$RP_OUT\" | grep -q REPINNED"
+# …and still moves one that IS ours, or the gate has disabled the feature.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still moves a link from a previous jjstack source" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+
+# --path-format arrived in git 2.31. On this machine git is newer, so the
+# fallback below it is code no test on this box would ever execute - it
+# survived a mutation run that deleted it entirely, which is the definition of
+# untested. A stub git that rejects --path-format and forwards everything else
+# to the real one puts an old git in front of the script without needing one.
+GITSTUB="$SANDBOX/gitstub"; mkdir -p "$GITSTUB"
+REALGIT="$(command -v git)"
+cat > "$GITSTUB/git" <<STUB
+#!/bin/sh
+# Pre-2.31 git: --path-format is not a known option.
+for a in "\$@"; do
+  case "\$a" in --path-format=*)
+    echo "error: unknown option \\\`\${a#--}'" >&2; exit 129 ;;
+  esac
+done
+exec "$REALGIT" "\$@"
+STUB
+chmod +x "$GITSTUB/git"
+check "the stub git really refuses --path-format (control)" \
+      "! PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1"
+check "…and still answers the plain form (control)" \
+      "PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --git-common-dir >/dev/null 2>&1"
+check "--source finds the clone from a worktree on a pre-2.31 git" \
+      "[ \"\$(PATH='$GITSTUB:$PATH' JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+
+echo "== 15. the decision record is internally consistent =="
+# THE ADRs ARE WHERE THE DECISION LIVES, and nothing checked them. This
+# directory has been wrong twice in the branch that adds this section:
+#
+#   .last_id read 2 while AR-6.md existed, so the next adr_create would have
+#   assigned AR-3 and overwritten a record in force.
+#
+#   a merge resolution used `git show :3:<path>` — stage 3 is THEIRS, stage 2
+#   is ours — so it wrote the OTHER branch's record into AR-8, checked the
+#   other branch's record out at AR-7 as well, and dropped this PR's own ADR
+#   entirely. .last_id was consistent with the resulting directory, which is
+#   why it read as fine: the counter agreed with a directory that was wrong.
+#
+# Both are caught by asking the files what they say rather than trusting that
+# someone looked. DERIVED from the directory, per this file's own header rule.
+ADRD="$DIR/architrix/adr"
+adr_ids=$(for f in "$ADRD"/AR-*.md; do
+            printf '%s\t%s\n' "$(basename "$f" .md)" "$(awk '/^id: /{print $2; exit}' "$f")"
+          done)
+printf '%s\n' "$adr_ids" > "$SANDBOX/adr_ids.txt"
+check "every AR-N.md declares the id its filename claims" \
+      "! awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids.txt' | grep -q ."
+# A duplicated decision is the merge failure above; it shows up as two files
+# with one title long before anyone notices the missing one.
+awk '/^title: /{sub(/^title: /,""); print}' "$ADRD"/AR-*.md | sort > "$SANDBOX/adr_titles.txt"
+check "no two decision records share a title (a merge did exactly this)" \
+      "[ \"\$(sort -u '$SANDBOX/adr_titles.txt' | wc -l)\" = \"\$(wc -l < '$SANDBOX/adr_titles.txt')\" ]"
+check "…and there is one title per record, so a file with no title cannot hide" \
+      "[ \"\$(wc -l < '$SANDBOX/adr_titles.txt')\" = \"\$(ls '$ADRD'/AR-*.md | wc -l)\" ]"
+# The counter is only ever advanced by hand, which is why it drifts. It has to
+# equal the highest id on disk or the next create overwrites a live record.
+adr_max=$(for f in "$ADRD"/AR-*.md; do basename "$f" .md | sed 's/^AR-//'; done | sort -n | tail -1)
+check "the id counter matches the highest record on disk (it has read low twice)" \
+      "[ \"\$(cat '$ADRD/.last_id')\" = '$adr_max' ]"
+# ANTI-VACUITY: all four assertions above scan a glob, and an empty glob passes
+# every one of them.
+check "…and there are records to check at all (the glob is not empty)" \
+      "[ \"\$(ls '$ADRD'/AR-*.md | wc -l)\" -ge 8 ]"
+# POSITIVE CONTROLS. The specimens are the failures this repo actually
+# produced, FROZEN as fixtures rather than fetched from git at run time.
+# CI proved why: actions/checkout is a SHALLOW clone, so `git show <old-sha>`
+# found nothing and both controls failed — loudly, which is the right
+# direction, but a control that only works on a full clone is not a control.
+# Deepening CI would fix that and not the second problem: one specimen came
+# from a commit on this branch, which a SQUASH merge discards, so the control
+# would work in CI and then break on main forever. Frozen with provenance, a
+# reader can re-derive them while the history exists and the guard does not
+# depend on it.
+ADRFIX="$SANDBOX/adrfix"; mkdir -p "$ADRFIX"
+grep -v '^#' "$DIR/test/fixtures/adr-duplicated-titles.txt" | grep -v '^$' \
+  | sort > "$SANDBOX/adr_titles_bad.txt"
+check "the duplicate-title fixture carries the two titles the merge produced" \
+      "[ \"\$(wc -l < '$SANDBOX/adr_titles_bad.txt')\" = 2 ]"
+check "the duplicate-title guard FIRES on the tree this repo actually produced (control)" \
+      "[ \"\$(sort -u '$SANDBOX/adr_titles_bad.txt' | wc -l)\" != \"\$(wc -l < '$SANDBOX/adr_titles_bad.txt')\" ]"
+adr_old=$(grep -v '^#' "$DIR/test/fixtures/adr-drifted-last-id.txt" | grep -v '^$' | head -1)
+check "the counter guard FIRES on the value this repo actually shipped (control)" \
+      "[ -n \"\$adr_old\" ] && [ \"\$adr_old\" != '$adr_max' ]"
+# ID-MISMATCH CONTROL. Nothing here was authored to match the pattern: the
+# specimen is AR-7 itself under a wrong filename, so the mismatch comes out of
+# the STRUCTURE. That is the axis that matters — derived from the artifact
+# rather than written from the pattern — not whether a blob was fetched. There
+# is no blob to fetch: no commit here has shipped this defect, because it is a
+# structural invariant rather than a past incident.
+cp "$ADRD/AR-7.md" "$ADRFIX/AR-99.md"
+cp "$ADRD"/AR-*.md "$ADRFIX/" 2>/dev/null || true
+for f in "$ADRFIX"/AR-*.md; do
+  printf '%s\t%s\n' "$(basename "$f" .md)" "$(awk '/^id: /{print $2; exit}' "$f")"
+done > "$SANDBOX/adr_ids_bad.txt"
+check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
+      "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

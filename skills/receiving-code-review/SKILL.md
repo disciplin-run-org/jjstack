@@ -48,7 +48,10 @@ Adapted from `obra/superpowers`' `receiving-code-review`.
 - You were asked "can you address these findings?"
 
 **Skip for:**
-- Self-review (use `/review` directly — you're the reviewer, not the receiver)
+- Reviewing someone else's PR (use `/review` directly — you're the reviewer,
+  not the receiver). A round you run on your own PR does not satisfy
+  done-done rung 4, which needs a session that did not write the code; see
+  `references/independent-review.md`.
 - Trivial nits on throwaway code (fix or ignore, no ceremony)
 - Feedback that is entirely out of scope (that's a new task, open an issue)
 
@@ -82,6 +85,12 @@ Adapted from `obra/superpowers`' `receiving-code-review`.
 ┌──────────────────────────┐
 │ Close the loop —         │
 │ summarize resolved/open  │
+└────────────┬─────────────┘
+             ▼
+┌──────────────────────────┐
+│ Re-read the thread in    │
+│ the same call as the     │
+│ merge                    │
 └──────────────────────────┘
 ```
 
@@ -148,6 +157,29 @@ For agreed items: make the fix. Group related fixes into commits. Don't
 fix-and-squash if the review is ongoing — reviewers need to see what
 changed per round.
 
+**A fix to a document is not done when the named sentence is changed. It
+is done when the whole document agrees with the change.** A finding names
+one place; the idea behind it usually lives in several. Before committing:
+
+1. Find every place the *idea* is stated — grep the concept, not the
+   wording the finding used. `git log -S '<phrase>' --stat` on the phrase
+   you are removing shows what else that commit touched — before the branch
+   is squashed; after, it names the whole feature.
+2. Read each one against the new text. If two places now say different
+   things, the fix is incomplete, and committing it hands the reviewer the
+   next round for free.
+3. If the same idea is restated in three or more places, that is the
+   defect: state it once and have the others refer to it. A bullet cannot
+   drift from a definition it does not restate. A place read on its own — a
+   frontmatter `description`, a HARD-GATE block — restates by design; check
+   that it agrees, do not collapse it.
+
+This applies to prose exactly as it applies to code — a skill, a policy or
+a README is machine instructions, and a contradiction in it is a bug. The
+measurement behind this step is in `/review`'s equivalence gate: three
+rounds on one scoping rule, each fix restating the scope in a place the last
+one had not touched.
+
 For disagreed items: write the disagreement response in the review
 thread. Be specific. "Already handled elsewhere" is not an answer;
 "Already handled in `auth_middleware.py:L42`" is.
@@ -187,6 +219,53 @@ Reply on the review with a summary:
 
 Then re-request review. The reviewer should not have to hunt for your
 responses.
+
+## Step 6: Re-read the thread in the same breath as the merge
+
+**`MERGEABLE` is not `unreviewed`.** They are different questions and only one
+of them is about your change. GitHub answers whether the branches conflict; it
+says nothing about whether a review is sitting on the pull request that you
+have not read. Reading only the first is how a review gets merged over.
+
+So the last thing before a merge is a check that **exits non-zero** when the
+thread has moved, chained to the merge so no turn can pass between them:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-pr-unread-check --pr <N> --repo <REPO> --since <the moment you last READ the thread> && gh pr merge <N> --repo <REPO> --squash --delete-branch
+```
+
+**The exit code is the whole mechanism, and this is the second attempt at it.**
+The first printed `gh pr view` and called that the chain. `gh pr view` exits 0
+whether or not anything is unread, so `read && merge` gated on nothing while
+looking exactly like a gate, and it left the reader to compare timestamps by
+eye, which puts a turn between the read and the merge by construction. The
+reviewer-side chain in `/review` works for the one reason that one was missing:
+its lint exits non-zero. This is the author side's equivalent.
+
+`--since` is when you last actually **read** the thread, not when you last
+looked at the merge button. Exit 1 names what arrived and refuses the merge;
+exit 3 means the thread could not be read, which is never treated as nothing
+new.
+
+All three surfaces are checked, because a person can leave something on any of
+them and they are three different shapes: an issue comment carries `createdAt`,
+a submitted review carries `submittedAt` and no `createdAt` at all, and a reply
+inside an inline review thread is on neither list — `gh pr view` cannot return
+it. Comparing fewer than all three is how an unread item hides behind a stale
+date on another surface.
+
+A review that is unread at merge time has cost the whole engagement: its
+findings are on `main` before anyone answers them, and the author who merged
+is the one who has to go back and fix them.
+
+Under a stacked or retargeted pull request this matters more, not less. The
+window between "I checked it was clean" and "I merged" is where the review
+lands, and the check that fills that window is the only thing that closes it.
+
+**Measured:** the review of jjstack #29 posted `CAUTION` with three blocking
+findings at 13:12. The pull request was merged at 13:21, on a `mergeStateStatus`
+of `CLEAN` read before the review existed. All three shipped in a release. No
+step was skipped in bad faith — the step did not exist.
 
 ## When the reviewer is another AI
 
@@ -238,6 +317,12 @@ agreement leaves a known-wrong change in the code.
   capitulation; code gets worse with every round.
 - **Fixing a finding but not verifying the fix** — leaves a different
   bug behind.
+- **Fixing the sentence the finding named and nothing else** — the idea
+  lives elsewhere too; the reviewer finds the sibling next round and you
+  have paid for two rounds to move one word.
+- **Merging on a mergeability check instead of a fresh read** — `MERGEABLE`
+  answers whether the branches conflict, not whether anyone has reviewed you.
+  A review that lands in the gap between the two ships unread.
 - **Arguing style nits for more than two rounds** — it's a nit, pick
   one, move on.
 - **Taking disagreement personally** — review is about the code, not
@@ -250,4 +335,5 @@ agreement leaves a known-wrong change in the code.
 Pattern adapted from `obra/superpowers` `receiving-code-review` (MIT).
 jjstack additions: AI-reviewer-specific section, tiebreaker via `/codex`,
 work-order-feedback loop for underspecified tasks, severity matrix with
-"Out of scope" handling.
+"Out of scope" handling, whole-document sweep before committing a fix
+(Step 3), re-reading the thread in the same command as the merge (Step 6).

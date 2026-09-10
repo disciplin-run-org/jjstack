@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# jjstack-pr-comment-assemble — build the PR comment from its two parts.
+#
+# A /review comment has a VISIBLE part (attribution, verdict, the blocking
+# findings, the residual) and the full report, collapsed beneath it in one
+# `<details>` block. The join is three lines of markup that have to be exactly
+# right - GitHub needs the block opened on its own line and a blank line after
+# `<summary>` before it will render markdown inside - so it is done here, once,
+# rather than re-typed by every review.
+#
+# Usage:
+#   jjstack-pr-comment-assemble --head HEAD.md --report REPORT.md [--out OUT.md]
+#
+#   --head    the visible part, written in the voice reference's structure
+#   --report  Phase 4's review-YYYY-MM-DD.md, verbatim
+#   --out     where to write the assembled comment (default: stdout)
+#
+# Both inputs must exist and be non-empty: an empty report assembled into a
+# block is exactly the placeholder the lint's anti-vacuity floor refuses, and
+# refusing it here names the cause instead of the symptom.
+#
+# Exit: 0 written, 2 usage, 3 an input is missing or empty, 4 --out names one
+#       of the inputs and would truncate it before it is read.
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+CYA="\033[96m"; RST="\033[0m"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HERE/jjstack-review-argcheck.sh" || exit 3
+
+HEAD=""; REPORT=""; OUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --head)   review_need_value "$1" $# || exit 2; HEAD="$2";   shift 2 ;;
+    --report) review_need_value "$1" $# || exit 2; REPORT="$2"; shift 2 ;;
+    --out)    review_need_value "$1" $# || exit 2; OUT="$2";    shift 2 ;;
+    -h|--help) show_help "$0"; exit 0 ;;
+    *) echo -e "${CYA}error${RST} unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$HEAD" ] && [ -n "$REPORT" ] || {
+  echo -e "${CYA}error${RST} usage: $(basename "$0") --head HEAD.md --report REPORT.md [--out OUT.md]" >&2; exit 2; }
+for f in "$HEAD" "$REPORT"; do
+  [ -s "$f" ] || { echo -e "${CYA}error${RST} missing or empty: $f" >&2; exit 3; }
+done
+
+assemble() {
+  cat "$HEAD"
+  printf '\n<details><summary>Full report</summary>\n\n'
+  cat "$REPORT"
+  printf '\n</details>\n'
+}
+# `> "$OUT"` truncates before `cat` reads, so --out naming an input destroys it
+# and exits 0. The report is a working file that is never committed, by design,
+# so there is no copy anywhere: one mistyped flag at the end of an hour costs
+# the hour, and the tool reports success. Refuse the alias before writing.
+if [ -n "$OUT" ]; then
+  for _in in "$HEAD" "$REPORT"; do
+    if [ "$OUT" -ef "$_in" ] 2>/dev/null || [ "$OUT" = "$_in" ]; then
+      echo -e "${CYA}error${RST} --out is one of the inputs ($_in): it would be truncated before it is read" >&2
+      exit 4
+    fi
+  done
+  assemble > "$OUT"
+else
+  assemble
+fi

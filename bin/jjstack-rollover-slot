@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# jjstack-rollover-slot — the handover artifact that decides whether a
+# successor session resumes the previous session's work.
+#
+# WHY THIS IS A FILE AND NOT A JUDGEMENT CALL. /save-and-clear used to file a
+# QM resume order whenever "multi-turn work continues past this session",
+# which is true of every mid-task session, and /resume-from-clear used to
+# trigger on "evidence of unfinished work". Between them, asking for a clean
+# context to start a NEW task handed the successor the OLD one. Continuation
+# now has exactly one carrier per session boundary and it is inspectable:
+#
+#   /rollover           writes the slot   (the only verb that hands work on)
+#   /resume-from-clear  consumes the slot (the only verb that picks it up)
+#   /save-and-clear     touches neither   (new task, same identity)
+#   /save-and-exit      touches neither   (nothing resumes)
+#
+# The slot lives OUTSIDE the auto-memory index on purpose. A handover written
+# into MEMORY.md is loaded by every later session, so a sweep that mentioned
+# unfinished work could make an unrelated session resume it. Nothing indexes
+# this directory; only the two verbs above read and write it.
+#
+# Layout:  $HOME/.claude/projects/<dashified-cwd>/rollover/<worker>.md
+# Keyed on the WORKER, not the directory: iris-qa hosts three workers in one
+# cwd and they must not overwrite each other's handovers.
+#
+# Verbs:
+#   path        [--cwd DIR]                     print the slot path (no writes)
+#   write       [--cwd DIR]                     stdin -> the slot; prints the path
+#   status      [--cwd DIR] [--max-age-days N]  print the path of a LIVE slot, else exit 1
+#   consume     [--cwd DIR]                     retire the slot; prints the path it USED to be at
+#   transcript  [--cwd DIR] [--exclude ID]...   newest session log, excluding named ids
+#
+# No color red anywhere — unreadable on the target terminal.
+set -uo pipefail
+
+# A handover older than this stopped being a handover and became clutter: the
+# prompt hook surfaces a live slot on every prompt, so an abandoned one would
+# nag forever. Overridable per call for a deliberate archaeology dig.
+DEFAULT_MAX_AGE_DAYS=7
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: jjstack-rollover-slot [--cwd DIR] <verb> [options]
+
+  path                            print the slot path for this cwd + worker
+  write                           read the handover on stdin into the slot
+  status [--max-age-days N]       print a live slot's path, else exit 1
+  consume                         retire the live slot; prints the path it was
+                                  at, which no longer exists afterwards
+  transcript [--exclude ID]...    newest session log, minus the excluded ids
+
+The worker comes from $TM_WORKER_NAME; without one the slot is the
+plain-session slot for this directory.
+USAGE
+  exit 2
+}
+
+die() { printf 'jjstack-rollover-slot: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+CWD="$PWD"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cwd) [ $# -ge 2 ] || usage; CWD="$2"; shift 2 ;;
+    --cwd=*) CWD="${1#--cwd=}"; shift ;;
+    -h|--help) usage ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] || usage
+VERB="$1"; shift
+
+# Trailing slashes would dashify into an empty final segment and key a
+# different directory than the harness does for the same cwd.
+while [ "${CWD%/}" != "$CWD" ] && [ "$CWD" != "/" ]; do CWD="${CWD%/}"; done
+
+# The harness keys project state by the cwd with its punctuation turned into
+# dashes. Replacing ONLY `/` was wrong: measured against the 47 project
+# directories on this machine that record a cwd, `/`-only reproduces 26 of
+# them, while replacing every non-alphanumeric run reproduces 41 — the other
+# six are stale keys from a repository rename, not a different rule. The
+# directories that broke are real: a cwd of
+# `.../inboundsavvy.com/webmaster` and one containing a space both resolved to
+# a directory with no session logs in it, so `transcript` returned nothing.
+#
+# Parameter expansion rather than a sed pipeline, and a plain assignment rather
+# than a command substitution: `status` runs on EVERY prompt through the
+# UserPromptSubmit hook, and the answer is almost always "no handover". That
+# path forks nothing — it is two expansions and a stat.
+PROJ_DIR="$HOME/.claude/projects/${CWD//[^A-Za-z0-9]/-}"
+SLOT_DIR="$PROJ_DIR/rollover"
+
+# …and the rule is NOT load-bearing, because the observed data cannot fully
+# pin it: no recorded cwd contains punctuation other than `/`, `.`, ` ` and
+# `-`, so `[^A-Za-z0-9]` and `[/. ]` are indistinguishable on every sample. The
+# slot itself does not care — `write` and `status` derive identically, so a
+# wrong key is merely a different directory and no handover is ever lost. Only
+# `transcript` has to agree with the harness, and it asks the logs rather than
+# trusting the rule: if the derived directory holds no session log, find the
+# one whose logs record this cwd. Cold path, run twice per rollover.
+resolve_proj_dir() {
+  local d f
+  for f in "$PROJ_DIR"/*.jsonl; do [ -e "$f" ] && { printf '%s' "$PROJ_DIR"; return 0; }; done
+  for d in "$HOME"/.claude/projects/*/; do
+    for f in "$d"*.jsonl; do
+      [ -e "$f" ] || continue
+      # The first line of a log can be a summary record with no cwd, so sample
+      # a window rather than one line. One file per directory is still enough:
+      # a project directory holds one cwd.
+      if head -40 "$f" 2>/dev/null | grep -qF "\"cwd\":\"$CWD\""; then
+        printf '%s' "${d%/}"; return 0
+      fi
+      break
+    done
+  done
+  printf '%s' "$PROJ_DIR"
+}
+
+# A worker name reaches this script from the environment, so it is untrusted
+# input for a path: anything outside the safe set becomes an underscore, and a
+# name that is only dots cannot become a directory traversal.
+SLOT_NAME="${TM_WORKER_NAME:-}"
+SLOT_NAME="${SLOT_NAME//[^A-Za-z0-9._-]/_}"
+case "$SLOT_NAME" in ''|.|..) SLOT_NAME=session ;; esac
+SLOT="$SLOT_DIR/$SLOT_NAME.md"
+
+# A slot is LIVE when it exists, is not empty, and is younger than the window.
+# The age test costs a fork, so it runs only once the cheap tests have already
+# said there is something to age.
+live_slot() {  # live_slot <max-age-days> -> 0 and prints the path
+  local days="$1" hit
+  [ -s "$SLOT" ] || return 1
+  hit=$(find "$SLOT" -maxdepth 0 -mtime -"$days" -print -quit 2>/dev/null)
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$SLOT"
+}
+
+case "$VERB" in
+
+  path)
+    [ $# -eq 0 ] || usage
+    printf '%s\n' "$SLOT"
+    ;;
+
+  write)
+    [ $# -eq 0 ] || usage
+    body=$(cat)
+    # An empty handover is worse than none: it makes `status` succeed, so the
+    # successor runs the resume ladder and finds nothing to resume.
+    case "${body//[[:space:]]/}" in '') die "refusing to write an empty handover" ;; esac
+    mkdir -p "$SLOT_DIR" || die "cannot create $SLOT_DIR"
+    printf '%s\n' "$body" > "$SLOT" || die "cannot write $SLOT"
+    printf '%s\n' "$SLOT"
+    ;;
+
+  status)
+    days="$DEFAULT_MAX_AGE_DAYS"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --max-age-days) [ $# -ge 2 ] || usage; days="$2"; shift 2 ;;
+        --max-age-days=*) days="${1#--max-age-days=}"; shift ;;
+        *) usage ;;
+      esac
+    done
+    case "$days" in ''|*[!0-9]*) die "--max-age-days takes a whole number of days" ;; esac
+    live_slot "$days"
+    ;;
+
+  consume)
+    [ $# -eq 0 ] || usage
+    # Consume ignores the age window deliberately: whatever the successor was
+    # told to pick up, it retires. The window governs nagging, not reading.
+    [ -s "$SLOT" ] || die "no handover to consume at $SLOT"
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    # The handover is RENAMED, never deleted. The transcript it points at is
+    # the authoritative record and this is the index into it; a resume that
+    # goes wrong needs to be readable afterwards.
+    mv "$SLOT" "${SLOT%.md}.consumed-$stamp.md" || die "cannot retire $SLOT"
+    # The PRE-move path, so a caller can say which slot it retired. It does not
+    # exist any more — do not read it back.
+    printf '%s\n' "$SLOT"
+    ;;
+
+  transcript)
+    excl_file=$(mktemp) || die "cannot allocate a temp file"
+    trap 'rm -f "$excl_file"' EXIT
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --exclude) [ $# -ge 2 ] || usage; printf '%s\n' "$2" >> "$excl_file"; shift 2 ;;
+        --exclude=*) printf '%s\n' "${1#--exclude=}" >> "$excl_file"; shift ;;
+        *) usage ;;
+      esac
+    done
+    LOG_DIR=$(resolve_proj_dir)
+    [ -d "$LOG_DIR" ] || exit 1
+    newest=$(
+      find "$LOG_DIR" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@\t%p\n' 2>/dev/null \
+        | sort -rn \
+        | while IFS=$'\t' read -r _ p; do
+            base="${p##*/}"; base="${base%.jsonl}"
+            grep -qxF "$base" "$excl_file" 2>/dev/null && continue
+            printf '%s\n' "$p"; break
+          done
+    )
+    [ -n "$newest" ] || exit 1
+    printf '%s\n' "$newest"
+    ;;
+
+  *) usage ;;
+esac

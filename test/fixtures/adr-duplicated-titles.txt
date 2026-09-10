@@ -1,0 +1,13 @@
+# The duplicated decision this repo actually produced, at 7836454.
+#
+# A merge resolution used `git show :3:<path>` — stage 3 is THEIRS,
+# stage 2 is ours — so it wrote the other branch's record into AR-8 and
+# checked the other branch's record out at AR-7 as well. Two copies of one
+# decision; this PR's own ADR left the tree. 610 assertions passed over it.
+#
+# Re-derive while 7836454 is still reachable:
+#   git show 7836454:architrix/adr/AR-8.md | sed -n 's/^title: //p'
+#
+# DATA, NOT CODE. One title per line, the set section 15 must reject.
+The live skill tree is a pinned worktree, never a working checkout
+The live skill tree is a pinned worktree, never a working checkout

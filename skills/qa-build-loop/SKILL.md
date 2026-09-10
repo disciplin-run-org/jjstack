@@ -69,24 +69,27 @@ it isn't in this skill or a memory Jesper wrote, it doesn't exist.
 - **Always delegate detail work to workers via QM** (`clear_first` for
   unrelated tasks per /context-hygiene). The orchestrator's context is for
   orchestration and verification only.
-- **≥85% context: run /rollover.** The whole transition is factored into
-  three independently testable skills: /rollover orchestrates
-  /save-and-clear (memory sweep → handover → **QM resume order addressed
-  to yourself**, verified to exist) + a **pre-posted tubemail
-  self-message** naming /resume-from-clear (delivered by the successor's
-  auto-`/sync-inbox` — readiness-timed prompt injection) + the
+- **≥85% context: run /rollover.** It is the ONLY verb that carries this
+  loop into a fresh context: memory sweep → **handover slot** naming the
+  previous transcript → **QM resume order addressed to yourself**,
+  verified to exist → **pre-posted
+  tubemail self-message** naming /resume-from-clear (delivered by the
+  successor's auto-`/sync-inbox` — readiness-timed prompt injection) →
   **fresh-restart signal** (no `--continue`; startup `/rename`
   re-registers identity — tubemail QM #552/#553/#555). Your resume
   order's prompt must begin with `/resume-from-clear` + `/qa-build-loop
-  RESUME` and name: the handover memory path, the transcript path, the
-  four key skills, and the precise next actions.
+  RESUME` and name: the handover slot path, the transcript path, the four
+  key skills, and the precise next actions.
+- **/save-and-clear will NOT carry the loop.** It sweeps memory and hands
+  nothing on — that is what it is for. Reaching for it here loses the
+  loop; /rollover is the verb.
 - **Never type `/clear` yourself, never ask the manager for a bare
   clear** — a clear without the queued resume order and identity
   re-registration produces an amnesiac session (2026-07-04: fresh context
   woke to an empty heartbeat, no skill, no name, ended with "Just say the
   word").
-- Stopping "for quality" or "for a fresh context" without the
-  /save-and-clear transition is forbidden.
+- Stopping "for quality" or "for a fresh context" without the /rollover
+  transition is forbidden.
 
 Evidence for the atomicity rule: on 2026-07-04 a session cleared without
 the queued resume order landing; the fresh context woke to an empty
@@ -272,16 +275,16 @@ report, with screenshots attached.
 ## Rule 12: Definition of Done — "done-done"
 
 A scope or work order is done ONLY when it is **done-done** — the canonical
-10-rung checklist in `references/definition-of-done.md` (version-controlled
+11-rung checklist in `references/definition-of-done.md` (version-controlled
 source of truth; mirrored in global CLAUDE.md). For this loop, rung 6 is
 **iris-qa tested green against the live surface**; the final two rungs are
 change-log updated with an end-user summary and README reflecting the
 current product state.
 
-**Reporting rule:** the unqualified word "done" may only be used at 10/10.
-Anything less is **"done N/10"** naming the missing rungs — in your own
+**Reporting rule:** the unqualified word "done" may only be used at 11/11.
+Anything less is **"done N/11"** naming the missing rungs — in your own
 replies AND required of every worker (put "DONE = done-done or report
-done N/10" in every work order's Done section). "Wired" is not done;
+done N/11" in every work order's Done section). "Wired" is not done;
 "demonstrated" is done.
 
 ## Rule 13: Worktree discipline
@@ -305,7 +308,7 @@ not ask.** Evidence, any one of:
 - a background-task notification named after this skill
 
 Recovery = **run /resume-from-clear** — the entry-side twin of
-/save-and-clear, factored out so the transition is independently
+/rollover, factored out so the transition is independently
 testable. Its ladder: identity from `$TM_WORKER_NAME` → timeline via
 `tm_receive(worker=…)` (never `tm_my_inbox`) → QM resume order
 (`qm_queue_list`/`qm_queue_read`) → handover memory → the ENTIRE
@@ -663,8 +666,8 @@ iris_qa_run(<scope>) — all listed behaviors pass.
 ## Done
 Reply with: commit_sha, tests_passing, any remaining failures you classified
 differently. Open the PR titled `feat(qa-loop): <scope> green`.
-DONE = done-done (all 10 rungs of the global Definition of Done) or report
-"done N/10" naming the missing rungs. Demonstrated green with the result
+DONE = done-done (all 11 rungs of the global Definition of Done) or report
+"done N/11" naming the missing rungs. Demonstrated green with the result
 pasted, never "wired". Zero false-greens: if blocked, punt-and-report with
 specifics.
 ```
@@ -685,7 +688,7 @@ Work order — Fix <N> behaviors flagged by iris-qa.
 
 ## Done
 Reply: commit_sha, list of fixed/created spec ids.
-DONE = done-done (all 10 rungs) or report "done N/10" naming the missing rungs.
+DONE = done-done (all 11 rungs) or report "done N/11" naming the missing rungs.
 ```
 
 Work-order hygiene: state constraints explicitly in the order (e.g.

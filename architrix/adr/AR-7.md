@@ -1,0 +1,63 @@
+---
+id: AR-7
+title: The live skill tree is a pinned worktree, never a working checkout
+status: accepted
+spec_refs: []
+paths: ["bin/jjstack-skills-pin", "bin/jjstack-fix-symlinks", "bin/jjstack-upgrade", "setup", "test/smoke.sh", "README.md", "CHANGELOG.md"]
+supersedes: null
+superseded_by: null
+created: 2026-09-10T05:24:48+00:00
+updated: 2026-09-10T05:24:48+00:00
+---
+
+# AR-7: The live skill tree is a pinned worktree, never a working checkout
+
+## Context
+
+`~/.claude/skills/jjstack` is what every Claude Code session on this machine loads. `setup` created it as a symlink to the directory it was run from, which for the maintainer is a development clone. Whatever branch that clone sat on was therefore what every session executed, and a file saved mid-edit was the live skill.
+
+Measured on 2026-09-10. While PR #39 was in flight, the symlink resolved to `/home/jesper/PycharmProjects/jjstack` checked out on `feat/independent-review-rung`, so the machine's `/review`, `/receiving-code-review` and every other jjstack skill were that unmerged branch. The branch predated two releases: #30 as `672f5da` (0.41.0) and #34 as `7efea97` (0.41.1). `bin/jjstack-pr-unread-check`, which `/receiving-code-review` names by path, did not exist on the live tree at all. A peer session working on another pull request found this and reported it rather than editing another session's working tree.
+
+The consequence reached the review of #39 itself: the reviewer had to create a worktree by hand, pin it to the commit under review, and record in its verdict that it had done so, because otherwise nothing in the report could say which version of the reviewer produced it. A reviewer that has to distrust its own tooling by hand is a reviewer whose approvals are worth less.
+
+This repository had already learned the rule for the other half of the install. `setup` installs hooks by copy, and says why: "They used to be symlinked into this checkout, which made the machine-wide permission policy whatever branch the checkout happened to sit on: a `git checkout` silently changed what every session on the box was allowed to do." That is the same sentence, one directory over. The reasoning was applied to hooks and never carried to skills.
+
+## Decision
+
+The live skill tree is a detached worktree pinned to a release ref. `bin/jjstack-skills-pin` creates it at `~/.jjstack/skills-pin`, advances it in place, and answers `--status`, `--path` and `--resolve`. `setup` points the root link and all fifty per-skill links at whatever `--resolve` returns, and `jjstack-upgrade` advances the pin to the sha it pulled.
+
+**A worktree rather than a copy.** The reason first written here was wrong and the review of this change caught it: it claimed a worktree avoids an install step between editing a skill and testing it. It does not. Serving an edit means committing it and re-pinning, which is an install step in git's clothing, so on that axis a worktree and a copy cost the same.
+
+The real reasons are narrower and hold. The served tree stays a genuine git tree, so `VERSION`, `git show origin/main:VERSION` and `jjstack-update-check` work with no special case and no second mechanism for "what version is live". Advancing is one `git checkout --detach` rather than a re-copy of the tree, and rolling back to any earlier release is the same command with a tag. The developer's checkout is never written to by a pin operation, so pinning and developing cannot interfere. A copy would have been defensible; these are the properties that decided it, and the honest statement of the cost is that a change is not live until it is committed and pinned.
+
+**One resolver, asked by everyone who writes a link.** `--resolve` returns the pin when there is a usable one and the checkout when there is not. `setup` and `jjstack-fix-symlinks` both ask it rather than each deciding. This is load-bearing: `jjstack-fix-symlinks` runs from `jjstack-update-check`, which runs in the preamble of nearly every skill, making it the most frequently executed writer of these links on the machine. Its first version resolved the pin tool under `$JJSTACK_DIR` rather than beside itself, which meant that under any `JJSTACK_DIR` override the resolver was simply absent, the fallback fired, and the links were re-pointed at the checkout - a pin that worked everywhere except where it was being tested. The executed test found that; reading the script did not.
+
+**Usable means it has skills.** An interrupted `worktree add` leaves a directory that is a git tree with no `skills/` in it. Served, that is an empty skill tree and every jjstack skill silently disappears, so `--resolve` requires the directory to exist, be a git tree, and hold `skills/`.
+
+**The prune is handed every root that can back a link.** `jjstack-prune-stale-links` recognises a link by whether its target resolves inside the repo directory it is given. With the tree pinned, links resolve into the pin, so a prune handed only the checkout matches nothing and reports success having done nothing - the exact no-op the script was extracted from `setup` to prevent, one directory over. `setup` runs it for the pin and for the checkout, the second catching links left by an install from before the pin existed.
+
+**setup asks what is served; it does not infer it.** These are two questions and conflating them was a defect the review found: the tool exits non-zero when it could not MOVE the pin - a bad ref, a dirty tree - while a perfectly good pin is still there and still what every preamble's `jjstack-fix-symlinks` will answer. Reading that exit code as "serve the checkout" moved fifty-one links to the checkout and left the repairer pointing at the pin, a split install that silently re-creates the coupling this decision removes. `setup` now runs the pin, then asks `--resolve`, and reports three distinguishable outcomes: serving a pin it just advanced, serving an existing pin it could not advance (with `--status` printed), or serving the checkout - naming exit 3, a tarball install with no clone, separately from any other reason. Every fallback is loud; a silent one would restore the coupling.
+
+## Consequences
+
+Accepted. A change is not live until someone pins it. That is the point, and it is a step the maintainer did not previously have to take. `jjstack-upgrade` takes it automatically on the ordinary path, so the step is only manual when deliberately serving something other than the latest release.
+
+Accepted. The pin is a second working tree of the same repository on disk, roughly the size of the repo. `git worktree list` gains an entry.
+
+Accepted. A tarball install gets the old behaviour, because there is nothing to pin. It is warned rather than silently degraded.
+
+Gained. What every session executes is now a decision with a timestamp rather than a side effect of `git checkout`. A reviewer can state which version of the reviewer produced a verdict without building a worktree by hand first.
+
+Gained. `jjstack-fix-symlinks` no longer decides for itself where links point, which removes the only path that could undo the pin between sessions.
+
+Learned, and it is the same lesson as AR-5's. Three guards written for this change were grep-text assertions about how the scripts were spelled, and one of them went red the moment the executed tests forced a call to change shape - it was tracking wording, not behaviour. It was replaced with an absence assertion about the property. Seven mutants were run across the resolver, the repairer, the upgrade, `setup` and the exit codes; all were killed, and the two that mattered most - the resolver returning the checkout, and the repairer re-pointing links at it - each failed a test that runs an actual branch edit against an actual served tree.
+
+Learned, from the first review round of the change itself. All three blocking findings were in the UPGRADE path, which is the only way a pinned install ever moves, and none was visible in the diff. Run through the served link - the ordinary way - `$JJSTACK_DIR` is the detached pin, so every branch precondition failed and a pinned install could not be upgraded at all, `/jjstack-repair` included. `already up-to-date` spoke for the clone and exited before the pin was touched, which is the state every install is in immediately after this lands. And the migration moved the fifty per-skill links while `jjstack-fix-symlinks` skipped the root link by name, as it always has, leaving the one link through which about seventy-four runtime references reach `references/` and `bin/` still pointing at the checkout. The lesson is that pinning a tree is not the change; MOVING a pinned tree is the change, and the tests written first exercised only the former.
+
+Learned again, one level down. A guard written for the third fix asserted that `--link` leaves a real directory intact, and it passed with the guard deleted: `ln -snf` onto an existing directory writes a link inside it rather than replacing it, so the directory and its contents survive either way while the install is silently wrong. Mutation caught it; reading the assertion did not. It now asserts the directory gained no entries.
+
+Learned, from the second round. `jjstack-upgrade --check` advanced the pin and moved the root and skill links: a dry run that writes, and the one command a person runs precisely because they are not ready to change anything. The cause was a call site, not the function - the equal-sha exit ran the sync before `--check` was ever consulted - so the guard was put inside the write function rather than at that call site, covering the sites that exist and the ones added later.
+
+Learned, one level down again. The pre-2.31 fallback in `--source` survived a mutation that deleted it whole, because this machine's git is 2.34 and the primary path always succeeds: code no test on this box could execute. A stub `git` that rejects `--path-format` and forwards everything else to the real one puts an old git in front of the script without needing one, and the fallback now dies when removed. The rule this repo already had - a behaviour that cannot be tested produces a failing test, never a hidden one - applies to a fallback as much as to a feature.
+
+Outstanding. This ADR fixes the skills half. `bin/jjstack-statusline-install` and the OWASP reference cache still resolve paths from `$JJSTACK_DIR`; neither changes what a session is allowed to do or which skill it loads, so neither is in this change.

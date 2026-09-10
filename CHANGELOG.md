@@ -9,7 +9,259 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four checks that could not have failed.** The change that split the session
+  verbs added guards to keep them split, and review found that several of them
+  were reading text that had never existed in the form they searched for. A
+  check anchored on one line cannot see a call written across two, and that is
+  how these files write a call. Each one now carries a copy of the real defect
+  it exists to catch, taken from the repository's own history, so a check that
+  stops working says so instead of passing quietly.
+
+  Nothing about how the verbs behave has changed. What changed is whether the
+  machinery that keeps them honest is honest itself.
+
 ### Changed
+
+- **Clearing your context no longer picks the old task back up.** There are
+  three things you can want at the end of a session, and until now two of them
+  ran the same machinery. `/save-and-clear` filed a resume order whenever the
+  work "continued" — true of almost any session mid-task — so asking for a
+  clean slate to start something new produced a successor that resumed what
+  you had just walked away from.
+
+  The three verbs now do three different things, and you pick by what happens
+  next rather than by how full the context is:
+
+  | You want to | Use | It hands the next session |
+  |---|---|---|
+  | Shut down, keep the lessons | `/save-and-exit` | nothing |
+  | Start a different task, keep the lessons | `/save-and-clear` | nothing |
+  | Keep going on THIS work in a fresh context | `/rollover` | the handover |
+
+  All three still sweep the conversation for durable lessons and write them to
+  memory. That part never depended on which one you picked. The first two now
+  also close out your Quartermaster items instead of leaving them in flight
+  against a session that no longer exists, which used to stall that worker's
+  queue until someone noticed.
+
+  `/rollover` is a skill in its own right now rather than a variant of
+  `/save-and-clear`, and it writes the handover to a file that the next
+  session reads and then retires. That file is what makes the difference
+  concrete: no handover, no resume. Roll over outside a tubemail worker and
+  you are told exactly what to type; type something else first and your next
+  session is reminded that a handover is waiting for it.
+
+  There was a second route by which the old work came back, and it is closed
+  too. A worker that restarts with a fresh context reads its own message
+  timeline to catch up, and with no memory to check against it could not tell
+  a finished order from an unanswered one, so it re-ran them. All three verbs
+  now mark the timeline as settled before they close, and a fresh session
+  reads only what arrived after that mark.
+
+- **The skills every session loads no longer follow your checked-out branch.**
+  `~/.claude/skills/jjstack` used to be a shortcut straight into the jjstack
+  clone you develop in, so whatever branch that clone sat on was what every
+  Claude Code session on the machine executed, and a file saved mid-edit was
+  the live skill. `./setup` now points it at a pinned copy in
+  `~/.jjstack/skills-pin` that only moves when you move it, with
+  `bin/jjstack-skills-pin` to move it and `--status` to see what is live.
+  `jjstack-upgrade` advances it after a pull, so upgrading works as before.
+
+  What changes about developing: a skill edit is live once you commit it and
+  re-pin (`bin/jjstack-skills-pin HEAD` to serve your branch on purpose,
+  `bin/jjstack-skills-pin` to put the release back). That is a step you did not
+  have before, and it is the price of the machine not following your working
+  tree by accident. Hooks have been installed this
+  way since the permission gate landed, for the same reason; this is the
+  skills half of that. Installed from a tarball rather than a clone, setup
+  serves the directory directly and tells you so.
+
+  This is not hypothetical. An in-flight pull request branch was this
+  machine's `/review` for hours, and the reviewer of that very pull request
+  had to pin a copy by hand before its verdict could say which version of the
+  reviewer produced it.
+
+### Fixed
+
+- **`/receiving-code-review` refuses to merge a pull request with something
+  unread on it.** GitHub's "mergeable" answers whether the branches conflict,
+  not whether anyone has reviewed you, and a review that lands in the gap
+  between that check and the merge ships unread. Not hypothetical: a review of
+  this repo posted three blocking findings nine minutes before the pull request
+  was merged on a mergeability check read before the review existed, and all
+  three shipped in a release. A new `jjstack-pr-unread-check` exits non-zero
+  when the thread has moved since you last read it, and the merge is chained
+  behind it, so it cannot run past. It reads all three surfaces a person can
+  leave something on - an issue comment, a submitted review, and a reply inside
+  an inline review thread - because they are three different shapes and the
+  usual tools return only the first two, and it treats a thread it could not
+  read as a refusal rather than as good news.
+- **A review comment can no longer approve at the top while rejecting at the
+  bottom.** Now that the report rides inside the comment, the visible verdict
+  is checked against it: a one-line "all issues resolved - lgtm - approved"
+  sitting over a report that rejects is refused, and a declared finding total
+  smaller than the report beneath it is refused too. Before this, the reader
+  saw the approval, merged, and the blocking findings sat one click below,
+  unread.
+- **Two routine credential shapes are caught.** A bearer token written after a
+  word (`Authorization: Bearer …`) and a URL whose password has no username
+  before it both published clean. Quoting the offending line is what a security
+  finding is supposed to do, so finding the hardcoded token had become the act
+  that published it.
+- **Pointing the comment assembler's `--out` at one of its own inputs no longer
+  destroys that file.** It truncated before reading and exited zero. The report
+  is a working file that is never committed, so one mistyped flag at the end of
+  an hour cost the hour and the tool reported success.
+
+### Changed
+
+- **"Done" now means someone else reviewed it.** The Definition of Done has an
+  eleventh rung: before a pull request is merged, a Claude Code session that did
+  not write the code reviews it and approves it on GitHub. The reporting form is
+  now "done N/11". Until now every review on this repo was run by the session
+  that wrote the change, and eight merged pull requests in a row carried no
+  review at all.
+
+  Review is a loop, not one gate. Every push that answers findings gets a fresh
+  review request, and the merge waits for an approval newer than the last
+  commit. An approval from the round that asked for the changes does not cover
+  the changes it asked for.
+
+  Who must approve depends on whose repository it is. On InboundSavvy
+  repositories the AI review goes first and then Andre or Santiago is asked, so
+  they see a converged change rather than a draft. On disciplin.run and personal
+  repositories one AI review is enough. The table, the protocol for both sides,
+  and the branch-protection settings are in `references/independent-review.md`,
+  including the two commands that repeatedly went wrong by hand: requesting a
+  reviewer over REST, because `gh pr edit --add-reviewer` fails whole against a
+  repo with Projects classic retired, and turning on
+  `require_code_owner_reviews`, without which a `CODEOWNERS` file is requested
+  but never required.
+
+  A review you run on your own pull request still runs and is still worth
+  running before you hand it over. It just does not satisfy the rung, and
+  `/review` now says so in its close-out instead of leaving you to notice the
+  missing green check. Branch protection requiring an approval is set per repo
+  once the reviewer account has approved something there; it is not on yet.
+
+- **Long-running work no longer stops to ask you for permission.** Over a
+  measured 48 hours, sessions on this machine interrupted a person 430 times,
+  about nine times an hour, and every single interruption was approved. That
+  is not a safety check, it is a queue of things you have to click. Two causes,
+  both now gone. The permission settings listed the verbs an autonomous run
+  uses most (`rm`, `curl`, `git push`, `sudo`, `chmod -R`) as "always ask", and
+  an always-ask rule interrupts you in *every* mode — including a session you
+  deliberately started with permission checks skipped, which is why that flag
+  never seemed to work. And the gate itself asked a small model to rate each
+  command, then woke you whenever the answer came back unreadable, which it
+  did four times out of ten on long commands.
+
+  In their place is a gate that decides on its own and never asks. It refuses
+  ten kinds of command outright: ones whose reach has no bound (deleting a home
+  directory or a filesystem root), ones running code nobody has read (piping a
+  download into a shell), ones sending a local file or a known secret to the
+  network, ones writing to a raw disk, ones powering the machine off, and
+  force-pushes to the trunk. A refusal tells Claude the rule and the fix, so it
+  tries another way in the same breath rather than parking the job until you
+  come back. Everything else simply runs.
+
+- **Claude is now held to one command per Bash call.** Chaining several
+  commands into one call is refused with instructions to split it. That has
+  been the house rule for months and it was quietly ignored: 391 of the 393
+  commands that interrupted somebody were chained. It matters for more than
+  tidiness. A call that starts `S=/tmp/x; rm -rf $S` hides the `rm` behind an
+  assignment, so no safety rule and no audit report ever sees it, and the log
+  of what was actually run becomes unreadable. Writing a multi-line file or a
+  commit message still counts as one command.
+
+- **What the permission gate is doing is now something you can look at.**
+  `bin/jjstack-permission-audit --since 24h` reports how often anyone was
+  interrupted, by which session, and for what, plus how much of the work is
+  still chained. Run it after a long unattended session; the expected answer
+  is zero.
+
+- **jjstack's hooks are installed as copies instead of shortcuts into the
+  source folder.** The permission gate used to be a link into the working
+  copy, which meant that switching branches in that folder silently changed
+  what every Claude session on the machine was allowed to do. Installing now
+  writes real files, replaces any old link, and backs up your settings first.
+
+- **`/security-review` is now `/jj-security-review`, and shadowing a Claude
+  Code built-in is a declared, checked decision.** Claude Code ships its own
+  `/security-review` and `/review`. jjstack's skills sat on both names, so
+  typing them reached jjstack's and, for `/security-review`, Claude's had no
+  other name to be reached by. The rule now: jjstack shadows gstack names by
+  design, shadows a Claude Code name only when the built-in keeps another
+  name and the skill says so (`/review` does — Claude's reviewer is
+  `/code-review`), and otherwise takes the `jj-` prefix. Re-run `./setup`:
+  it removes the old `security-review` link. `bin/jjstack-verify-skills`
+  fails on an undeclared collision or a stale declaration, reads the
+  built-in list from `references/claude-code-builtins.txt` (regenerate with
+  `bin/jjstack-builtins-refresh`), warns when your Claude Code is newer than
+  that list, and runs on every pull request — before this, nothing ran it.
+
+- **The `/review` PR comment opens with its attribution, and carries the full
+  report inside it, collapsed under the verdict.** `Claude
+  jjstack/skills/review/SKILL.md` is now the first line of every comment, not
+  the last — a footer is read after the verdict has already been taken as the
+  account holder's own opinion. And the report is no longer a file committed
+  to your repository and linked: it rides in the same comment, folded under a
+  "Full report" block, so the reader finds it where they already are, it
+  survives branch deletion, and no reviewer has to push to your branch to
+  deliver it. Three lint rounds had gone on that link — missing, then pointing
+  at the reviewer's scratchpad, then on a side branch — each the same defect,
+  the delivery stored where the reader was not. The visible part keeps its
+  budget (three findings, twelve lines); the report beneath is as long as the
+  review needed, and the linter reads all of it: a credential, a local path
+  (`/tmp`, `~`, `/home`), or an emdash anywhere in the body is refused, and so
+  is a block that is missing, empty, doubled, unclosed, or rendered expanded.
+  A re-review reads the previous round from the PR thread, so it works on any
+  machine. `jjstack-pr-comment-assemble` writes the join.
+
+- **`/receiving-code-review` now sweeps the whole document before committing
+  a fix.** A finding names one sentence; the idea behind it usually lives in
+  several. The step: grep the concept, read every place against the new text,
+  and if the idea is restated three or more times state it once and have the
+  others refer to it. Fixing only the named sentence hands the reviewer the
+  next round for free.
+
+- **The verdict line says `N blocking, K non-blocking`, not `N blocking, M
+  total`.** An approval that goes on to list findings is ordinary practice,
+  but it read as a contradiction until you worked out from the severities
+  that none of them block. The word says it. The old form is refused.
+
+- **`/review` now posts its verdict as a GitHub review, not a loose comment,
+  and looks at what the change is rather than only whether it works.** The
+  verdict used to arrive as an ordinary comment, which left the PR's Reviews
+  box empty: GitHub recorded the pull request as never reviewed, and a branch
+  rule that requires an approval saw nothing. It is now a review, with the
+  verdict mapped to approve, comment, or request-changes. On a pull request
+  you opened yourself GitHub refuses to record a state at all, so the review
+  posts as a comment there and the closing line tells you the state was
+  refused instead of implying a green check. Requesting a reviewer has its
+  own two traps, both now documented with the call that actually works.
+  A re-review reads the previous round from both channels, picks the newest
+  one by timestamp rather than by which channel it came from, and accepts
+  only rounds this account actually posted: the body's attribution line is a
+  prefix anyone can type, while authorship is attested by GitHub.
+
+  The review also gained the questions it was missing. It asks whether the
+  change is the right shape and whether it is more complex than the problem
+  needs, reads names and whether comments say why rather than what, names any
+  file in the diff that no pass opened instead of reporting a coverage
+  fraction that counts only passes, and may name one thing the change does
+  well.
+
+  It also says when it has started. GitHub has no "under review" state, and
+  the thing that looks like one, a review left unsubmitted, is visible only
+  to the person who started it. `/review` now posts a pending commit status
+  when it begins and replaces it with the verdict when it ends, so everyone
+  can see a review is in flight and a repository can require that check
+  before a merge. On a pull request you opened yourself, where GitHub refuses
+  to record an approval, that status is the only machine-readable verdict
+  that works.
 
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
@@ -55,12 +307,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   line.** The review posts under your GitHub account, because that is whose
   token `gh` holds, so until now the comments read as though you had written
   them yourself. Every comment now carries `Claude
-  jjstack/code-review/skill.md` — as the opening of a one-line verdict, or as
-  the last line of a findings comment so the verdict still comes first. And
-  when everything is resolved, or nothing was found, the comment is exactly
-  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved - jjstack/review-YYYY-MM-DD.md`
-  and nothing else: no posture, no coverage claim, no summary of what you
-  changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
+  jjstack/skills/review/SKILL.md` as its first line. And when everything is
+  resolved, or nothing was found, the visible comment is exactly
+  `Claude jjstack/skills/review/SKILL.md: all issues resolved - lgtm - approved`
+  (or `no findings` on a first clean review) and nothing else: no posture, no
+  coverage claim, no summary of what you changed. `lgtm` is deliberate — it is the idiom a human reviewer uses and
   the one a model reaches for almost never, and disclosure is the byline's
   job, not the prose's. The linter holds the form verbatim, because a budget
   alone leaves room to fill and it got filled twice.

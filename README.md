@@ -33,6 +33,83 @@ jjstack does not replace gstack — it stands on its shoulders. Same command
 names you already know (`/review`, `/qa`, `/ship`), enhanced behavior, plus
 a library of original skills the gstack base doesn't ship.
 
+### Whose name is it
+
+Sharing a name is the point of a wrapper, and it needs a rule, because
+Claude Code ships built-in commands of its own on a cadence jjstack does not
+control. jjstack shadows **gstack** names by design — that is the contract.
+It shadows a **Claude Code** built-in only when the built-in stays reachable
+under another name, and the skill declares it in frontmatter
+(`shadows: - "claude-code:/review -> /code-review"`) so the check can hold
+it to that. Otherwise the skill takes a `jj-` prefix. Today: `/review` keeps
+its name (Claude's reviewer answers to `/code-review`); jjstack's security
+audit is `/jj-security-review` (Claude's `/security-review` has no other
+name). `bin/jjstack-verify-skills` fails on an undeclared collision and on a
+stale declaration; the built-in list it reads is data in
+`references/claude-code-builtins.txt`, regenerated from the installed binary
+by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
+is newer than the list. It runs on every pull request.
+
+### Which tree is live
+
+`~/.claude/skills/jjstack` is what every Claude Code session on this machine
+loads. `./setup` points it at a **pinned worktree**, not at your working
+checkout, so the branch you have checked out is never what other sessions
+execute. The pin lives in `~/.jjstack/skills-pin` and moves only when someone
+moves it:
+
+```bash
+bin/jjstack-skills-pin --status     # what is live right now
+bin/jjstack-skills-pin              # advance it to origin/main
+bin/jjstack-skills-pin v0.42.0      # or to a tag, branch or sha
+```
+
+`jjstack-upgrade` advances it for you after a pull. Hooks are installed by
+copy for the same reason and have been since the permission gate landed; this
+is the skills half of that decision.
+
+It is a worktree rather than a copy because the served tree stays a real git
+tree: `VERSION`, `git show origin/main:VERSION` and the update check keep
+working with no special case, advancing is one `git checkout --detach`, and
+going back to any earlier release is the same command with a tag. Your
+checkout is never touched by any of it.
+
+What it does **not** buy you is editing a skill and having the change be live.
+Testing a change on the live tree means committing it and re-pinning:
+
+```bash
+git commit -am "wip"
+bin/jjstack-skills-pin HEAD      # serve your branch, deliberately
+bin/jjstack-skills-pin           # put the release back
+```
+
+That is an install step, just a git-shaped one. It is the price of the
+machine not following your working tree by accident.
+
+Without this, a `git checkout` in the maintainer's clone silently changed what
+every session on the box executed. It happened: an in-flight pull request
+branch was this machine's `/review` for hours, and the reviewer of that very
+pull request had to pin a worktree by hand to produce a verdict that could say
+which reviewer produced it.
+
+If jjstack was installed from a tarball rather than a clone there is no repo
+to hang a worktree off, so `setup` serves the directory directly and says so.
+
+### Who reviews it
+
+Nothing merges on the author's say-so. Rung 4 of the Definition of Done is an
+independent review: a Claude Code session that did not write the code, in its
+own directory and under its own GitHub identity, runs `/review` on the pull
+request and approves it. Every push that answers findings is followed by a
+re-request, and the merge waits for an approval newer than the last commit.
+A review you run on your own PR still runs, and still helps before you hand
+the change over; it just does not satisfy the rung, and `/review` says so.
+On InboundSavvy repositories a human (Andre or Santiago) is asked after the AI
+round is clean; on disciplin.run and personal repositories one AI review is
+enough. `references/independent-review.md` has the table, both sides of the
+protocol, and the branch-protection settings that make the rule a floor rather
+than prose.
+
 ---
 
 ## The Three Pillars
@@ -97,7 +174,7 @@ have on a developer machine.
 | Output location | `~/.gstack/` (invisible) | **`{repo}/jjstack/`** (version-controlled) |
 | DNA injection | None | Pluggable voice + coding standards |
 | README maintenance | None | Auto-create/update after every skill run |
-| Permission friction | Manual approve every time | Smart auto-approve with Haiku risk classifier |
+| Permission friction | Manual approve every time | Deterministic deny floor; long runs never stop to ask |
 | MCP resilience | Manual reconnect | Auto-reconnect with retry tracking |
 | Auto-updates | gstack-only | jjstack checks on every skill use |
 | Prompt-injection guard | None | PreToolUse hook scans markdown writes |
@@ -132,9 +209,9 @@ enhancements transparently.
 ### Security & Code Review
 | Skill | What it does |
 |-------|--------------|
-| `/security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. |
+| `/jj-security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. Carries the `jj-` prefix because Claude Code's own `/security-review` has no other name. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
-| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR. Finishes in under an hour; `--deep` for the exhaustive sweep. |
+| `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. Also the name of Claude Code's built-in reviewer; type `/code-review` for that one. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -152,6 +229,10 @@ enhancements transparently.
 ### Meta & Workflow
 | Skill | What it does |
 |-------|--------------|
+| `/save-and-exit` | Keep the session's lessons, then end it. Sweeps memory, settles the Quartermaster ledger, exits cleanly. |
+| `/save-and-clear` | Keep the lessons, then start a DIFFERENT task with a clean context. Hands nothing to the next session. |
+| `/rollover` | Continue THIS work in a fresh context. The only verb that writes a handover and points a successor at the transcript. |
+| `/resume-from-clear` | The entry side of a rollover: read the handover, read the whole previous transcript, verify live state, continue. |
 | `/state-doc` | Live `STATE.md` that survives `/clear`, `/compact`, restarts. |
 | `/work-order` | Context/Deliverables/Verify/Done template for sub-agent delegation. |
 | `/lean` | Cost-lean execution — explicit budgets, no polishing loops. |
@@ -174,7 +255,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 17 reference documents — the encoded knowledge each skill
+jjstack ships 22 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -192,12 +273,16 @@ loads. Read them directly or let skills load them for you.
 | `root-cause-analysis.md` | Verified contributing-factors tree (replaces 5 Whys with evidence-gated nodes) |
 | `spec-cleanup-playbook.md` | Five smell tests for capability-level spec cleanup before the QA loop |
 | `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
-| `definition-of-done.md` | The canonical 10-rung "done-done" Definition of Done + reporting rule |
+| `definition-of-done.md` | The canonical 11-rung "done-done" Definition of Done + reporting rule |
+| `independent-review.md` | Rung 4: who reviews a PR before merge (the AI reviewer session, then a human on InboundSavvy repos), why the author never reviews their own, the reviewer identity, and the branch-protection settings |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
-| `memory-sweep.md` | The shared base for the `save-and-*` / `rollover` skills — what to keep before a clear |
+| `memory-sweep.md` | The shared base all three session-boundary skills run — what to keep before the context goes |
+| `qm-ledger-settle.md` | How `/save-and-clear` and `/save-and-exit` close out their Quartermaster items instead of stranding them |
+| `specimen-recovery.md` | A guard must exhibit text it matches: derive the specimen from the artifact, never author it from the pattern |
+| `rollover-handover.md` | The contract between `/rollover` and `/resume-from-clear`: what the handover carries and which carrier delivers it |
 | `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
-| `owasp-security/` | Language-specific security quirks — the layer below `/security-review` |
+| `owasp-security/` | Language-specific security quirks — the layer below `/jj-security-review` |
 
 These references are the durable layer. Skills come and go; the philosophy
 stays.
@@ -206,13 +291,36 @@ stays.
 
 ## Hooks
 
-jjstack ships six optional hooks that ride along with every Claude Code
+jjstack ships seven optional hooks that ride along with every Claude Code
 session.
 
-**`auto-approve-safe.sh`** — A smart permission gate. Read-only tools always
-pass. Bash commands get sent to Claude Haiku for LOW/MEDIUM/HIGH risk
-classification. LOW commands auto-approve; MEDIUM/HIGH defer to you.
-Fail-closed when the API is unreachable.
+**`permission-floor.py`** — The permission gate: a `PreToolUse` hook on
+`Bash` that refuses eleven shapes and lets everything else run without
+asking anyone. It calls nothing and needs no API key.
+
+Ten rules are the floor — commands whose reach is unbounded (`rm -rf ~`,
+`chmod -R 777 /`), whose content nobody has read (`curl … | sh`), that send
+a local file or a known secret path to the network, that write to a block
+device, that power the machine down, or that force-push the trunk. The
+eleventh is `SHAPE`: one command per Bash call. A chained call is refused
+with instructions to split it, which is both a readability rule and what
+makes the other ten exact — `S=/tmp/x; rm -rf $S` begins with an
+assignment, so no prefix rule the permission system has ever sees the `rm`.
+Heredoc bodies and quoted strings are excluded from that scan, so writing a
+commit message or a fixture file stays one call.
+
+Refusals are `deny`, not `ask`: Claude is told the rule and the fix and
+reroutes inside the same turn, so an unattended run never stops for a
+person. `test/settings-lint.sh` checks the installed policy and
+`bin/jjstack-permission-audit --since 24h` reports how often anyone was
+actually interrupted.
+
+**`auto-approve-safe.sh`** — A `PermissionRequest` hook that decides
+nothing. It writes the audit line the permission audit reads, and hands the
+request to the tubemail forwarder so an orchestrator can answer the few
+residual prompts remotely with `tm_respond_permission`. It has no `allow`
+branch, deliberately: a hook that can approve is a hook that can be a
+bypass.
 
 **`shared-memory.sh`** — A UserPromptSubmit hook that recalls relevant memory
 into every prompt (see [Memory](#memory)): deterministic always-rules,
@@ -354,7 +462,7 @@ load DNA files, then delegate to the corresponding gstack skill via
 `cat`. After gstack completes, jjstack runs post-enhancement: quality loop
 to 10/10, output capture into `{repo}/jjstack/`, README maintenance.
 
-**Layered skills** (`/security-review`, `/product-manager-review`,
+**Layered skills** (`/jj-security-review`, `/product-manager-review`,
 `/qa-review`, `/unit-test-builder`) — pure jjstack skills that load
 multiple reference documents and run their own multi-phase pipelines with
 sub-agent verification.

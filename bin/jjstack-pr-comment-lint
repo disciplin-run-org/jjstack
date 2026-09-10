@@ -18,18 +18,34 @@
 #    model's pull toward completeness on every single run, so the budget is
 #    enforced by code instead of by asking.
 #
+# THE COMMENT HAS TWO PARTS, and the rules know which is which. The VISIBLE
+# part is the doorbell: attribution, verdict, the blocking findings, the
+# residual count. The full report rides in the same comment, collapsed under a
+# `<details>` block, so the reader who wants the evidence expands it and the
+# reader who wants the verdict never scrolls past it. The report used to be a
+# file committed to the reviewed repository and linked from the comment. Three
+# consecutive lint rounds were spent on that link - missing, then pointing at
+# the reviewer's scratchpad, then on a side branch because the reviewer would
+# not push to the author's branch - and every one was the same defect: the
+# delivery was stored somewhere the reader was not. The comment is where the
+# reader is. Budget rules judge the visible part; safety rules read the whole
+# body, because all of it is public.
+#
 # Every rule here is one a machine can decide. Voice judgement stays in the
 # skill; only the checkable half lives in this script.
 #
 # Rules enforced (from the Jesper Jurcenoks Voice DNA, Executive register):
-#   - the attribution line, so a reader knows a machine wrote it
-#   - a resolved/clean verdict is ONE line, in a fixed form
+#   - the attribution line FIRST, so a reader knows a machine wrote it
+#   - a resolved/clean verdict is ONE visible line, in a fixed form
 #   - no credential literal anywhere in the body  (fails closed, exit 4)
-#   - hard size budget: lines and characters
-#   - at most N findings inline, counted as OCCURRENCES not lines
-#   - a link to a report that EXISTS on disk
-#   - a declared residual: "N blocking, M total" plus "M-shown more"
+#   - no local machine path anywhere in the body (report included)
+#   - hard size budget on the VISIBLE part: lines and characters
+#   - at most N findings visible, counted as OCCURRENCES not lines
+#   - a findings comment, or a resolved approve, carries exactly one collapsed
+#     `<details>` report block, closed, not `open`, and not empty
+#   - a declared residual: "N blocking, K non-blocking" plus "N+K-shown more"
 #   - no emdash "—"            (hard rule, the critical differentiator)
+#   - a whole-body cap under GitHub's comment limit
 #
 # Voice beyond that - superlatives, meta-commentary, sentence length, softening
 # qualifiers - is JUDGEMENT and lives in references/pr-comment-voice.md. A
@@ -38,7 +54,8 @@
 #
 # Usage:
 #   jjstack-pr-comment-lint <file> [--max-lines N] [--max-chars N]
-#                                  [--max-findings N] [--quiet]
+#                                  [--max-findings N] [--max-total-chars N]
+#                                  [--quiet]
 # Exit: 0 clean, 1 rule violations found, 2 usage, 3 file missing,
 #       4 a credential literal was found (never post; redact first).
 #
@@ -69,15 +86,20 @@ need_int() {   # need_int FLAG VALUE
 }
 
 # Budget is deliberately brutal. A PR comment is a DOORBELL, not the delivery:
-# verdict, the blocking findings, a link. Everything else is already committed
-# to {repo}/jjstack/ and does not need re-typing into a scroll box.
-# 12 lines / 900 chars is about six seconds of reading. That is the whole point.
-SRC=""; MAX_LINES=12; MAX_CHARS=900; MAX_FINDINGS=3; QUIET=0
+# verdict, the blocking findings, and the rest one click away in the collapsed
+# block beneath. 12 lines / 900 chars visible is about six seconds of reading.
+# That is the whole point.
+#
+# The whole-body cap is GitHub's, not ours: the API refuses a comment body over
+# 65536 characters, and a post that fails there fails AFTER the lint said
+# clean. Refuse it here, with margin, and name the real problem.
+SRC=""; MAX_LINES=12; MAX_CHARS=900; MAX_FINDINGS=3; MAX_TOTAL=60000; QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --max-lines)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_LINES="$2";    shift 2 ;;
-    --max-chars)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_CHARS="$2";    shift 2 ;;
-    --max-findings) review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_FINDINGS="$2"; shift 2 ;;
+    --max-lines)       review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_LINES="$2";    shift 2 ;;
+    --max-chars)       review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_CHARS="$2";    shift 2 ;;
+    --max-findings)    review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_FINDINGS="$2"; shift 2 ;;
+    --max-total-chars) review_need_value "$1" $# || exit 2; need_int "$1" "$2"; MAX_TOTAL="$2";    shift 2 ;;
     --quiet)     QUIET=1; shift ;;
     -h|--help)   show_help "$0"; exit 0 ;;
     -*) echo -e "${CYA}error${RST} unknown flag: $1" >&2; exit 2 ;;
@@ -85,9 +107,8 @@ while [ $# -gt 0 ]; do
         shift ;;
   esac
 done
-[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N]" >&2; exit 2; }
+[ -z "$SRC" ] && { echo -e "${CYA}error${RST} usage: $(basename "$0") <file> [--max-lines N] [--max-chars N] [--max-findings N] [--max-total-chars N]" >&2; exit 2; }
 [ -f "$SRC" ] || { echo -e "${CYA}error${RST} no such file: $SRC" >&2; exit 3; }
-
 # PCRE is a HARD REQUIREMENT, checked once, before anything is read.
 #
 # The shape rule needs lookaheads (the digit-and-uppercase entropy gate) and
@@ -107,7 +128,7 @@ done
 # vendors we listed", which is the round-3 defect this rule exists to fix.
 #
 # A credential gate may not degrade. Exit 2 here stops the `&&` chain before
-# `gh pr comment`, so an unsupported grep means "will not post", never "posts
+# `gh pr review`, so an unsupported grep means "will not post", never "posts
 # your key".
 # The probe must MATCH something, and must exercise a lookahead. `grep -qP ''`
 # against empty input returns 1 on a machine with full PCRE - no line to match -
@@ -127,8 +148,6 @@ fail() { viol=$((viol + 1)); say "  ${YEL}$1${RST}  $2"; }
 # silenced this would be silencing the one rule that prevents a public leak.
 hard() { viol=$((viol + 1)); secrets=$((secrets + 1)); echo -e "  ${YEL}$1${RST}  $2" >&2; }
 
-n_lines=$(wc -l < "$SRC" | tr -d ' ')
-n_chars=$(wc -c < "$SRC" | tr -d ' ')
 
 # --- SAFETY: no credential literal reaches a public PR ------------------------
 # The class is "a credential literal", not "an AWS key" and not a list of
@@ -167,7 +186,7 @@ n_chars=$(wc -c < "$SRC" | tr -d ' ')
 # The message names the RULE and the LINE, never the match. A linter that echoes
 # the key has moved the leak into the terminal and the run log instead of
 # stopping it. The fix the message teaches is the one the voice already wants:
-# cite `file:line`, leave the value in the committed report.
+# cite `file:line` and the kind; the value goes nowhere public, report included.
 #
 # `grep -E --` because a PEM header STARTS with dashes: without the terminator
 # grep reads the pattern as its own options and that rule silently never fires.
@@ -176,9 +195,9 @@ while IFS='|' read -r label pat; do
   hits=$(grep -nPi -- "$pat" "$SRC" 2>/dev/null | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
   [ -n "$hits" ] && hard "secret" "$label on line(s) $hits. Cite file:line only - the value never goes in a public comment, and a later edit does not remove it from the API's edit history."
 done <<'SECRETS'
-assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
+assigned credential|(api[_-]?key|secret|token|password|passwd|credential|auth|sig|salt|private[_-]?key|access[_-]?key|account[_-]?key|signing[_-]?key)[A-Za-z0-9_-]*["']?[[:space:]]*(=>|[=:])[[:space:]]*["']?([A-Za-z][A-Za-z0-9_-]{0,15}[[:space:]]+)?["']?(?=[A-Za-z0-9/+_.~-]*[0-9])(?=[A-Za-z0-9/+_.~-]*[A-Z])[A-Za-z0-9/+_.~-]{16,}(?![A-Za-z0-9/+_.~-])(?<!\.md)(?<!\.txt)(?<!\.json)(?<!\.yaml)(?<!\.yml)(?<!\.sh)(?<!\.py)(?<!\.js)
 private key block|-----BEGIN [A-Z ]*PRIVATE KEY-----
-credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]+:[^/@[:space:]]{6,}@
+credential in a url|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]*:[^/@[:space:]]{6,}@
 aws key id|(AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)[0-9A-Z]{16}
 github token|gh[pousr]_[A-Za-z0-9]{36,}
 github fine-grained pat|github_pat_[A-Za-z0-9_]{22,}
@@ -190,7 +209,33 @@ json web token|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}
 azure connection string|AccountKey=[A-Za-z0-9+/=]{20,}
 SECRETS
 
-# --- how many findings this comment shows -------------------------------------
+# --- the split: what the reader sees, and the report collapsed beneath it ---
+# One `<details>` block, opened on its own line (the `<summary>` may share it),
+# closed on its own line. Everything outside it is VISIBLE and is what the
+# budget rules judge. Everything inside is the report. The safety rules above
+# and below read the whole file: a credential or a local path is public
+# whether or not it is behind a click.
+#
+# GitHub renders a bare `<details>` collapsed and a `<details open>` expanded.
+# The whole point of the block is that the reader sees the verdict, not the
+# report, so `open` is refused: it is forty lines of correct findings the
+# author scrolls past, in a new costume.
+n_open=$(grep -cE '^[[:space:]]*<details([[:space:]]|>)' "$SRC")
+n_close=$(grep -cE '^[[:space:]]*</details>[[:space:]]*$' "$SRC")
+VIS=$(mktemp "${TMPDIR:-/tmp}/pcl-vis.XXXXXX"); REP=$(mktemp "${TMPDIR:-/tmp}/pcl-rep.XXXXXX")
+trap 'rm -f "$VIS" "$REP"' EXIT
+awk -v vis="$VIS" -v rep="$REP" '
+  BEGIN { inb = 0 }
+  /^[[:space:]]*<details([[:space:]]|>)/ { inb = 1; next }
+  /^[[:space:]]*<\/details>[[:space:]]*$/ { inb = 0; next }
+  { if (inb) print > rep; else print > vis }
+' "$SRC"
+n_lines=$(wc -l < "$VIS" | tr -d ' ')
+n_chars=$(wc -c < "$VIS" | tr -d ' ')
+n_total=$(wc -c < "$SRC" | tr -d ' ')
+
+
+# --- how many findings the VISIBLE part shows ---------------------------------
 # Counted as OCCURRENCES, not lines. `grep -c` OVERRIDES `-o` in GNU grep, so
 # five findings on one physical line counted as one and the comment passed clean.
 # (A ugrep shim counts occurrences, which is why this survives a hand check.)
@@ -211,13 +256,17 @@ SECRETS
 # one-line `APPROVE - no findings, risk is **low**` counted as a finding,
 # stopped being an approve, and was then refused for declaring no residual.
 # The `\<` boundary is kept for the same class - `LOW` matched inside `below:`.
+#
+# The report inside the block carries every finding by design, so it is
+# counted on the VISIBLE part only; the cap is on what the reader is made to
+# read, not on what the review found.
 count_findings() {   # count_findings FILE
   local f="$1" a b
   a=$(sed 's/[][*_`(){}<>"]/ /g' "$f" | grep -owiE 'P[0-3]' 2>/dev/null | wc -l | tr -d ' ')
   b=$(grep -oiE '(\*\*|__|\[|\()?\<(CRITICAL|BLOCKER|SEVERE|MAJOR|MINOR|SEV[0-3])(\*\*|__|\]|\)|:)' "$f" 2>/dev/null | wc -l | tr -d ' ')
   echo $(( ${a:-0} + ${b:-0} ))
 }
-n_find=$(count_findings "$SRC")
+n_find=$(count_findings "$VIS")
 
 # --- the budget scales with the verdict, because the information does ---
 # One budget for every verdict was wrong. Twelve lines is right for a REJECT
@@ -225,18 +274,14 @@ n_find=$(count_findings "$SRC")
 # four times too generous, and a model fills whatever ceiling it is given: a
 # real clean review spent ~25 lines - posture, coverage, five evidence bullets -
 # proving it had nothing to say. On a clean PR the author wants the verdict, not
-# the audit trail that produced it. The evidence is already in the report.
+# the audit trail that produced it. The evidence is in the collapsed report.
 #
 # Detected, not declared, so no caller has to remember to pass a flag. It reads
 # the SAME count as the cap: when the count under-reads a finding shape, the
 # comment is both under-capped and mis-classified as clean, and the second error
 # is silent. One counter, one place to fix.
 VERDICT="findings"
-if [ "$n_find" -eq 0 ] && grep -qiE '\b(APPROVE|APPROVED|LGTM)\b' "$SRC"; then
-  # No separate budget for an approve: the canonical-form check below is an
-  # exact match on the whole body, which is strictly stricter than any line or
-  # character count. Setting one here was dead code - reverting it to the old
-  # 3-line/250-char budget changed no assertion.
+if [ "$n_find" -eq 0 ] && grep -qiE '\b(APPROVE|APPROVED|LGTM)\b' "$VIS"; then
   VERDICT="approve"
 fi
 
@@ -246,10 +291,49 @@ fi
 # apparent author wrote, and every comment this skill has posted so far read
 # as Jesper's own words.
 ATTRIB='Claude jjstack/skills/review/SKILL.md'
-grep -qF "$ATTRIB" "$SRC" || \
-  fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it."
+# FIRST, not merely present. A footer is read last or not at all; the reader
+# has already taken the verdict as the account holder's opinion by the time
+# they reach it. The first thing on the screen says who wrote this - so it is
+# the first non-blank line of the WHOLE file: a `<details>` block above it
+# would put a collapsed "Full report" on top of the byline.
+first_line=$(sed -e '/^[[:space:]]*$/d' "$SRC" | head -1)
+case "$first_line" in
+  "$ATTRIB"*) ;;
+  *) if grep -qF "$ATTRIB" "$SRC"; then
+       fail "attribution-not-first" "\"$ATTRIB\" is in the comment but not on its FIRST line. Move it to the top; the verdict follows it."
+     else
+       fail "no-attribution" "the comment does not carry \"$ATTRIB\". It posts under a human account; say a machine wrote it - on the first line."
+     fi ;;
+esac
 
-# --- a resolved or clean verdict is exactly one line, in a fixed form ---
+# --- the report block: proof that findings were MOVED, not deleted ---
+# Without this, "be brief" degrades into "drop findings", which is the one
+# failure this whole skill exists to prevent. The report used to be a linked
+# file, and three rounds of this rule were satisfiable without one: any ".md"
+# substring counted, then any URL, then a path nobody stat'd, then a path that
+# existed on the reviewer's machine and nowhere else. A block IN the comment
+# cannot point at nothing - but it can be empty, be two blocks, be left open,
+# or be rendered expanded. Each of those has a fixture.
+#
+# The anti-vacuity floor is the report's own heading. `<details>` around a
+# blank line satisfies every structural check and carries nothing; requiring
+# the `## /review:` line the report template opens with means the block holds
+# a report, not a placeholder.
+if [ "$n_open" -ne "$n_close" ]; then
+  fail "report-shape" "$n_open <details> against $n_close </details>. The report block opens once, on its own line, and closes once, on its own line."
+elif [ "$n_open" -gt 1 ]; then
+  fail "report-shape" "$n_open report blocks. One comment, one collapsed report; the visible part carries the rest."
+elif [ "$n_open" -eq 1 ]; then
+  o_ln=$(grep -nE '^[[:space:]]*<details([[:space:]]|>)' "$SRC" | head -1 | cut -d: -f1)
+  c_ln=$(grep -nE '^[[:space:]]*</details>[[:space:]]*$' "$SRC" | head -1 | cut -d: -f1)
+  [ "$c_ln" -gt "$o_ln" ] || fail "report-shape" "</details> comes before <details>."
+  grep -qE '^[[:space:]]*<details[[:space:]]+open\b' "$SRC" && \
+    fail "report-expanded" "<details open> renders the whole report expanded. The reader gets the verdict; the report is one click away - drop \`open\`."
+  grep -qE '^## /review:' "$REP" || \
+    fail "empty-report" "the collapsed block does not carry a report: no \`## /review:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
+fi
+
+# --- a resolved or clean verdict is exactly one visible line, in a fixed form ---
 # Not "short": FIXED. A budget alone leaves room to fill, and it got filled -
 # 25 lines of evidence proving a review had nothing to say, then an eleven-
 # paragraph reply restating three findings that were already closed.
@@ -257,118 +341,133 @@ if [ "$VERDICT" = "approve" ]; then
   # `lgtm` verbatim: it is the human idiom, and a model left to itself writes
   # "Looks good to me!" or "LGTM ✅" instead. Disclosure is the attribution
   # line's job; the prose does not also have to sound like a machine.
-  # A resolved verdict carries its report; a clean one has nothing to carry.
-  # Without the path, a PR that closed eleven findings over three rounds renders
-  # identically to one that was clean on sight - and this is the lint that says
-  # "brevity moves evidence, it never deletes it" twenty lines further down. The
-  # approve path was the one place where brevity deleted it, on the very comment
-  # telling the reader not to worry.
-  want_resolved_re="^$ATTRIB: all issues resolved - lgtm - approved - [A-Za-z0-9_./-]+\.md$"
+  #
+  # A RESOLVED verdict carries its report, collapsed; a CLEAN one has nothing
+  # to carry. "All issues resolved" asserts findings existed and were fixed,
+  # and without the report a PR that closed eleven findings over three rounds
+  # renders identically to one that was clean on sight - the one place brevity
+  # deleted evidence, on the very comment telling the reader not to worry.
+  want_resolved="$ATTRIB: all issues resolved - lgtm - approved"
   want_clean="$ATTRIB: no findings - lgtm - approved"
-  # The WHOLE body, not its first line: appending prose after the canonical
-  # line would otherwise pass this check and be caught only by the length
-  # budget, which names the wrong problem.
-  body_all=$(sed -e '/^[[:space:]]*$/d' "$SRC")
-  if ! grep -qE "$want_resolved_re" <<<"$body_all" && [ "$body_all" != "$want_clean" ]; then
-    fail "not-canonical" "a resolved verdict is one line: \"$ATTRIB: all issues resolved - lgtm - approved - <report>.md\" (or \"$want_clean\" when nothing was ever found). Nothing else."
-  elif grep -qE "$want_resolved_re" <<<"$body_all"; then
-    # The path is not decoration: it must exist, for the same reason the
-    # no-report rule stats a link. A pointer to nothing is no pointer.
-    # head -1: the shape check greps per line, so a canonical line followed by
-    # prose satisfies it and rr would otherwise capture the prose as part of the
-    # filename - failing closed, but printing the wrong rule and a nonsense path.
-    rr=$(head -1 <<<"$body_all" | sed -E "s/.* - ([A-Za-z0-9_.\/-]+\.md)$/\1/")
-    if [ "$(grep -c . <<<"$body_all")" -gt 1 ]; then
-      fail "not-canonical" "a resolved verdict is ONE line. Everything after it belongs in the report."
-    else
-    sd=$(cd "$(dirname "$SRC")" && pwd)
-    rt=$(git -C "$sd" rev-parse --show-toplevel 2>/dev/null || true)
-    fnd=0
-    for c in "${rt:+$rt/$rr}" "$sd/$rr" "$sd/../$rr" "$sd/$(basename "$rr")"; do
-      [ -n "$c" ] && [ -f "$c" ] && { fnd=1; break; }
-    done
-    [ "$fnd" -eq 1 ] || \
-      fail "no-report" "the resolved line names \`$rr\` and no such file exists. Commit the report first, then approve."
-    fi
+  # The WHOLE visible part, not its first line: appending prose after the
+  # canonical line would otherwise pass this check and be caught only by the
+  # length budget, which names the wrong problem.
+  body_vis=$(sed -e '/^[[:space:]]*$/d' "$VIS")
+  if [ "$body_vis" = "$want_resolved" ]; then
+    [ "$n_open" -eq 1 ] || \
+      fail "no-report" "a resolved verdict carries its report: \"$want_resolved\" and then the full report in one collapsed <details> block. Without it, eleven closed findings render like a PR that was clean on sight."
+  elif [ "$body_vis" = "$want_clean" ]; then
+    [ "$n_open" -eq 0 ] || \
+      fail "not-canonical" "a first clean review is ONE line and nothing else: nothing was found, so there is nothing to carry. Use the resolved form if findings were closed."
+  else
+    fail "not-canonical" "a resolved verdict is one visible line: \"$want_resolved\" (or \"$want_clean\" when nothing was ever found), with the report collapsed beneath it. Nothing else."
   fi
+else
+  [ "$n_open" -eq 1 ] || \
+    fail "no-report" "no collapsed report block. A findings comment shows the blocking findings and carries the full report in one <details> block beneath them: brevity moves evidence, it never deletes it."
 fi
 
 [ "$n_lines" -gt "$MAX_LINES" ] && {
   if [ "$VERDICT" = "approve" ]; then
-    fail "too-long" "$n_lines lines for a clean approve (budget $MAX_LINES). Nothing was found: say so and link the report. The evidence for why it is clean belongs in the report, not the comment."
+    fail "too-long" "$n_lines visible lines for a clean approve (budget $MAX_LINES). Nothing was found: say so. The evidence for why it is clean belongs in the report, not the comment."
   else
-    fail "too-long" "$n_lines lines (budget $MAX_LINES). Cut findings, do not cut evidence: link instead."
+    fail "too-long" "$n_lines visible lines (budget $MAX_LINES). Cut findings from the visible part, not from the report: the block beneath carries them."
   fi
 }
 [ "$n_chars" -gt "$MAX_CHARS" ] && \
-  fail "too-long" "$n_chars chars (budget $MAX_CHARS, verdict=$VERDICT)."
+  fail "too-long" "$n_chars visible chars (budget $MAX_CHARS, verdict=$VERDICT)."
+[ "$n_total" -gt "$MAX_TOTAL" ] && \
+  fail "too-long" "$n_total chars in the whole body (cap $MAX_TOTAL; GitHub refuses a comment over 65536). Trim the report's expansions, not its findings."
 
 # --- finding count: the real cause of a wall of text ---
-# Length is the symptom. The cause is pasting every finding into the comment.
-# Cap what appears inline; the rest stays in the committed report.
+# Length is the symptom. The cause is pasting every finding into the visible
+# part. Cap what appears there; the rest stay in the collapsed report.
 [ "$n_find" -gt "$MAX_FINDINGS" ] && \
-  fail "too-many" "$n_find findings inline (max $MAX_FINDINGS). Show the blocking ones, link the rest."
+  fail "too-many" "$n_find findings visible (max $MAX_FINDINGS). Show the blocking ones; the report beneath carries the rest."
 
-# --- the link: proof that findings were MOVED, not deleted ---
-# Without this, "be brief" degrades into "drop findings", which is the one
-# failure this whole skill exists to prevent.
-#
-# Two rounds of this rule were satisfiable without a report. First any ".md"
-# substring counted, so a finding whose own subject was `docs/setup.md:12`
-# passed. Then a bare `https://` counted, so a finding citing any URL passed.
-# And a named report path was never stat'd: `jjstack/does-not-exist-anywhere.md`
-# returned clean. So: the reference must LOOK like a report, and if it names a
-# path it must BE there. A link to nothing is the same as no link.
-report_ref=$(grep -oE '(jjstack/[A-Za-z0-9_./-]*\.md|review-[0-9]{4}-[0-9]{2}-[0-9]{2}\.md)' "$SRC" 2>/dev/null | head -1)
-url_ref=$(grep -oE 'https?://[^)>[:space:]`"'"'"']+' "$SRC" 2>/dev/null \
-  | grep -E '(\.md([?#].*)?$|/jjstack/|review-[0-9]{4}-[0-9]{2}-[0-9]{2})' | head -1)
-
-if [ "$VERDICT" = "approve" ]; then
-  : # the canonical resolved line carries no link: there is nothing to move
-elif [ -z "$report_ref" ] && [ -z "$url_ref" ]; then
-  fail "no-link" "no link to the full report. A finding's own subject file is not a report link, and neither is a bare URL inside a citation: brevity moves evidence, it never deletes it."
-elif [ -n "$report_ref" ]; then
-  # Resolve against the repo the comment lives in, then against the comment's own
-  # directory, then one level up: {OUTPUT_DIR} is normally {repo}/jjstack, so
-  # both "jjstack/review-DATE.md" and a bare "review-DATE.md" have to land.
-  src_dir=$(cd "$(dirname "$SRC")" && pwd)
-  root=$(git -C "$src_dir" rev-parse --show-toplevel 2>/dev/null || true)
-  found=0
-  for cand in "${root:+$root/$report_ref}" "$src_dir/$report_ref" "$src_dir/../$report_ref" "$src_dir/$(basename "$report_ref")"; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { found=1; break; }
-  done
-  [ "$found" -eq 1 ] || \
-    fail "no-report" "the comment links \`$report_ref\`, and no such file exists. Commit the report first (Phase 5), then link it: a link to nothing is the same as no link."
-fi
+# --- no local machine path anywhere, report included ---
+# It names a machine a reader of the PR cannot reach, and the pre-flight
+# artifacts the report is built from print `repo: /home/...` lines by design:
+# a report pasted in whole carries them unless the reviewer strips them.
+localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$SRC" 2>/dev/null | head -1 | sed 's/^[[:space:]`(]//')
+[ -n "$localp" ] && fail "local-path" "\`$localp\` is a path on the reviewer's machine. Nothing local goes in a public comment, above or below the fold; cite repo-relative paths."
 
 # --- the residual: the count that proves nothing was dropped ---
-# "N blocking, M total" lived only as prose in the voice reference, so a comment
-# could show three findings, declare nothing, and pass clean. That is precisely
-# how "be brief" turns into "drop findings". The arithmetic is checkable, so it
-# is checked: M-N must be stated, and it must equal total minus shown.
+# The count lived only as prose in the voice reference, so a comment could show
+# three findings, declare nothing, and pass clean. That is precisely how "be
+# brief" turns into "drop findings". The arithmetic is checkable, so it is
+# checked: the residual must be stated, and it must equal total minus shown.
+#
+# The form is "N blocking, K non-blocking", not "N blocking, M total". An
+# APPROVE that lists findings reads as a contradiction until the reader works
+# out from the P-numbers that none of them block; the word says it for them.
+# The old form is refused, not accepted alongside: two forms is one more thing
+# for a reader to decode.
+#
+# And the declared count is answerable to the report beneath it. Before the
+# fold this check COULD not see the report; after it, it still did not, so a
+# one-line "all issues resolved - lgtm - approved" over a report reading REJECT
+# with two unfixed P0s linted clean and posted - the author reads the top of
+# the comment and merges, the blocking findings one click below, unread.
+#
+# The report's findings are its TABLE ROWS, not its P-tokens. Phase 4's
+# template puts each finding in a row and expands it beneath, so a token sweep
+# counts every finding at least twice and a Guardrails line mentioning P0
+# counts a third. Floored against that, a comment declaring its true total was
+# REFUSED and only an inflated one passed: the rule exists so a reader is never
+# told there are fewer findings than there are, and it made the reviewer tell
+# them there are more.
+n_rep=$(sed -n '/^### Findings/,/^### /p' "$REP" 2>/dev/null | grep -cE '^\|[[:space:]]*P[0-3][[:space:]]*\|')
+# ANTI-VACUITY FLOOR. The range above is anchored on a literal heading, so a
+# report that lists its findings anywhere else yields an empty range, n_rep=0,
+# and every declared total clears a floor of nothing - five findings declared
+# as one, clean, posted. The repo's own rule names the class: an assertion that
+# scopes its own input needs a floor beside it, or empty input passes
+# unconditionally. So count the lines that OPEN with a severity, which is what
+# one finding looks like in EITHER shape, and take the larger.
+#
+# Anchored, deliberately. A Guardrails sentence reading "while no P0 is added"
+# mentions a severity mid-line and is not a finding; counting those is the
+# over-count the table rule replaced.
+n_anch=$(grep -cE '^([-*+][[:space:]]+|[0-9]+\.[[:space:]]+)?(\*\*|__|\[|\()?P[0-3]\b' "$REP" 2>/dev/null)
+[ "${n_anch:-0}" -gt "${n_rep:-0}" ] && n_rep="$n_anch"
 if [ "$VERDICT" = "approve" ]; then
-  : # the canonical one-line form above already states the outcome
+  # A resolved or clean verdict may not sit on a report that still blocks.
+  if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(REJECT|CAUTION|STOP)' "$REP" 2>/dev/null; then
+    fail "verdict-contradicts-report" "the visible line approves while the report beneath it does not. The reader takes the top of the comment as the answer and never opens the block."
+  fi
 else
-  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$SRC" 2>/dev/null | head -1)
+  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ non-blocking' "$VIS" 2>/dev/null | head -1)
   if [ -z "$decl" ]; then
-    fail "no-residual" "no \"N blocking, M total\" declared. Without the total, a reader cannot tell a short comment from a dropped finding."
+    fail "no-residual" "no \"N blocking, K non-blocking\" declared. Without both counts, a reader cannot tell a short comment from a dropped finding, or an approve-with-notes from a contradiction."
   else
     n_block=$(echo "$decl" | grep -oE '^[0-9]+')
-    n_total=$(echo "$decl" | grep -oE '[0-9]+ total' | grep -oE '^[0-9]+')
-    if [ "$n_total" -lt "$n_block" ]; then
-      fail "bad-residual" "$decl: the total cannot be smaller than the blocking count."
-    elif [ "$n_total" -gt "$n_find" ]; then
-      want=$((n_total - n_find))
-      got=$(grep -oiE '[0-9]+ more\b' "$SRC" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
+    # -i, because the declaration above matched case-insensitively: a
+    # legitimate "9 Non-blocking" re-grepped case-sensitively returned empty,
+    # bash read the empty operand as 0, and nine findings sat in the report
+    # with nothing in the visible part pointing at them - clean, exit 0. And
+    # base 10 explicitly, or "09" aborts the arithmetic, leaves n_tot unset,
+    # and skips the whole check below just as silently.
+    n_nonblock=$(echo "$decl" | grep -oiE '[0-9]+ non-blocking' | grep -oE '^[0-9]+')
+    n_tot=$((10#${n_block:-0} + 10#${n_nonblock:-0}))
+    if [ "$n_rep" -gt "$n_tot" ]; then
+      # The declared count is a FLOOR, not a free variable. It may exceed what
+      # the report enumerates, but never fall below it: that is a finding the
+      # reader is never told exists.
+      fail "bad-residual" "$n_tot declared, but the report beneath carries $n_rep. The declared count is what the reader trusts; it cannot be smaller than the report it sits on."
+    elif [ "$n_tot" -gt "$n_find" ]; then
+      want=$((n_tot - n_find))
+      got=$(grep -oiE '[0-9]+ more\b' "$VIS" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
       [ "${got:-x}" = "$want" ] || \
-        fail "bad-residual" "$n_total total, $n_find shown: say \"$want more\" and link the report. Findings move into the report, they never disappear."
+        fail "bad-residual" "$n_tot findings declared, $n_find shown: say \"$want more\" and point at the report beneath. Findings move into the report, they never disappear."
     fi
   fi
 fi
 
 # --- emdash: hard rule, the single most recognisable tell ---
+# Whole body: the report is posted too, under the same account.
 if grep -q '—' "$SRC"; then
-  fail "emdash" "found '—'. Use the short dash '-' instead."
+  fail "emdash" "found '—'. Use the short dash '-' instead - in the report as well, it is public now."
 fi
 
 if [ "$secrets" -gt 0 ]; then
@@ -376,7 +475,7 @@ if [ "$secrets" -gt 0 ]; then
   exit 4
 fi
 if [ "$viol" -eq 0 ]; then
-  say "${GRN}clean${RST}    $n_lines lines, $n_chars chars - within budget and in voice."
+  say "${GRN}clean${RST}    $n_lines visible lines, $n_chars visible chars, $n_total total - within budget and in voice."
   exit 0
 fi
 say "${YEL}$viol rule violation(s)${RST} - fix before posting."
