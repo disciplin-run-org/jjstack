@@ -2302,8 +2302,21 @@ for s in rollover save-and-clear save-and-exit; do
   check "…and /$s never posts a boundary through tm_send, which would deliver it" \
         "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
 done
-check "the entry side reads from the boundary, not from the tail" \
-      "grep -qF 'since_boundary=True' '$DIR/skills/resume-from-clear/SKILL.md'"
+# The entry read must be the DEDICATED verb. The flag form fails open: a client
+# holding a stale schema strips an unknown kwarg and the call still succeeds,
+# returning the full tail and re-running settled work while looking correct.
+# Measured on this machine after an explicit refresh_tools — the dedicated tool
+# is served and tm_receive still advertises only {worker, since, limit}.
+RFC="$DIR/skills/resume-from-clear/SKILL.md"
+check "the entry side reads from the boundary with the dedicated verb" \
+      "grep -qF 'mcp__tubemail__tm_receive_since_boundary(' '$RFC'"
+# The previous version of this assertion grepped for 'since_boundary=True',
+# which the file still contains — inside the sentence saying never to use it.
+# A vocabulary match passes on prose that says the opposite; pin the CALL.
+check "…and does not call tm_receive with the droppable flag instead" \
+      "! grep -qE 'tm_receive\\(.*since_boundary' '$RFC'"
+check "…and says why, so the next editor does not switch back" \
+      "grep -qF 'fails OPEN' '$RFC'"
 
 # THE GUARD THAT KEEPS IT THIS WAY (verify-skills check 8). The markers are
 # MECHANISMS — the QM call, the slot verbs — never the word "rollover": a grep

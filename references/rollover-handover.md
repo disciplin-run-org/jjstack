@@ -16,6 +16,7 @@ because each has failed in the field.
 | **The prompt hook** (`hooks/shared-memory.sh`) | a plain session, on its first prompt whatever the user types | the hook is not installed, or the slot it reads has already aged out |
 | **The QM resume order** | a worker, when QM dispatches it | the worker holds an in_flight item and dispatch is gated |
 | **The tubemail self-message** | a worker, via the successor's auto-`/sync-inbox fresh` | the manager predates the auto-catchup commit, or a boundary marker was posted after it |
+| **`tm_receive_since_boundary`** | the successor's own read of its timeline | never silently: a missing tool errors, unlike the `since_boundary=True` flag it replaces, which a stale client strips |
 
 A plain session gets the slot, the hook, and the line /rollover ends on.
 A worker gets those plus the resume order and the self-message.
