@@ -1291,6 +1291,14 @@ check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' 
 me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
 check "…and on an error body it emits NOTHING, not the string null" \
       "[ -z \"\$me_err\" ]"
+# The success body and the 401 body differ in more than the login, so neither
+# asserts WHICH field the guard reads. A producer keyed on the error message
+# instead passes both, and then writes PR_ME=null on any failure body that
+# carries no message, a 404 among them. This third body differs from the
+# success body ONLY in the login, so the field is what the assertion turns on.
+me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on a body differing ONLY in the missing login, still nothing" \
+      "[ -z \"\$me_nul\" ]"
 check "…so the positional concatenation is gone" \
       "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
 check "…so the comments-only detector is gone" \
