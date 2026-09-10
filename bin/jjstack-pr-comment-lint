@@ -58,7 +58,8 @@
 #                                  [--attribution LINE] [--quiet]
 # --attribution: the first line every comment must open with (default
 #   `Claude jjstack/skills/review/SKILL.md`). A sibling skill that posts under
-#   its own path passes its own; the two canonical one-liners derive from it.
+#   its own path passes its own; the two canonical one-liners and the report
+#   heading (`## /<skill>:`, matched literally) derive from it.
 # Exit: 0 clean, 1 rule violations found, 2 usage, 3 file missing,
 #       4 a credential literal was found (never post; redact first).
 #
@@ -348,7 +349,7 @@ elif [ "$n_open" -eq 1 ]; then
   [ "$c_ln" -gt "$o_ln" ] || fail "report-shape" "</details> comes before <details>."
   grep -qE '^[[:space:]]*<details[[:space:]]+open\b' "$SRC" && \
     fail "report-expanded" "<details open> renders the whole report expanded. The reader gets the verdict; the report is one click away - drop \`open\`."
-  grep -q "^## /$rep_skill:" "$REP" || \
+  REP_HEAD="## /$rep_skill:" awk 'index($0, ENVIRON["REP_HEAD"]) == 1 { f = 1 } END { exit !f }' "$REP" || \
     fail "empty-report" "the collapsed block does not carry a report: no \`## /$rep_skill:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
 fi
 

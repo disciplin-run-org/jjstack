@@ -54,7 +54,8 @@ A sibling skill names its own path, because the line exists so a reader can
 open the rules that ran: `/review-lean` opens with
 `Claude jjstack/skills/review-lean/SKILL.md` and passes that line to the
 linter with `--attribution`. The canonical one-liners below take the same
-prefix.
+prefix, and the report beneath opens with that skill's name
+(`## /review-lean:`).
 
 ## A resolved review is one visible line, with the report beneath it
 

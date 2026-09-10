@@ -1034,6 +1034,12 @@ check "--attribution: another skill's canonical line passes under the flag" "[ \
 body att2_wrongrep "$ATT2: all issues resolved - lgtm - approved\n$RPT_OK"
 check "…and the report beneath must name the byline's skill, not a sibling's" \
       "grep -q empty-report <<<\"\$(why '$PCL/att2_wrongrep.md' --attribution '$ATT2')\""
+# The heading is matched LITERALLY. As a regex, a byline segment `a.*` accepted
+# a report headed `## /abc:`, and one carrying `\|` accepted any line with a
+# colon - a block holding no report linted clean.
+body att2_regex "Claude jjstack/skills/a.*/SKILL.md: all issues resolved - lgtm - approved\n"'\n<details><summary>Full report</summary>\n\n## /abc: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
+check "…and is matched literally, so a byline cannot turn it into a pattern" \
+      "grep -q empty-report <<<\"\$(why '$PCL/att2_regex.md' --attribution 'Claude jjstack/skills/a.*/SKILL.md')\""
 check "…and is refused as no-attribution without it (the default did not widen)" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att2_ok.md')\""
 check "…and the default line is refused under the flag (it replaces, it does not add)" \
@@ -1482,6 +1488,10 @@ check "…and the report template carries no emdash, since it is posted now" \
       "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
 check "…and that template range is non-empty (anti-vacuity floor)" \
       "[ \$(sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -c .) -gt 10 ]"
+# The lint refuses a report whose heading names another skill, but only at
+# post time. Pin the template here so the refusal is never the first signal.
+check "…and the report it describes opens with this skill's own name" \
+      "sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '^## /$LBL: <target>'"
 for gone in "${REVIEW_GONE[@]}"; do
   check "the skill does not call the deleted $gone" "! grep -q '$gone' '$SK'"
 done
