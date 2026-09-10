@@ -109,9 +109,20 @@ if [ -n "$OLD_VERSION" ]; then
   echo "$OLD_VERSION" > "$MARKER_FILE"
 fi
 
+# ─── Advance the skills pin to what was just pulled ───────────
+# The pull moved this checkout; the live tree is a separate pinned worktree
+# and does not move with it. Without this an upgrade would report success and
+# change nothing any session loads - the pin is the thing being upgraded.
+if [ -x "$JJSTACK_DIR/bin/jjstack-skills-pin" ]; then
+  "$JJSTACK_DIR/bin/jjstack-skills-pin" "$REMOTE_SHA" ||     echo "WARNING: skills pin not advanced; sessions still load the previous release"
+fi
+
 # ─── Re-symlink skills so any new skills become active ────────
+# JJSTACK_REPIN_LINKS moves links left pointing at a previous source onto the
+# pin. Set only here, where a version change is the deliberate moment for it,
+# never in the per-session preamble path.
 if [ -x "$JJSTACK_DIR/bin/jjstack-fix-symlinks" ]; then
-  "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
+  JJSTACK_REPIN_LINKS=1 "$JJSTACK_DIR/bin/jjstack-fix-symlinks" >/dev/null 2>&1 || true
 fi
 
 # Also refresh the statusline path (handles relocated clones)

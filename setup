@@ -91,8 +91,37 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
   fi
 fi
 
-# ─── Step 2: Symlink jjstack repo root ────────────────────────
-JJSTACK_REAL=$(cd "$JJSTACK_DIR" && pwd -P)
+# ─── Step 2: Point the live skill tree at a pinned worktree ───
+#
+# THE LIVE TREE IS NEVER A WORKING CHECKOUT. $SKILLS_DIR/jjstack is what every
+# Claude Code session on this machine loads. Linked straight at a development
+# clone it serves whatever branch that clone sits on, so `git checkout`
+# silently changes what every session executes and a file left mid-edit is the
+# live skill. Measured: an in-flight PR branch was the machine's /review for
+# hours, and a reviewer had to pin a worktree by hand to produce a verdict that
+# said which reviewer produced it.
+#
+# This is the same argument the hook install makes below, and the same fix in
+# the shape skills can afford: a copy would break the edit-and-test loop that
+# skill development runs on, a detached worktree does not. SKILL_SRC is what
+# gets linked from here on - the pin when there is one, the checkout when
+# there cannot be one.
+SKILL_SRC="$JJSTACK_DIR"
+PIN_DIR="$STATE_DIR/skills-pin"
+mkdir -p "$STATE_DIR"
+
+if "$JJSTACK_DIR/bin/jjstack-skills-pin" "${JJSTACK_PIN_REF:-}"; then
+  SKILL_SRC="$PIN_DIR"
+else
+  # exit 3 is a tarball install with no git clone to hang a worktree off; exit
+  # 4 is a ref that does not exist. Both are reasons to serve the checkout
+  # rather than nothing, and both are said out loud - a silent fallback here
+  # would restore exactly the coupling this step removes.
+  warn "Could not create a skills pin — serving $JJSTACK_DIR directly."
+  warn "Every session will load whatever branch that checkout is on."
+fi
+
+JJSTACK_REAL=$(cd "$SKILL_SRC" && pwd -P)
 TARGET_REAL="$SKILLS_DIR/jjstack"
 [ -e "$TARGET_REAL" ] && TARGET_REAL=$(cd "$TARGET_REAL" && pwd -P 2>/dev/null || echo "$TARGET_REAL")
 
@@ -101,11 +130,13 @@ if [ "$JJSTACK_REAL" = "$TARGET_REAL" ]; then
 elif [ -d "$SKILLS_DIR/jjstack" ] && [ ! -L "$SKILLS_DIR/jjstack" ]; then
   warn "$SKILLS_DIR/jjstack is a real directory — cannot create symlink. This is fine if you cloned jjstack directly there."
 else
-  ln -snf "$JJSTACK_DIR" "$SKILLS_DIR/jjstack"
-  ok "Linked $SKILLS_DIR/jjstack → $JJSTACK_DIR"
+  ln -snf "$SKILL_SRC" "$SKILLS_DIR/jjstack"
+  ok "Linked $SKILLS_DIR/jjstack → $SKILL_SRC"
 fi
 
 # ─── Step 3: Create state directory ──────────────────────────
+# (Step 2 already needed it for the pin; kept for the path where Step 2
+# fell back before reaching its mkdir.)
 mkdir -p "$STATE_DIR"
 
 # ─── Step 4: Install skills ──────────────────────────────────
@@ -129,7 +160,11 @@ MANIFEST_LINES=()
 MANIFEST_LINES+=("# jjstack install manifest — DO NOT EDIT")
 MANIFEST_LINES+=("# format: skill-name|original-target|jjstack-target")
 
-for skill_dir in "$JJSTACK_DIR"/skills/*/; do
+# Iterate the PIN's skills, not the checkout's: the links must describe the
+# tree that will be served. A skill present only in the checkout is a skill
+# the pinned tree cannot load, so linking it would create a dangling entry
+# the harness lists and cannot open.
+for skill_dir in "$SKILL_SRC"/skills/*/; do
   [ ! -d "$skill_dir" ] && continue
   skill_name="$(basename "$skill_dir")"
 
@@ -144,7 +179,10 @@ for skill_dir in "$JJSTACK_DIR"/skills/*/; do
   fi
 
   target_link="$SKILLS_DIR/$skill_name"
-  jj_target="$JJSTACK_DIR/skills/$skill_name"
+  # SKILL_SRC, not JJSTACK_DIR: pinning the root link and leaving the 50
+  # per-skill links pointed at the checkout would pin nothing a session
+  # actually loads.
+  jj_target="$SKILL_SRC/skills/$skill_name"
 
   if [ -L "$target_link" ]; then
     current_target="$(readlink "$target_link")"
@@ -213,10 +251,22 @@ done
 # version of this loop keyed on the install manifest, which is read through the
 # jjstack link and does not exist on a worktree install — so it iterated zero
 # times on exactly the install whose link the rename orphaned.
-PRUNED_OUT="$("$JJSTACK_DIR/bin/jjstack-prune-stale-links" "$SKILLS_DIR" "$JJSTACK_DIR" "$MANIFEST" 2>/dev/null)"
-if [ -n "$PRUNED_OUT" ]; then
-  while IFS= read -r line; do [ -n "$line" ] && ok "Pruned $line"; done <<< "$PRUNED_OUT"
-fi
+#
+# TWO directories can back an installed link, so the prune runs for each. It
+# matches a link by whether the target resolves inside the repo dir it is
+# given: with the live tree pinned, links resolve into the PIN, and passing
+# only $JJSTACK_DIR would match nothing and prune silently - the same no-op
+# this script was extracted to prevent, one directory over. The second call
+# catches links left pointing at the checkout by an install from before the
+# pin existed. Both calls are idempotent and scoped to what they are given.
+PRUNE_ROOTS=("$SKILL_SRC")
+[ "$SKILL_SRC" != "$JJSTACK_DIR" ] && PRUNE_ROOTS+=("$JJSTACK_DIR")
+for prune_root in "${PRUNE_ROOTS[@]}"; do
+  PRUNED_OUT="$("$JJSTACK_DIR/bin/jjstack-prune-stale-links" "$SKILLS_DIR" "$prune_root" "$MANIFEST" 2>/dev/null)"
+  if [ -n "$PRUNED_OUT" ]; then
+    while IFS= read -r line; do [ -n "$line" ] && ok "Pruned $line"; done <<< "$PRUNED_OUT"
+  fi
+done
 
 # Write manifest
 printf '%s\n' "${MANIFEST_LINES[@]}" > "$MANIFEST"

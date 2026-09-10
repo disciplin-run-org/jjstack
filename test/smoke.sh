@@ -2047,9 +2047,18 @@ SETUP_NC="$SANDBOX/setup-nocomments.sh"
 sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
 check "setup invokes the prune script (code, not a comment)" \
       "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
-printf '%s\n' '"$SKILLS_DIR" "$JJSTACK_DIR"' > "$SANDBOX/prune-args.txt"
-check "…and hands it the skills dir and this repo" \
+printf '%s\n' '"$SKILLS_DIR" "$prune_root"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and a repo root" \
       "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+# The roots are what decide whether the prune matches anything at all: it
+# recognises a link by whether the target resolves inside the root it is
+# given. With the live tree pinned, links resolve into the PIN, so a prune
+# handed only the checkout matches nothing and reports success having done
+# nothing - the exact no-op this script was extracted from `setup` to prevent.
+check "…and the roots include the served tree" \
+      "grep -q 'PRUNE_ROOTS=(\"\$SKILL_SRC\")' '$SETUP_NC'"
+check "…and the checkout too, for links left by an install before the pin" \
+      "grep -q 'PRUNE_ROOTS+=(\"\$JJSTACK_DIR\")' '$SETUP_NC'"
 
 # A blank line inside a markdown table ENDS it, and the rows below render as
 # raw pipe text. Editing the /review row in this PR introduced exactly that on
@@ -2076,6 +2085,120 @@ check "the refresh script reproduces the binary-derived block's shape (header li
       "grep -q '^# binary-derived' '$DIR/references/claude-code-builtins.txt'"
 check "security-review is no longer a jjstack skill name (the built-in has no other name)" \
       "[ ! -e '$DIR/skills/security-review' ] && [ -f '$DIR/skills/jj-security-review/SKILL.md' ]"
+
+echo "== 13. the skills pin: the live tree is not a working checkout =="
+# ~/.claude/skills/jjstack is what every session on the machine loads. Linked
+# at a development clone it serves whatever branch that clone sits on. Measured
+# on 2026-09-10: an in-flight PR branch was this machine's /review for hours,
+# and the reviewer of that very PR had to pin a worktree by hand to produce a
+# verdict that could say which reviewer produced it.
+#
+# Driven END TO END against a throwaway origin+clone inside the sandbox, not
+# by grepping the scripts: the defect this prevents is a BEHAVIOUR (a branch
+# reaching the served tree), and the two previous attempts in this area were
+# both scripts that read correctly and did nothing.
+PINBIN="$BIN/jjstack-skills-pin"
+PINSB="$SANDBOX/pin"; mkdir -p "$PINSB"
+git init -q --bare "$PINSB/origin"
+git clone -q "$PINSB/origin" "$PINSB/work" 2>/dev/null
+mkdir -p "$PINSB/work/skills/alpha" "$PINSB/work/bin"
+# The fixture carries the real scripts, because the behaviour under test is
+# how they answer each other. A fixture without them proved only that a
+# missing resolver falls back - which is the fallback, not the feature.
+cp "$BIN/jjstack-skills-pin" "$BIN/jjstack-fix-symlinks" "$PINSB/work/bin/"
+echo "0.1.0" > "$PINSB/work/VERSION"
+printf -- '---\nname: alpha\n---\nRELEASE\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm init
+git -C "$PINSB/work" branch -q -M main
+git -C "$PINSB/work" push -q -u origin main 2>/dev/null
+pin() { JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" "$@"; }
+
+pin main >/dev/null 2>&1; _rc=$?
+check "the pin is created from a clone" "[ $_rc -eq 0 ]"
+SERVED="$(pin --resolve)"
+check "…and --resolve names it, not the checkout" "[ \"$SERVED\" != \"$PINSB/work\" ]"
+check "…and it is a real git tree, so VERSION and update-check still work" \
+      "git -C '$SERVED' rev-parse --git-dir >/dev/null 2>&1 && [ -f '$SERVED/VERSION' ]"
+check "…reported by --status with a sha" "pin --status | grep -qE 'pinned [0-9a-f]{7}'"
+
+# THE LOAD-BEARING ASSERTION. Everything else in this section is scaffolding
+# for it: a developer switches branch and edits a skill, and the served tree
+# must not change. This is the exact scenario that occurred on 2026-09-10.
+git -C "$PINSB/work" checkout -q -b wip
+printf -- '---\nname: alpha\n---\nIN-FLIGHT\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam wip
+check "a branch checked out in the clone does not reach the served tree" \
+      "! grep -q IN-FLIGHT '$SERVED/skills/alpha/SKILL.md'"
+check "…and the served tree still holds the release text (not merely absent)" \
+      "grep -q RELEASE '$SERVED/skills/alpha/SKILL.md'"
+check "…while the developer's checkout really did change (anti-vacuity floor)" \
+      "grep -q IN-FLIGHT '$PINSB/work/skills/alpha/SKILL.md'"
+
+# jjstack-fix-symlinks runs from the update-check that almost every skill
+# preamble calls, so it is the most frequently executed writer of these links.
+# Writing the checkout path there would undo the pin within one session.
+mkdir -p "$HOME/.claude/skills"
+ln -snf "$SERVED/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "the per-session symlink repairer leaves a pinned link alone" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+# …and still does the job it exists for: a link pointing into gstack is ours
+# to repair, and repairing it must land on the PIN, not on the checkout.
+ln -snf "$HOME/.claude/skills/gstack/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still repairs a gstack-clobbered link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" != '$HOME/.claude/skills/gstack/alpha' ]"
+check "…onto the pin rather than the checkout" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+
+# Advancing is deliberate and idempotent.
+git -C "$PINSB/work" checkout -q main
+printf -- '---\nname: alpha\n---\nRELEASE2\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam r2
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+pin main >/dev/null 2>&1
+check "advancing the pin moves the served tree" "grep -q RELEASE2 '$SERVED/skills/alpha/SKILL.md'"
+pin main 2>&1 | grep -q 'already at'; _rc=$?
+check "…and a second advance to the same ref says so rather than churning" "[ $_rc -eq 0 ]"
+
+# Error paths. Each must be DISTINCT, because setup branches on them: 3 means
+# serve the checkout and say so, 4 means the ref was wrong.
+pin no-such-ref >/dev/null 2>&1; _rc=$?
+check "a ref that does not exist exits 4, and does not pin" "[ $_rc -eq 4 ]"
+mkdir -p "$PINSB/nogit"
+JJSTACK_DIR="$PINSB/nogit" JJSTACK_STATE_DIR="$PINSB/state2" "$PINBIN" >/dev/null 2>&1; _rc=$?
+check "a non-clone install exits 3 (tarball installs are supported)" "[ $_rc -eq 3 ]"
+check "…and --resolve then names the checkout, so links still work" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state2' '$PINBIN' --resolve)\" = '$PINSB/nogit' ]"
+pin --bogus >/dev/null 2>&1; _rc=$?
+check "an unknown flag exits 2, distinct from both" "[ $_rc -eq 2 ]"
+# An interrupted `worktree add` leaves a directory that is a git tree with no
+# skills in it. Served, that is an empty skill tree and every skill vanishes.
+rm -rf "$PINSB/state/skills-pin/skills"
+check "a pin with no skills/ is not resolved as usable" \
+      "[ \"\$(pin --resolve)\" = '$PINSB/work' ]"
+
+# setup and fix-symlinks must ASK the resolver rather than each deciding.
+check "setup points the live links at the resolved tree, not the checkout" \
+      "grep -q 'jj_target=\"\$SKILL_SRC/skills/\$skill_name\"' '$DIR/setup'"
+check "…and iterates the resolved tree's skills" \
+      "grep -q 'for skill_dir in \"\$SKILL_SRC\"/skills' '$DIR/setup'"
+check "…and prunes against it, or the prune matches nothing and is silent" \
+      "grep -q 'PRUNE_ROOTS=' '$DIR/setup'"
+# Spelling-independent, because the first version of this guard grepped for
+# the literal call and went red when the executed tests above forced the call
+# to change shape - a guard that tracked the wording rather than the property.
+# What must hold: it consults a resolver, and it never writes a link that
+# points into the checkout's own skills directory.
+check "fix-symlinks consults the resolver" \
+      "grep -q -- '--resolve' '$BIN/jjstack-fix-symlinks'"
+check "…and never writes a link target under the checkout" \
+      "! grep -q 'jj_target=\"\$JJSTACK_DIR/skills' '$BIN/jjstack-fix-symlinks'"
+check "…nor iterates the checkout's skills" \
+      "! grep -q 'for skill_dir in \"\$JJSTACK_DIR\"/skills' '$BIN/jjstack-fix-symlinks'"
+check "the upgrade advances the pin, or an upgrade changes nothing served" \
+      "grep -q 'jjstack-skills-pin\" \"\$REMOTE_SHA\"' '$BIN/jjstack-upgrade'"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an

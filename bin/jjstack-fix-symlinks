@@ -20,6 +20,29 @@
 
 JJSTACK_DIR="${JJSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SKILLS_DIR="$HOME/.claude/skills"
+
+# THE LINKS POINT AT THE SERVED TREE, NOT AT THIS CHECKOUT.
+#
+# This script runs from jjstack-update-check, which runs in the preamble of
+# almost every skill, so it is the most frequently executed writer of these
+# links on the machine. Writing $JJSTACK_DIR here would re-point every link at
+# the working checkout within one session of any pin being made - the pin
+# would appear to work at install time and be gone by the next prompt.
+# jjstack-skills-pin --resolve is the one answer both this and `setup` ask.
+# The resolver is found NEXT TO THIS SCRIPT, not under $JJSTACK_DIR. Both are
+# the same directory in a real install, and they are not when JJSTACK_DIR is
+# overridden - which is every test, and any caller pointing this at another
+# tree. Looking under $JJSTACK_DIR meant the resolver was simply absent there,
+# SKILL_SRC silently fell back to the checkout, and the pin appeared to work
+# everywhere except where it was being checked. It is invoked WITH the same
+# JJSTACK_DIR this script is using, so the two cannot answer about different
+# trees.
+_PINBIN="$(dirname "$0")/jjstack-skills-pin"
+SKILL_SRC="$JJSTACK_DIR"
+if [ -x "$_PINBIN" ]; then
+  SKILL_SRC="$(JJSTACK_DIR="$JJSTACK_DIR" "$_PINBIN" --resolve 2>/dev/null || echo "$JJSTACK_DIR")"
+fi
+[ -d "$SKILL_SRC/skills" ] || SKILL_SRC="$JJSTACK_DIR"
 FIXED=0
 SKIPPED=0
 
@@ -40,19 +63,32 @@ read_name_frontmatter() {
   ' "$file"
 }
 
-for skill_dir in "$JJSTACK_DIR"/skills/*/; do
+for skill_dir in "$SKILL_SRC"/skills/*/; do
   [ ! -d "$skill_dir" ] && continue
   skill_name="$(basename "$skill_dir")"
   [ ! -f "$skill_dir/SKILL.md" ] && continue
   [ "$skill_name" = "jjstack" ] && continue
 
   target="$SKILLS_DIR/$skill_name"
-  jj_target="$JJSTACK_DIR/skills/$skill_name"
+  jj_target="$SKILL_SRC/skills/$skill_name"
 
   # Case 1: symlink pointing to gstack — replace
   if [ -L "$target" ]; then
     current="$(readlink "$target")"
+    # A link is ours if it resolves to the tree we serve; otherwise the
+    # gstack test decides. Path-spelling alone is not enough: the pin lives
+    # outside any directory named jjstack, so `grep jjstack/` reads a correct
+    # pinned link as a gstack one and rewrites it every run.
+    if [ "$(readlink -f "$target" 2>/dev/null)" = "$(readlink -f "$jj_target" 2>/dev/null)" ]; then
+      continue
+    fi
     if echo "$current" | grep -q "gstack/" && ! echo "$current" | grep -q "jjstack/"; then
+      ln -snf "$jj_target" "$target"
+      FIXED=$((FIXED + 1))
+    elif [ -n "${JJSTACK_REPIN_LINKS:-}" ]; then
+      # Opt-in: move links from a previous source (a checkout, an older pin)
+      # onto the served tree. Off by default so this script keeps its narrow
+      # contract of repairing gstack clobbering.
       ln -snf "$jj_target" "$target"
       FIXED=$((FIXED + 1))
     fi
