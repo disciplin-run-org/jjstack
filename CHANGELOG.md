@@ -92,6 +92,42 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   others refer to it. Fixing only the named sentence hands the reviewer the
   next round for free.
 
+- **The verdict line says `N blocking, K non-blocking`, not `N blocking, M
+  total`.** An approval that goes on to list findings is ordinary practice,
+  but it read as a contradiction until you worked out from the severities
+  that none of them block. The word says it. The old form is refused.
+
+- **`/review` now posts its verdict as a GitHub review, not a loose comment,
+  and looks at what the change is rather than only whether it works.** The
+  verdict used to arrive as an ordinary comment, which left the PR's Reviews
+  box empty: GitHub recorded the pull request as never reviewed, and a branch
+  rule that requires an approval saw nothing. It is now a review, with the
+  verdict mapped to approve, comment, or request-changes. On a pull request
+  you opened yourself GitHub refuses to record a state at all, so the review
+  posts as a comment there and the closing line tells you the state was
+  refused instead of implying a green check. Requesting a reviewer has its
+  own two traps, both now documented with the call that actually works.
+  A re-review reads the previous round from both channels, picks the newest
+  one by timestamp rather than by which channel it came from, and accepts
+  only rounds this account actually posted: the body's attribution line is a
+  prefix anyone can type, while authorship is attested by GitHub.
+
+  The review also gained the questions it was missing. It asks whether the
+  change is the right shape and whether it is more complex than the problem
+  needs, reads names and whether comments say why rather than what, names any
+  file in the diff that no pass opened instead of reporting a coverage
+  fraction that counts only passes, and may name one thing the change does
+  well.
+
+  It also says when it has started. GitHub has no "under review" state, and
+  the thing that looks like one, a review left unsubmitted, is visible only
+  to the person who started it. `/review` now posts a pending commit status
+  when it begins and replaces it with the verdict when it ends, so everyone
+  can see a review is in flight and a repository can require that check
+  before a merge. On a pull request you opened yourself, where GitHub refuses
+  to record an approval, that status is the only machine-readable verdict
+  that works.
+
 - **`/review` now finishes in under an hour, and gets shorter each round.** It
   used to be tuned to catch everything: every specialist forced, no small-diff
   skip, ten extra passes, nothing ever dropped. That version was slower than a

@@ -650,51 +650,51 @@ RPT='\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 00
 # SAFETY. The class is "a credential", not "an AWS key id": the rule that
 # enumerated vendors matched the 20-char identifier and let the 40-char SECRET
 # access key through, which lint+post would have published to a public PR.
-body sec_id '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
+body sec_id '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n'"$RPT"
 check "an AWS key ID is blocked (exit 4)" "[ \$(lint '$PCL/sec_id.md') = 4 ]"
-body sec_key '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
+body sec_key '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'"$RPT"
 check "the 40-char AWS SECRET key is blocked too (the class, not the example)" \
       "[ \$(lint '$PCL/sec_key.md') = 4 ]"
-body sec_generic '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n'"$RPT"
+body sec_generic '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` leaked\nDATABASE_PASSWORD=s3cr3tvaluethatislong123\n'"$RPT"
 check "a vendor-less assigned credential is blocked (shape, not vendor list)" \
       "[ \$(lint '$PCL/sec_generic.md') = 4 ]"
 # One fixture per vendor row. A row with no fixture can be deleted silently -
 # and the whole enumeration WAS collapsed into the shape rule once, which let a
 # JWT, a Google key, a Stripe key and a fine-grained PAT lint clean and publish.
-body sec_jwt '**REJECT** - 1 blocking, 1 total.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n'"$RPT"
+body sec_jwt '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `auth.py:12` JWT `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`\n'"$RPT"
 check "a bare JWT is blocked" "[ \$(lint '$PCL/sec_jwt.md') = 4 ]"
-body sec_goog '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n'"$RPT"
+body sec_goog '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` AIzaSyD-1234567890abcdefghijklmnopqrstu\n'"$RPT"
 check "a Google API key is blocked" "[ \$(lint '$PCL/sec_goog.md') = 4 ]"
-body sec_stripe '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n'"$RPT"
+body sec_stripe '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` sk_live_abcdefghij1234567890\n'"$RPT"
 check "a Stripe live key is blocked" "[ \$(lint '$PCL/sec_stripe.md') = 4 ]"
-body sec_pat '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n'"$RPT"
+body sec_pat '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwx\n'"$RPT"
 check "a fine-grained GitHub PAT is blocked" "[ \$(lint '$PCL/sec_pat.md') = 4 ]"
-body sec_azure '**REJECT** - 1 blocking, 1 total.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n'"$RPT"
+body sec_azure '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `az.cfg:1` AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq\n'"$RPT"
 check "an Azure connection-string key is blocked" "[ \$(lint '$PCL/sec_azure.md') = 4 ]"
-body sec_slash '**REJECT** - 1 blocking, 1 total.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'"$RPT"
+body sec_slash '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `deploy.tf:9` aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'"$RPT"
 check "an AWS SECRET key is blocked even though it holds slashes" \
       "[ \$(lint '$PCL/sec_slash.md') = 4 ]"
-body sec_rocket '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n'"$RPT"
+body sec_rocket '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a.rb:2` api_key => "Zq4Xt9RmPa2LwVeNbCd7Hs1Kj3Yu5Gx8"\n'"$RPT"
 check "a hashrocket assignment is blocked" "[ \$(lint '$PCL/sec_rocket.md') = 4 ]"
 # The report is public too. "The value stays in the report" was the old rule's
 # escape hatch; the report is now in the same comment, so a secret behind the
 # fold is a secret on the PR.
-body sec_inrep 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:1` key leaked, see report.\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n</details>\n'
+body sec_inrep 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:1` key leaked, see report.\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**P0** `c.py:1` key: AKIAIOSFODNN7EXAMPLE\n\n</details>\n'
 check "a credential INSIDE the collapsed report is blocked (exit 4)" \
       "[ \$(lint '$PCL/sec_inrep.md') = 4 ]"
 
 # The ENTROPY gate, both directions. Without it a review comment ABOUT
 # credential handling exits 4 - unsilenceable - and cannot be posted at all.
-body fp_docpath '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n'"$RPT"
+body fp_docpath '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see Credentials: docs/research/vendor-lessons-aikido.md\n'"$RPT"
 check "a doc path after a credential word is NOT a secret" \
       "[ \$(lint '$PCL/fp_docpath.md') != 4 ]"
-body fp_adr '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n'"$RPT"
+body fp_adr '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` see credential: architrix/adr/AR-1.md\n'"$RPT"
 check "…nor a mixed-case path with a digit that ends in .md" \
       "[ \$(lint '$PCL/fp_adr.md') != 4 ]"
-body fp_k8s '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n'"$RPT"
+body fp_k8s '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k8s.yaml:12` mounts `secret: my-app-db-credentials` from the default ns.\n'"$RPT"
 check "…nor a Kubernetes secret NAME" "[ \$(lint '$PCL/fp_k8s.md') != 4 ]"
 
-body sec_pem '**REJECT** - 1 blocking, 1 total.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n'"$RPT"
+body sec_pem '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `k.pem:1`\n-----BEGIN RSA PRIVATE KEY-----\n'"$RPT"
 check "a private key block is blocked" "[ \$(lint '$PCL/sec_pem.md') = 4 ]"
 # Control: the secret rule is a DISCRIMINATION, not a blanket refusal.
 body clean_ok 'Claude jjstack/skills/review/SKILL.md: no findings - lgtm - approved\n'
@@ -703,13 +703,13 @@ check "a clean approve passes (control: the secret rule discriminates)" \
 # A bare vendor token carries no `name = value` shape, so the generic rule
 # cannot see it. The prefix list is the backstop and needs its own fixture:
 # narrowing it to AWS alone left this whole section green.
-body sec_ghp '**REJECT** - 1 blocking, 1 total.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'"$RPT"
+body sec_ghp '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `ci.yml:4` token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'"$RPT"
 check "a bare GitHub token is blocked (the prefix backstop earns its place)" \
       "[ \$(lint '$PCL/sec_ghp.md') = 4 ]"
-body sec_sk '**REJECT** - 1 blocking, 1 total.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n'"$RPT"
+body sec_sk '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `c.py:2` sk-abcdefghijklmnopqrstuvwx\n'"$RPT"
 check "a bare openai-style key is blocked too" "[ \$(lint '$PCL/sec_sk.md') = 4 ]"
 
-body noreport '**REJECT** - 1 blocking, 1 total.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
+body noreport '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `docs/setup.md:12` the install step is wrong.\n'
 # --quiet must not silence the credential rule, and the EXIT CODE alone cannot
 # prove that: silencing the message leaves rc=4 untouched. Assert the output.
 q_out=$("$BIN/jjstack-pr-comment-lint" "$PCL/sec_key.md" --quiet 2>&1); q_rc=$?
@@ -725,7 +725,7 @@ check "…and it never prints the value it found" "! grep -q 'wJalrXUtnFEMI' <<<
 
 # BUDGET. Findings are counted as OCCURRENCES and in every severity spelling
 # SKILL.md sanctions - six findings written **HIGH** posted under a cap of three.
-body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 # Assert the RULE that fired, not merely a non-zero exit. Every one of these
 # bodies breaks a second rule too (the residual arithmetic keys off the same
 # count), so `rc=1` passes whether or not the cap saw the findings at all -
@@ -733,26 +733,50 @@ body many4 '- **P0** `a:1` one\n- **P1** `b:2` two\n- **P2** `c:3` three\n- **P3
 why() { "$BIN/jjstack-pr-comment-lint" "$1" 2>&1 | grep -oE 'too-many|too-long|no-report|report-shape|report-expanded|empty-report|bad-residual|no-residual|secret|emdash|no-attribution|not-canonical|attribution-not-first|local-path' | sort -u | tr '\n' ' '; }
 check "four bulleted P-findings trip the 3-finding cap" \
       "grep -q too-many <<<\"\$(why '$PCL/many4.md')\""
-body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body manyhigh '- **CRITICAL:** `a:1` one\n- **BLOCKER:** `b:2` two\n- **MAJOR:** `c:3` three\n- **MINOR:** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and four spelled-out severities carrying a label marker" \
       "grep -q too-many <<<\"\$(why '$PCL/manyhigh.md')\""
 # The reverse: HIGH/MEDIUM/LOW are ordinary English, not severity tokens, and
 # counting them refused a correct one-line approve.
-body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` risk here is **low** but real.\n'"$RPT"
+body aplow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` risk here is **low** but real.\n'"$RPT"
 check "the word **low** in prose is not counted as a second finding" \
       "! grep -q too-many <<<\"\$(why '$PCL/aplow.md')\""
-body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P0** `a:1` x. Details below:\n'"$RPT"
+body apbelow 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x. Details below:\n'"$RPT"
 check "…nor the word below: in a citation" \
       "! grep -q too-many <<<\"\$(why '$PCL/apbelow.md')\""
-body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 4 total.\n'"$RPT"
+body manylower '- **p0** `a:1` one\n- **p1** `b:2` two\n- **p2** `c:3` three\n- **p3** `d:4` four\n\n4 blocking, 0 non-blocking.\n'"$RPT"
 check "…and lowercase p0, which evaded a case-sensitive match" \
       "grep -q too-many <<<\"\$(why '$PCL/manylower.md')\""
-body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 3 total.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n'"$RPT"
+body oneline 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 3 blocking, 0 non-blocking.\n\n**P0** `a:1` one **P1** `b:2` two **P2** `c:3` three\n'"$RPT"
 check "three findings on ONE line still count as three (occurrences, not lines)" \
       "[ \$(lint '$PCL/oneline.md') = 0 ]"
+# RESIDUAL. The verdict line says "N blocking, K non-blocking": an APPROVE that
+# lists findings is a contradiction to a reader until the word tells them none
+# block. The old "M total" form is refused rather than accepted alongside.
+body res_old 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n'"$RPT"
+check "the old \"N blocking, M total\" form is refused (no-residual)" \
+      "grep -q no-residual <<<\"\$(why '$PCL/res_old.md')\""
+body res_new 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "…and the same comment in the new form passes" "[ \$(lint '$PCL/res_new.md') = 0 ]"
+body res_more 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n5 more in the report below.\n'"$RPT"
+check "blocking + non-blocking minus shown must equal the \"more\" count" "[ \$(lint '$PCL/res_more.md') = 0 ]"
+body res_wrong 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 5 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n\n4 more in the report below.\n'"$RPT"
+check "…and a wrong \"more\" count is bad-residual" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_wrong.md')\""
+# CASE AND BASE. The declaration is matched case-insensitively, so `K` was
+# re-grepped out of it case-sensitively, came back empty, and bash read the
+# empty operand as 0: nine findings in the report, nothing in the visible part
+# pointing at them, clean and exit 0. A leading zero aborted the arithmetic
+# instead, leaving n_tot unset and skipping the whole check - silently.
+body res_case 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 9 Non-blocking.\n\n**P1** `a:1` x\n'"$RPT"
+check "a capital N in Non-blocking does not disable the residual gate" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_case.md')\""
+body res_zero 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 2 blocking, 09 non-blocking.\n\n**P0** `a:1` x\n**P1** `b:2` y\n'"$RPT"
+check "…nor does a leading zero, which used to abort the arithmetic" \
+      "grep -q bad-residual <<<\"\$(why '$PCL/res_zero.md')\""
 # A budget that cannot be evaluated is not a budget: an empty flag value must
 # fail closed, not report clean.
-big=$(printf '**REJECT** - 1 blocking, 1 total.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
+big=$(printf '**REJECT** - 1 blocking, 0 non-blocking.\n**P0** `a:1` x\n%.0sfiller line\n' $(seq 40))
 printf '%b' "$big$RPT" > "$PCL/big.md"
 "$BIN/jjstack-pr-comment-lint" "$PCL/big.md" --max-lines '' >/dev/null 2>&1
 # Exactly 2 - refused at PARSE time. `-ne 0` was not enough: this body also
@@ -767,7 +791,7 @@ check "…and forty visible filler lines are too-long (control)" \
 # comment carrying a real report, and the reviewer would trim the evidence to
 # fit - the exact failure the block exists to end.
 longrep=$(printf '## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** CAUTION - fixture\n%.0s- **P2** `f:1` a finding in the report, one of many\n' $(seq 200))
-printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 1 total.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
+printf 'Claude jjstack/skills/review/SKILL.md\n\n**CAUTION** - 1 blocking, 0 non-blocking.\n\n**P1** `a:1` x\n\n<details><summary>Full report</summary>\n\n%s\n</details>\n' "$longrep" > "$PCL/fold.md"
 check "a 200-line report beneath the fold passes the visible budget" \
       "[ \$(lint '$PCL/fold.md') = 0 ]"
 check "…and its 200 P-tokens do not count against the visible cap" \
@@ -785,30 +809,30 @@ check "…under the too-long rule" \
 # be missing, empty, doubled, unclosed, or rendered open. One fixture each.
 check "a findings comment with no report block is refused" \
       "grep -q no-report <<<\"\$(why '$PCL/noreport.md')\""
-body rp_open 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details open><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n</details>\n'
+body rp_open 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details open><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n</details>\n'
 check "a <details open> block is refused: the report renders expanded" \
       "grep -q report-expanded <<<\"\$(why '$PCL/rp_open.md')\""
-body rp_empty 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n\n</details>\n'
+body rp_empty 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n\n</details>\n'
 check "an empty block is refused (anti-vacuity: no report heading inside)" \
       "grep -q empty-report <<<\"\$(why '$PCL/rp_empty.md')\""
 check "…and is NOT reported as a missing block" \
       "! grep -q no-report <<<\"\$(why '$PCL/rp_empty.md')\""
-body rp_two 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT$RPT"
+body rp_two 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT$RPT"
 check "two report blocks are refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_two.md')\""
-body rp_unclosed 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n'
+body rp_unclosed 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n'
 check "an unclosed block is refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_unclosed.md')\""
-body rp_inverted 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n</details>\n\n## /review: fixture (commit 0000000, 1 min)\n\n<details>\n'
+body rp_inverted 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n</details>\n\n## /review: fixture (commit 0000000, 1 min)\n\n<details>\n'
 check "a close before its open is refused" \
       "grep -q report-shape <<<\"\$(why '$PCL/rp_inverted.md')\""
-body rp_findok 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body rp_findok 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "a findings comment with one closed, collapsed, non-empty block passes" \
       "[ \$(lint '$PCL/rp_findok.md') = 0 ]"
 # No repository is needed any more: the comment file can live anywhere. That
 # was the class the old resolver refused (no-repo), and it is now the point.
 NOREPO="$SANDBOX/norepo"; mkdir -p "$NOREPO"
-printf '%b' 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT" > "$NOREPO/c.md"
+printf '%b' 'Claude jjstack/skills/review/SKILL.md\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT" > "$NOREPO/c.md"
 check "a comment outside any git repository passes (nothing on disk is linked)" \
       "[ \$(lint '$NOREPO/c.md') = 0 ]"
 
@@ -864,37 +888,37 @@ body att_none '**APPROVE** - no findings.\n'
 check "an approve with no attribution is refused" "[ \$(lint '$PCL/att_none.md') != 0 ]"
 check "…and the message names attribution, not just length" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_none.md')\""
-body att_find '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body att_find '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "a findings comment without attribution is refused too" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att_find.md')\""
-body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"
+body att_findok "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"
 check "…and passes once it opens with the line" "[ \$(lint '$PCL/att_findok.md') = 0 ]"
 # FIRST, not merely present. A footer is read after the verdict has already
 # been taken as the account holder's opinion.
-body att_footer '**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'"$RPT"'\n'"$ATT"'\n'
+body att_footer '**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'"$RPT"'\n'"$ATT"'\n'
 check "attribution as a FOOTER is refused" \
       "grep -q attribution-not-first <<<\"\$(why '$PCL/att_footer.md')\""
 # And a block ABOVE the attribution puts a collapsed "Full report" on top of
 # the byline: the first thing on screen must be who wrote this.
-body att_blockfirst "$RPT"'\n'"$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n'
+body att_blockfirst "$RPT"'\n'"$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n'
 check "a report block above the attribution is refused" \
       "grep -q attribution-not-first <<<\"\$(why '$PCL/att_blockfirst.md')\""
 
 # LOCAL PATHS. Nothing on the reviewer's machine goes in a public comment - and
 # the pre-flight artifacts the report is built from print `repo: /home/...`
 # lines by design, so the rule reads the whole body, fold included.
-body lp_vis "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md\n'"$RPT"
+body lp_vis "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\nFull report: /tmp/claude-1000/x/scratchpad/review-2026-01-01.md\n'"$RPT"
 check "a local machine path in the visible part is refused" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_vis.md')\""
-body lp_home "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x, see ~/scratch/notes.md\n'"$RPT"
+body lp_home "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x, see ~/scratch/notes.md\n'"$RPT"
 check "…and so is a home-relative one" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_home.md')\""
-body lp_rep "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n- repo: `/tmp/claude-1000/x/pin`\n\n</details>\n'
+body lp_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n- repo: `/tmp/claude-1000/x/pin`\n\n</details>\n'
 check "a local path INSIDE the collapsed report is refused too" \
       "grep -q local-path <<<\"\$(why '$PCL/lp_rep.md')\""
 # The emdash rule reads the whole body for the same reason: the report is
 # posted under the same account, in the same voice.
-body em_rep "$ATT"'\n\n**REJECT** - 1 blocking, 1 total.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT — one P0\n\n</details>\n'
+body em_rep "$ATT"'\n\n**REJECT** - 1 blocking, 0 non-blocking.\n\n**P0** `a:1` x\n\n<details><summary>Full report</summary>\n\n## /review: fixture (commit 0000000, 1 min)\n\n**Verdict:** REJECT — one P0\n\n</details>\n'
 check "an emdash inside the collapsed report is refused" \
       "grep -q emdash <<<\"\$(why '$PCL/em_rep.md')\""
 
@@ -916,7 +940,7 @@ check "the canonical line carries lgtm verbatim" \
 # lines of markup GitHub is particular about; one tool writes it, and the lint
 # is the acceptance test for what it writes.
 ASM="$SANDBOX/asm"; mkdir -p "$ASM"
-printf '%s\n\n**CAUTION** - 1 blocking, 2 total.\n\n**P1** `a:1` x\n\n1 more in the report below.\n' "$ATT" > "$ASM/head.md"
+printf '%s\n\n**CAUTION** - 1 blocking, 1 non-blocking.\n\n**P1** `a:1` x\n\n1 more in the report below.\n' "$ATT" > "$ASM/head.md"
 printf '## /review: fixture (commit 0000000, 3 min)\n\n**Verdict:** CAUTION - fixture\n\n| Sev | Conf |\n|---|---|\n| P1 | 90 |\n| P2 | 70 |\n' > "$ASM/report.md"
 "$BIN/jjstack-pr-comment-assemble" --head "$ASM/head.md" --report "$ASM/report.md" --out "$ASM/comment.md"
 check "assemble writes a comment (exit 0)" "[ \$? -eq 0 ]"
@@ -1072,9 +1096,108 @@ check "the evidence pack the skill reads includes the test baseline"       "grep
 # The post and its lint must be ONE command: Claude Code does not persist shell
 # state, so a sourced PR identity in a separate call expands empty.
 check "the PR post is chained to the lint in one command" \
-      "grep -q 'jjstack-pr-comment-lint .* && gh pr comment' '$SK'"
+      "grep -q 'jjstack-pr-comment-lint .* && gh pr review' '$SK'"
 check "…and the PR identity is sourced in that same command" \
-      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr comment' '$SK'"
+      "grep -qE '\. \{OUTPUT_DIR\}/pr\.env && .*gh pr review' '$SK'"
+# GITHUB MECHANICS. The verdict was posted as an issue comment, so the PR's
+# Reviews box stayed empty through twelve rounds on this skill's own PR:
+# reviewDecision "" and reviews []. A review attaches the verdict to the head
+# commit and satisfies a branch rule that requires one; a comment does neither.
+check "the verdict is posted as a review, not an issue comment" \
+      "! grep -q 'gh pr comment' '$SK'"
+# The mapping is PINNED as a table, not grepped as a word: `--request-changes`
+# also appears in the self-authored paragraph, so a grep for it stayed green
+# with the table gutted. Anti-vacuity floor first, then the exact row set.
+# BOTH cells, not the value column: pinning only the right-hand side let the
+# rows be transposed - APPROVE to --request-changes, REJECT to --approve - with
+# ALL 312 PASS. A row set needs both halves of the row.
+sed -n '/^| Verdict | Event |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/events.txt"
+check "the verdict-to-event table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/events.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`--approve`' '`CAUTION`|`--comment`' '`REJECT`, `STOP`|`--request-changes`' \
+  | sort > "$SANDBOX/events-want.txt"
+check "…and maps every verdict to one of the three review events" \
+      "diff -q '$SANDBOX/events.txt' '$SANDBOX/events-want.txt' >/dev/null"
+# Verified against the API, not assumed: POST .../reviews with event=APPROVE or
+# REQUEST_CHANGES on a self-authored PR returns 422; event=COMMENT is accepted.
+check "…and the self-authored refusal is named, since only --comment works there" \
+      "grep -q 'Can not approve your own pull request' '$SK'"
+# Read-back is pinned to the COMMAND, not the word: `reviewDecision` also
+# appears in the sentence about the twelve rounds that left it empty, so a
+# bare grep survived deleting the read-back entirely.
+check "…and the posted state is read back rather than assumed" \
+      "grep -q -- '--json reviewDecision,reviews' '$SK'"
+# gh pr edit --add-reviewer dies on a Projects-classic GraphQL error before it
+# reaches the request, and the REST endpoint returns 200 for a login it
+# silently drops - so the request is read back too.
+# Same class again: the prose says to read `requested_reviewers` back, so the
+# word survives deleting the call that does it. Pin the endpoint invocation.
+check "the reviewer-request trap is recorded with the working call" \
+      "grep -q 'requested_reviewers --input -' '$SK'"
+# Named as the CLASS, not the one flag it was first met on: `gh pr edit` dies
+# on the Projects-classic read whatever it was asked to do, verified on
+# --add-reviewer and on a title/body edit. Pinning the flag would have let the
+# skill keep recommending `gh pr edit` for everything else.
+check "…and names the broken subcommand as wholly broken, not one flag" \
+      "grep -q 'gh pr edit. does not work' '$SK'"
+# UNDER REVIEW. GitHub has no such state, and the one that looks like it -
+# a review left unsubmitted - is PENDING and visible only to its author, so it
+# signals to nobody. A commit status is visible to everyone and can gate the
+# merge, and unlike --approve it is not refused on a self-authored PR.
+check "the review announces itself with a pending commit status" \
+      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+check "…and the pr identity carries the head sha the status needs" \
+      "grep -q 'PR_SHA=' '$SK'"
+check "…and names why an unsubmitted review is not that signal" \
+      "grep -q 'visible only to the' '$SK'"
+# A required check left pending blocks the merge forever and the run that
+# stranded it is gone, so every exit path owes a terminal status.
+check "…and a run that ends any other way still posts a terminal status" \
+      "grep -q 'A pending status is a promise to replace it' '$SK'"
+# The hazard without the recovery is a scare, not an instruction: a stranded
+# check is cleared by one POST, because a status is keyed by commit+context and
+# the newest wins. Someone meeting this at merge time needs the way out.
+check "…and says how a stranded check is cleared" \
+      "grep -q 'keyed by commit and context' '$SK'"
+check "…naming the call that clears it" \
+      "grep -q 'the same POST above with .state=success' '$SK'"
+# Named so nobody reaches for the richer API and finds out in production.
+check "…and records that Check Runs refuse a personal token" \
+      "grep -q 'authenticate via a GitHub App' '$SK'"
+# The mapping is PINNED as a table, like the event table: `success` and
+# `failure` both appear in prose nearby, so a word-grep would survive gutting
+# it. Anti-vacuity floor first.
+sed -n '/^| Verdict | Commit status |/,/^$/p' "$SK" | cut -d'|' -f2,3 | sed -e '1,2d' \
+  -e 's/^ *//' -e 's/ *$//' -e 's/ *| */|/' | grep -v '^|*$' | sort > "$SANDBOX/status.txt"
+check "the verdict-to-status table is locatable (anti-vacuity floor)" \
+      "[ \$(grep -c . '$SANDBOX/status.txt') -eq 3 ]"
+printf '%s\n' '`APPROVE`|`success`' '`CAUTION`, `REJECT`|`failure`' '`STOP`|`error`' \
+  | sort > "$SANDBOX/status-want.txt"
+check "…and maps every verdict to one of the three terminal states" \
+      "diff -q '$SANDBOX/status.txt' '$SANDBOX/status-want.txt' >/dev/null"
+# CAUTION carries a P1 and a P1 blocks, so a green check beside it is the same
+# contradiction as an approval that lists blocking findings.
+check "…with CAUTION failing the check, not passing it" \
+      "grep -q 'CAUTION. fails the check' '$SK'"
+# GOOGLE'S CATEGORIES. Design is the first thing their guide says to look at
+# and no lens asked for it; complexity, naming and why-not-what comments had
+# no owner either, so a correct implementation of the wrong shape passed.
+check "a lens asks whether the change is the right shape" \
+      "grep -q 'is the abstraction earned' '$SK'"
+check "…and whether it is more complex than the problem needs" \
+      "grep -q 'more complex than the problem needs' '$SK'"
+check "…and reads names and why-not-what comments" \
+      "grep -q 'instead of .why.' '$SK'"
+# EVERY LINE. A lens count says nothing about which files were opened.
+check "the report names the diff files no lens read" \
+      "grep -q 'Not read:' '$SK'"
+check "…and requires every file to be read or named" \
+      "grep -q 'read by at least one lens or named' '$SK'"
+# GOOD THINGS. Step 0 admits only harm, so nothing done well had anywhere to
+# go and the author could not tell which parts of the approach to repeat.
+check "the report may name one thing done well" \
+      "grep -q 'specific enough to repeat' '$SK'"
 check "the skill uses the literal HARD-GATE tag" "grep -q '<HARD-GATE>' '$SK'"
 # THE REPORT IS IN THE COMMENT. It was a committed file with a link, and three
 # lint rounds went on the link. The skill must say the new shape everywhere it
@@ -1089,8 +1212,97 @@ check "…nor links a report file from the comment" \
       "! grep -q 'approved - jjstack/review-YYYY' '$SK'"
 check "…so the canonical resolved line ends at approved" \
       "grep -q 'all issues resolved - lgtm - approved\$' '$SK'"
-check "a re-review reads the previous round from the PR thread" \
-      "grep -q 'json comments' '$SK'"
+# This guard pinned the DEFECT: it asserted `--json comments`, the channel the
+# verdict left when Phase 5 moved to `gh pr review`, so the correct fix turned
+# the suite red. A guard's title is a claim; this one claimed the mechanism was
+# right while its body enforced the broken one.
+check "a re-review reads the reviews, where the verdict now lands" \
+      "grep -q 'json reviews,comments' '$SK'"
+check "…and still reads comments, for rounds posted before the change" \
+      "grep -q '.comments\[\]?' '$SK'"
+# The guard used to match ONLY the filter clause. The binding that defines
+# $me sat in a separate span of the same 260-character line and was pinned by
+# nothing: deleting ` --arg me "$(gh api user --jq .login)"` left the suite at
+# 317 green while the documented command died on a jq compile error, which the
+# skill reads as no previous round. That is the P0 this line exists to fix,
+# restored silently, under a guard whose title said the opposite. Pin the whole
+# mechanism: the login is resolved into pr.env, bound on the command line, and
+# compared against the author.
+# THE DETECTOR IS RUN, NOT GREPPED. Three consecutive rounds closed one
+# instance each of a single class: a check that pins a STRING while its title
+# claims a MECHANISM. Round 1, both verdict tables pinned by their value column
+# so an inverted mapping passed. Round 2, the --arg me binding pinned by
+# nothing. Round 3, five single-edit mutations on this very block green at 392:
+# the two timestamp arms swapped, `first` for `last`, `and` for `or`, the
+# comments arm's author dropped, and `>>` turned into `>` on the PR_ME step.
+# Patching a fourth instance would buy a fifth. So the jq program is EXTRACTED
+# from the skill and EXECUTED against fixtures; what it returns is the
+# assertion. A string check cannot see any of those five edits; running it sees
+# four, and the fifth is the append operator, pinned literally below.
+det_line=$(grep -F "jq -r --arg me" "$SK" | head -1)
+det_prog=${det_line#*--arg me \'<PR_ME>\' \'}
+det_prog=${det_prog%\'}
+check "the detector's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#det_prog} -gt 80 ]"
+
+# Fixture A: the newest entry belongs to somebody else, and of MINE the newest
+# is a review and the oldest a comment. Correct answer: MY review.
+# The third comment is MINE and NEWEST of all, and its body does not open with
+# the attribution line: it is the author's own reply to the last round, which
+# is a real shape on a real PR. Without it the startswith filter is never the
+# reason anything is excluded, and deleting that filter stays green while the
+# detector starts returning the author's reply as "the previous round".
+det_a='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"Claude jjstack/skills/review/SKILL.md\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and run, it returns MY newest round, not another account's newer one" \
+      "[ \"\$det_out_a\" = WANT-REVIEW ]"
+
+# Fixture B: of mine the newest is a COMMENT. Correct answer: that comment.
+# This is the half fixture A cannot see - it is what fails when the comments
+# arm stops carrying an author, or when the arms' timestamps are swapped.
+det_b='{"reviews":[{"body":"Claude jjstack/skills/review/SKILL.md\nOLDER-REVIEW","submittedAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"Claude jjstack/skills/review/SKILL.md\nWANT-COMMENT","createdAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}]}'
+det_out_b=$(printf '%s' "$det_b" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
+check "…and when my newest round is a comment, it returns the comment" \
+      "[ \"\$det_out_b\" = WANT-COMMENT ]"
+
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+# The fifth mutant running cannot see: pr.env is built by APPENDING. `>` there
+# truncates it to one key, every gated call in the file short-circuits on its
+# own [ -n ] test, and the review completes having posted nothing at all.
+append_pat='>> {OUTPUT_DIR}/pr.env'
+check "the login is APPENDED to pr.env, never written over it" \
+      "grep -qF \"$append_pat\" '$SK'"
+check "…and refuses to guess when it is missing" \
+      "grep -q 'A missing .PR_ME. stops the review' '$SK'"
+
+# THE PRODUCER IS RUN TOO. Grepping its `if` condition certified arms nothing
+# touched: inverting the test, binding .name instead of .login, returning an
+# empty binding instead of nothing, and renaming the key all stayed green, and
+# the first of those is this commit's own defect restored verbatim.
+me_line=$(grep -F 'gh api user --jq' "$SK" | head -1)
+me_prog=${me_line#*--jq \'}
+me_prog=${me_prog%%\' >>*}
+check "the PR_ME producer's jq program is extractable (anti-vacuity floor)" \
+      "[ \${#me_prog} -gt 30 ]"
+me_ok=$(printf '%s' '{"login":"ME"}' | jq -r "$me_prog" 2>&1 | tail -1)
+check "…and on a success body it binds the login" "[ \"\$me_ok\" = 'PR_ME=ME' ]"
+me_err=$(printf '%s' '{"message":"Bad credentials","status":"401"}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on an error body it emits NOTHING, not the string null" \
+      "[ -z \"\$me_err\" ]"
+# The success body and the 401 body differ in more than the login, so neither
+# asserts WHICH field the guard reads. A producer keyed on the error message
+# instead passes both, and then writes PR_ME=null on any failure body that
+# carries no message, a 404 among them. This third body differs from the
+# success body ONLY in the login, so the field is what the assertion turns on.
+me_nul=$(printf '%s' '{"login":null}' | jq -r "$me_prog" 2>/dev/null)
+check "…and on a body differing ONLY in the missing login, still nothing" \
+      "[ -z \"\$me_nul\" ]"
+check "…so the positional concatenation is gone" \
+      "! grep -qF '(.reviews[]?, .comments[]?)' '$SK'"
+check "…so the comments-only detector is gone" \
+      "! grep -q -- '--json comments --jq' '$SK'"
 check "…and the report template carries no emdash, since it is posted now" \
       "! sed -n '/^Write .{OUTPUT_DIR}.review-YYYY-MM-DD.md/,/^Omit empty sections/p' '$SK' | grep -q '—'"
 check "…and that template range is non-empty (anti-vacuity floor)" \

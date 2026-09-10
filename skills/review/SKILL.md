@@ -168,7 +168,14 @@ the output dir. Note the start time — the 60-minute clock runs from here.
 Resolve the PR once, into a file — the **base** repo, not a fork:
 
 ```bash
-gh pr view --json number,url --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+gh pr view --json number,url,commits --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))\nPR_SHA=\(.commits[-1].oid)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+```
+
+The re-review detector below filters on the account that posted, so resolve
+that once too, into the same file:
+
+```bash
+gh api user --jq 'if (.login|type)=="string" then "PR_ME=\(.login)" else empty end' >> {OUTPUT_DIR}/pr.env 2>> {OUTPUT_DIR}/pr.err
 ```
 
 Read the outcome in a second call:
@@ -176,6 +183,17 @@ Read the outcome in a second call:
 ```bash
 cat {OUTPUT_DIR}/pr.env {OUTPUT_DIR}/pr.err
 ```
+
+**A missing `PR_ME` stops the review; it does not default.** The `if` above
+is what makes that true rather than aspirational: `--jq` is applied to the
+error response as well as the success one, and jq interpolates a missing field
+as the literal string `null`, so the plain form wrote `PR_ME=null` on a failed
+call. The line was present, the rule keyed on absence, and nothing stopped. The filter drops
+every entry whose author does not match, so an empty binding matches nothing,
+the detector prints `null`, and the skill reads that as a first review. That is
+the same silent first-review failure as reading the wrong channel, reached
+through an empty variable instead. If `pr.env` has no `PR_ME` line, treat it as
+**GH_ERROR** and stop.
 
 The PR URL names the base repo — the one the number belongs to — even on a
 cross-repository PR; `headRepository` would name the fork. With no argument
@@ -190,17 +208,87 @@ Then decide **first review or re-review**. The previous round is on the PR:
 every comment this skill posts opens with its attribution line and carries
 its full report collapsed beneath the verdict, so the thread is the record —
 on every machine, in every session. Read the newest one now, before anything
-else, substituting the two values `pr.env` just printed:
+else, substituting the bracketed values `pr.env` just printed:
 
 ```bash
-gh pr view <PR_NUM> --repo <PR_REPO> --json comments --jq '[.comments[] | select(.body | startswith("Claude jjstack/skills/review/SKILL.md"))] | last | .body'
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviews,comments | jq -r --arg me '<PR_ME>' '[(.reviews[]? | {body, at: .submittedAt, who: .author.login}), (.comments[]? | {body, at: .createdAt, who: .author.login})] | map(select(.who == $me and ((.body // "") | startswith("Claude jjstack/skills/review/SKILL.md")))) | sort_by(.at) | last | .body'
 ```
+
+All three values in angle brackets are substituted from `pr.env`, including
+the login: the command carries no `$(...)`, so it survives a permission gate
+that refuses compound calls, and the binding is a named line in a file rather
+than a span buried in the longest line of this document.
+
+**Newest by time, not by position.** jq's `,` emits every left-hand output
+before any right-hand one, so concatenating reviews and comments and taking
+`last` means "the last comment if any comment matched", never "the newest
+round". On a pull request holding a comment-era round and a newer review-era
+round, that returns the older comment: Phase 4 then measures its delta against
+the wrong commit, re-verifies the wrong round's findings, and hands `STOP` a
+count that can read as falling when it rose. Both entries carry a timestamp
+already, `submittedAt` on a review and `createdAt` on a comment, so ordering
+costs nothing but the sort. Executed both ways: with an older comment and a
+newer review the positional form returned the comment and this one returns the
+review; with the channels reversed both return the newer entry.
+
+**Both channels, and the author is checked.** A review body is not an issue
+comment: `--json comments` does not return one, so once Phase 5 started posting
+through `gh pr review` a detector reading only comments found nothing and every
+later round reported as a first review — no delta line, no prior findings
+marked fixed, the "raise nothing below the blocking tier" rule never engaging,
+and `STOP` unable to fire because there was no previous count. Idempotence is
+called the property that outranks recall a few sections down; reading the wrong
+channel switches it off silently. Rounds posted before that change are still
+issue comments, so both are read for one release.
+
+The `author.login` filter is not decoration either. The only authenticity test
+on a body is a string prefix anyone can type, so without it an outside
+contributor's issue comment opening with this skill's attribution line and
+asserting the prior round's blocking findings are resolved feeds straight into
+Phase 4's filter. Authorship is attested by GitHub; the prefix is not.
 
 `null` → first review. Under NO_PR the newest `{OUTPUT_DIR}/review-*.md` for
 this branch stands in, if one exists. A re-review still runs Phases 0–3 in
 full — a second commit can introduce a fresh P0, and a pass that only
 re-checks the old findings would return APPROVE over it. What the previous
 round changes is Phase 4's *filter*, not which phases run.
+
+### Say that a review has started
+
+GitHub has no "under review" state. A review request marks who is *expected*
+to review, and a review left unsubmitted is **PENDING and visible only to the
+person who started it** — so the one thing that looks like this signal tells
+nobody. The mechanism that does is a commit status: it shows in the PR's
+checks box for everyone, and a repository can make it a required check so a
+merge waits on it. Post one before Phase 0 begins:
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_SHA" ] && gh api -X POST repos/"$PR_REPO"/statuses/"$PR_SHA" -f state=pending -f context=jjstack/review -f description='Review in progress'
+```
+
+A status is not subject to the self-authored refusal that blocks `--approve`:
+on a PR the token's own account opened, this is the only machine-readable
+verdict channel that works, and the only one a branch rule can gate on.
+
+**A pending status is a promise to replace it.** Phase 5 posts the terminal
+one. If the run ends any other way — the 60-minute budget, a GH_ERROR, an
+abort — post `state=error` with the reason before stopping. Nothing else will:
+the run that posted it is gone, so where the check is required the merge waits
+on a review that is never coming.
+
+That is recoverable, not fatal, and the recovery belongs here so nobody has to
+find it under pressure. A status is keyed by commit and context and the newest
+one on that pair wins, so anyone with write access clears a stranded check with
+one call — the same POST above with `state=success`. Failing that, a repository
+admin can drop the context from the required list, or merge past it where
+bypass is allowed. Recoverable by hand is still worse than not stranding it.
+
+Under NO_PR skip all of this: there is no checks box to post into.
+
+(`state` accepts `error`, `failure`, `pending`, `success` only, and
+`description` is truncated past 140 characters. The richer Check Runs API
+gives progress and annotations but refuses a personal token with *You must
+authenticate via a GitHub App*, so it is not an option here.)
 
 ---
 
@@ -267,7 +355,7 @@ wrong result) | simplest fix (deletion first) | net lines`.
 
 | Agent | Lens |
 |---|---|
-| **context** | git history of the touched hunks (`git log -p`, `git blame`): reintroduced bugs, contradicted recent intent; comments/docstrings whose "must/never" the diff now violates; CLAUDE.md rules the diff breaks (only rules the file actually states); intent fidelity — a stated case not implemented, or a behaviour change the claim never mentions |
+| **design + context** | is this the right shape: does the change belong in this layer, is the abstraction earned by more than one caller, is it more complex than the problem needs, is there generality no caller needs today; git history of the touched hunks (`git log -p`, `git blame`): reintroduced bugs, contradicted recent intent; names that mislead about what the thing does, and comments that say *what* instead of *why*; comments/docstrings whose "must/never" the diff now violates; CLAUDE.md rules the diff breaks (only rules the file actually states); intent fidelity — a stated case not implemented, or a behaviour change the claim never mentions |
 | **correctness** | logic, boundaries, error paths, partial-failure states, races/TOCTOU, leaked handles, missing timeouts; **blast-radius walk** — for every call site in `blast-radius.md`, does it still hold against the new definition? A broken out-of-diff caller is P0 |
 | **security** | OWASP-class on the diff: injection, authz/authn gaps, secret exposure, unsafe deserialization, SSRF, LLM trust boundary; use `references/owasp-security/` if present |
 | **coverage + absence** | for each new/changed behaviour, is there a test that fails when it regresses? name the untested branch; then *what should have changed and didn't* — schema without migration, enum member without its consumers, signature without its callers or docs, config key without a default |
@@ -380,9 +468,12 @@ committed:
 
 **Verdict:** APPROVE | CAUTION | REJECT | STOP - one line why
 **Coverage:** <lenses run>/<applicable> · <n> findings, <n> unconfirmed, <n> dropped
+**Not read:** <files in the diff no lens opened, or "none">
 
 ### Bottom line
-2-3 sentences: land it or not, the main risk.
+2-3 sentences: land it or not, the main risk. Then at most one sentence
+naming something the change does well, when it is specific enough to repeat
+on purpose.
 
 ### Findings   (at most 10 rows)
 | Sev | Conf | Location | Finding | Simplest fix | Net lines |
@@ -393,7 +484,12 @@ Each row expands below: quoted line, failure scenario, proof tag if any.
 ### Guardrails   (2-5 conditions under which this verdict holds)
 ```
 
-Omit empty sections.
+Omit empty sections, except `Not read`, which is stated even when empty.
+
+**Every file in the diff is read by at least one lens or named on the `Not
+read` line.** A coverage fraction counts lenses, not files, so a generated
+blob or a vendored directory that no pass opened reads to the author as
+examined. Naming it is the difference between a gap and a silent one.
 
 This file is posted verbatim inside the PR comment in Phase 5, under the same
 account as the verdict, so it is written to the comment's rules: the short
@@ -422,8 +518,8 @@ cat ~/.claude/skills/jjstack/references/pr-comment-voice.md
 
 Compose `{OUTPUT_DIR}/pr-comment-head.md` — the visible part — in the
 structure the voice reference gives: the attribution line **first**, the
-verdict, ≤ 3 blocking findings one line each, `N blocking, M total` with
-`M-N more` pointing at the report beneath, one guardrail.
+verdict, ≤ 3 blocking findings one line each, `N blocking, K non-blocking`
+with `N+K-shown more` pointing at the report beneath, one guardrail.
 
 **Every comment opens with `Claude jjstack/skills/review/SKILL.md`.** It posts
 under a human's GitHub account — that is whose token `gh` holds — so without
@@ -463,15 +559,71 @@ budget alone leaves room to fill and it got filled twice. It also refuses a
 `<details open>` block, an empty block, a second block, a local path or an
 emdash anywhere in the body, and a body over GitHub's size limit.
 
+**The verdict goes on the PR as a review, not as a plain comment.** An issue
+comment leaves the Reviews box empty: GitHub records the PR as never reviewed,
+a branch rule requiring an approval is not satisfied, and the verdict is not
+attached to the commit it judged. Twelve rounds ran on this skill's own PR and
+left `reviewDecision` empty and `reviews` an empty list. Map the verdict to
+the review event:
+
+| Verdict | Event |
+|---|---|
+| `APPROVE` | `--approve` |
+| `CAUTION` | `--comment` |
+| `REJECT`, `STOP` | `--request-changes` |
+
+**GitHub refuses a state on your own PR.** When the token's account opened the
+PR, `--approve` and `--request-changes` return HTTP 422, whose message is
+`Can not approve your own pull request`, and only `--comment` is accepted.
+Resolve authorship before posting:
+
+```bash
+gh pr view <PR_NUM> --repo <PR_REPO> --json author --jq .author.login
+```
+
+Equal to `gh api user --jq .login` → self-authored: post `--comment` whatever
+the verdict says, and state in the close-out that the review state could not be
+set and why. The verdict still reads from the body; what is lost is the green
+check, and claiming otherwise is worse than saying it plainly.
+
 <HARD-GATE>
-Do NOT run `gh pr comment` unless `jjstack-pr-comment-lint` exited 0 on
+Do NOT run `gh pr review` unless `jjstack-pr-comment-lint` exited 0 on
 {OUTPUT_DIR}/pr-comment.md in the SAME shell command as the post, with the
 PR identity sourced in that same command. This applies to EVERY invocation.
 </HARD-GATE>
 
 ```bash
-. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr comment "$PR_NUM" --repo "$PR_REPO" --body-file {OUTPUT_DIR}/pr-comment.md
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_NUM" ] && [ -n "$PR_REPO" ] && ~/.claude/skills/jjstack/bin/jjstack-pr-comment-lint {OUTPUT_DIR}/pr-comment.md && gh pr review "$PR_NUM" --repo "$PR_REPO" <EVENT> --body-file {OUTPUT_DIR}/pr-comment.md
 ```
+
+**Then replace the pending status the preamble posted.** It answers one
+question — does anything block this merge — so it is binary where the verdict
+is not:
+
+| Verdict | Commit status |
+|---|---|
+| `APPROVE` | `success` |
+| `CAUTION`, `REJECT` | `failure` |
+| `STOP` | `error` |
+
+`CAUTION` fails the check because it carries a P1, and a P1 blocks. A green
+check beside a verdict that names a blocking finding is the same contradiction
+as an approval that goes on to list them; the human overrides the gate if they
+want it merged anyway.
+
+```bash
+. {OUTPUT_DIR}/pr.env && [ -n "$PR_SHA" ] && gh api -X POST repos/"$PR_REPO"/statuses/"$PR_SHA" -f state=<STATE> -f context=jjstack/review -f description='<VERDICT>: <N> blocking, <K> non-blocking'
+```
+
+**Confirm it landed.** GitHub accepts some review calls and does nothing
+observable, so read the state back rather than trusting the exit code:
+
+```bash
+gh pr view <PR_NUM> --repo <PR_REPO> --json reviewDecision,reviews,statusCheckRollup --jq '{decision:.reviewDecision, last:(.reviews|last|{state,author:.author.login}), status:[.statusCheckRollup[]?|select(.context=="jjstack/review")|.state]}'
+```
+
+An empty `decision` after an `--approve` means the state was refused and only
+the body landed. Report that, do not restate the verdict as though it stuck.
 
 **This chain is the one sanctioned exception to one-command-per-Bash-call.**
 Claude Code does not persist shell state, so `$PR_NUM` set in an earlier call
@@ -485,6 +637,25 @@ and re-run — the value goes nowhere public, and the report is inside the
 comment now. Exit 1 is budget or shape: move findings from the visible part
 into the report, never delete them.
 
-3. Update `README.md` only if the change under review affects it.
-4. Close with the verdict, the minutes elapsed, and the comment URL that
-   `gh pr comment` printed.
+3. **`gh pr edit` does not work on this account at all.** Every invocation,
+   whatever the flag, dies on a GraphQL Projects-classic deprecation error
+   raised while reading `projectCards`, and nothing is written — verified on
+   `--add-reviewer` and again on a title and body edit. Use the REST endpoint
+   for anything you would have reached for it: `PATCH /repos/<PR_REPO>/pulls/<PR_NUM>`
+   with a JSON body edits the title and body.
+
+   **Requesting a reviewer** is the author's move, not this skill's, and it
+   is the same story with one extra trap:
+
+```bash
+echo '{"reviewers":["<login>"]}' | gh api -X POST repos/<PR_REPO>/pulls/<PR_NUM>/requested_reviewers --input -
+```
+
+   It returns 200 and silently ignores a login it does not recognise, so read
+   `requested_reviewers` back before believing it. A reviewer that is a Claude
+   session rather than a GitHub account cannot be requested at all — the
+   posted review is the whole record in that case, which is the second reason
+   it must be a review and not a comment.
+4. Update `README.md` only if the change under review affects it.
+5. Close with the verdict, the minutes elapsed, whether the review state was
+   set or refused, and the URL `gh pr review` printed.

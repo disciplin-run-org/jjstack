@@ -43,7 +43,7 @@
 #   - at most N findings visible, counted as OCCURRENCES not lines
 #   - a findings comment, or a resolved approve, carries exactly one collapsed
 #     `<details>` report block, closed, not `open`, and not empty
-#   - a declared residual: "N blocking, M total" plus "M-shown more"
+#   - a declared residual: "N blocking, K non-blocking" plus "N+K-shown more"
 #   - no emdash "—"            (hard rule, the critical differentiator)
 #   - a whole-body cap under GitHub's comment limit
 #
@@ -128,7 +128,7 @@ done
 # vendors we listed", which is the round-3 defect this rule exists to fix.
 #
 # A credential gate may not degrade. Exit 2 here stops the `&&` chain before
-# `gh pr comment`, so an unsupported grep means "will not post", never "posts
+# `gh pr review`, so an unsupported grep means "will not post", never "posts
 # your key".
 # The probe must MATCH something, and must exercise a lookahead. `grep -qP ''`
 # against empty input returns 1 on a machine with full PCRE - no line to match -
@@ -393,26 +393,37 @@ localp=$(grep -oE '(^|[[:space:]`(])(/tmp/|/home/|/Users/|~/)[^[:space:]`)]*' "$
 [ -n "$localp" ] && fail "local-path" "\`$localp\` is a path on the reviewer's machine. Nothing local goes in a public comment, above or below the fold; cite repo-relative paths."
 
 # --- the residual: the count that proves nothing was dropped ---
-# "N blocking, M total" lived only as prose in the voice reference, so a comment
-# could show three findings, declare nothing, and pass clean. That is precisely
-# how "be brief" turns into "drop findings". The arithmetic is checkable, so it
-# is checked: M-N must be stated, and it must equal total minus shown.
+# The count lived only as prose in the voice reference, so a comment could show
+# three findings, declare nothing, and pass clean. That is precisely how "be
+# brief" turns into "drop findings". The arithmetic is checkable, so it is
+# checked: the residual must be stated, and it must equal total minus shown.
+#
+# The form is "N blocking, K non-blocking", not "N blocking, M total". An
+# APPROVE that lists findings reads as a contradiction until the reader works
+# out from the P-numbers that none of them block; the word says it for them.
+# The old form is refused, not accepted alongside: two forms is one more thing
+# for a reader to decode.
 if [ "$VERDICT" = "approve" ]; then
   : # the canonical one-line form above already states the outcome
 else
-  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ total' "$VIS" 2>/dev/null | head -1)
+  decl=$(grep -oiE '[0-9]+ blocking,[[:space:]]*[0-9]+ non-blocking' "$VIS" 2>/dev/null | head -1)
   if [ -z "$decl" ]; then
-    fail "no-residual" "no \"N blocking, M total\" declared. Without the total, a reader cannot tell a short comment from a dropped finding."
+    fail "no-residual" "no \"N blocking, K non-blocking\" declared. Without both counts, a reader cannot tell a short comment from a dropped finding, or an approve-with-notes from a contradiction."
   else
     n_block=$(echo "$decl" | grep -oE '^[0-9]+')
-    n_tot=$(echo "$decl" | grep -oE '[0-9]+ total' | grep -oE '^[0-9]+')
-    if [ "$n_tot" -lt "$n_block" ]; then
-      fail "bad-residual" "$decl: the total cannot be smaller than the blocking count."
-    elif [ "$n_tot" -gt "$n_find" ]; then
+    # -i, because line 409 matched case-insensitively: a legitimate
+    # "9 Non-blocking" re-grepped case-sensitively returned empty, bash read
+    # the empty operand as 0, and nine findings sat in the report with nothing
+    # in the visible part pointing at them - clean, exit 0. And base 10
+    # explicitly, or "09" aborts the arithmetic, leaves n_tot unset, and skips
+    # the whole check below just as silently.
+    n_nonblock=$(echo "$decl" | grep -oiE '[0-9]+ non-blocking' | grep -oE '^[0-9]+')
+    n_tot=$((10#${n_block:-0} + 10#${n_nonblock:-0}))
+    if [ "$n_tot" -gt "$n_find" ]; then
       want=$((n_tot - n_find))
       got=$(grep -oiE '[0-9]+ more\b' "$VIS" 2>/dev/null | head -1 | grep -oE '^[0-9]+')
       [ "${got:-x}" = "$want" ] || \
-        fail "bad-residual" "$n_tot total, $n_find shown: say \"$want more\" and point at the report beneath. Findings move into the report, they never disappear."
+        fail "bad-residual" "$n_tot findings declared, $n_find shown: say \"$want more\" and point at the report beneath. Findings move into the report, they never disappear."
     fi
   fi
 fi
