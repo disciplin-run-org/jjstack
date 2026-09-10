@@ -9,6 +9,38 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/receiving-code-review` refuses to merge a pull request with something
+  unread on it.** GitHub's "mergeable" answers whether the branches conflict,
+  not whether anyone has reviewed you, and a review that lands in the gap
+  between that check and the merge ships unread. Not hypothetical: a review of
+  this repo posted three blocking findings nine minutes before the pull request
+  was merged on a mergeability check read before the review existed, and all
+  three shipped in a release. A new `jjstack-pr-unread-check` exits non-zero
+  when the thread has moved since you last read it, and the merge is chained
+  behind it, so it cannot run past. It reads all three surfaces a person can
+  leave something on - an issue comment, a submitted review, and a reply inside
+  an inline review thread - because they are three different shapes and the
+  usual tools return only the first two, and it treats a thread it could not
+  read as a refusal rather than as good news.
+- **A review comment can no longer approve at the top while rejecting at the
+  bottom.** Now that the report rides inside the comment, the visible verdict
+  is checked against it: a one-line "all issues resolved - lgtm - approved"
+  sitting over a report that rejects is refused, and a declared finding total
+  smaller than the report beneath it is refused too. Before this, the reader
+  saw the approval, merged, and the blocking findings sat one click below,
+  unread.
+- **Two routine credential shapes are caught.** A bearer token written after a
+  word (`Authorization: Bearer …`) and a URL whose password has no username
+  before it both published clean. Quoting the offending line is what a security
+  finding is supposed to do, so finding the hardcoded token had become the act
+  that published it.
+- **Pointing the comment assembler's `--out` at one of its own inputs no longer
+  destroys that file.** It truncated before reading and exited zero. The report
+  is a working file that is never committed, so one mistyped flag at the end of
+  an hour cost the hour and the tool reported success.
+
 ### Changed
 
 - **Long-running work no longer stops to ask you for permission.** Over a
