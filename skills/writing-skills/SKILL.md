@@ -210,8 +210,10 @@ additions: <list>.
 
 - Small fixes (typos, better trigger phrases, clarified examples): commit
   directly with `fix(<skill-name>): <what>`.
-- Breaking changes (renamed commands, changed frontmatter): bump VERSION
-  minor. Note the breaking change in the commit.
+- Breaking changes (renamed commands, changed frontmatter): say so in the
+  commit subject, `feat(<skill-name>)!: <what>`. There is no VERSION file to
+  bump; the release is a tag, and `bin/jjstack-release-version` reads the
+  subject: `!:` makes the next release a major, `feat` a minor, `fix` a patch.
 - Removing a skill: remove the directory, update `setup` if it had
   hooks, update README. Add a note in the commit explaining why it's
   gone.

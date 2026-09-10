@@ -12,9 +12,8 @@
 # A copy would have solved it and cost too much: skills are edited constantly
 # during development, and an install step between every edit and every test
 # gets worked around. A detached worktree keeps both properties. The live tree
-# only moves when someone runs this script, and it is still a git tree, so
-# VERSION, `git show origin/main:VERSION` and jjstack-update-check all keep
-# working.
+# only moves when someone runs this script, and it is still a git tree, so its
+# release tags, bin/jjstack-version and jjstack-update-check all keep working.
 #
 # Usage:
 #   jjstack-skills-pin                  # pin to the default ref (origin/main)
@@ -116,8 +115,8 @@ case "${1:-}" in
   --status)
     if is_usable_pin; then
       sha="$(git -C "$PIN_DIR" rev-parse --short HEAD)"
-      ver="$(cat "$PIN_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo '?')"
-      echo "pinned $sha (VERSION $ver) at $PIN_DIR"
+      ver="$("$(dirname "$0")/jjstack-version" "$PIN_DIR" 2>/dev/null || true)"
+      echo "pinned $sha (version ${ver:-unknown}) at $PIN_DIR"
     else
       echo "no pin at $PIN_DIR"
     fi

@@ -69,7 +69,7 @@ copy for the same reason and have been since the permission gate landed; this
 is the skills half of that decision.
 
 It is a worktree rather than a copy because the served tree stays a real git
-tree: `VERSION`, `git show origin/main:VERSION` and the update check keep
+tree: its release tags, `bin/jjstack-version` and the update check keep
 working with no special case, advancing is one `git checkout --detach`, and
 going back to any earlier release is the same command with a tag. Your
 checkout is never touched by any of it.

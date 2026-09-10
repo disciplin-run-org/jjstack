@@ -19,6 +19,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   discards the previous answer in the same step, so the only way to post again
   is to ask again.
 
+- **New versions are announced again.** Since branch protection went on for
+  independent review, every merge to main failed to release: the release step
+  committed a version bump straight to main, main refused it, and the version
+  every install compares against stayed at 0.42.0 through six merged changes.
+  So nobody was told there was anything to upgrade to. A release is now a tag
+  on the merged commit, which needs no commit to main at all, and the update
+  check, `jjstack-upgrade`, `jjstack-skills-pin --status` and `/jjstack-repair`
+  read the version from that tag. The `VERSION` file is gone, so there is no
+  second number to disagree with the tag.
+
 - **Four checks that could not have failed.** The change that split the session
   verbs added guards to keep them split, and review found that several of them
   were reading text that had never existed in the form they searched for. A

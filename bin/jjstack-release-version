@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# jjstack-release-version — the tag the version-bump workflow should cut for HEAD.
+#
+# Usage: jjstack-release-version [<dir>]
+#
+# Prints vX.Y.Z, or nothing when no commit since the last release HEAD can
+# reach is a feat, a fix or a breaking change. A re-run on a commit that is
+# already released is that case too: the release HEAD reaches is its own tag,
+# so there is nothing after it.
+#
+# Two different tags feed it, on purpose:
+#   - the bump TYPE comes from the commit subjects since the nearest release
+#     REACHABLE from HEAD - that is what this release contains;
+#   - the BASE number is the HIGHEST version tag anywhere in the repository.
+#     A tag can exist on a commit that never reached main: v0.42.1 and v0.43.0
+#     were pushed by runs whose push to main was refused. Counting from the
+#     reachable tag instead would compute v0.43.0 again and collide with it on
+#     every run, which is how the old workflow stayed broken.
+set -euo pipefail
+
+dir="${1:-.}"
+g() { git -C "$dir" "$@"; }
+semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+if g tag --points-at HEAD --list 'v[0-9]*' | grep -qE "$semver"; then
+  exit 0
+fi
+
+last="$(g describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+if [ -n "$last" ]; then
+  subjects="$(g log --format=%s "$last..HEAD")"
+else
+  subjects="$(g log --format=%s HEAD)"
+fi
+
+if printf '%s\n' "$subjects" | grep -qiE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+  bump=major
+elif printf '%s\n' "$subjects" | grep -qE '^feat(\(.+\))?:'; then
+  bump=minor
+elif printf '%s\n' "$subjects" | grep -qE '^fix(\(.+\))?:'; then
+  bump=patch
+else
+  exit 0
+fi
+
+# `|| true`: in a repository with no version tags yet the grep matches nothing,
+# pipefail turns that into a failed pipeline, and set -e would end the script
+# silently - no output, exit 1 - instead of releasing v0.1.0.
+highest="$(g tag --list 'v[0-9]*' | grep -E "$semver" | sed 's/^v//' \
+           | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
+IFS=. read -r major minor patch <<<"${highest:-0.0.0}"
+case "$bump" in
+  major) major=$((major + 1)); minor=0; patch=0 ;;
+  minor) minor=$((minor + 1)); patch=0 ;;
+  patch) patch=$((patch + 1)) ;;
+esac
+printf 'v%s.%s.%s\n' "$major" "$minor" "$patch"
