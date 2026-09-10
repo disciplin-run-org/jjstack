@@ -1,0 +1,3 @@
+# Frozen `gh api -i` specimens keep the CRLF header lines gh really prints.
+# Normalising them to LF would leave the daemon's CRLF handling untested.
+test/fixtures/review-daemon/*.txt -text

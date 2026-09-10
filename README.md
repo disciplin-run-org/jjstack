@@ -138,6 +138,27 @@ reviewer is a standing session, so the round runs beside you and the verdict
 arrives as a GitHub review on the pull request, rather than as something you sit
 and watch. When it lands, `/receiving-code-review` is the other half of the loop.
 
+### Who opens the reviewer sessions
+
+`jjstack-review-daemon` does it for you. Start it in a terminal in the reviewer
+directory and leave it running. It watches GitHub for review requests and
+@-mentions for the reviewer account. A mention counts only from someone with
+write access to the repository. Each PR gets its own worker session,
+named after it, for example `Code-Review-jjstack-pr12-tm`, in its own window.
+The daemon checks the session is on Opus, then sends `/review`. Later rounds go
+to the same session, so it knows what it found last time. When the PR merges
+or closes, the session gets `/save-and-exit`. Only repositories owned by
+`JesperJurcenoks` or `disciplin-run-org` are served. A stranger who adds the
+reviewer to their own repository gets nothing, and so does a stranger who
+mentions it on one of yours. At most four sessions run at
+once and the rest wait their turn. `/review-daemon` covers starting and
+checking it, and `references/review-daemon.md` is the full contract.
+
+```bash
+cd ~/PycharmProjects/Code-Review
+jjstack-review-daemon          # Ctrl-C stops it; open sessions keep running
+```
+
 For the general case of a second session on another branch, an experiment, a
 long-running subagent, or a QA loop beside your feature work, `/worktrees` has
 the conventions.
@@ -220,7 +241,7 @@ enhancements transparently.
 
 ## Skills
 
-42 skills across product, QA, code, security, ops, and meta. Highlights:
+53 skills across product, QA, code, security, ops, and meta. Highlights:
 
 ### Product Management
 | Skill | What it does |
@@ -244,6 +265,7 @@ enhancements transparently.
 | `/jj-security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. Carries the `jj-` prefix because Claude Code's own `/security-review` has no other name. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
 | `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. Also the name of Claude Code's built-in reviewer; type `/code-review` for that one. |
+| `/review-daemon` | Start, check, or stop the daemon that opens one review session per pull request, sends it `/review`, keeps it for later rounds, and ends it with `/save-and-exit` when the PR closes. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |
 
@@ -287,7 +309,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 22 reference documents — the encoded knowledge each skill
+jjstack ships 23 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -307,6 +329,7 @@ loads. Read them directly or let skills load them for you.
 | `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
 | `definition-of-done.md` | The canonical 11-rung "done-done" Definition of Done + reporting rule |
 | `independent-review.md` | Rung 4: who reviews a PR before merge (the AI reviewer session, then a human on InboundSavvy repos), why the author never reviews their own, the reviewer identity, and the branch-protection settings |
+| `review-daemon.md` | How reviewer sessions are opened and closed for you: what counts as a request, the owner allowlist, the Opus check, next rounds, crash recovery, and how a session ends |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base all three session-boundary skills run — what to keep before the context goes |

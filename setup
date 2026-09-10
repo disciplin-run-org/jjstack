@@ -567,6 +567,11 @@ done
 if mkdir -p "$HOME/.local/bin" 2>/dev/null; then
   ln -snf "$JJSTACK_DIR/bin/jjstack-plan" "$HOME/.local/bin/jjstack-plan" 2>/dev/null \
     && ok "PATH: jjstack-plan linked into ~/.local/bin" || true
+  # The review daemon is started by hand in its own terminal, so it needs a
+  # bare name too (references/review-daemon.md).
+  chmod +x "$JJSTACK_DIR/bin/jjstack-review-daemon" 2>/dev/null || true
+  ln -snf "$JJSTACK_DIR/bin/jjstack-review-daemon" "$HOME/.local/bin/jjstack-review-daemon" 2>/dev/null \
+    && ok "PATH: jjstack-review-daemon linked into ~/.local/bin" || true
 fi
 
 # ─── Step 10: Build skill-trigger index ──────────────────────
