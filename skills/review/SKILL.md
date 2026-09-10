@@ -180,8 +180,13 @@ carrying on in the old tree reviews code that is no longer the head.
 Resolve the PR once, into a file — the **base** repo, not a fork:
 
 ```bash
-gh pr view --json number,url,commits --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))\nPR_SHA=\(.commits[-1].oid)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
+rm -f {OUTPUT_DIR}/head-now && gh pr view --json number,url,commits --jq '"PR_NUM=\(.number)\nPR_REPO=\(.url | sub("^https://github.com/"; "") | sub("/pull/[0-9]+$"; ""))\nPR_SHA=\(.commits[-1].oid)"' > {OUTPUT_DIR}/pr.env 2> {OUTPUT_DIR}/pr.err
 ```
+
+The `rm` discards the previous round's head check answer before anything is
+recorded. After a voided round that answer names the new head, which is exactly
+the head this line is about to record, so leaving it would let a re-run post
+through the Phase 5 gate without asking again.
 
 The re-review detector below filters on the account that posted, so resolve
 that once too, into the same file:

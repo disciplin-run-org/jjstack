@@ -3084,6 +3084,8 @@ hd_gh() {   # hd_gh <head-sha|FAIL|EMPTY|NEWLINE>
   {
     printf '#!/usr/bin/env bash\n'
     printf 'if [ "$1" = pr ] && [ "$2" = review ]; then printf "%%s\\n" "$*" > %q; exit 0; fi\n' "$HDOUT/posted"
+    printf 'if [ "$1" = pr ] && [ "$2" = view ]; then q=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done; printf %%s %q | jq -r "$q"; exit 0; fi\n' \
+           "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"commits\":[{\"oid\":\"$1\"}]}"
     printf '[ "$1" = api ] || { echo "stub: unexpected gh $1" >&2; exit 2; }\n'
     printf '[ "$2" = repos/o/r/pulls/7 ] || { echo "HTTP 404: Not Found ($2)" >&2; exit 1; }\n'
     case "$1" in
@@ -3169,6 +3171,33 @@ check "the gate refuses when the head moved, whatever the reviewer did with the 
       "[ \"\$(hd_post $HD_A)\" = REFUSED ]"
 check "the gate refuses when the head check was never run" \
       "[ \"\$(hd_post ABSENT)\" = REFUSED ]"
+
+# A VOIDED ROUND'S ANSWER MUST NOT OUTLIVE IT. After HEAD_MOVED the reviewer
+# re-runs. Resolution re-reads PR_SHA as the new head, and the previous round's
+# head-now already holds that same new head, because that is how the round was
+# voided. So a re-run that skipped the head check would pass the gate on the old
+# file. Resolution discards head-now in the same command, so the only way to post
+# again is to ask again. (Round 2 coverage note on #42.)
+HDRES=$(grep -F 'gh pr view --json number,url,commits' "$HDSK")
+hdr=$(printf '%s\n' "$HDRES" | grep -c .)
+check "the skill resolves the PR in exactly one line (anti-vacuity floor)" "[ \"\$hdr\" = 1 ]"
+hd_resolve() {   # run the shipped resolution line against the stub
+  ( cd "$HDCWD" && export PATH="$HDBIN:$PATH" && eval "${HDRES//\{OUTPUT_DIR\}/$HDOUT}" ) >/dev/null 2>&1
+}
+hd_gh "$HD_B"
+printf '%s\n' "$HD_B" > "$HDOUT/head-now"   # the voided round's answer, already naming the new head
+hd_resolve
+check "resolution records the new head in pr.env (control: the stub answered)" \
+      "grep -qx 'PR_SHA=$HD_B' '$HDOUT/pr.env'"
+check "…and discards the previous round's head check answer" "[ ! -e '$HDOUT/head-now' ]"
+# End to end on the path that bit: resolve, skip the head check, go straight to
+# the gated post. It must refuse. (hd_post is not reused: it writes its own
+# head-now, which is the one thing this case must not have.)
+rm -f "$HDOUT/posted"
+hdc="${HDGATE//\{OUTPUT_DIR\}/$HDOUT}"; hdc="${hdc//<EVENT>/--approve}"
+( cd "$HDCWD" && export PATH="$HDBIN:$PATH" HOME="$HDHOME" && eval "$hdc" ) >/dev/null 2>&1
+check "a re-run that skips the head check cannot post on the previous round's answer" \
+      "[ ! -e '$HDOUT/posted' ]"
 
 # THE TREE BINDING. The head check compares GitHub with GitHub; this line is
 # what compares the tree being read with the sha. The case that bit: a void
