@@ -20,8 +20,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   `bin/jjstack-skills-pin` to move it and `--status` to see what is live.
   `jjstack-upgrade` advances it after a pull, so upgrading works as before.
 
-  Nothing changes about how you develop: edit any branch in your own checkout,
-  and none of it goes live until you pin it. Hooks have been installed this
+  What changes about developing: a skill edit is live once you commit it and
+  re-pin (`bin/jjstack-skills-pin HEAD` to serve your branch on purpose,
+  `bin/jjstack-skills-pin` to put the release back). That is a step you did not
+  have before, and it is the price of the machine not following your working
+  tree by accident. Hooks have been installed this
   way since the permission gate landed, for the same reason; this is the
   skills half of that. Installed from a tarball rather than a clone, setup
   serves the directory directly and tells you so.

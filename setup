@@ -91,6 +91,24 @@ if [ ! -f "$OWASP_DIR/SKILL.md" ]; then
   fi
 fi
 
+# ─── Step 1b: Read the install manifest BEFORE anything moves ─
+#
+# $MANIFEST lives under $SKILLS_DIR/jjstack, which is a symlink Step 2 is about
+# to re-point. Read after that, it resolves into the newly served tree, which
+# has no manifest: EXISTING_ORIGINALS comes back empty, the manifest is
+# rewritten with no originals, and `uninstall` then REMOVES the gstack skills
+# it should have RESTORED. That is destructive, it fires on the first setup
+# after the pin ships, and the only thing keeping the read correct is that it
+# happens before the move.
+declare -A EXISTING_ORIGINALS
+if [ -f "$MANIFEST" ]; then
+  while IFS='|' read -r name orig_target jj_target; do
+    [ -z "$name" ] && continue
+    [[ "$name" == \#* ]] && continue
+    EXISTING_ORIGINALS["$name"]="$orig_target"
+  done < "$MANIFEST"
+fi
+
 # ─── Step 2: Point the live skill tree at a pinned worktree ───
 #
 # THE LIVE TREE IS NEVER A WORKING CHECKOUT. $SKILLS_DIR/jjstack is what every
@@ -106,19 +124,35 @@ fi
 # skill development runs on, a detached worktree does not. SKILL_SRC is what
 # gets linked from here on - the pin when there is one, the checkout when
 # there cannot be one.
-SKILL_SRC="$JJSTACK_DIR"
-PIN_DIR="$STATE_DIR/skills-pin"
 mkdir -p "$STATE_DIR"
 
-if "$JJSTACK_DIR/bin/jjstack-skills-pin" "${JJSTACK_PIN_REF:-}"; then
-  SKILL_SRC="$PIN_DIR"
-else
-  # exit 3 is a tarball install with no git clone to hang a worktree off; exit
-  # 4 is a ref that does not exist. Both are reasons to serve the checkout
-  # rather than nothing, and both are said out loud - a silent fallback here
-  # would restore exactly the coupling this step removes.
-  warn "Could not create a skills pin — serving $JJSTACK_DIR directly."
+# Attempt the pin, then ASK what is served rather than inferring it from the
+# exit code. The two are not the same question: the tool exits non-zero when it
+# could not MOVE the pin (a bad ref, a dirty tree) while a perfectly good pin
+# is still there and still what every preamble's fix-symlinks will answer.
+# Inferring "serve the checkout" from that moved 51 links to the checkout and
+# left fix-symlinks pointing at the pin - a split install that silently
+# re-creates the coupling this step exists to remove.
+"$JJSTACK_DIR/bin/jjstack-skills-pin" "${JJSTACK_PIN_REF:-}" || PIN_RC=$?
+PIN_RC="${PIN_RC:-0}"
+SKILL_SRC="$("$JJSTACK_DIR/bin/jjstack-skills-pin" --resolve 2>/dev/null || echo "$JJSTACK_DIR")"
+[ -d "$SKILL_SRC/skills" ] || SKILL_SRC="$JJSTACK_DIR"
+
+if [ "$SKILL_SRC" = "$JJSTACK_DIR" ]; then
+  # No pin is being served. Say so, and say which of the reasons it was: 3 is
+  # a tarball install with no clone to hang a worktree off, which is supported;
+  # anything else is a pin that should have worked.
+  if [ "$PIN_RC" = "3" ]; then
+    warn "No git clone here, so no pin — serving $JJSTACK_DIR directly."
+  else
+    warn "Could not create a skills pin (exit $PIN_RC) — serving $JJSTACK_DIR directly."
+  fi
   warn "Every session will load whatever branch that checkout is on."
+elif [ "$PIN_RC" != "0" ]; then
+  # A pin exists and is served, but it could not be moved to the ref asked for.
+  # Serving it is right; being quiet about it is not.
+  warn "Skills pin could not be advanced (exit $PIN_RC); serving the existing pin."
+  "$JJSTACK_DIR/bin/jjstack-skills-pin" --status || true
 fi
 
 JJSTACK_REAL=$(cd "$SKILL_SRC" && pwd -P)
@@ -145,15 +179,8 @@ REPLACED=()
 SKIPPED=()
 NEW=()
 
-# Read existing manifest if present (for idempotent re-runs)
-declare -A EXISTING_ORIGINALS
-if [ -f "$MANIFEST" ]; then
-  while IFS='|' read -r name orig_target jj_target; do
-    [ -z "$name" ] && continue
-    [[ "$name" == \#* ]] && continue
-    EXISTING_ORIGINALS["$name"]="$orig_target"
-  done < "$MANIFEST"
-fi
+# (The manifest was read in Step 1b, before Step 2 moved the link it lives
+# under. Reading it here would resolve into the served tree and find nothing.)
 
 # Build new manifest
 MANIFEST_LINES=()

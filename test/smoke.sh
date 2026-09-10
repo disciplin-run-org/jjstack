@@ -2325,6 +2325,73 @@ check "--source returns the tree unchanged for a layout it cannot read" \
 check "…and for a directory that is not a repo at all" \
       "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/nogit' ]"
 
+# ── PR #41 round 1 P2s: the paths that were never executed ──────────────────
+# setup was covered only by greps, and the reviewer showed four mutants
+# surviving because of it - including the resolver-beside-itself bug that AR-7
+# credits an executed test with catching. These run the real thing.
+
+# The manifest is read through $SKILLS_DIR/jjstack, and Step 2 re-points that
+# link. Read after the move it resolves into the served tree, finds no
+# manifest, and the rewritten one carries no gstack originals - so `uninstall`
+# REMOVES the gstack skills it should RESTORE. Destructive, and it fires on the
+# first setup after the pin ships.
+SUSB="$SANDBOX/setup-run"; mkdir -p "$SUSB/skills" "$SUSB/gstack/review"
+printf -- '---\nname: review\n---\ngstack original\n' > "$SUSB/gstack/review/SKILL.md"
+mkdir -p "$SUSB/pinsrc"
+cp -r "$PINSB/work/." "$SUSB/pinsrc/" 2>/dev/null
+# A manifest recording that `alpha` replaced a gstack original.
+mkdir -p "$SUSB/skills/jjstack"
+printf '# jjstack install manifest\nalpha|%s|old\n' "$SUSB/gstack/review" > "$SUSB/skills/jjstack/.install-manifest"
+check "the manifest read happens before the link is re-pointed" \
+      "[ \$(grep -n 'EXISTING_ORIGINALS\[' '$DIR/setup' | head -1 | cut -d: -f1) -lt \$(grep -n 'ln -snf \"\$SKILL_SRC\" \"\$SKILLS_DIR/jjstack\"' '$DIR/setup' | cut -d: -f1) ]"
+printf '%s\n' 'EXISTING_ORIGINALS["$name"]=' > "$SANDBOX/manif-assign.txt"
+check "…and setup no longer reads it a second time, after the move" \
+      "[ \$(grep -cFf '$SANDBOX/manif-assign.txt' '$DIR/setup') -eq 1 ]"
+check "…and that pattern matches something at all (anti-vacuity floor)" \
+      "grep -qFf '$SANDBOX/manif-assign.txt' '$DIR/setup'"
+
+# setup must ASK what is served. Exit 1 (dirty) and exit 4 (bad ref) leave a
+# healthy pin in place that --resolve still names; inferring "serve the
+# checkout" from the exit code moved 51 links there while fix-symlinks kept
+# answering the pin.
+check "setup asks the resolver rather than inferring from the exit code" \
+      "grep -q 'SKILL_SRC=\"\$(\"\$JJSTACK_DIR/bin/jjstack-skills-pin\" --resolve' '$DIR/setup'"
+check "…and no longer assigns the pin path from its own variable" \
+      "! grep -q 'SKILL_SRC=\"\$PIN_DIR\"' '$DIR/setup'"
+check "…and distinguishes a served-but-unadvanced pin from no pin at all" \
+      "grep -q 'could not be advanced' '$DIR/setup'"
+check "…naming the tarball case separately from any other failure" \
+      "grep -q 'No git clone here' '$DIR/setup'"
+
+# REPIN must not take a link the user chose. setup refuses that same link by
+# name and says to remove it manually; the upgrade discards this script's
+# output, so a silent re-point would be an unannounced replacement.
+mkdir -p "$PINSB/foreign/alpha"
+printf -- '---\nname: alpha\n---\nsomeone else\n' > "$PINSB/foreign/alpha/SKILL.md"
+ln -snf "$PINSB/foreign/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "REPIN leaves a foreign link alone (it is not ours to move)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/foreign/alpha' ]"
+# The fixture above has no `skills/` segment, so it is rejected by the cheapest
+# clause and proves only that one. Another package that DOES lay itself out as
+# <root>/skills/<name> - the obvious shape for anything shipping Claude skills -
+# reaches the rest of the test, and gutting those clauses survived a mutation
+# run against the fixture above alone.
+mkdir -p "$PINSB/otherpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother package\n' > "$PINSB/otherpkg/skills/alpha/SKILL.md"
+ln -snf "$PINSB/otherpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…including one laid out as <root>/skills/<name> but not a jjstack tree" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/otherpkg/skills/alpha' ]"
+# …and still moves one that IS ours, or the gate has disabled the feature.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still moves a link from a previous jjstack source" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+
 # --path-format arrived in git 2.31. On this machine git is newer, so the
 # fallback below it is code no test on this box would ever execute - it
 # survived a mutation run that deleted it entirely, which is the definition of

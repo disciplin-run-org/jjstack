@@ -66,10 +66,25 @@ bin/jjstack-skills-pin v0.42.0      # or to a tag, branch or sha
 
 `jjstack-upgrade` advances it for you after a pull. Hooks are installed by
 copy for the same reason and have been since the permission gate landed; this
-is the skills half of that decision. It is a worktree rather than a copy
-because skills are edited constantly during development, and an install step
-between every edit and every test gets worked around. Your checkout stays
-yours: edit any branch you like, and nothing goes live until you pin it.
+is the skills half of that decision.
+
+It is a worktree rather than a copy because the served tree stays a real git
+tree: `VERSION`, `git show origin/main:VERSION` and the update check keep
+working with no special case, advancing is one `git checkout --detach`, and
+going back to any earlier release is the same command with a tag. Your
+checkout is never touched by any of it.
+
+What it does **not** buy you is editing a skill and having the change be live.
+Testing a change on the live tree means committing it and re-pinning:
+
+```bash
+git commit -am "wip"
+bin/jjstack-skills-pin HEAD      # serve your branch, deliberately
+bin/jjstack-skills-pin           # put the release back
+```
+
+That is an install step, just a git-shaped one. It is the price of the
+machine not following your working tree by accident.
 
 Without this, a `git checkout` in the maintainer's clone silently changed what
 every session on the box executed. It happened: an in-flight pull request
