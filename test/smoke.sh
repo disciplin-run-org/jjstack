@@ -89,6 +89,8 @@ shopt -qo pipefail
 hcheck "HARNESS: ...and back ON when the assertion returns" "$?" 0
 h_pfx=$( pass=0; fail=0; CK_PREFIX='[x] '; check "probe" "true" | grep -c '\[x\] probe' )
 hcheck "HARNESS: a run label reaches the verdict line" "$h_pfx" 1
+h_pfxf=$( pass=0; fail=0; CK_PREFIX='[x] '; check "probe" "false" | grep -c '\[x\] probe' )
+hcheck "HARNESS: ...on a failing assertion too, where the label matters most" "$h_pfxf" 1
 
 # ── The sandbox ──────────────────────────────────────────────────────
 # One throwaway $HOME for the WHOLE file, exported before the first assertion.
@@ -3326,7 +3328,7 @@ done > "$SANDBOX/adr_ids_bad.txt"
 check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
       "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
 
-echo "== 16. the round refuses to publish against a moved head =="
+echo "== 16. the reference a treeless reviewer is sent to carries the procedure =="
 # The executed head-check contract runs per skill inside review_skill_contract
 # (section 9). What stays here is the reference it sends a treeless reviewer to.
 # The reference the skill sends a treeless reviewer to must actually carry the
