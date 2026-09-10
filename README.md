@@ -48,7 +48,10 @@ name). `bin/jjstack-verify-skills` fails on an undeclared collision and on a
 stale declaration; the built-in list it reads is data in
 `references/claude-code-builtins.txt`, regenerated from the installed binary
 by `bin/jjstack-builtins-refresh`, and the check warns when your Claude Code
-is newer than the list. It runs on every pull request.
+is newer than the list. It also refuses a `$1`-shaped token in a skill body,
+because the loader replaces any `$<number>` with a word of the invocation
+before the model reads the file, inside code fences too; an argument you mean
+is written `$ARGUMENTS[N]`. It runs on every pull request.
 
 ### Which tree is live
 

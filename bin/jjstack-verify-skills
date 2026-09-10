@@ -19,6 +19,10 @@
 #   8. a continuation mechanism (the QM resume order, the handover slot)
 #      appearing in a skill that is not allowed to resume work — the defect
 #      that made /save-and-clear roll a session over instead of clearing it
+#   9. a `$<number>` in a skill body: the loader replaces it with a word of
+#      the invocation before the model reads the file, code fences included
+#      (a dollar amount reads wrong; a shell snippet runs wrong). An
+#      argument the author means is written $ARGUMENTS or $ARGUMENTS[N].
 #
 # Scope note: a directory under skills/ with no SKILL.md is not a skill
 # and is skipped — git cannot track an empty directory, so these are
@@ -327,6 +331,36 @@ while IFS=$'\t' read -r pat primary allowed; do
     ok "$pat [$primary] — carried by: $found"
   fi
 done < "$TMP/continuation"
+
+echo "== 9. no SKILL.md body carries a positional placeholder =="
+# The loader substitutes any $<number> ($0, $1, $10 ...) and $ARGUMENTS with
+# the words of the slash-command invocation before the model sees the file,
+# and it does so inside code fences too. Measured 2026-06-26 on Claude Code
+# 2.1.193: `/consensus <question>` rendered its own H1 as "(local CLIs,
+# ~Stance:)" and its fenced verdict template as "Cost: ~Stance:". A dollar
+# amount is the usual way in; a shell snippet with awk '{print $2}' is the
+# dangerous one, because it runs. The frontmatter is NOT rewritten (the same
+# session's skill listing shows the description verbatim), so only the body
+# is read, and a file whose frontmatter does not open on line 1 is all body.
+# The loader's closing `---` is not line-anchored and takes trailing spaces,
+# so the frontmatter ends at the first later line CONTAINING `---`, and that
+# line itself is read as body: conservative on both sides. Review executed
+# the anchored form and it hid a whole body behind a `--- ` close.
+# $ARGUMENTS and $ARGUMENTS[N] are the loader's own forms for an argument
+# the author means, and are not hits; there is no opt-out beyond them. A
+# backslash before the dollar is undocumented and counts as a hit.
+while read -r d; do
+  f="$REPO/skills/$d/SKILL.md"
+  fm_end=$(awk 'NR == 1 && !/^---$/ { print 0; done = 1; exit }
+                NR > 1 && /---/ { print NR - 1; done = 1; exit }
+                END { if (!done) print 0 }' "$f")
+  grep -noE '\$[0-9]+' "$f" 2>/dev/null | awk -F: -v s="$fm_end" '$1 > s' > "$TMP/hits"
+  if [ -s "$TMP/hits" ]; then
+    while IFS=: read -r ln tok; do
+      bad "$d:$ln carries $tok, which the loader replaces with a word of the invocation (code fences included); write the number in words, or use \$ARGUMENTS[N] for an argument you mean"
+    done < "$TMP/hits"
+  else ok "$d — no positional placeholder in the body"; fi
+done < "$TMP/skills"
 
 echo
 if [ "$fails" -eq 0 ]; then
