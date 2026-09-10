@@ -1,5 +1,5 @@
 ---
-id: AR-7
+id: AR-8
 title: The live skill tree is a pinned worktree, never a working checkout
 status: accepted
 spec_refs: []
@@ -10,7 +10,7 @@ created: 2026-09-10T05:24:48+00:00
 updated: 2026-09-10T05:24:48+00:00
 ---
 
-# AR-7: The live skill tree is a pinned worktree, never a working checkout
+# AR-8: The live skill tree is a pinned worktree, never a working checkout
 
 ## Context
 

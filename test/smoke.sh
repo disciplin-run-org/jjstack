@@ -2079,9 +2079,18 @@ SETUP_NC="$SANDBOX/setup-nocomments.sh"
 sed 's/#.*//' "$DIR/setup" > "$SETUP_NC"
 check "setup invokes the prune script (code, not a comment)" \
       "grep -q 'bin/jjstack-prune-stale-links' '$SETUP_NC'"
-printf '%s\n' '"$SKILLS_DIR" "$JJSTACK_DIR"' > "$SANDBOX/prune-args.txt"
-check "…and hands it the skills dir and this repo" \
+printf '%s\n' '"$SKILLS_DIR" "$prune_root"' > "$SANDBOX/prune-args.txt"
+check "…and hands it the skills dir and a repo root" \
       "grep -qFf '$SANDBOX/prune-args.txt' '$SETUP_NC'"
+# The roots are what decide whether the prune matches anything at all: it
+# recognises a link by whether the target resolves inside the root it is
+# given. With the live tree pinned, links resolve into the PIN, so a prune
+# handed only the checkout matches nothing and reports success having done
+# nothing - the exact no-op this script was extracted from `setup` to prevent.
+check "…and the roots include the served tree" \
+      "grep -q 'PRUNE_ROOTS=(\"\$SKILL_SRC\")' '$SETUP_NC'"
+check "…and the checkout too, for links left by an install before the pin" \
+      "grep -q 'PRUNE_ROOTS+=(\"\$JJSTACK_DIR\")' '$SETUP_NC'"
 
 # A blank line inside a markdown table ENDS it, and the rows below render as
 # raw pipe text. Editing the /review row in this PR introduced exactly that on
@@ -2466,6 +2475,350 @@ printf 'x\n' | TM_WORKER_NAME= bash "$RS" --cwd "$W" write >/dev/null
 # nothing — which would read as "the control passed".
 PATH="$SHIM:$REAL_PATH" TM_WORKER_NAME= bash "$RS" --cwd "$W" status >/dev/null 2>&1
 check "…and the probe does see one when a handover exists (control)" "[ -s '$FORKLOG' ]"
+echo "== 14. the skills pin: the live tree is not a working checkout =="
+# ~/.claude/skills/jjstack is what every session on the machine loads. Linked
+# at a development clone it serves whatever branch that clone sits on. Measured
+# on 2026-09-10: an in-flight PR branch was this machine's /review for hours,
+# and the reviewer of that very PR had to pin a worktree by hand to produce a
+# verdict that could say which reviewer produced it.
+#
+# Driven END TO END against a throwaway origin+clone inside the sandbox, not
+# by grepping the scripts: the defect this prevents is a BEHAVIOUR (a branch
+# reaching the served tree), and the two previous attempts in this area were
+# both scripts that read correctly and did nothing.
+PINBIN="$BIN/jjstack-skills-pin"
+PINSB="$SANDBOX/pin"; mkdir -p "$PINSB"
+git init -q --bare "$PINSB/origin"
+git clone -q "$PINSB/origin" "$PINSB/work" 2>/dev/null
+mkdir -p "$PINSB/work/skills/alpha" "$PINSB/work/bin"
+# The fixture carries the real scripts, because the behaviour under test is
+# how they answer each other. A fixture without them proved only that a
+# missing resolver falls back - which is the fallback, not the feature.
+cp "$BIN/jjstack-skills-pin" "$BIN/jjstack-fix-symlinks" "$PINSB/work/bin/"
+echo "0.1.0" > "$PINSB/work/VERSION"
+printf -- '---\nname: alpha\n---\nRELEASE\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm init
+git -C "$PINSB/work" branch -q -M main
+git -C "$PINSB/work" push -q -u origin main 2>/dev/null
+pin() { JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" "$@"; }
+
+pin main >/dev/null 2>&1; _rc=$?
+check "the pin is created from a clone" "[ $_rc -eq 0 ]"
+SERVED="$(pin --resolve)"
+check "…and --resolve names it, not the checkout" "[ \"$SERVED\" != \"$PINSB/work\" ]"
+check "…and it is a real git tree, so VERSION and update-check still work" \
+      "git -C '$SERVED' rev-parse --git-dir >/dev/null 2>&1 && [ -f '$SERVED/VERSION' ]"
+check "…reported by --status with a sha" "pin --status | grep -qE 'pinned [0-9a-f]{7}'"
+
+# THE LOAD-BEARING ASSERTION. Everything else in this section is scaffolding
+# for it: a developer switches branch and edits a skill, and the served tree
+# must not change. This is the exact scenario that occurred on 2026-09-10.
+git -C "$PINSB/work" checkout -q -b wip
+printf -- '---\nname: alpha\n---\nIN-FLIGHT\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam wip
+check "a branch checked out in the clone does not reach the served tree" \
+      "! grep -q IN-FLIGHT '$SERVED/skills/alpha/SKILL.md'"
+check "…and the served tree still holds the release text (not merely absent)" \
+      "grep -q RELEASE '$SERVED/skills/alpha/SKILL.md'"
+check "…while the developer's checkout really did change (anti-vacuity floor)" \
+      "grep -q IN-FLIGHT '$PINSB/work/skills/alpha/SKILL.md'"
+
+# jjstack-fix-symlinks runs from the update-check that almost every skill
+# preamble calls, so it is the most frequently executed writer of these links.
+# Writing the checkout path there would undo the pin within one session.
+mkdir -p "$HOME/.claude/skills"
+ln -snf "$SERVED/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "the per-session symlink repairer leaves a pinned link alone" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+# …and still does the job it exists for: a link pointing into gstack is ours
+# to repair, and repairing it must land on the PIN, not on the checkout.
+ln -snf "$HOME/.claude/skills/gstack/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still repairs a gstack-clobbered link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" != '$HOME/.claude/skills/gstack/alpha' ]"
+check "…onto the pin rather than the checkout" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$SERVED/skills/alpha' ]"
+
+# Advancing is deliberate and idempotent.
+git -C "$PINSB/work" checkout -q main
+printf -- '---\nname: alpha\n---\nRELEASE2\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam r2
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+pin main >/dev/null 2>&1
+check "advancing the pin moves the served tree" "grep -q RELEASE2 '$SERVED/skills/alpha/SKILL.md'"
+pin main 2>&1 | grep -q 'already at'; _rc=$?
+check "…and a second advance to the same ref says so rather than churning" "[ $_rc -eq 0 ]"
+
+# Error paths. Each must be DISTINCT, because setup branches on them: 3 means
+# serve the checkout and say so, 4 means the ref was wrong.
+pin no-such-ref >/dev/null 2>&1; _rc=$?
+check "a ref that does not exist exits 4, and does not pin" "[ $_rc -eq 4 ]"
+mkdir -p "$PINSB/nogit"
+JJSTACK_DIR="$PINSB/nogit" JJSTACK_STATE_DIR="$PINSB/state2" "$PINBIN" >/dev/null 2>&1; _rc=$?
+check "a non-clone install exits 3 (tarball installs are supported)" "[ $_rc -eq 3 ]"
+check "…and --resolve then names the checkout, so links still work" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state2' '$PINBIN' --resolve)\" = '$PINSB/nogit' ]"
+pin --bogus >/dev/null 2>&1; _rc=$?
+check "an unknown flag exits 2, distinct from both" "[ $_rc -eq 2 ]"
+# An interrupted `worktree add` leaves a directory that is a git tree with no
+# skills in it. Served, that is an empty skill tree and every skill vanishes.
+rm -rf "$PINSB/state/skills-pin/skills"
+check "a pin with no skills/ is not resolved as usable" \
+      "[ \"\$(pin --resolve)\" = '$PINSB/work' ]"
+
+# setup and fix-symlinks must ASK the resolver rather than each deciding.
+check "setup points the live links at the resolved tree, not the checkout" \
+      "grep -q 'jj_target=\"\$SKILL_SRC/skills/\$skill_name\"' '$DIR/setup'"
+check "…and iterates the resolved tree's skills" \
+      "grep -q 'for skill_dir in \"\$SKILL_SRC\"/skills' '$DIR/setup'"
+check "…and prunes against it, or the prune matches nothing and is silent" \
+      "grep -q 'PRUNE_ROOTS=' '$DIR/setup'"
+# Spelling-independent, because the first version of this guard grepped for
+# the literal call and went red when the executed tests above forced the call
+# to change shape - a guard that tracked the wording rather than the property.
+# What must hold: it consults a resolver, and it never writes a link that
+# points into the checkout's own skills directory.
+check "fix-symlinks consults the resolver" \
+      "grep -q -- '--resolve' '$BIN/jjstack-fix-symlinks'"
+check "…and never writes a link target under the checkout" \
+      "! grep -q 'jj_target=\"\$JJSTACK_DIR/skills' '$BIN/jjstack-fix-symlinks'"
+check "…nor iterates the checkout's skills" \
+      "! grep -q 'for skill_dir in \"\$JJSTACK_DIR\"/skills' '$BIN/jjstack-fix-symlinks'"
+# ── the three blocking findings from PR #41 round 1, each as its repro ──
+# All three are about the UPGRADE path, which is the only way a pinned install
+# ever moves. A pin nobody can advance is worse than no pin: it freezes the
+# machine on one commit and the freeze is invisible.
+cp "$BIN/jjstack-upgrade" "$PINSB/work/bin/"
+git -C "$PINSB/work" add -A
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qm tools
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" remote set-head origin main >/dev/null 2>&1
+pin main >/dev/null 2>&1
+UPG="$PINSB/state/skills-pin/bin/jjstack-upgrade"
+
+# FINDING 1. Run through the served link, $JJSTACK_DIR is the DETACHED pin and
+# every branch precondition fails: `ABORT: on branch 'DETACHED'`. A pinned
+# install could not be upgraded at all, including by /jjstack-repair, whose
+# job is to fix an install without the user knowing where the clone is.
+UP_OUT="$(JJSTACK_STATE_DIR="$PINSB/state" "$UPG" 2>&1)"; _rc=$?
+check "upgrade run through the served (detached) tree does not abort" "[ $_rc -eq 0 ]"
+check "…and says nothing about a DETACHED branch" "! printf '%s' \"$UP_OUT\" | grep -q DETACHED"
+check "…because it resolves the source clone and says which" \
+      "printf '%s' \"$UP_OUT\" | grep -q 'upgrading the clone at'"
+check "--source names the clone when asked from inside the worktree" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+check "…and is a no-op when already given the clone" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+
+# FINDING 2. The pin is a separate tree and can be behind a CURRENT clone -
+# the state every install is in right after this change lands, and after any
+# manual `git pull`. `already up-to-date` spoke for the clone and exited
+# before the pin was touched.
+printf -- '---\nname: alpha\n---\nUPGRADED\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam upgraded
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+check "the pin starts behind the clone (anti-vacuity floor)" \
+      "! grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+UP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "a current clone with a stale pin still advances the pin" \
+      "grep -q UPGRADED '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+# The old message claimed something it had not checked. It must scope itself.
+check "…and the up-to-date message speaks only for the clone" \
+      "! printf '%s' \"$UP_OUT\" | grep -qx 'already up-to-date'"
+
+# FINDING 3. The ROOT link is how ~74 runtime references reach references/ and
+# bin/. jjstack-fix-symlinks skips it by name and always has, so an upgrade
+# moved the fifty skill links to the pin and left the root link on the
+# checkout: half migrated, and the half left behind is the one carrying the
+# reference library.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+check "the migration fixture starts with BOTH links on the checkout (floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "an upgrade moves the ROOT link onto the pin, not only the skill links" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+check "…and the skill links too, so the install is not half migrated" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+check "…so references/ resolves into the served tree" \
+      "[ -d '$HOME/.claude/skills/jjstack/skills' ]"
+# --link must not eat a real directory: a user who cloned jjstack straight to
+# ~/.claude/skills/jjstack has no link to move, and rm -rf on that is the
+# user's whole install.
+mkdir -p "$PINSB/realdir/jjstack"
+echo keep > "$PINSB/realdir/jjstack/marker"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINBIN" --link "$PINSB/realdir" >/dev/null 2>&1
+check "--link refuses to replace a real directory with a symlink" \
+      "[ -d '$PINSB/realdir/jjstack' ] && [ ! -L '$PINSB/realdir/jjstack' ]"
+check "…and leaves its contents alone" "[ -f '$PINSB/realdir/jjstack/marker' ]"
+# The assertions above BOTH pass with the guard deleted, because `ln -snf`
+# onto an existing directory writes a link INSIDE it rather than replacing it.
+# The directory survives, its marker survives, and the install is silently
+# wrong: $dir/jjstack/skills-pin now exists and nothing resolves through it.
+# Mutation found this; reading the assertions did not.
+check "…and creates nothing inside it (the guard, not ln's behaviour)" \
+      "[ \$(ls -A '$PINSB/realdir/jjstack' | wc -l) -eq 1 ]"
+check "--link is idempotent and says so on a second run" \
+      "JJSTACK_DIR='$PINSB/work' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --link '$HOME/.claude/skills' | grep -q 'already at'"
+
+check "the upgrade advances the served tree on both exits" \
+      "[ \$(grep -c 'sync_served_tree' '$BIN/jjstack-upgrade') -ge 3 ]"
+
+# ── PR #41 round 2: a dry run may not write ─────────────────────────────────
+# The equal-sha exit ran the sync before --check was ever consulted, so
+# `jjstack-upgrade --check` advanced the pin and moved the root and skill
+# links. A dry run that writes is worse than one that lies: it is the command
+# a person runs precisely because they are not ready to change anything.
+# Executed, not read: set the state up so a write would be VISIBLE in two
+# independent places, run --check, and require both to be untouched.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+printf -- '---\nname: alpha\n---\nDRYRUN\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam dryrun
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+# The floor: the pin must actually be behind, and the root link must actually
+# be on the checkout, or "nothing changed" is true of a state where there was
+# nothing to change.
+check "the dry-run fixture has a stale pin (anti-vacuity floor)" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and a root link still on the checkout (second floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+DRY_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" --check 2>&1)"
+check "--check does not advance the pin" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…does not move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+check "…does not move the skill links either" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/work/skills/alpha' ]"
+# Silence would also pass the three assertions above. It must still REPORT.
+check "…and still says what it would have done" \
+      "printf '%s' \"$DRY_OUT\" | grep -q WOULD_SYNC"
+# And the real run, from the same state, must still do it - or the guard has
+# simply disabled the feature.
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "…while a real run from the same state does advance the pin" \
+      "grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and does move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+
+# --source degrades to the checkout on any layout it cannot read, which is the
+# pre-existing abort: loud, never a wrong directory. A bare repo is the case
+# reachable without a submodule fixture.
+git init -q --bare "$PINSB/bare.git"
+check "--source returns the tree unchanged for a layout it cannot read" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/bare.git' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/bare.git' ]"
+check "…and for a directory that is not a repo at all" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/nogit' ]"
+
+# ── PR #41 round 1 P2s: the paths that were never executed ──────────────────
+# setup was covered only by greps, and the reviewer showed four mutants
+# surviving because of it - including the resolver-beside-itself bug that AR-7
+# credits an executed test with catching. These run the real thing.
+
+# The manifest is read through $SKILLS_DIR/jjstack, and Step 2 re-points that
+# link. Read after the move it resolves into the served tree, finds no
+# manifest, and the rewritten one carries no gstack originals - so `uninstall`
+# REMOVES the gstack skills it should RESTORE. Destructive, and it fires on the
+# first setup after the pin ships.
+check "the manifest read happens before the link is re-pointed" \
+      "[ \$(grep -n 'EXISTING_ORIGINALS\[' '$DIR/setup' | head -1 | cut -d: -f1) -lt \$(grep -n 'ln -snf \"\$SKILL_SRC\" \"\$SKILLS_DIR/jjstack\"' '$DIR/setup' | cut -d: -f1) ]"
+printf '%s\n' 'EXISTING_ORIGINALS["$name"]=' > "$SANDBOX/manif-assign.txt"
+check "…and setup no longer reads it a second time, after the move" \
+      "[ \$(grep -cFf '$SANDBOX/manif-assign.txt' '$DIR/setup') -eq 1 ]"
+check "…and that pattern matches something at all (anti-vacuity floor)" \
+      "grep -qFf '$SANDBOX/manif-assign.txt' '$DIR/setup'"
+
+# setup must ASK what is served. Exit 1 (dirty) and exit 4 (bad ref) leave a
+# healthy pin in place that --resolve still names; inferring "serve the
+# checkout" from the exit code moved 51 links there while fix-symlinks kept
+# answering the pin.
+check "setup asks the resolver rather than inferring from the exit code" \
+      "grep -q 'SKILL_SRC=\"\$(\"\$JJSTACK_DIR/bin/jjstack-skills-pin\" --resolve' '$DIR/setup'"
+check "…and no longer assigns the pin path from its own variable" \
+      "! grep -q 'SKILL_SRC=\"\$PIN_DIR\"' '$DIR/setup'"
+check "…and distinguishes a served-but-unadvanced pin from no pin at all" \
+      "grep -q 'could not be advanced' '$DIR/setup'"
+check "…naming the tarball case separately from any other failure" \
+      "grep -q 'No git clone here' '$DIR/setup'"
+
+# REPIN must not take a link the user chose. setup refuses that same link by
+# name and says to remove it manually; the upgrade discards this script's
+# output, so a silent re-point would be an unannounced replacement.
+mkdir -p "$PINSB/foreign/alpha"
+printf -- '---\nname: alpha\n---\nsomeone else\n' > "$PINSB/foreign/alpha/SKILL.md"
+ln -snf "$PINSB/foreign/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "REPIN leaves a foreign link alone (it is not ours to move)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/foreign/alpha' ]"
+# The fixture above has no `skills/` segment, so it is rejected by the cheapest
+# clause and proves only that one. Another package that DOES lay itself out as
+# <root>/skills/<name> - the obvious shape for anything shipping Claude skills -
+# reaches the rest of the test, and gutting those clauses survived a mutation
+# run against the fixture above alone.
+mkdir -p "$PINSB/otherpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother package\n' > "$PINSB/otherpkg/skills/alpha/SKILL.md"
+ln -snf "$PINSB/otherpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…including one laid out as <root>/skills/<name> but not a jjstack tree" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/otherpkg/skills/alpha' ]"
+# The case the earlier gate could not refuse: a real GIT REPO of skills that
+# is not jjstack. Every skills repo anyone has cloned satisfies "has a .git and
+# a skills/ directory" - getsentry-skills on this machine does - so the old
+# test rested on no such repo happening to share a skill name with jjstack,
+# which is a fact about the disk, not about the code.
+mkdir -p "$PINSB/gitpkg/skills/alpha"
+printf -- '---\nname: alpha\n---\nanother skills repo\n' > "$PINSB/gitpkg/skills/alpha/SKILL.md"
+echo "9.9.9" > "$PINSB/gitpkg/VERSION"
+git init -q "$PINSB/gitpkg"
+ln -snf "$PINSB/gitpkg/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and a git repo of skills that is not jjstack (has .git AND VERSION)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/gitpkg/skills/alpha' ]"
+# The upgrade is the only caller that sets JJSTACK_REPIN_LINKS, and it used to
+# send this script's output to /dev/null - so the line announcing a moved link
+# was written for a reader who never received it.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+RP_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" 2>&1)"
+check "the upgrade surfaces a re-pinned link instead of discarding it" \
+      "printf '%s' \"$RP_OUT\" | grep -q REPINNED"
+# …and still moves one that IS ours, or the gate has disabled the feature.
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" JJSTACK_REPIN_LINKS=1 \
+  "$PINSB/work/bin/jjstack-fix-symlinks" >/dev/null 2>&1
+check "…and still moves a link from a previous jjstack source" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/state/skills-pin/skills/alpha' ]"
+
+# --path-format arrived in git 2.31. On this machine git is newer, so the
+# fallback below it is code no test on this box would ever execute - it
+# survived a mutation run that deleted it entirely, which is the definition of
+# untested. A stub git that rejects --path-format and forwards everything else
+# to the real one puts an old git in front of the script without needing one.
+GITSTUB="$SANDBOX/gitstub"; mkdir -p "$GITSTUB"
+REALGIT="$(command -v git)"
+cat > "$GITSTUB/git" <<STUB
+#!/bin/sh
+# Pre-2.31 git: --path-format is not a known option.
+for a in "\$@"; do
+  case "\$a" in --path-format=*)
+    echo "error: unknown option \\\`\${a#--}'" >&2; exit 129 ;;
+  esac
+done
+exec "$REALGIT" "\$@"
+STUB
+chmod +x "$GITSTUB/git"
+check "the stub git really refuses --path-format (control)" \
+      "! PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1"
+check "…and still answers the plain form (control)" \
+      "PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --git-common-dir >/dev/null 2>&1"
+check "--source finds the clone from a worktree on a pre-2.31 git" \
+      "[ \"\$(PATH='$GITSTUB:$PATH' JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
