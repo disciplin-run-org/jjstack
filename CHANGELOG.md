@@ -91,9 +91,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   nothing checked. Two rounds on this repo were published that way. `/review` now
   asks GitHub what the pull request head is before it posts, compares it to the
   sha the round started from, and refuses to publish a stale report instead of
-  hand-patching it. If it cannot find out — no network, a token without access —
-  it says so, rather than telling you the author pushed and sending the reviewer
-  round the loop again.
+  hand-patching it. Before the round starts it also checks that the tree being
+  read is that commit, so a tree left over from an earlier round cannot be
+  reviewed under a newer head's name. If it cannot find out — no network, a
+  token without access — it says so, rather than telling you the author pushed
+  and sending the reviewer round the loop again.
 
   The check asks GitHub about the pull request itself, not about a branch in a
   local clone, because the obvious local shortcuts answer a different question:
@@ -102,8 +104,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   the reviewer's own directory, which is not a clone of anything.
 
 - **The reviewer's checkout is written down.** The independent reviewer runs
-  from its own directory and holds no checkout of anything, so every round has
-  to materialise the pull request head and then remove it. That was being
+  from its own directory and holds no clone of the repo it reviews, so every
+  round has to materialise the pull request head and then remove it. That was being
   retyped from memory, which is why stale worktrees accumulated from rounds that
   had ended weeks earlier. `references/independent-review.md` now carries the
   commands, and `/review` points at them when it starts with no tree to work
