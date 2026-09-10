@@ -2278,6 +2278,78 @@ check "--link is idempotent and says so on a second run" \
 check "the upgrade advances the served tree on both exits" \
       "[ \$(grep -c 'sync_served_tree' '$BIN/jjstack-upgrade') -ge 3 ]"
 
+# ── PR #41 round 2: a dry run may not write ─────────────────────────────────
+# The equal-sha exit ran the sync before --check was ever consulted, so
+# `jjstack-upgrade --check` advanced the pin and moved the root and skill
+# links. A dry run that writes is worse than one that lies: it is the command
+# a person runs precisely because they are not ready to change anything.
+# Executed, not read: set the state up so a write would be VISIBLE in two
+# independent places, run --check, and require both to be untouched.
+ln -snf "$PINSB/work" "$HOME/.claude/skills/jjstack"
+ln -snf "$PINSB/work/skills/alpha" "$HOME/.claude/skills/alpha"
+printf -- '---\nname: alpha\n---\nDRYRUN\n' > "$PINSB/work/skills/alpha/SKILL.md"
+git -C "$PINSB/work" -c user.email=t@t -c user.name=t commit -qam dryrun
+git -C "$PINSB/work" push -q origin main 2>/dev/null
+git -C "$PINSB/work" fetch -q origin main 2>/dev/null
+# The floor: the pin must actually be behind, and the root link must actually
+# be on the checkout, or "nothing changed" is true of a state where there was
+# nothing to change.
+check "the dry-run fixture has a stale pin (anti-vacuity floor)" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and a root link still on the checkout (second floor)" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+DRY_OUT="$(JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" --check 2>&1)"
+check "--check does not advance the pin" \
+      "! grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…does not move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/work' ]"
+check "…does not move the skill links either" \
+      "[ \"\$(readlink '$HOME/.claude/skills/alpha')\" = '$PINSB/work/skills/alpha' ]"
+# Silence would also pass the three assertions above. It must still REPORT.
+check "…and still says what it would have done" \
+      "printf '%s' \"$DRY_OUT\" | grep -q WOULD_SYNC"
+# And the real run, from the same state, must still do it - or the guard has
+# simply disabled the feature.
+JJSTACK_DIR="$PINSB/work" JJSTACK_STATE_DIR="$PINSB/state" "$PINSB/work/bin/jjstack-upgrade" >/dev/null 2>&1
+check "…while a real run from the same state does advance the pin" \
+      "grep -q DRYRUN '$PINSB/state/skills-pin/skills/alpha/SKILL.md'"
+check "…and does move the root link" \
+      "[ \"\$(readlink '$HOME/.claude/skills/jjstack')\" = '$PINSB/state/skills-pin' ]"
+
+# --source degrades to the checkout on any layout it cannot read, which is the
+# pre-existing abort: loud, never a wrong directory. A bare repo is the case
+# reachable without a submodule fixture.
+git init -q --bare "$PINSB/bare.git"
+check "--source returns the tree unchanged for a layout it cannot read" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/bare.git' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/bare.git' ]"
+check "…and for a directory that is not a repo at all" \
+      "[ \"\$(JJSTACK_DIR='$PINSB/nogit' JJSTACK_STATE_DIR='$PINSB/state3' '$PINBIN' --source)\" = '$PINSB/nogit' ]"
+
+# --path-format arrived in git 2.31. On this machine git is newer, so the
+# fallback below it is code no test on this box would ever execute - it
+# survived a mutation run that deleted it entirely, which is the definition of
+# untested. A stub git that rejects --path-format and forwards everything else
+# to the real one puts an old git in front of the script without needing one.
+GITSTUB="$SANDBOX/gitstub"; mkdir -p "$GITSTUB"
+REALGIT="$(command -v git)"
+cat > "$GITSTUB/git" <<STUB
+#!/bin/sh
+# Pre-2.31 git: --path-format is not a known option.
+for a in "\$@"; do
+  case "\$a" in --path-format=*)
+    echo "error: unknown option \\\`\${a#--}'" >&2; exit 129 ;;
+  esac
+done
+exec "$REALGIT" "\$@"
+STUB
+chmod +x "$GITSTUB/git"
+check "the stub git really refuses --path-format (control)" \
+      "! PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1"
+check "…and still answers the plain form (control)" \
+      "PATH='$GITSTUB:$PATH' git -C '$PINSB/work' rev-parse --git-common-dir >/dev/null 2>&1"
+check "--source finds the clone from a worktree on a pre-2.31 git" \
+      "[ \"\$(PATH='$GITSTUB:$PATH' JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built

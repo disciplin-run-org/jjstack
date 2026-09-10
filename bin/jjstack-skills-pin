@@ -68,8 +68,23 @@ case "${1:-}" in
     # instead. --git-common-dir names the shared .git for every worktree; its
     # parent is the main worktree. Prints $JJSTACK_DIR unchanged when it is
     # already the clone, or when there is no git at all.
+    # --path-format arrived in git 2.31; without it the flag is an error and
+    # older git would fall through to the checkout - which is the old abort,
+    # loud rather than wrong, but needlessly so. The fallback asks without the
+    # flag and resolves the answer, which may be relative, against the tree.
     _cd="$(git -C "$JJSTACK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    if [ -n "$_cd" ] && [ "$(basename "$_cd")" = ".git" ]; then
+    if [ -z "$_cd" ]; then
+      _cd="$(git -C "$JJSTACK_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+      case "$_cd" in
+        ""|/*) ;;
+        *) _cd="$(cd "$JJSTACK_DIR" && cd "$(dirname "$_cd")" 2>/dev/null && pwd)/$(basename "$_cd")" ;;
+      esac
+    fi
+    # Only a common dir literally named .git names a main worktree one level
+    # up. A bare repo, a submodule's .git file, or any other layout takes the
+    # else branch and returns the tree unchanged - the caller then behaves
+    # exactly as it did before --source existed.
+    if [ -n "$_cd" ] && [ "$(basename "$_cd")" = ".git" ] && [ -d "$(dirname "$_cd")" ]; then
       echo "$(dirname "$_cd")"
     else
       echo "$JJSTACK_DIR"

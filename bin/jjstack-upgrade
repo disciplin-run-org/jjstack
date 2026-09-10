@@ -95,6 +95,19 @@ REMOTE_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH")
 # too, and the message says which of the two it is talking about.
 sync_served_tree() {
   [ -x "$PINBIN" ] || return 0
+  # A DRY RUN MAY NOT WRITE. The guard lives in the function rather than at the
+  # call sites, because the defect was a call site that forgot it: the
+  # equal-sha exit ran the sync before --check was ever consulted, so
+  # `jjstack-upgrade --check` advanced the pin and moved the root and skill
+  # links. Guarding here covers the call sites that exist and the ones added
+  # later, which is the difference between fixing the instance and the class.
+  if [ "$CHECK_ONLY" = true ]; then
+    local _cur _want
+    _cur="$("$PINBIN" --status 2>/dev/null || true)"
+    _want="$(git rev-parse --short "$1" 2>/dev/null || echo "$1")"
+    echo "WOULD_SYNC served tree to $_want (currently: ${_cur:-unknown})"
+    return 0
+  fi
   JJSTACK_DIR="$JJSTACK_DIR" "$PINBIN" "$1" || \
     echo "WARNING: skills pin not advanced; sessions still load the previous release"
   # The root link is how references/ and bin/ are reached and fix-symlinks
