@@ -2858,24 +2858,34 @@ check "the id counter matches the highest record on disk (it has read low twice)
 # every one of them.
 check "…and there are records to check at all (the glob is not empty)" \
       "[ \"\$(ls '$ADRD'/AR-*.md | wc -l)\" -ge 8 ]"
-# POSITIVE CONTROL, recovered rather than invented: the merge commit's own
-# broken tree, where AR-8 was a second copy of AR-7's decision.
+# POSITIVE CONTROLS. The specimens are the failures this repo actually
+# produced, FROZEN as fixtures rather than fetched from git at run time.
+# CI proved why: actions/checkout is a SHALLOW clone, so `git show <old-sha>`
+# found nothing and both controls failed — loudly, which is the right
+# direction, but a control that only works on a full clone is not a control.
+# Deepening CI would fix that and not the second problem: one specimen came
+# from a commit on this branch, which a SQUASH merge discards, so the control
+# would work in CI and then break on main forever. Frozen with provenance, a
+# reader can re-derive them while the history exists and the guard does not
+# depend on it.
 ADRFIX="$SANDBOX/adrfix"; mkdir -p "$ADRFIX"
-cp "$ADRD"/AR-*.md "$ADRFIX/"
-git -C "$DIR" show 7836454:architrix/adr/AR-8.md > "$ADRFIX/AR-8.md" 2>/dev/null
-awk '/^title: /{sub(/^title: /,""); print}' "$ADRFIX"/AR-*.md | sort > "$SANDBOX/adr_titles_bad.txt"
-check "the duplicate-title guard FIRES on the merge commit's own broken tree (control)" \
+grep -v '^#' "$DIR/test/fixtures/adr-duplicated-titles.txt" | grep -v '^$' \
+  | sort > "$SANDBOX/adr_titles_bad.txt"
+check "the duplicate-title fixture carries the two titles the merge produced" \
+      "[ \"\$(wc -l < '$SANDBOX/adr_titles_bad.txt')\" = 2 ]"
+check "the duplicate-title guard FIRES on the tree this repo actually produced (control)" \
       "[ \"\$(sort -u '$SANDBOX/adr_titles_bad.txt' | wc -l)\" != \"\$(wc -l < '$SANDBOX/adr_titles_bad.txt')\" ]"
-# COUNTER CONTROL, also recovered: at 68cac1e the counter read 2 with AR-6 on
-# disk. The next adr_create would have assigned AR-3 over a record in force.
-adr_old=$(git -C "$DIR" show 68cac1e:architrix/adr/.last_id 2>/dev/null)
+adr_old=$(grep -v '^#' "$DIR/test/fixtures/adr-drifted-last-id.txt" | grep -v '^$' | head -1)
 check "the counter guard FIRES on the value this repo actually shipped (control)" \
       "[ -n \"\$adr_old\" ] && [ \"\$adr_old\" != '$adr_max' ]"
-# ID-MISMATCH CONTROL. This one is CONSTRUCTED, not recovered, and the
-# distinction is worth stating: no commit in this repo ever shipped a file
-# whose id disagreed with its name, so there is no blob to recover. The
-# property is structural, so the specimen exhibits it directly.
+# ID-MISMATCH CONTROL. Nothing here was authored to match the pattern: the
+# specimen is AR-7 itself under a wrong filename, so the mismatch comes out of
+# the STRUCTURE. That is the axis that matters — derived from the artifact
+# rather than written from the pattern — not whether a blob was fetched. There
+# is no blob to fetch: no commit here has shipped this defect, because it is a
+# structural invariant rather than a past incident.
 cp "$ADRD/AR-7.md" "$ADRFIX/AR-99.md"
+cp "$ADRD"/AR-*.md "$ADRFIX/" 2>/dev/null || true
 for f in "$ADRFIX"/AR-*.md; do
   printf '%s\t%s\n' "$(basename "$f" .md)" "$(awk '/^id: /{print $2; exit}' "$f")"
 done > "$SANDBOX/adr_ids_bad.txt"
