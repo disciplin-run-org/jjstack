@@ -75,28 +75,30 @@ while [ "${CWD%/}" != "$CWD" ] && [ "$CWD" != "/" ]; do CWD="${CWD%/}"; done
 # The harness keys project state by the cwd with every slash turned into a
 # dash. Deriving it the same way here is what makes `transcript` able to find
 # the session logs the harness wrote.
-dashify() { printf '%s' "$1" | sed 's|/|-|g'; }
-
-PROJ_DIR="$HOME/.claude/projects/$(dashify "$CWD")"
+#
+# Parameter expansion rather than a sed pipeline, and a plain assignment rather
+# than a command substitution: `status` runs on EVERY prompt through the
+# UserPromptSubmit hook, and the answer is almost always "no handover". That
+# path now forks nothing — it is two expansions and a stat.
+PROJ_DIR="$HOME/.claude/projects/${CWD//\//-}"
 SLOT_DIR="$PROJ_DIR/rollover"
 
 # A worker name reaches this script from the environment, so it is untrusted
 # input for a path: anything outside the safe set becomes an underscore, and a
 # name that is only dots cannot become a directory traversal.
-slot_name() {
-  local n="${TM_WORKER_NAME:-}"
-  n="${n//[^A-Za-z0-9._-]/_}"
-  case "$n" in ''|.|..) n=session ;; esac
-  printf '%s' "$n"
-}
-
-SLOT="$SLOT_DIR/$(slot_name).md"
+SLOT_NAME="${TM_WORKER_NAME:-}"
+SLOT_NAME="${SLOT_NAME//[^A-Za-z0-9._-]/_}"
+case "$SLOT_NAME" in ''|.|..) SLOT_NAME=session ;; esac
+SLOT="$SLOT_DIR/$SLOT_NAME.md"
 
 # A slot is LIVE when it exists, is not empty, and is younger than the window.
+# The age test costs a fork, so it runs only once the cheap tests have already
+# said there is something to age.
 live_slot() {  # live_slot <max-age-days> -> 0 and prints the path
-  local days="$1"
+  local days="$1" hit
   [ -s "$SLOT" ] || return 1
-  find "$SLOT" -maxdepth 0 -mtime -"$days" -print -quit 2>/dev/null | grep -q . || return 1
+  hit=$(find "$SLOT" -maxdepth 0 -mtime -"$days" -print -quit 2>/dev/null)
+  [ -n "$hit" ] || return 1
   printf '%s\n' "$SLOT"
 }
 
