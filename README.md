@@ -110,6 +110,35 @@ enough. `references/independent-review.md` has the table, both sides of the
 protocol, and the branch-protection settings that make the rule a floor rather
 than prose.
 
+### Where the review runs
+
+The reviewer is a session in a different directory. Not a branch of your repo,
+not a second tab on the same tree: on this machine `~/PycharmProjects/Code-Review`,
+which holds a `CLAUDE.md`, an `.env` pointing `gh` at the reviewer's own
+credentials, and no clone of the repo under review.
+`references/independent-review.md` is where that directory is specified.
+
+That separation buys three things.
+
+**Distance.** The reviewer cannot quietly fix what it finds: what it holds is a
+copy of your head, not your branch, and it does not push. So a finding has to be
+written down and argued for instead. It is also a different context window: none
+of the reasoning that produced the code is present to rationalise it.
+
+**Your tree is never touched.** The review does not stash, switch, or check
+anything out in your repo. The reviewer works from its own copy of the pull
+request head, in its own directory, and runs the repo's real tooling there.
+Nothing of yours is at risk and there is nothing for you to clean up afterwards.
+
+**You keep working.** Request the review and carry on with the next thing. The
+reviewer is a standing session, so the round runs beside you and the verdict
+arrives as a GitHub review on the pull request, rather than as something you sit
+and watch. When it lands, `/receiving-code-review` is the other half of the loop.
+
+For the general case of a second session on another branch, an experiment, a
+long-running subagent, or a QA loop beside your feature work, `/worktrees` has
+the conventions.
+
 ---
 
 ## The Three Pillars
