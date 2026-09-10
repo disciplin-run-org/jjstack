@@ -12,13 +12,22 @@ because each has failed in the field.
 
 | Carrier | Reaches | Fails when |
 |---|---|---|
-| **The handover slot** (`bin/jjstack-rollover-slot`) | any successor in the same directory | never — it is a file on disk |
-| **The prompt hook** (`hooks/shared-memory.sh`) | a plain session, on its first prompt whatever the user types | the hook is not installed |
+| **The handover slot** (`bin/jjstack-rollover-slot`) | a successor in the same directory running under the same `$TM_WORKER_NAME` | the successor's worker name differs (a rename, or a session started outside `claude-tm`), or the slot is older than the seven-day window |
+| **The prompt hook** (`hooks/shared-memory.sh`) | a plain session, on its first prompt whatever the user types | the hook is not installed, or the slot it reads has already aged out |
 | **The QM resume order** | a worker, when QM dispatches it | the worker holds an in_flight item and dispatch is gated |
-| **The tubemail self-message** | a worker, via the successor's auto-`/sync-inbox` | the manager predates the auto-catchup commit |
+| **The tubemail self-message** | a worker, via the successor's auto-`/sync-inbox fresh` | the manager predates the auto-catchup commit, or a boundary marker was posted after it |
 
 A plain session gets the slot, the hook, and the line /rollover ends on.
 A worker gets those plus the resume order and the self-message.
+
+**The slot is not infallible, and the failure is silent by design.** It is
+keyed on the worker, so two workers in one directory never collide — and by
+the same token a successor under a different name sees nothing at all.
+`/resume-from-clear` then correctly reports "you are a new session" and
+stops, which is the right behaviour for a session that genuinely has no
+handover and the wrong outcome for one that does. If you rename a worker
+between the rollover and the restart, the handover does not travel; hand
+the slot path over by hand.
 
 ## What /rollover writes into the slot
 
@@ -57,7 +66,7 @@ jjstack-rollover-slot transcript      # newest log in this project dir
 At write time the newest log is the predecessor's own, which is what the
 successor needs.
 
-## Three rules the field taught, in the order they were learned
+## Four rules the field taught, in the order they were learned
 
 **1. Reference queued work, never inline it.** On 2026-07-04 a resume
 order that copied a queued QA duty into its "next actions" made the
@@ -73,7 +82,16 @@ already gives a clean context. With several carriers running, a delayed
 bootstrapped — observed the same day, and the re-bootstrap cost more than
 the rollover saved.
 
-**3. The transcript is authoritative; this file is an index into it.**
+**3. Post the session-boundary marker BEFORE the injection.** A fresh
+successor treats everything at or above the newest marker as settled and
+never reads it. Marker first and the predecessor's finished traffic is
+settled while the injection below it still arrives; marker last and you
+have hidden the message that bootstraps the session you are handing to.
+Use `tm_session_boundary`, never `tm_send` — `tm_send` delivers to the
+worker's channel, so the marker would land in the still-live session as a
+work order announcing that its own work is settled.
+
+**4. The transcript is authoritative; this file is an index into it.**
 The handover is a summary, and a summary is the failure mode. Where the
 two disagree the transcript wins. That is why the slot names the
 transcript path rather than trying to replace it.

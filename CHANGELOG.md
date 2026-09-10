@@ -40,6 +40,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   you are told exactly what to type; type something else first and your next
   session is reminded that a handover is waiting for it.
 
+  There was a second route by which the old work came back, and it is closed
+  too. A worker that restarts with a fresh context reads its own message
+  timeline to catch up, and with no memory to check against it could not tell
+  a finished order from an unanswered one, so it re-ran them. All three verbs
+  now mark the timeline as settled before they close, and a fresh session
+  reads only what arrived after that mark.
+
 ### Fixed
 
 - **`/receiving-code-review` refuses to merge a pull request with something

@@ -27,7 +27,7 @@
 #   path        [--cwd DIR]                     print the slot path (no writes)
 #   write       [--cwd DIR]                     stdin -> the slot; prints the path
 #   status      [--cwd DIR] [--max-age-days N]  print the path of a LIVE slot, else exit 1
-#   consume     [--cwd DIR]                     retire the slot; prints the path it retired
+#   consume     [--cwd DIR]                     retire the slot; prints the path it USED to be at
 #   transcript  [--cwd DIR] [--exclude ID]...   newest session log, excluding named ids
 #
 # No color red anywhere — unreadable on the target terminal.
@@ -45,7 +45,8 @@ usage: jjstack-rollover-slot [--cwd DIR] <verb> [options]
   path                            print the slot path for this cwd + worker
   write                           read the handover on stdin into the slot
   status [--max-age-days N]       print a live slot's path, else exit 1
-  consume                         retire the live slot, printing its path
+  consume                         retire the live slot; prints the path it was
+                                  at, which no longer exists afterwards
   transcript [--exclude ID]...    newest session log, minus the excluded ids
 
 The worker comes from $TM_WORKER_NAME; without one the slot is the
@@ -72,16 +73,47 @@ VERB="$1"; shift
 # different directory than the harness does for the same cwd.
 while [ "${CWD%/}" != "$CWD" ] && [ "$CWD" != "/" ]; do CWD="${CWD%/}"; done
 
-# The harness keys project state by the cwd with every slash turned into a
-# dash. Deriving it the same way here is what makes `transcript` able to find
-# the session logs the harness wrote.
+# The harness keys project state by the cwd with its punctuation turned into
+# dashes. Replacing ONLY `/` was wrong: measured against the 47 project
+# directories on this machine that record a cwd, `/`-only reproduces 26 of
+# them, while replacing every non-alphanumeric run reproduces 41 — the other
+# six are stale keys from a repository rename, not a different rule. The
+# directories that broke are real: a cwd of
+# `.../inboundsavvy.com/webmaster` and one containing a space both resolved to
+# a directory with no session logs in it, so `transcript` returned nothing.
 #
 # Parameter expansion rather than a sed pipeline, and a plain assignment rather
 # than a command substitution: `status` runs on EVERY prompt through the
 # UserPromptSubmit hook, and the answer is almost always "no handover". That
-# path now forks nothing — it is two expansions and a stat.
-PROJ_DIR="$HOME/.claude/projects/${CWD//\//-}"
+# path forks nothing — it is two expansions and a stat.
+PROJ_DIR="$HOME/.claude/projects/${CWD//[^A-Za-z0-9]/-}"
 SLOT_DIR="$PROJ_DIR/rollover"
+
+# …and the rule is NOT load-bearing, because the observed data cannot fully
+# pin it: no recorded cwd contains punctuation other than `/`, `.`, ` ` and
+# `-`, so `[^A-Za-z0-9]` and `[/. ]` are indistinguishable on every sample. The
+# slot itself does not care — `write` and `status` derive identically, so a
+# wrong key is merely a different directory and no handover is ever lost. Only
+# `transcript` has to agree with the harness, and it asks the logs rather than
+# trusting the rule: if the derived directory holds no session log, find the
+# one whose logs record this cwd. Cold path, run twice per rollover.
+resolve_proj_dir() {
+  local d f
+  for f in "$PROJ_DIR"/*.jsonl; do [ -e "$f" ] && { printf '%s' "$PROJ_DIR"; return 0; }; done
+  for d in "$HOME"/.claude/projects/*/; do
+    for f in "$d"*.jsonl; do
+      [ -e "$f" ] || continue
+      # The first line of a log can be a summary record with no cwd, so sample
+      # a window rather than one line. One file per directory is still enough:
+      # a project directory holds one cwd.
+      if head -40 "$f" 2>/dev/null | grep -qF "\"cwd\":\"$CWD\""; then
+        printf '%s' "${d%/}"; return 0
+      fi
+      break
+    done
+  done
+  printf '%s' "$PROJ_DIR"
+}
 
 # A worker name reaches this script from the environment, so it is untrusted
 # input for a path: anything outside the safe set becomes an underscore, and a
@@ -143,6 +175,8 @@ case "$VERB" in
     # the authoritative record and this is the index into it; a resume that
     # goes wrong needs to be readable afterwards.
     mv "$SLOT" "${SLOT%.md}.consumed-$stamp.md" || die "cannot retire $SLOT"
+    # The PRE-move path, so a caller can say which slot it retired. It does not
+    # exist any more — do not read it back.
     printf '%s\n' "$SLOT"
     ;;
 
@@ -156,9 +190,10 @@ case "$VERB" in
         *) usage ;;
       esac
     done
-    [ -d "$PROJ_DIR" ] || exit 1
+    LOG_DIR=$(resolve_proj_dir)
+    [ -d "$LOG_DIR" ] || exit 1
     newest=$(
-      find "$PROJ_DIR" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@\t%p\n' 2>/dev/null \
+      find "$LOG_DIR" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@\t%p\n' 2>/dev/null \
         | sort -rn \
         | while IFS=$'\t' read -r _ p; do
             base="${p##*/}"; base="${base%.jsonl}"

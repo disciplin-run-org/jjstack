@@ -185,39 +185,76 @@ echo "== 8. continuation mechanisms live only where a session may resume =="
 # describes, and every skill here legitimately NAMES the others in its
 # comparison table.
 #
-# Two ways to fail, and the second is the one that matters: a marker found
-# outside its allowed set FAILS (the mechanism leaked), and a marker found
-# NOWHERE fails too (the guard is watching something this repo no longer has,
-# and would pass forever without ever inspecting anything).
+# The patterns are REGEXES, not fixed strings, because the first version was
+# fixed strings and the script's own documented calling convention walked past
+# it in both directions: `jjstack-rollover-slot --cwd "$PWD" write` does not
+# contain "jjstack-rollover-slot write" (options are parsed before the verb),
+# and the hook calls it through a variable. A planted bypass in
+# /save-and-clear passed both gates. The last row closes the variable form by
+# keying on the script NAME alone: whatever a file does with it, it has to
+# name it once.
 #
-# `status` has a wider allowed set than `write` and `consume` on purpose: it
-# only READS, so it is how the hook detects a handover and how /rollover
-# verifies the one it just wrote. Handing work on is `write`, picking it up is
-# `consume`, and those two stay pinned to one skill each.
-# marker|space-separated repo-relative files allowed to carry it
-cat > "$TMP/continuation" <<'CONT'
-mcp__quartermaster__qm_queue_add|skills/rollover/SKILL.md references/rollover-handover.md
-jjstack-rollover-slot write|skills/rollover/SKILL.md references/rollover-handover.md
-jjstack-rollover-slot consume|skills/resume-from-clear/SKILL.md references/rollover-handover.md
-jjstack-rollover-slot status|skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh references/rollover-handover.md
-CONT
-while IFS='|' read -r marker allowed; do
-  [ -n "$marker" ] || continue
-  grep -rlF "$marker" "$REPO/skills" "$REPO/references" "$REPO/hooks" 2>/dev/null \
-    | sed "s|^$REPO/||" | sort -u > "$TMP/carriers"
+# Three ways to fail, and only the first is the obvious one:
+#   leak    — a carrier outside the allowed set: the mechanism escaped
+#   absent  — no carrier at all: the guard is watching something this repo no
+#             longer has, and would pass forever without inspecting anything
+#   hollow  — carriers exist but none in the PRIMARY set: the mechanism left
+#             the skill that must have it, and only prose about it remains.
+#             The reference doc names every mechanism, so without this rule
+#             deleting /rollover's slot write entirely kept the tree green.
+#
+# TAB-separated: pattern <TAB> primary <TAB> also-allowed. The patterns carry
+# `|` themselves, both as alternation and inside a negated class, so it cannot
+# also be the field separator — the first draft split every slot pattern at its
+# own `[^;|&]` and reported three phantom "matches nothing" failures.
+printf '%s\t%s\t%s\n' \
+  'mcp__quartermaster__qm_queue_add' \
+    'skills/rollover/SKILL.md' \
+    'references/rollover-handover.md' \
+  'jjstack-rollover-slot[^;|&]*[[:space:]]write([[:space:]]|$)' \
+    'skills/rollover/SKILL.md' \
+    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+  'jjstack-rollover-slot[^;|&]*[[:space:]]consume([[:space:]]|$)' \
+    'skills/resume-from-clear/SKILL.md' \
+    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+  'jjstack-rollover-slot[^;|&]*[[:space:]]status([[:space:]]|$)' \
+    'skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
+    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+  'jjstack-rollover-slot' \
+    'skills/rollover/SKILL.md skills/resume-from-clear/SKILL.md hooks/shared-memory.sh' \
+    'references/rollover-handover.md bin/jjstack-rollover-slot' \
+  > "$TMP/continuation"
+# The guard is not a carrier. This file states every pattern it looks for, so
+# scanning bin/ without this exclusion makes each row find itself and report a
+# leak that is the check's own table — the self-pollution class.
+SELF="bin/$(basename "${BASH_SOURCE[0]}")"
+while IFS=$'\t' read -r pat primary allowed; do
+  [ -n "$pat" ] || continue
+  grep -rlE "$pat" "$REPO/skills" "$REPO/references" "$REPO/hooks" "$REPO/bin" 2>/dev/null \
+    | sed "s|^$REPO/||" | grep -vxF "$SELF" | sort -u > "$TMP/carriers"
   if ! [ -s "$TMP/carriers" ]; then
-    bad "'$marker' appears nowhere in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
+    bad "'$pat' matches nothing in this repo — the guard is watching a mechanism that no longer exists; fix the mechanism or drop the row"
     continue
   fi
-  stray=""
+  # Print what was MEASURED, never the allowed list. The first version printed
+  # the allowed list under the words "carried only by", so it cheerfully named
+  # hooks/shared-memory.sh as a carrier of a string that file has never
+  # contained — which is what hid the leak above for a whole review round.
+  found=$(tr '\n' ' ' < "$TMP/carriers"); found="${found% }"
+  stray=""; hit=""
   while read -r f; do
     [ -n "$f" ] || continue
-    case " $allowed " in *" $f "*) ;; *) stray="${stray:+$stray, }$f" ;; esac
+    case " $primary " in *" $f "*) hit=y ;; esac
+    case " $primary $allowed " in *" $f "*) ;; *) stray="${stray:+$stray, }$f" ;; esac
   done < "$TMP/carriers"
-  if [ -z "$stray" ]; then ok "$marker — carried only by: $allowed"
-  else bad "$marker appears in $stray — only /rollover hands work to a successor; a clear or an exit that carries this makes the next session resume work nobody asked it to"; fi
+  if [ -n "$stray" ]; then
+    bad "$pat is carried by $stray — only /rollover hands work to a successor; a clear or an exit that carries this makes the next session resume work nobody asked it to"
+  elif [ -z "$hit" ]; then
+    bad "$pat is mentioned ($found) but no longer USED in any of: $primary — the mechanism is gone and only prose about it is left"
+  else
+    ok "$pat — carried by: $found"
+  fi
 done < "$TMP/continuation"
-
 
 echo
 if [ "$fails" -eq 0 ]; then

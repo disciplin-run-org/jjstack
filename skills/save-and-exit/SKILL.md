@@ -86,11 +86,26 @@ hardest here. Report, correct forward, or name each open item.
 
 When 5a returned `WORKER:<name>`:
 
+First, mark the timeline settled:
+
+```
+mcp__tubemail__tm_session_boundary(worker="<name>", reason="/save-and-exit")
+```
+
+Nothing resumes from this session, but the timeline outlives it. A worker
+relaunched under the same name later runs `/sync-inbox` against everything
+still on it and, with no context to check against, can re-execute orders
+this session already answered. The marker is the fact that stops it. Use
+`tm_session_boundary`, never `tm_send`: `tm_send` delivers to the worker's
+channel, so the marker would arrive in this session as a work order.
+
+Then ask the manager to type the exit:
+
 ```
 mcp__tubemail__tm_send(worker="<name>", message="/exit")
 ```
 
-That is the whole close. Three things to get right:
+That is the close. Three things to get right:
 
 - **Address the WORKER, not `<name>-manager`.** `/exit` is a built-in
   harness command and `tm_send` routes built-ins automatically: the
@@ -148,6 +163,7 @@ differs.
 | Handover slot | never | never | written (the only writer) |
 | QM resume order | never | never | filed to itself |
 | Other QM items | settled or named now | settled or named now | inherited by the successor |
+| Timeline marker | `tm_session_boundary` | `tm_session_boundary` | `tm_session_boundary`, before the injection |
 | Worker signal | `tm_send(<name>, "/exit")` | `tm_send(<name>-manager, "restart fresh")` | same fresh restart, after the handover |
 | Why that address | built-in → tm_send types it into the pty | not a built-in → address the manager | same as /save-and-clear |
 | After the close | 💤 exited cleanly | fresh context, new task | fresh context, `/resume-from-clear` |

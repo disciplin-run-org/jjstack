@@ -84,19 +84,26 @@ step 5 with the slot you just read.
 
 ### 3. Read your timeline (worker)
 
-If the manager already auto-typed `/sync-inbox`, its catch-up report is
-above you — use it. Otherwise:
+If the manager already auto-typed `/sync-inbox fresh`, its catch-up
+report is above you — use it. Otherwise read your own timeline from the
+last settled point:
 
 ```
-mcp__tubemail__tm_receive(worker="<name from step 2>", limit=20)
+mcp__tubemail__tm_receive(worker="<name from step 2>",
+                          since_boundary=True, limit=20)
 ```
 
 Never `tm_my_inbox` — it resolves identity hub-side and returns a
 misleading "TM_WORKER_NAME not set" in the standard topology (tubemail QM
 #555; the tool is deprecated for this use).
 
-A `SESSION-BOUNDARY` line on the timeline marks work a predecessor
-already settled. Everything above it is done; do not re-execute it.
+`since_boundary=True` starts the window strictly after the newest
+`session_boundary` event. Everything at or above that marker belongs to a
+session that has ended and is settled by definition — do not re-execute
+it, and do not go looking above it. With no marker anywhere the read
+degrades to the ordinary tail, and only the TRAILING inbounds are live:
+an inbound with a later event of any other kind after it was already
+being worked on by the session that is now gone.
 
 ### 4. Find your resume order in QM (worker)
 

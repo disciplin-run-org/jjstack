@@ -94,18 +94,24 @@ When 5a returned `WORKER:<name>`:
 1. **Post the session-boundary marker** on your own timeline:
 
    ```
-   mcp__tubemail__tm_send(worker="<name>",
-       message="SESSION-BOUNDARY — /save-and-clear. Everything above this
-       line is settled; the next session starts a new task and must not
-       re-execute anything from before it.")
+   mcp__tubemail__tm_session_boundary(worker="<name>",
+       reason="/save-and-clear")
    ```
 
-   The successor's auto-`/sync-inbox` is told to prefer false positives
-   and re-do anything it cannot confirm was handled. In an empty context
-   it can confirm nothing, so without this line a clear can re-run the
-   orders the previous session already finished. (Making `/sync-inbox`
-   stop at the marker deterministically is tubemail's change, not this
-   skill's; this is the marker it will read.)
+   Everything above the marker is settled. The successor restarts with
+   no conversation context, so it cannot tell a finished work order from
+   an unanswered one; `/sync-inbox fresh` reads the marker via
+   `tm_receive(since_boundary=True)` and never re-executes anything above
+   it. Without it, a clear re-runs the orders the previous session
+   already finished — the accidental continuation this skill exists to
+   end, arriving through the timeline instead of through a resume order.
+
+   **Use `tm_session_boundary`, never `tm_send`.** `tm_send` DELIVERS to
+   the worker's channel, so a marker sent that way lands in the still-live
+   session as an inbound work order telling it its own work is settled.
+   The marker tool records the event and fans out only to the UI and
+   roster streams. (Caught by tubemail-tm on QM #615, against the first
+   draft of this step, which used `tm_send`.)
 
 2. **Signal the fresh restart — to the MANAGER, exactly once:**
 

@@ -129,7 +129,19 @@ Verify it exists with `qm_queue_read` and capture the id. **Never set
 `clear_first`** (contract, rule 2). **Never inline queued work** into the
 prompt (contract, rule 1).
 
-Then mail your successor, before restarting:
+Then mark the timeline settled — BEFORE the injection, never after:
+
+```
+mcp__tubemail__tm_session_boundary(worker="<name>", reason="/rollover")
+```
+
+**The order is the whole point.** `/sync-inbox fresh` treats everything
+above the newest marker as settled and invisible. Post the marker first
+and your predecessor's finished traffic is settled while the injection
+below it still reaches the successor. Post it last and you have just
+hidden the message that bootstraps the session you are handing to.
+
+Now mail your successor, still before restarting:
 
 ```
 mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>",
@@ -140,9 +152,10 @@ mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>",
 ```
 
 The hub persists this on your own timeline while the process is down. The
-fresh restart's manager auto-types `/sync-inbox` once the successor is
-ready, which surfaces it as prompt injection timed by readiness rather
-than by a clock.
+fresh restart's manager auto-types `/sync-inbox fresh` once the successor
+is ready, which surfaces it as prompt injection timed by readiness rather
+than by a clock. The `fresh` argument is what makes the successor trust
+the timeline over a memory it does not have.
 
 ## 5g. Worker — signal the fresh restart, to the MANAGER, exactly once
 
@@ -168,8 +181,9 @@ Three rules, each violated live on 2026-07-04:
   `tm_restart` is for EXTERNAL recovery of hung workers.
 
 Never a bare `/clear`. The manager restarts without `--continue`; the
-startup `/rename` re-registers identity (QM #552); auto-`/sync-inbox`
-fires (QM #553) and reads the timeline identity-safely (QM #555).
+startup `/rename` re-registers identity (QM #552); auto-`/sync-inbox
+fresh` fires (QM #553) and reads the timeline identity-safely (QM #555),
+from the boundary marker down (QM #615).
 
 End the reply with this exact single line as the FINAL visible text:
 
@@ -184,8 +198,9 @@ Testable end to end without a qa-build-loop:
 1. On any mid-task session, invoke /rollover.
 2. Observe: the slot exists (`jjstack-rollover-slot status` prints it);
    in a worker, QM shows the resume order and the hub timeline shows the
-   injection; the claude process relaunches with no `--continue`;
-   `/rename` and `/sync-inbox` fire.
+   boundary marker followed by the injection, in that order; the claude
+   process relaunches with no `--continue`; `/rename` and `/sync-inbox
+   fresh` fire.
 3. Pass = the successor's first substantive turn continues the work and
    cites the predecessor's state, with no human input in between. Fail =
    the successor asks anything.

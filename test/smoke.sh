@@ -2113,7 +2113,12 @@ echo "== 13. the handover slot: the only artifact that resumes work =="
 # file that exists or does not, never a judgement call about "unfinished work".
 RS="$BIN/jjstack-rollover-slot"
 slotcwd()  { local r; r=$(tmp slotwork); mkdir -p "$r/repo"; printf '%s' "$r/repo"; }
-slot_dir() { printf '%s' "$HOME/.claude/projects/$(dash "$1")/rollover"; }
+# The harness dashes every non-alphanumeric character, not just the slash.
+# Stated independently of the script on purpose — if the two disagree, one of
+# them is wrong and the assertions below say which. `dash` above keys the
+# memory directory and is a separate question; do not merge them.
+slot_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '-'; }
+slot_dir() { printf '%s' "$HOME/.claude/projects/$(slot_key "$1")/rollover"; }
 
 W=$(slotcwd)
 check "with no worker name the slot is the plain-session one" \
@@ -2166,7 +2171,7 @@ check "…and the refusal leaves no slot behind" \
 
 # The predecessor transcript is the authoritative handover source, so finding
 # it is code, not a guess the successor makes about which log is whose.
-W=$(slotcwd); PD="$HOME/.claude/projects/$(dash "$W")"; mkdir -p "$PD"
+W=$(slotcwd); PD="$HOME/.claude/projects/$(slot_key "$W")"; mkdir -p "$PD"
 printf '{}\n' > "$PD/older.jsonl"; touch -d '2 hours ago' "$PD/older.jsonl"
 printf '{}\n' > "$PD/newer.jsonl"
 check "transcript names the newest session log" \
@@ -2175,6 +2180,41 @@ check "…and --exclude skips your own, naming the predecessor" \
       "[ \"\$(bash '$RS' --cwd '$W' transcript --exclude newer)\" = '$PD/older.jsonl' ]"
 check "…and it exits 1 rather than printing a path that is not there" \
       "! bash '$RS' --cwd '$W' transcript --exclude newer --exclude older >/dev/null 2>&1"
+
+# P1-3: THE PROJECT-DIRECTORY KEY. The harness dashes a cwd's punctuation, not
+# only its slashes, and the first version of this script replaced only `/`. It
+# therefore looked in a directory with no session logs and `transcript` printed
+# nothing, silently, for `.../inboundsavvy.com/webmaster` and for any path with
+# a space in it — both real directories on this machine. The old fixture used a
+# name with neither, so it could not see the class.
+for odd in 'has.dots' 'has spaces' 'both.kinds here'; do
+  W=$(tmp slotodd); W="$W/$odd"; mkdir -p "$W"
+  PD="$HOME/.claude/projects/$(printf '%s' "$W" | tr -c 'A-Za-z0-9' '-')"
+  mkdir -p "$PD"; printf '{"cwd":"%s"}\n' "$W" > "$PD/only.jsonl"
+  check "transcript finds the log for a cwd containing '$odd'" \
+        "[ \"\$(bash '$RS' --cwd \"$W\" transcript)\" = '$PD/only.jsonl' ]"
+  check "…and the slot for '$odd' lands in that same directory" \
+        "[ \"\$(dirname \"\$(TM_WORKER_NAME= bash '$RS' --cwd \"$W\" path)\")\" = '$PD/rollover' ]"
+done
+
+# …and the derived key is NOT load-bearing. The observed data cannot fully pin
+# the harness's rule (no recorded cwd carries punctuation beyond / . space -),
+# so `transcript` asks the logs when the derived directory has none: this
+# fixture puts the log somewhere the rule would never name.
+W=$(tmp slotmiss); W="$W/proj"; mkdir -p "$W"
+ELSEWHERE="$HOME/.claude/projects/a-key-no-rule-would-derive"
+mkdir -p "$ELSEWHERE"
+printf '{"type":"summary","summary":"no cwd on this line"}\n{"cwd":"%s"}\n' "$W" \
+  > "$ELSEWHERE/found.jsonl"
+check "transcript falls back to the logs when the derived directory has none" \
+      "[ \"\$(bash '$RS' --cwd '$W' transcript)\" = '$ELSEWHERE/found.jsonl' ]"
+check "…and it reads past a first line that carries no cwd" \
+      "head -1 '$ELSEWHERE/found.jsonl' | grep -qv '\"cwd\"'"
+# ANTI-VACUITY: the fallback must not answer for a cwd nobody logged, or the
+# assertion above would pass for any input at all.
+W2=$(tmp slotmiss2); W2="$W2/nolog"; mkdir -p "$W2"
+check "…and it still exits 1 for a directory no log mentions" \
+      "! bash '$RS' --cwd '$W2' transcript >/dev/null 2>&1"
 
 # THE PLAIN-SESSION CARRIER. A worker gets three carriers (slot, QM resume
 # order, tubemail self-message); a plain session gets the slot and this hook,
@@ -2209,43 +2249,156 @@ TM_WORKER_NAME= bash "$RS" --cwd "$W" consume >/dev/null
 check "…and once consumed the hook goes quiet again" \
       "[ -z \"\$(hook_out '$W' '\"hi\"')\" ]"
 
+# THE ORDERING RULE, checked by line number rather than by reading the prose.
+# A fresh successor treats everything at or above the newest session-boundary
+# marker as settled and never reads it, so /rollover posting its marker AFTER
+# the self-message would hide the very message that bootstraps the successor.
+# Caught by tubemail-tm on QM #615 against the first draft of this PR, which
+# also used tm_send for the marker — and tm_send DELIVERS, so the marker
+# arrived in the still-live session as a work order saying its own work was
+# settled.
+ROLL="$DIR/skills/rollover/SKILL.md"
+# The injection is the tm_send addressed to the BARE worker name; the restart
+# signal three steps later goes to <name>-manager. Anchoring on the prose
+# instead matched the QM resume order, which carries the same sentence, so the
+# first version of this guard read the wrong step's line number and failed on a
+# correct file. That is also why it gets a control below.
+bl_order() {  # bl_order <skill file> -> prints "ok" | "reversed" | "missing"
+  local f="$1" m i
+  m=$(grep -n 'tm_session_boundary' "$f" | head -1 | cut -d: -f1)
+  i=$(grep -n 'tm_send(worker="<TM_WORKER_NAME>",' "$f" | head -1 | cut -d: -f1)
+  if [ -z "$m" ] || [ -z "$i" ]; then printf 'missing\n'
+  elif [ "$m" -lt "$i" ]; then printf 'ok\n'
+  else printf 'reversed\n'; fi
+}
+check "/rollover posts the boundary marker before its injection message" \
+      "[ \"\$(bl_order '$ROLL')\" = ok ]"
+# CONTROL, from the shipped file rather than an invented one: swap the two
+# blocks and the guard must say so. Without this, wrong anchors read as a pass
+# — which is exactly how the first version of this check behaved.
+awk '/^Then mark the timeline settled/,/^Now mail your successor/' "$ROLL" > "$SANDBOX/bl_mark.txt"
+awk '/^Now mail your successor/,/^The hub persists this/' "$ROLL" > "$SANDBOX/bl_inj.txt"
+{ sed '/^Then mark the timeline settled/,$d' "$ROLL"; cat "$SANDBOX/bl_inj.txt" "$SANDBOX/bl_mark.txt"; } \
+  > "$SANDBOX/rollover-reversed.md"
+check "…and the guard says 'reversed' when those two blocks are swapped (control)" \
+      "[ \"\$(bl_order '$SANDBOX/rollover-reversed.md')\" = reversed ]"
+check "…and 'missing' when a step is absent, rather than passing on an empty compare" \
+      "[ \"\$(bl_order '$DIR/skills/save-and-exit/SKILL.md')\" = missing ]"
+# The marker tool, not the delivering one. Every close posts a boundary now.
+for s in rollover save-and-clear save-and-exit; do
+  check "/$s marks the timeline settled with tm_session_boundary" \
+        "grep -qF 'tm_session_boundary' '$DIR/skills/$s/SKILL.md'"
+  check "…and /$s never posts a boundary through tm_send, which would deliver it" \
+        "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
+done
+check "the entry side reads from the boundary, not from the tail" \
+      "grep -qF 'since_boundary=True' '$DIR/skills/resume-from-clear/SKILL.md'"
+
 # THE GUARD THAT KEEPS IT THIS WAY (verify-skills check 8). The markers are
 # MECHANISMS — the QM call, the slot verbs — never the word "rollover": a grep
 # for a name survives deleting the code that name describes.
-F=$(mkfix)
-check "check 8 passes on a tree where the mechanisms live only in /rollover" \
-      "vs_plain '$F' | grep -q 'ok  mcp__quartermaster__qm_queue_add'"
-check "…and that fixture exits 0, so the failures below are check 8's verdict" \
-      "bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+#
+# These fixtures COPY THE REAL TREE and mutate one thing. The previous version
+# built a synthetic skills/ instead, and that shape difference is what let both
+# P1s through a green suite: the synthetic tree had no reference doc, so the
+# "matches nothing" branch fired there and could never fire on the real tree
+# where the reference doc names every mechanism.
+#
+# Never `cp -a` a worktree — the .git pointer file makes the copy share the
+# REAL index, and a git-invoking mutation leaks out of the sandbox. Only the
+# four directories check 8 reads are copied.
+c8tree() {   # c8tree -> a copy of the parts check 8 inspects
+  local d; d=$(tmp c8)
+  cp -r "$DIR/bin" "$DIR/skills" "$DIR/references" "$DIR/hooks" "$d/"
+  echo "$d"
+}
+c8() { bash "$1/bin/jjstack-verify-skills" 2>&1 | sed -n '/== 8/,$p'; }
 
-F=$(mkfix); mkskill "$F" save-and-clear
-printf 'mcp__quartermaster__qm_queue_add(\n' >> "$F/skills/save-and-clear/SKILL.md"
-check "a resume order put back into /save-and-clear FAILS and names the file" \
-      "vs_out '$F' | grep -q 'skills/save-and-clear/SKILL.md'"
-check "…and the script exits non-zero" \
-      "! bash '$F/bin/jjstack-verify-skills' >/dev/null 2>&1"
+C=$(c8tree)
+check "check 8 passes on an unmutated copy of this tree (control)" \
+      "bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
+check "…and it reports the files it MEASURED, not the files it allows" \
+      "! c8 '$C' | grep -q 'carried by:.*hooks/shared-memory.sh.*status'"
 
-F=$(mkfix); mkskill "$F" save-and-exit
-printf 'jjstack-rollover-slot write\n' >> "$F/skills/save-and-exit/SKILL.md"
-check "a handover written by /save-and-exit FAILS too (an exit resumes nothing)" \
-      "vs_out '$F' | grep -q 'skills/save-and-exit/SKILL.md'"
+# LEAK, the plain form.
+C=$(c8tree)
+printf 'jjstack-rollover-slot write\n' >> "$C/skills/save-and-clear/SKILL.md"
+check "a handover written by /save-and-clear FAILS" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
 
-# ANTI-VACUITY. A marker nobody uses makes check 8 pass by watching nothing.
-F=$(mkfix); sed -i '/qm_queue_add/d' "$F/skills/rollover/SKILL.md"
-check "a marker that matches nothing FAILS instead of passing vacuously" \
-      "vs_out '$F' | grep -q 'appears nowhere'"
+# LEAK, the form the script itself documents. Options are parsed BEFORE the
+# verb, so `--cwd DIR write` does not contain the string "slot write" — a
+# fixed-string marker walked straight past this and both gates stayed green
+# with /save-and-clear instructed to hand work on.
+C=$(c8tree)
+printf 'Run `jjstack-rollover-slot --cwd "$PWD" write` with the handover on stdin.\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+check "…and so does the documented option form, which a fixed string misses" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the script exits non-zero for it" \
+      "! bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
 
-# The real tree, asserted directly rather than only through the fixtures.
+# LEAK, through a variable — how the hook itself calls the script.
+C=$(c8tree)
+printf 'RS="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"; "$RS" write\n' \
+  >> "$C/skills/save-and-exit/SKILL.md"
+check "…and the variable form too (an exit resumes nothing)" \
+      "c8 '$C' | grep -q 'skills/save-and-exit/SKILL.md'"
+
+# HOLLOW. Absence of a leak is not presence of the mechanism: deleting the sole
+# slot write from /rollover left the old check green, because the reference doc
+# still mentioned it.
+C=$(c8tree)
+sed -i '/^jjstack-rollover-slot write /d' "$C/skills/rollover/SKILL.md"
+check "/rollover losing its only slot write FAILS, even though prose still names it" \
+      "c8 '$C' | grep -q 'no longer USED'"
+check "…and the mutation really removed it (the fixture is not a no-op)" \
+      "! grep -qE 'jjstack-rollover-slot[[:space:]]+write' '$C/skills/rollover/SKILL.md'"
+
+C=$(c8tree)
+sed -i 's/mcp__quartermaster__qm_queue_add(/QM_ADD_CALL(/' "$C/skills/rollover/SKILL.md"
+check "/rollover losing its resume order FAILS too" \
+      "! bash '$C/bin/jjstack-verify-skills' >/dev/null 2>&1"
+
+# The real tree, asserted directly rather than only through fixtures.
 check "the real /save-and-clear files no resume order" \
-      "! grep -qF qm_queue_add '$DIR/skills/save-and-clear/SKILL.md'"
+      "! grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/save-and-clear/SKILL.md'"
 check "the real /save-and-exit files no resume order" \
-      "! grep -qF qm_queue_add '$DIR/skills/save-and-exit/SKILL.md'"
-check "…and neither of them writes a handover slot" \
-      "! grep -qF 'jjstack-rollover-slot write' '$DIR/skills/save-and-clear/SKILL.md' '$DIR/skills/save-and-exit/SKILL.md'"
-check "the real /rollover does file one (the verb that resumes still resumes)" \
-      "grep -qF qm_queue_add '$DIR/skills/rollover/SKILL.md'"
+      "! grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/save-and-exit/SKILL.md'"
+check "…and neither of them mentions the slot script at all" \
+      "! grep -qF 'jjstack-rollover-slot' '$DIR/skills/save-and-clear/SKILL.md' '$DIR/skills/save-and-exit/SKILL.md'"
+check "the real /rollover writes the slot (the mechanism this PR is named after)" \
+      "grep -qE 'jjstack-rollover-slot[[:space:]]+write' '$DIR/skills/rollover/SKILL.md'"
+check "…and files the resume order" \
+      "grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/rollover/SKILL.md'"
 check "…and no longer delegates its close to /save-and-clear" \
       "! grep -qiE 'Run /save-and-clear|Execute the /save-and-clear skill' '$DIR/skills/rollover/SKILL.md'"
+
+# THE EVERY-PROMPT PATH FORKS NOTHING. Shadow every external command the script
+# could reach and assert the silent path executed none of them. The shim list is
+# DERIVED from the script rather than enumerated, per this file's own rule.
+SHIM=$(tmp shim); REAL_PATH="$PATH"; FORKLOG="$SHIM/execs"
+: > "$FORKLOG"
+grep -ohE '\b(sed|find|grep|date|mktemp|cat|head|sort|tr|awk|cut|basename|dirname)\b' "$RS" \
+  | sort -u > "$SHIM/cmds"
+check "the shim list is derived from the script and is not empty" "[ -s '$SHIM/cmds' ]"
+while read -r c; do
+  printf '#!/bin/bash\nprintf "%%s\\n" %s >> "%s"\nPATH="%s" exec %s "$@"\n' \
+      "$c" "$FORKLOG" "$REAL_PATH" "$c" > "$SHIM/$c"
+  chmod +x "$SHIM/$c"
+done < "$SHIM/cmds"
+W=$(slotcwd)
+PATH="$SHIM:$REAL_PATH" TM_WORKER_NAME= bash "$RS" --cwd "$W" status >/dev/null 2>&1
+check "the every-prompt path (status, no handover) forks nothing" "[ ! -s '$FORKLOG' ]"
+# CONTROL: the probe must be able to SEE a fork, or the assertion above passes
+# on a broken shim just as happily.
+printf 'x\n' | TM_WORKER_NAME= bash "$RS" --cwd "$W" write >/dev/null
+: > "$FORKLOG"
+# TM_WORKER_NAME= on BOTH calls: the suite runs inside a worker, so leaving it
+# set reads a different slot than the one just written and the probe records
+# nothing — which would read as "the control passed".
+PATH="$SHIM:$REAL_PATH" TM_WORKER_NAME= bash "$RS" --cwd "$W" status >/dev/null 2>&1
+check "…and the probe does see one when a handover exists (control)" "[ -s '$FORKLOG' ]"
 
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
