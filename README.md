@@ -125,10 +125,9 @@ different context window: none of the reasoning that produced the code is presen
 to rationalise it.
 
 **Your tree is never touched.** The review does not stash, switch, or check
-anything out in your repo. It reads the pull request head into a detached
-worktree under its own scratchpad, runs the repo's real tooling there, and prunes
-it when the round ends. Nothing of yours is at risk and there is nothing to clean
-up afterwards.
+anything out in your repo. The reviewer works from its own copy of the pull
+request head, in its own directory, and runs the repo's real tooling there.
+Nothing of yours is at risk and there is nothing for you to clean up afterwards.
 
 **You keep working.** Request the review and carry on with the next thing. The
 reviewer is a standing session, so the round runs beside you and the verdict

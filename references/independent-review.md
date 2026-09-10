@@ -128,32 +128,6 @@ re-request it re-reviews under AR-3's rules: only the prior P0/P1 are
 re-verified, nothing below P1 is raised, and `STOP` is returned if the
 finding count did not fall.
 
-The reviewer directory is not a checkout, so each round materialises what it
-needs and takes it away again. From any local clone of the repo under review:
-
-```bash
-git -C <clone> fetch origin --prune
-git -C <clone> fetch origin pull/<PR>/head
-git -C <clone> worktree add --detach <scratchpad>/pr<PR> FETCH_HEAD
-```
-
-Detached, and in the session scratchpad, never inside the clone: a worktree
-nested in the main tree breaks `rg`, `find`, and the repo's own tree-walking
-checks, which is the first anti-pattern in `/worktrees`. Record the head sha,
-because it is what every finding is measured against.
-
-Before publishing, re-fetch and compare:
-
-```bash
-git -C <clone> fetch origin --prune
-git -C <clone> rev-parse --short origin/<ref>
-```
-
-If that differs from the sha the round was measured at, the head moved and the
-findings are void. Re-run the round; do not hand-patch the report. Then remove
-the worktree and prune, because a round that leaves a tree behind makes the next
-one measure the wrong thing.
-
 ## The reviewer identity
 
 A GitHub machine user, not a GitHub App: one reviewer on a handful of orgs
