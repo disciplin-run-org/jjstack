@@ -255,7 +255,7 @@ relevant phrases.
 
 ## The Reference Library
 
-jjstack ships 21 reference documents — the encoded knowledge each skill
+jjstack ships 22 reference documents — the encoded knowledge each skill
 loads. Read them directly or let skills load them for you.
 
 | Reference | What's inside |
@@ -279,6 +279,7 @@ loads. Read them directly or let skills load them for you.
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base all three session-boundary skills run — what to keep before the context goes |
 | `qm-ledger-settle.md` | How `/save-and-clear` and `/save-and-exit` close out their Quartermaster items instead of stranding them |
+| `specimen-recovery.md` | A guard must exhibit text it matches: derive the specimen from the artifact, never author it from the pattern |
 | `rollover-handover.md` | The contract between `/rollover` and `/resume-from-clear`: what the handover carries and which carrier delivers it |
 | `capture-classifier.md` | The headless prompt that extracts durable lessons from a transcript as JSON |
 | `owasp-security/` | Language-specific security quirks — the layer below `/jj-security-review` |

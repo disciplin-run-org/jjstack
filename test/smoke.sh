@@ -25,6 +25,14 @@
 # review rounds precisely because the suite listed the cases it knew about
 # instead of asking the implementation which cases exist.
 #
+# DERIVE THE SPECIMEN, TOO. The same idea one level up, and the harder half:
+# an assertion about text some other artifact produces must be written from
+# that text, not from your memory of it. Five guards in PR #43 could not fire
+# for exactly that reason, and each fix was authored the same way as the
+# defect. references/specimen-recovery.md is the rule and the checklist; the
+# short form is that a guard must exhibit text it matches, recovered from the
+# commit where the defect lived or from the program with the defect restored.
+#
 # Usage: test/smoke.sh   (exit 0 = all pass, 1 = a failure)
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -2309,8 +2317,74 @@ for s in rollover save-and-clear save-and-exit; do
   check "/$s marks the timeline settled with tm_session_boundary" \
         "grep -qF 'tm_session_boundary' '$DIR/skills/$s/SKILL.md'"
   check "…and /$s never posts a boundary through tm_send, which would deliver it" \
-        "! grep -qE 'tm_send\\(.*SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
+        "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$DIR/skills/$s/SKILL.md'"
 done
+# KEYED ON THE ARGUMENT, WHICH IS THE MECHANISM. Only a DELIVERING call takes
+# `message=`; the marker tool takes `reason=`. The guard asks what the call
+# does, not how its tokens happen to be spaced.
+#
+# Two earlier spellings failed, and the second is the instructive one.
+# `tm_send\(.*SESSION-BOUNDARY` missed the defect because the call wraps across
+# lines — that is how these files write an MCP call. Flattening the file and
+# using `tm_send\([^)]*SESSION-BOUNDARY` fixed that ONE spelling and stayed
+# blind to two others, because `[^)]*` cannot cross a `)`: a nested call or a
+# parenthetical inside the arguments — ordinary prose here — hid the same
+# defect. It also FIRED on a documentation line warning against the call, so a
+# prose edit turned the suite red.
+#
+# That is references/specimen-recovery.md's second half. Recovering the
+# specimen fixes what you test the pattern against; it does not fix what the
+# pattern keys on. Derive the specimen from the artifact AND the pattern from
+# the mechanism.
+#
+# ONE BOUND, CHOSEN NOT MISSED: the pattern assumes a double quote, so
+# `message='SESSION-BOUNDARY'` is silent. Every MCP argument in this tree is
+# double-quoted without exception, and keying on the mechanism is meant to
+# remove the spelling that MATTERED, not every spelling that could exist.
+GSPEC="$DIR/test/fixtures/guard-tm-send-boundary.md"
+check "…and that guard FIRES on the defect this repo actually shipped (control)" \
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$GSPEC'"
+# A BATTERY, not one specimen — but the battery does TWO jobs and they need
+# different specimens. A set assembled only from "spellings that defeated the
+# old pattern" drifts toward invention by construction, because the old pattern
+# was defeated precisely by spellings this tree has never written.
+BAT="$SANDBOX/boundary-battery"; mkdir -p "$BAT"
+
+# JOB 1 — DERIVED POSITIVE: does the guard catch what this codebase actually
+# writes? Built the way the invariant recipe says: a REAL shipped call, put in
+# the forbidden state. Nothing here is authored — the call is /rollover's own
+# restart signal with its message replaced.
+sed -n '/^mcp__tubemail__tm_send(worker="<TM_WORKER_NAME>-manager",$/,/^ *meta=/p' \
+    "$DIR/skills/rollover/SKILL.md" \
+  | sed 's/message="restart fresh"/message="SESSION-BOUNDARY - settled"/' > "$BAT/shipped-shape.md"
+check "the derived specimen really came out of the shipped skill (not authored)" \
+      "grep -q 'meta={\"kind\": \"restart\"' '$BAT/shipped-shape.md'"
+check "…and the guard FIRES on a REAL shipped call put in the forbidden state" \
+      "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/shipped-shape.md'"
+
+# JOB 2 — DISCRIMINATING SPECIMENS: do they prove the REPAIR, not just the
+# guard? Each must be caught by the new pattern and MISSED by the old one, or
+# it certifies nothing about what changed. These two spellings do NOT occur in
+# this tree — `grep -rnE 'mcp__[a-z_]*__[a-z_]*\([^)]*[a-z_]+\('` over skills/
+# and references/ returns nothing — and that is stated rather than implied:
+# they are here because the previous pattern was blind to them, which is a
+# claim a reader can check. A third specimen (`meta={…}` with a parenthesis in
+# the MESSAGE BODY) was dropped: the old pattern caught it too, because
+# `[^)]*` never had to cross that paren, so it was inert.
+printf 'tm_send(worker=resolve_name($TM_WORKER_NAME),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/nested.md"
+printf 'tm_send(worker="<name>" (the bare name, not the manager),\n  message="SESSION-BOUNDARY - x")\n' > "$BAT/paren.md"
+for spelling in nested paren; do
+  check "…and on the same defect spelled with a $spelling in its arguments" \
+        "grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/$spelling.md'"
+  check "…and that specimen DISCRIMINATES: the pattern it replaced was blind to it" \
+        "! tr '\n' ' ' < '$BAT/$spelling.md' | grep -qE 'tm_send\([^)]*SESSION-BOUNDARY'"
+done
+# THE MIRROR: a guard that fires on prose FORBIDDING the call turns a
+# documentation edit red. The flattened form did exactly that.
+cp "$DIR/skills/save-and-exit/SKILL.md" "$BAT/prohibition.md"
+printf '\nNever post the marker with `tm_send(` — it delivers, and the SESSION-BOUNDARY\nwould arrive as a work order.\n' >> "$BAT/prohibition.md"
+check "…and stays SILENT on prose that spells the call in order to forbid it" \
+      "! grep -qE 'message[[:space:]]*=[[:space:]]*\"SESSION-BOUNDARY' '$BAT/prohibition.md'"
 # The entry read must be the DEDICATED verb. The flag form fails open: a client
 # holding a stale schema strips an unknown kwarg and the call still succeeds,
 # returning the full tail and re-running settled work while looking correct.
@@ -2323,7 +2397,21 @@ check "the entry side reads from the boundary with the dedicated verb" \
 # which the file still contains — inside the sentence saying never to use it.
 # A vocabulary match passes on prose that says the opposite; pin the CALL.
 check "…and does not call tm_receive with the droppable flag instead" \
-      "! grep -qE 'tm_receive\\(.*since_boundary' '$RFC'"
+      "! grep -qE 'since_boundary[[:space:]]*=' '$RFC'"
+# Same mechanism-keying. `since_boundary=` is the flag being PASSED; the
+# dedicated verb `tm_receive_since_boundary(` does not contain it, so there is
+# no collision with the call this skill must make. Scoped to the ENTRY skill on
+# purpose: this guards which call that file makes, not whether a string appears
+# somewhere in the tree.
+FSPEC="$DIR/test/fixtures/guard-since-boundary-flag.md"
+check "…and that guard FIRES on the call this repo actually shipped (control)" \
+      "grep -qE 'since_boundary[[:space:]]*=' '$FSPEC'"
+printf 'mcp__tubemail__tm_receive(worker=pick($X),\n    since_boundary=True)\n' > "$BAT/flag-nested.md"
+check "…and on the same call with a nested call in its arguments" \
+      "grep -qE 'since_boundary[[:space:]]*=' '$BAT/flag-nested.md'"
+printf 'mcp__tubemail__tm_receive_since_boundary(worker="x", limit=20)\n' > "$BAT/dedicated.md"
+check "…and stays SILENT on the dedicated verb, which the entry skill must call" \
+      "! grep -qE 'since_boundary[[:space:]]*=' '$BAT/dedicated.md'"
 check "…and says why, so the next editor does not switch back" \
       "grep -qF 'fails OPEN' '$RFC'"
 
@@ -2346,6 +2434,26 @@ c8tree() {   # c8tree -> a copy of the parts check 8 inspects
   echo "$d"
 }
 c8() { bash "$1/bin/jjstack-verify-skills" 2>&1 | sed -n '/== 8/,$p'; }
+
+# NO EXCLUSION LIST AT ALL. Check 8 used to carry a hand-written list of files
+# that DOCUMENT the mechanisms rather than using them, and that list was the one
+# place a real call site could have hidden. It is derived now: a match does not
+# count when the matching LINE quotes some row's pattern literally, because a
+# call site contains text the pattern MATCHES while documentation contains the
+# pattern ITSELF.
+check "check 8 carries no hand-written exclusion list any more" \
+      "! grep -q 'notcarriers' '$DIR/bin/jjstack-verify-skills'"
+check "…and the reference that quotes the patterns is not reported as a carrier" \
+      "! bash '$DIR/bin/jjstack-verify-skills' | grep -q 'specimen-recovery'"
+# THE DIRECTION THAT MATTERS. A rule that discounts quoted patterns must not
+# discount a REAL call site sitting in the very file that quotes them.
+C=$(c8tree)
+printf '\nRun `jjstack-rollover-slot --cwd "$PWD" write` to hand the work on.\n' \
+  >> "$C/references/specimen-recovery.md"
+check "…but a real call site planted IN that reference is still caught" \
+      "c8 '$C' | grep -q 'references/specimen-recovery.md'"
+check "…and the mutation really added one (the fixture is not a no-op)" \
+      "grep -qE 'jjstack-rollover-slot[^;|&]*[[:space:]]write' '$C/references/specimen-recovery.md'"
 
 C=$(c8tree)
 check "check 8 passes on an unmutated copy of this tree (control)" \
@@ -2449,6 +2557,35 @@ check "…and files the resume order" \
       "grep -qF mcp__quartermaster__qm_queue_add '$DIR/skills/rollover/SKILL.md'"
 check "…and no longer delegates its close to /save-and-clear" \
       "! grep -qiE 'Run /save-and-clear|Execute the /save-and-clear skill' '$DIR/skills/rollover/SKILL.md'"
+
+# FINDING 3: A COMMENTED-OUT CARRIER IS NOT A CARRIER. hooks/shared-memory.sh
+# is the one file in check 8's table that is CODE rather than prose, and the
+# row was satisfied by the assignment existing at all. Disabling the plain
+# session's handover notice entirely — comment the assignment, make the guard
+# `if false` — left the row green while the carrier it names was dead.
+C=$(c8tree)
+sed -i 's|^RSLOT=|#RSLOT=|' "$C/hooks/shared-memory.sh"
+sed -i 's|if \[ -x "\$RSLOT" \]|if false|' "$C/hooks/shared-memory.sh"
+check "a commented-out hook carrier FAILS check 8 (it used to pass)" \
+      "c8 '$C' | grep -q 'RSLOT'"
+check "…and the mutation really disabled it (the fixture is not a no-op)" \
+      "! grep -qE '^RSLOT=' '$C/hooks/shared-memory.sh'"
+
+# FINDING 4: THE SHARED ALLOW-LIST, MEASURED. Widening it by one file and
+# planting the variable form there used to keep check 8 green: the NAME row is
+# the only detector of that class and it was reading the same shared string, so
+# one edit to one variable silently widened the one row where widening is
+# dangerous. The name row carries its own literal list now; the read-only
+# status rows keep the union, where uniformity costs nothing.
+C=$(c8tree)
+sed -i "s|^ALL='references/rollover-handover.md|ALL='skills/save-and-clear/SKILL.md references/rollover-handover.md|" \
+    "$C/bin/jjstack-verify-skills"
+printf 'RS="$HOME/.claude/skills/jjstack/bin/jjstack-rollover-slot"; "$RS" write\n' \
+  >> "$C/skills/save-and-clear/SKILL.md"
+check "widening the shared list no longer hides a planted variable form" \
+      "c8 '$C' | grep -q 'skills/save-and-clear/SKILL.md'"
+check "…and the widening really applied (the sed is not a no-op)" \
+      "grep -q \"^ALL='skills/save-and-clear\" '$C/bin/jjstack-verify-skills'"
 
 # THE EVERY-PROMPT PATH FORKS NOTHING. Shadow every external command the script
 # could reach and assert the silent path executed none of them. The shim list is

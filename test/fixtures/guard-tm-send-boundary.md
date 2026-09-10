@@ -1,3 +1,9 @@
+<!-- SPECIMEN, not documentation. Recovered from 4a47453:skills/save-and-clear/SKILL.md
+     The boundary marker posted with tm_send, which DELIVERS — the marker arrived in the very session posting it.
+     That commit is a branch commit discarded by the squash merge of
+     PR #43, so this file is the only remaining copy. Nothing here was
+     written to match a pattern; it is what the repo shipped.
+     See references/specimen-recovery.md. -->
 ---
 name: save-and-clear
 description: >
@@ -94,24 +100,18 @@ When 5a returned `WORKER:<name>`:
 1. **Post the session-boundary marker** on your own timeline:
 
    ```
-   mcp__tubemail__tm_session_boundary(worker="<name>",
-       reason="/save-and-clear")
+   mcp__tubemail__tm_send(worker="<name>",
+       message="SESSION-BOUNDARY — /save-and-clear. Everything above this
+       line is settled; the next session starts a new task and must not
+       re-execute anything from before it.")
    ```
 
-   Everything above the marker is settled. The successor restarts with
-   no conversation context, so it cannot tell a finished work order from
-   an unanswered one; `/sync-inbox fresh` reads the marker via
-   `tm_receive_since_boundary` and never re-executes anything above
-   it. Without it, a clear re-runs the orders the previous session
-   already finished — the accidental continuation this skill exists to
-   end, arriving through the timeline instead of through a resume order.
-
-   **Use `tm_session_boundary`, never `tm_send`.** `tm_send` DELIVERS to
-   the worker's channel, so a marker sent that way lands in the still-live
-   session as an inbound work order telling it its own work is settled.
-   The marker tool records the event and fans out only to the UI and
-   roster streams. (Caught by tubemail-tm on QM #615, against the first
-   draft of this step, which used `tm_send`.)
+   The successor's auto-`/sync-inbox` is told to prefer false positives
+   and re-do anything it cannot confirm was handled. In an empty context
+   it can confirm nothing, so without this line a clear can re-run the
+   orders the previous session already finished. (Making `/sync-inbox`
+   stop at the marker deterministically is tubemail's change, not this
+   skill's; this is the marker it will read.)
 
 2. **Signal the fresh restart — to the MANAGER, exactly once:**
 
