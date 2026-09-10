@@ -2820,6 +2820,68 @@ check "…and still answers the plain form (control)" \
 check "--source finds the clone from a worktree on a pre-2.31 git" \
       "[ \"\$(PATH='$GITSTUB:$PATH' JJSTACK_DIR='$PINSB/state/skills-pin' JJSTACK_STATE_DIR='$PINSB/state' '$PINBIN' --source)\" = \"\$(cd '$PINSB/work' && pwd -P)\" ]"
 
+echo "== 15. the decision record is internally consistent =="
+# THE ADRs ARE WHERE THE DECISION LIVES, and nothing checked them. This
+# directory has been wrong twice in the branch that adds this section:
+#
+#   .last_id read 2 while AR-6.md existed, so the next adr_create would have
+#   assigned AR-3 and overwritten a record in force.
+#
+#   a merge resolution used `git show :3:<path>` — stage 3 is THEIRS, stage 2
+#   is ours — so it wrote the OTHER branch's record into AR-8, checked the
+#   other branch's record out at AR-7 as well, and dropped this PR's own ADR
+#   entirely. .last_id was consistent with the resulting directory, which is
+#   why it read as fine: the counter agreed with a directory that was wrong.
+#
+# Both are caught by asking the files what they say rather than trusting that
+# someone looked. DERIVED from the directory, per this file's own header rule.
+ADRD="$DIR/architrix/adr"
+adr_ids=$(for f in "$ADRD"/AR-*.md; do
+            printf '%s\t%s\n' "$(basename "$f" .md)" "$(awk '/^id: /{print $2; exit}' "$f")"
+          done)
+printf '%s\n' "$adr_ids" > "$SANDBOX/adr_ids.txt"
+check "every AR-N.md declares the id its filename claims" \
+      "! awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids.txt' | grep -q ."
+# A duplicated decision is the merge failure above; it shows up as two files
+# with one title long before anyone notices the missing one.
+awk '/^title: /{sub(/^title: /,""); print}' "$ADRD"/AR-*.md | sort > "$SANDBOX/adr_titles.txt"
+check "no two decision records share a title (a merge did exactly this)" \
+      "[ \"\$(sort -u '$SANDBOX/adr_titles.txt' | wc -l)\" = \"\$(wc -l < '$SANDBOX/adr_titles.txt')\" ]"
+check "…and there is one title per record, so a file with no title cannot hide" \
+      "[ \"\$(wc -l < '$SANDBOX/adr_titles.txt')\" = \"\$(ls '$ADRD'/AR-*.md | wc -l)\" ]"
+# The counter is only ever advanced by hand, which is why it drifts. It has to
+# equal the highest id on disk or the next create overwrites a live record.
+adr_max=$(for f in "$ADRD"/AR-*.md; do basename "$f" .md | sed 's/^AR-//'; done | sort -n | tail -1)
+check "the id counter matches the highest record on disk (it has read low twice)" \
+      "[ \"\$(cat '$ADRD/.last_id')\" = '$adr_max' ]"
+# ANTI-VACUITY: all four assertions above scan a glob, and an empty glob passes
+# every one of them.
+check "…and there are records to check at all (the glob is not empty)" \
+      "[ \"\$(ls '$ADRD'/AR-*.md | wc -l)\" -ge 8 ]"
+# POSITIVE CONTROL, recovered rather than invented: the merge commit's own
+# broken tree, where AR-8 was a second copy of AR-7's decision.
+ADRFIX="$SANDBOX/adrfix"; mkdir -p "$ADRFIX"
+cp "$ADRD"/AR-*.md "$ADRFIX/"
+git -C "$DIR" show 7836454:architrix/adr/AR-8.md > "$ADRFIX/AR-8.md" 2>/dev/null
+awk '/^title: /{sub(/^title: /,""); print}' "$ADRFIX"/AR-*.md | sort > "$SANDBOX/adr_titles_bad.txt"
+check "the duplicate-title guard FIRES on the merge commit's own broken tree (control)" \
+      "[ \"\$(sort -u '$SANDBOX/adr_titles_bad.txt' | wc -l)\" != \"\$(wc -l < '$SANDBOX/adr_titles_bad.txt')\" ]"
+# COUNTER CONTROL, also recovered: at 68cac1e the counter read 2 with AR-6 on
+# disk. The next adr_create would have assigned AR-3 over a record in force.
+adr_old=$(git -C "$DIR" show 68cac1e:architrix/adr/.last_id 2>/dev/null)
+check "the counter guard FIRES on the value this repo actually shipped (control)" \
+      "[ -n \"\$adr_old\" ] && [ \"\$adr_old\" != '$adr_max' ]"
+# ID-MISMATCH CONTROL. This one is CONSTRUCTED, not recovered, and the
+# distinction is worth stating: no commit in this repo ever shipped a file
+# whose id disagreed with its name, so there is no blob to recover. The
+# property is structural, so the specimen exhibits it directly.
+cp "$ADRD/AR-7.md" "$ADRFIX/AR-99.md"
+for f in "$ADRFIX"/AR-*.md; do
+  printf '%s\t%s\n' "$(basename "$f" .md)" "$(awk '/^id: /{print $2; exit}' "$f")"
+done > "$SANDBOX/adr_ids_bad.txt"
+check "the filename/id guard FIRES on a record filed under the wrong number (control)" \
+      "awk -F'\t' '\$1 != \$2' '$SANDBOX/adr_ids_bad.txt' | grep -q ."
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
