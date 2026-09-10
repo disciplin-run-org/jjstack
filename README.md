@@ -265,6 +265,7 @@ enhancements transparently.
 | `/jj-security-review` | 10-phase security audit combining Anthropic + Sentry + OWASP. Carries the `jj-` prefix because Claude Code's own `/security-review` has no other name. |
 | `/cso` | Adversarial security audit with quality loop to 10/10. |
 | `/review` | Pre-landing review under a budget: deterministic pre-flight (your tooling, blast radius, stated intent), four passes, verified findings, APPROVE/CAUTION/REJECT, and a short verdict posted to the PR with the full report collapsed beneath it. Finishes in under an hour; `--deep` for the exhaustive sweep. Also the name of Claude Code's built-in reviewer; type `/code-review` for that one. |
+| `/review-lean` | The production build of `/review`: the same review, held to the same test contract, in about two thirds of the lines. Runs side by side with `/review` until it replaces it; its comments and status check name `review-lean`, so the two never read each other's rounds. |
 | `/review-daemon` | Start, check, or stop the daemon that opens one review session per pull request, sends it `/review`, keeps it for later rounds, and ends it with `/save-and-exit` when the PR closes. |
 | `/two-stage-review` | Spec compliance first, then code quality. |
 | `/receiving-code-review` | Systematic processing of review feedback (no silent capitulation). |

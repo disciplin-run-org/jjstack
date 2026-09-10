@@ -43,7 +43,8 @@ gates between them. Adapted from `obra/superpowers`' subagent-driven-development
 **Skip for:**
 - Trivial fixes (typo, version bump, dependency update) — single-pass is fine
 - Exploratory / prototype code where "spec" doesn't exist yet
-- Post-merge audits (use `/review` or `/cso` instead)
+- A pre-landing PR review that ends in a posted verdict (use `/review`)
+- Post-merge security audits (use `/cso`)
 
 ## The process
 
@@ -171,10 +172,12 @@ the point of the separation.
 - **`/work-order`** — produces the spec that Stage 1 reviews against. A
   work order without Deliverables + Verify sections is unreviewable at
   Stage 1; fix the work order first.
-- **`/review`** — existing jjstack review is single-pass adversarial. Use
-  `/two-stage-review` when you specifically need the spec-then-quality
-  separation. Use `/review` for post-merge audits and deep adversarial
-  passes.
+- **`/review`** — the budgeted pre-landing PR review: deterministic
+  pre-flight, four passes, a verdict posted to the PR. It judges the change
+  against the intent the PR states, not against a spec, so use
+  `/two-stage-review` when a spec or work order exists and compliance with it
+  is the question. `/review-lean` is its rebuild, run side by side until the
+  swap.
 - **`/smart-review`** — triggers the Anthropic code-review plugin
   automatically. That plugin does general quality review; it does not
   enforce spec compliance. Run `/two-stage-review` first for spec-critical
