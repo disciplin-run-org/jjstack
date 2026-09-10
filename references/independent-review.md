@@ -114,8 +114,14 @@ GH_CONFIG_DIR=/home/jesper/.config/gh-ai-assistant-2026
 ```
 
 Never `GH_TOKEN=` in the environment: every Bash call in the session would
-inherit it, and `env` in a transcript prints it. The reviewer can find its
-own queue without being told:
+inherit it, and `env` in a transcript prints it.
+
+On this machine nobody has to open these sessions by hand. `jjstack-review-daemon`,
+started in the reviewer directory, opens one worker per pull request as
+`Code-Review-<repo>-pr<N>-tm`, sends it `/review`, sends later rounds to the
+same session, and ends it with `/save-and-exit` when the PR closes. It serves
+only the owners on its allowlist. `references/review-daemon.md` is its
+contract. By hand, the reviewer can find its own queue without being told:
 
 ```bash
 gh pr list --repo <owner/repo> --search "review-requested:ai-assistant-2026" --json number,title,url

@@ -3614,6 +3614,83 @@ oc_out=$(JJSTACK_DIR="$OC/install" JJSTACK_STATE_DIR="$OC/state" JJSTACK_REMOTE_
 check "an install still on the old checker is told to upgrade to what main ships" \
       "[ -n '$VSHIP' ] && [ \"\$oc_out\" = 'UPGRADE_AVAILABLE 0.42.0 $VSHIP' ]"
 
+echo "== 18. the review daemon opens one session per PR, and ends it without a kill =="
+# bin/jjstack-review-daemon polls GitHub as the reviewer and opens one worker
+# session per pull request. Its state machine is unit-tested against frozen
+# real specimens (test/review-daemon-check.py), and every guard in it is proven
+# load-bearing by a mutation run (test/review-daemon-mutation.py). What this
+# section adds is the CLI itself, run hermetically: a gh stub that serves the
+# frozen specimens and logs every call it gets, a hub URL that refuses, and the
+# sandboxed HOME. A dry run must name the session it would open and must never
+# mark anything read.
+RDD="$BIN/jjstack-review-daemon"
+RDF="$DIR/test/fixtures/review-daemon"
+check "python -m py_compile jjstack-review-daemon" "python3 -m py_compile '$RDD' 2>/dev/null"
+timeout 10 "$RDD" --help > "$SANDBOX/rd-help.txt" 2>/dev/null
+check "jjstack-review-daemon --help prints its contract, not its source" \
+      "grep -q 'review-daemon.md' '$SANDBOX/rd-help.txt' && ! grep -qE '^(import|from|def) ' '$SANDBOX/rd-help.txt'"
+
+rd_out=$(python3 "$DIR/test/review-daemon-check.py" 2>&1); rd_rc=$?
+check "review-daemon unit suite passes (rc=0; 2 would mean it cannot fail)" "[ \"$rd_rc\" = 0 ]"
+[ "$rd_rc" = 0 ] || printf '     %s\n' "$rd_out"
+rd_n=$(printf '%s\n' "$rd_out" | sed -n 's/^TESTS=\([0-9]*\) .*/\1/p')
+rd_floor=$(sed -n 's/^MIN_TESTS = \([0-9]*\)$/\1/p' "$DIR/test/review-daemon-check.py")
+check "…and ran at least its declared floor of $rd_floor tests" \
+      "[ -n '$rd_n' ] && [ -n '$rd_floor' ] && [ '$rd_n' -ge '$rd_floor' ]"
+
+rdm_out=$(python3 "$DIR/test/review-daemon-mutation.py" 2>&1); rdm_rc=$?
+check "mutation proof: every guard in the review daemon is load-bearing" "[ \"$rdm_rc\" = 0 ]"
+[ "$rdm_rc" = 0 ] || printf '     %s\n' "$rdm_out"
+check "…and every mutant still finds its anchor and runs the suite" \
+      "printf '%s' \"\$rdm_out\" | grep -qE 'survived=0 broken=0\$'"
+
+RD=$(tmp reviewd)
+RDC="$RD/Code-Review"; RDBIN="$RD/bin"
+mkdir -p "$RDC" "$RDBIN" "$RD/gh"
+printf 'GH_CONFIG_DIR=%s\n' "$RD/gh" > "$RDC/.env"
+cat > "$RDBIN/gh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$RD/gh.log"
+case " \$* " in
+  *" user "*) echo "\${STUB_LOGIN:-ai-assistant-2026}" ;;
+  *"notifications/threads/"*) exit 0 ;;
+  *"notifications?"*) cat "$RDF/notifications-200.txt" ;;
+  *" search/issues "*) cat "$RDF/search-empty.json" ;;
+  *"/pulls/"*) cat "$RDF/pull-open.json" ;;
+  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$RDBIN/gh"
+rd_run() { env -u GH_TOKEN -u GITHUB_TOKEN PATH="$RDBIN:$PATH" "$@" "$RDD" --cwd "$RDC" \
+             --hub-url http://127.0.0.1:9 --once --dry-run 2>&1; }
+
+rd_cli=$(rd_run); rd_cli_rc=$?
+check "a hermetic dry run of the daemon exits 0" "[ \"$rd_cli_rc\" = 0 ]"
+[ "$rd_cli_rc" = 0 ] || printf '     %s\n' "$rd_cli"
+check "…names the session it would open for a request in the real notification specimen" \
+      "printf '%s' \"\$rd_cli\" | grep -q '\[dry-run\] .*queued as Code-Review-jjstack-pr48-tm'"
+check "…says the hub is unreachable rather than opening anything" \
+      "printf '%s' \"\$rd_cli\" | grep -q 'tubemail hub unreachable'"
+check "…marks nothing read on GitHub" "! grep -q PATCH '$RD/gh.log'"
+check "…and writes no ledger" "[ ! -e '$RDC/.review-daemon/ledger.json' ]"
+
+: > "$RD/gh.log"
+rd_run GH_TOKEN=x >/dev/null; rd_tok_rc=$?
+check "a GH_TOKEN in the environment is refused with exit 3" "[ \"$rd_tok_rc\" = 3 ]"
+check "…before gh is asked anything" "[ ! -s '$RD/gh.log' ]"
+rd_run STUB_LOGIN=JesperJurcenoks >/dev/null; rd_who_rc=$?
+check "gh logged in as anyone but the reviewer is refused with exit 3" "[ \"$rd_who_rc\" = 3 ]"
+check "…after asking only who is logged in" "[ \"\$(grep -c . '$RD/gh.log')\" = 1 ]"
+
+check "the review-daemon skill cites its contract" \
+      "grep -q 'cat ~/.claude/skills/jjstack/references/review-daemon.md' '$DIR/skills/review-daemon/SKILL.md'"
+check "the contract pins the round the daemon sends and the verb that ends a session" \
+      "grep -qF '/review <owner>/<repo> pr <N>' '$DIR/references/review-daemon.md' && grep -qF '/save-and-exit' '$DIR/references/review-daemon.md'"
+check "…and the daemon sends exactly that round" "grep -qF '\"/review %s/%s pr %d\"' '$RDD'"
+check "the daemon has no way to kill a session (no tm_stop, no signal)" \
+      "! grep -qE 'tm_stop|SIGTERM|SIGKILL|\\.terminate\\(' '$RDD'"
+check "setup puts the daemon on PATH" "grep -qF '.local/bin/jjstack-review-daemon' '$DIR/setup'"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built
