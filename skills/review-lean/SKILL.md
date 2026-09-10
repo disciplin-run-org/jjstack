@@ -312,7 +312,7 @@ finding; author reputation, green CI, diff size and the posture do not.
 Write `{OUTPUT_DIR}/review-YYYY-MM-DD.md`, a working file that stays untracked:
 
 ```text
-## /review: <target>            (commit <sha>, <minutes> min)
+## /review-lean: <target>       (commit <sha>, <minutes> min)
 
 **Verdict:** APPROVE | CAUTION | REJECT | STOP - one line why
 **Coverage:** <lenses run>/<applicable> · <n> findings, <n> unconfirmed, <n> dropped

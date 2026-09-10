@@ -333,8 +333,11 @@ esac
 #
 # The anti-vacuity floor is the report's own heading. `<details>` around a
 # blank line satisfies every structural check and carries nothing; requiring
-# the `## /review:` line the report template opens with means the block holds
-# a report, not a placeholder.
+# the `## /<skill>:` line the report template opens with means the block holds
+# a report, not a placeholder. The skill is the one the byline names
+# (`Claude jjstack/skills/<skill>/SKILL.md`), so the report below the fold
+# points at the same rules as the line above it.
+rep_skill=${ATTRIB#Claude jjstack/skills/}; rep_skill=${rep_skill%%/*}
 if [ "$n_open" -ne "$n_close" ]; then
   fail "report-shape" "$n_open <details> against $n_close </details>. The report block opens once, on its own line, and closes once, on its own line."
 elif [ "$n_open" -gt 1 ]; then
@@ -345,8 +348,8 @@ elif [ "$n_open" -eq 1 ]; then
   [ "$c_ln" -gt "$o_ln" ] || fail "report-shape" "</details> comes before <details>."
   grep -qE '^[[:space:]]*<details[[:space:]]+open\b' "$SRC" && \
     fail "report-expanded" "<details open> renders the whole report expanded. The reader gets the verdict; the report is one click away - drop \`open\`."
-  grep -qE '^## /review:' "$REP" || \
-    fail "empty-report" "the collapsed block does not carry a report: no \`## /review:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
+  grep -q "^## /$rep_skill:" "$REP" || \
+    fail "empty-report" "the collapsed block does not carry a report: no \`## /$rep_skill:\` heading inside it. Put the full report there (Phase 4's file, verbatim)."
 fi
 
 # --- a resolved or clean verdict is exactly one visible line, in a fixed form ---

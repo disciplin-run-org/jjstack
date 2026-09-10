@@ -16,8 +16,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   the same budgets, verdicts, GitHub review, commit status and gates before
   posting, in 469 lines instead of 740. The incident stories are gone from its
   instructions, because the tests that guard against those incidents already
-  hold them. Both skills now share one test contract, so they cannot drift
-  apart. Run it with `/review-lean`; `/review` is unchanged and stays the
+  hold them. Both skills now share one test contract, so the rules and
+  commands it pins cannot drift apart. Run it with `/review-lean`; `/review` is unchanged and stays the
   default until the swap. Its comments open with
   `Claude jjstack/skills/review-lean/SKILL.md` and its status check is
   `jjstack/review-lean`, so you can always tell which of the two wrote a

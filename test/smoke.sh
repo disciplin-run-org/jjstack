@@ -1025,8 +1025,13 @@ check "the canonical line carries lgtm verbatim" \
 # two canonical one-liners derive from it rather than from the default.
 ATT2='Claude jjstack/skills/review-lean/SKILL.md'
 lint2() { "$BIN/jjstack-pr-comment-lint" "$1" --attribution "$ATT2" >/dev/null 2>&1; echo $?; }
-body att2_ok "$ATT2: all issues resolved - lgtm - approved\n$RPT_OK"
+RPT_LEAN='\n<details><summary>Full report</summary>\n\n## /review-lean: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
+body att2_ok "$ATT2: all issues resolved - lgtm - approved\n$RPT_LEAN"
 check "--attribution: another skill's canonical line passes under the flag" "[ \$(lint2 '$PCL/att2_ok.md') = 0 ]"
+# The report below the fold names the rules that ran, like the byline above it.
+body att2_wrongrep "$ATT2: all issues resolved - lgtm - approved\n$RPT_OK"
+check "…and the report beneath must name the byline's skill, not a sibling's" \
+      "grep -q empty-report <<<\"\$(why '$PCL/att2_wrongrep.md' --attribution '$ATT2')\""
 check "…and is refused as no-attribution without it (the default did not widen)" \
       "grep -q no-attribution <<<\"\$(why '$PCL/att2_ok.md')\""
 check "…and the default line is refused under the flag (it replaces, it does not add)" \
@@ -1042,6 +1047,8 @@ check "an empty --attribution is a usage error, not a byline that matches everyt
 check "…and so is a blank one" "[ \$? -eq 2 ]"
 "$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution --quiet >/dev/null 2>&1
 check "…and a value that is really the next flag" "[ \$? -eq 2 ]"
+"$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution $'Claude x\nClaude y' >/dev/null 2>&1
+check "…and a value spanning two lines, which can never match one first line" "[ \$? -eq 2 ]"
 timeout 5 "$BIN/jjstack-pr-comment-lint" "$PCL/att_ok.md" --attribution >/dev/null 2>&1
 check "…and a value-less trailing --attribution exits 2, never spins" "[ \$? -eq 2 ]"
 
@@ -1102,7 +1109,7 @@ review_skill_contract() {   # <SKILL.md> <attribution line> <label>
 local SK="$1" ATTR="$2" LBL="$3"
 local HDSK HDCMD hdn HDFIX HDBIN HDOUT HDCWD HD_A HD_B HD_BASE HDOLD HDGATE hdg HDHOME HDRES hdr hdc HDTREECMD hdt HDREPO HDT_A HDT_B hd_fetch_ln hd_resolve_ln det_line det_prog det_a det_out_a det_b det_out_b append_pat me_line me_prog me_ok me_err me_nul gone
 echo "-- $LBL: ${SK#$DIR/} --"
-CK_PREFIX="[$LBL] "
+local CK_PREFIX="[$LBL] "   # local: the label cannot outlive the call
 # The attribution is the skill's own path: a reader opens the rules that ran.
 check "every comment opens with this skill's own attribution line" "grep -qF '$ATTR' '$SK'"
 check "…and the previous-round detector filters on that same line" \
@@ -1288,7 +1295,16 @@ check "…and names the broken subcommand as wholly broken, not one flag" \
 # signals to nobody. A commit status is visible to everyone and can gate the
 # merge, and unlike --approve it is not refused on a self-authored PR.
 check "the review announces itself with a pending commit status" \
-      "grep -q \"state=pending -f context=jjstack/review\" '$SK'"
+      "grep -q \"state=pending -f context=jjstack/$LBL -f\" '$SK'"
+# ANCHORED on the skill's own context, at all three sites. A status is keyed by
+# commit and context, newest wins, so two skills sharing a context overwrite
+# each other's verdict on a commit both reviewed - and the prefix form this
+# replaced (`context=jjstack/review`) accepted `jjstack/review-lean` and vice
+# versa. The label is the skill's directory name, which is its context.
+check "…and replaces it under that same context when the round ends" \
+      "grep -q \"state=<STATE> -f context=jjstack/$LBL -f\" '$SK'"
+check "…and reads back the status under that context, not a sibling's" \
+      "grep -qF 'select(.context==\"jjstack/$LBL\")' '$SK'"
 check "…and the pr identity carries the head sha the status needs" \
       "grep -q 'PR_SHA=' '$SK'"
 check "…and names why an unsubmitted review is not that signal" \
@@ -1409,7 +1425,10 @@ check "the detector's jq program is extractable (anti-vacuity floor)" \
 # is a real shape on a real PR. Without it the startswith filter is never the
 # reason anything is excluded, and deleting that filter stays green while the
 # detector starts returning the author's reply as "the previous round".
-det_a='{"reviews":[{"body":"'"$ATTR"'\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"'"$ATTR"'\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"'"$ATTR"'\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}}]}'
+det_a='{"reviews":[{"body":"'"$ATTR"'\nWANT-REVIEW","submittedAt":"2026-09-08T00:00:00Z","author":{"login":"ME"}}],"comments":[{"body":"'"$ATTR"'\nOLDER-COMMENT","createdAt":"2026-09-01T00:00:00Z","author":{"login":"ME"}},{"body":"'"$ATTR"'\nNOT-MINE","createdAt":"2026-09-09T00:00:00Z","author":{"login":"SOMEONE-ELSE"}},{"body":"Claude jjstack/skills/receiving-code-review/SKILL.md\nMY-REPLY-NOT-A-ROUND","createdAt":"2026-09-10T00:00:00Z","author":{"login":"ME"}},{"body":"'"${ATTR%/SKILL.md}"'-x/SKILL.md\nSIBLING-NOT-A-ROUND","createdAt":"2026-09-11T00:00:00Z","author":{"login":"ME"}}]}'
+# The last body is MINE and NEWEST, under a sibling skill whose name extends
+# this one's (`review` -> `review-x`): a detector loosened to a shared prefix
+# returns it, so the run below catches the loosening, not only the string pin.
 det_out_a=$(printf '%s' "$det_a" | jq -r --arg me ME "$det_prog" 2>&1 | tail -1)
 check "…and run, it returns MY newest round, not another account's newer one" \
       "[ \"\$det_out_a\" = WANT-REVIEW ]"
@@ -1681,10 +1700,11 @@ hd_fetch_ln=$(grep -n 'pull/<PR>/head' "$HDSK" | head -1 | cut -d: -f1)
 hd_resolve_ln=$(grep -n 'gh pr view --json number,url,commits' "$HDSK" | head -1 | cut -d: -f1)
 check "a reviewer with no tree is told to make one before the command that needs one" \
       "[ -n \"\$hd_fetch_ln\" ] && [ -n \"\$hd_resolve_ln\" ] && [ \"\$hd_fetch_ln\" -lt \"\$hd_resolve_ln\" ]"
-CK_PREFIX=
 }  # end review_skill_contract
 review_skill_contract "$DIR/skills/review/SKILL.md"      'Claude jjstack/skills/review/SKILL.md'      review
 review_skill_contract "$DIR/skills/review-lean/SKILL.md" 'Claude jjstack/skills/review-lean/SKILL.md' review-lean
+check "the run label does not outlive the contract (every later section reads unlabelled)" \
+      "[ -z \"\${CK_PREFIX-}\" ]"
 # The rebuild exists to be smaller; the budget is a rule, the way AR-3 states
 # the others, and the voice rule it posts under holds for its own prose. 470 is
 # a ratchet at the size it shipped (740 before): lower it when a trim lands,
