@@ -18,6 +18,7 @@ Prints `TESTS=<n> FAILURES=<n>` last, which smoke.sh reads.
 from __future__ import annotations
 
 import copy
+import email.utils
 import importlib.util
 import io
 import json
@@ -25,6 +26,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from importlib.machinery import SourceFileLoader
@@ -33,7 +35,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # REVIEW_DAEMON_BIN points the suite at a mutant copy; the mutation proof uses it.
 BIN = os.environ.get("REVIEW_DAEMON_BIN") or os.path.join(REPO, "bin", "jjstack-review-daemon")
 FIX = os.path.join(REPO, "test", "fixtures", "review-daemon")
-MIN_TESTS = 79
+MIN_TESTS = 85
 FIXTURES = (
     "notifications-200.txt", "notifications-304.txt", "search.json",
     "search-empty.json", "pull-open.json", "pull-merged.json",
@@ -42,7 +44,9 @@ FIXTURES = (
     "transcript-boot.jsonl", "transcript-synthetic.jsonl",
     "pull-cleared.json", "pull-pending.json", "events.json", "events-paginated.txt",
     "comments.json", "permission-admin.json", "permission-read.json",
-    "comment-code-span.json",
+    "comment-code-span.json", "markdown-mention.html", "markdown-quote.html",
+    "markdown-crlf-fence.html", "markdown-other-user.html", "markdown-stray-backtick.html",
+    "markdown-fence.html",
 )
 _MISSING = [f for f in FIXTURES if not os.path.exists(os.path.join(FIX, f))]
 if _MISSING:  # before the module-level loads below, which would crash on it
@@ -87,6 +91,14 @@ MENTION_BODY = "@ai-assistant-2026 please take a look"
 # The real comment the round-2 reviewer found the daemon matching: the author's
 # own round-1 response on #49, where the handle only appears in backticks.
 COMMENT_CODE_SPAN = fxj("comment-code-span.json")
+# GitHub's own rendering (POST /markdown, gfm, context disciplin-run-org/jjstack)
+# of the cases the review of #51 raised. A mention is what GitHub links.
+MENTION_HTML = fx("markdown-mention.html")          # a user-mention link
+QUOTE_HTML = fx("markdown-quote.html")              # linked inside a > quote too
+CRLF_FENCE_HTML = fx("markdown-crlf-fence.html")    # CRLF code block, then a mention
+OTHER_USER_HTML = fx("markdown-other-user.html")    # a user-mention, of someone else
+STRAY_TICK_HTML = fx("markdown-stray-backtick.html")  # a lone ` does not swallow it
+FENCE_HTML = fx("markdown-fence.html")              # a handle inside a code block
 T0 = rd.parse_iso("2026-09-10T18:00:00Z")
 MIN = 60.0
 HOUR = 3600.0
@@ -136,7 +148,11 @@ class FakeGH:
         self.comments = {}         # "owner/repo/N" -> issue comments
         self.review_comments = {}  # "owner/repo/N" -> pull review comments
         self.writers = {"JesperJurcenoks"}
-        self.permission_error = False
+        self.permission_error = False  # every lookup fails
+        self.failing_logins = set()    # lookups for these fail (HTTP 502)
+        self.missing_logins = set()    # GitHub answers 404: not a user it knows
+        self.patch_fails = False       # marking a thread read fails (HTTP 502)
+        self.read_ids = set()          # threads marked read; GitHub lists them read
         self.login_as = rd.REVIEWER
         self.login_calls = 0
 
@@ -148,8 +164,10 @@ class FakeGH:
         self.calls.append((method, path, tuple(fields), tuple(headers)))
         m = re.match(r"repos/([^/]+)/([^/]+)/collaborators/([^/]+)/permission$", path)
         if m:
-            if self.permission_error:
+            if self.permission_error or m.group(3) in self.failing_logins:
                 raise rd.GHError("HTTP 502")
+            if m.group(3) in self.missing_logins:
+                raise rd.GHError("gh: %s is not a user (HTTP 404)" % m.group(3))
             p = copy.deepcopy(PERM_ADMIN if m.group(3) in self.writers else PERM_READ)
             p["user"]["login"] = m.group(3)
             return 200, {}, json.dumps(p)
@@ -167,10 +185,21 @@ class FakeGH:
                 return 200, {}, json.dumps(items[:half]) + json.dumps(items[half:])
             return 200, {}, json.dumps(items)
         if path.startswith("notifications?"):
-            if self.not_modified:
+            # As GitHub does: Last-Modified is the newest thread update, and a
+            # request whose If-Modified-Since is not older than it gets a 304.
+            newest = max((rd.parse_iso(t["updated_at"]) for t in self.threads), default=None)
+            stamp = self.last_modified if newest is None else email.utils.formatdate(newest, usegmt=True)
+            asked = [h.split(":", 1)[1].strip() for h in headers
+                     if h.lower().startswith("if-modified-since:")]
+            if self.not_modified or (asked and newest is not None and
+                                     email.utils.parsedate_to_datetime(asked[0]).timestamp() >= newest):
                 return rd.parse_gh_include(NOTIF_304)
-            return 200, headers_200(self.last_modified), json.dumps(self.threads)
+            served = [dict(t, unread=False) if str(t["id"]) in self.read_ids else t for t in self.threads]
+            return 200, headers_200(stamp), json.dumps(served)
         if path.startswith("notifications/threads/") and method == "PATCH":
+            if self.patch_fails:
+                raise rd.GHError("HTTP 502")
+            self.read_ids.add(path.rsplit("/", 1)[1])
             return 205, {}, ""
         if path == "search/issues":
             return 200, {}, json.dumps(self.search)
@@ -283,6 +312,7 @@ class World:
         t["reason"] = reason
         t["updated_at"] = updated or rd.iso(self.clock.t + 1)
         self.gh.threads = [x for x in self.gh.threads if x["id"] != t["id"]] + [t]
+        self.gh.read_ids.discard(str(t["id"]))  # a new update makes the thread unread again
         key = "disciplin-run-org/%s/%d" % (repo, number)
         if pr is not None:
             self.gh.pulls[key] = pr
@@ -295,8 +325,9 @@ class World:
             self.gh.events.setdefault(key, []).append(ev)
         if new_event and reason == "mention":
             c = copy.deepcopy(COMMENTS[0])
+            c.pop("body", None)  # under HTML_ACCEPT GitHub sends body_html, not body
             c.update(id=len(self.gh.comments.get(key, [])) + 1, created_at=rd.iso(self.clock.t + 1),
-                     user={"login": by}, body=MENTION_BODY)
+                     user={"login": by}, body_html=MENTION_HTML)
             self.gh.comments.setdefault(key, []).append(c)
         return t
 
@@ -968,11 +999,11 @@ class RoundOneFindings(unittest.TestCase):
                          ["review_requested", "referenced", "review_requested",
                           "merged", "closed", "head_ref_deleted"])
 
-    def test_mention_regex(self):
-        self.assertTrue(rd.mentions_reviewer("hi @ai-assistant-2026, please look"))
-        self.assertTrue(rd.mentions_reviewer("@AI-Assistant-2026"))
-        self.assertFalse(rd.mentions_reviewer("@ai-assistant-20260"))
-        self.assertFalse(rd.mentions_reviewer("mail me at x@ai-assistant-2026.dev"))
+    def test_mention_is_githubs_link_not_the_text(self):
+        self.assertTrue(rd.mentions_reviewer(MENTION_HTML))
+        self.assertTrue(rd.mentions_reviewer(MENTION_HTML.replace("ai-assistant-2026\"", "AI-Assistant-2026\"")))
+        self.assertFalse(rd.mentions_reviewer("hi @ai-assistant-2026, please look"))  # raw text, no link
+        self.assertFalse(rd.mentions_reviewer(OTHER_USER_HTML))
         self.assertFalse(rd.mentions_reviewer(None))
 
     def test_p1_a_bump_without_a_new_request_sends_nothing(self):
@@ -1003,7 +1034,7 @@ class RoundOneFindings(unittest.TestCase):
         self.assertEqual(len(self.w.gh.patched()), 1)
 
     def test_p0_a_strangers_fork_pr_mentioning_the_reviewer_opens_nothing(self):
-        fork = pull(PULL_CLEARED, 777, user={"login": "stranger"}, body=MENTION_BODY,
+        fork = pull(PULL_CLEARED, 777, user={"login": "stranger"}, body_html=MENTION_HTML,
                     created_at=rd.iso(self.w.clock.t + 1),
                     head={"sha": "c" * 40, "repo": {"full_name": "stranger/jjstack"}})
         self.w.request("jjstack", 777, reason="mention", pr=fork, new_event=False)
@@ -1020,7 +1051,7 @@ class RoundOneFindings(unittest.TestCase):
         self.assertIn("stranger", self.ignored())
 
     def test_p0_a_writers_mention_in_the_pr_body_opens_a_session(self):
-        mine = pull(PULL_CLEARED, 60, user={"login": "JesperJurcenoks"}, body=MENTION_BODY,
+        mine = pull(PULL_CLEARED, 60, user={"login": "JesperJurcenoks"}, body_html=MENTION_HTML,
                     created_at=rd.iso(self.w.clock.t + 1))
         self.w.request("jjstack", 60, reason="mention", pr=mine, new_event=False)
         self.w.poll()
@@ -1074,27 +1105,43 @@ class RoundTwoNotes(unittest.TestCase):
     def tearDown(self):
         self.w.close()
 
-    def test_a_handle_in_a_code_span_is_not_a_mention(self):
-        body = COMMENT_CODE_SPAN["body"]
-        self.assertIn("`@ai-assistant-2026`", body)  # the specimen is what it claims
-        self.assertFalse(rd.mentions_reviewer(body))
+    def test_the_cited_comment_is_not_a_mention(self):
+        self.assertIn("`@ai-assistant-2026`", COMMENT_CODE_SPAN["body"])  # the specimen is what it claims
+        self.assertFalse(rd.mentions_reviewer(COMMENT_CODE_SPAN["body_html"]))
 
-    def test_quotes_and_fences_are_not_mentions(self):
-        self.assertFalse(rd.mentions_reviewer("> @ai-assistant-2026 please look\n\nthanks"))
-        self.assertFalse(rd.mentions_reviewer("see:\n```\n@ai-assistant-2026 review\n```\n"))
-        self.assertFalse(rd.mentions_reviewer("see:\n~~~text\n@ai-assistant-2026 review\n~~~\n"))
-        self.assertFalse(rd.mentions_reviewer("``a `@ai-assistant-2026` b``"))
+    def test_githubs_rendering_decides_what_a_mention_is(self):
+        self.assertFalse(rd.mentions_reviewer(FENCE_HTML))      # in a code block: code
+        self.assertTrue(rd.mentions_reviewer(QUOTE_HTML))       # in a > quote: GitHub links it
+        self.assertTrue(rd.mentions_reviewer(CRLF_FENCE_HTML))  # after a CRLF block (#51 P1)
+        self.assertTrue(rd.mentions_reviewer(STRAY_TICK_HTML))  # after a lone backtick (#51 P2)
 
-    def test_a_mention_outside_code_still_counts(self):
-        self.assertTrue(rd.mentions_reviewer("`x` and then @ai-assistant-2026 please"))
-        self.assertTrue(rd.mentions_reviewer("```\ncode\n```\n@ai-assistant-2026 please review"))
-        self.assertTrue(rd.mentions_reviewer("> quoted\n@ai-assistant-2026 please review"))
+    def test_only_a_user_mention_link_to_the_reviewer_counts(self):
+        self.assertFalse(rd.mentions_reviewer(OTHER_USER_HTML))
+        self.assertFalse(rd.mentions_reviewer('<a href="https://github.com/ai-assistant-2026">profile</a>'))
+        self.assertFalse(rd.mentions_reviewer(MENTION_HTML.replace("user-mention", "issue-link")))
 
     def test_a_writers_handle_in_backticks_opens_nothing(self):
         self.w.request("jjstack", 55, reason="mention", by="JesperJurcenoks")
-        self.w.gh.comments["disciplin-run-org/jjstack/55"][-1]["body"] = COMMENT_CODE_SPAN["body"]
+        self.w.gh.comments["disciplin-run-org/jjstack/55"][-1]["body_html"] = COMMENT_CODE_SPAN["body_html"]
         self.w.poll()
         self.assertEqual(len(self.w.spawner.argvs), 0)
+
+    def test_a_writers_mention_after_a_crlf_code_block_opens_a_session(self):
+        # The reviewer's P1 repro on #51: a web-UI comment stores CRLF.
+        self.w.request("jjstack", 56, reason="mention", by="JesperJurcenoks")
+        self.w.gh.comments["disciplin-run-org/jjstack/56"][-1]["body_html"] = CRLF_FENCE_HTML
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 1)
+
+    def test_a_long_stranger_comment_is_scanned_in_linear_time(self):
+        # #51 P1: a 64 KB run of backticks took ~70 s through the old regex.
+        for html in ("<p><code>" + "`" * 65536 + "</code></p>",
+                     "&lt;a " * 20000,
+                     "<a " * 20000,
+                     '<a class="user-mention" ' * 5000):
+            started = time.monotonic()
+            self.assertFalse(rd.mentions_reviewer(html))
+            self.assertLess(time.monotonic() - started, 2.0)
 
     def test_a_failed_lookup_is_retried_not_marked_read(self):
         self.w.gh.permission_error = True
@@ -1106,11 +1153,50 @@ class RoundTwoNotes(unittest.TestCase):
         out2 = self.w.poll()  # still failing: still unread, and no second warning
         self.assertEqual(self.w.gh.patched(), [])
         self.assertEqual([1 for level, _ in out2 if level == "warn"], [])
+        # The retry is real only if the feed is re-listed: GitHub answers a
+        # 304 to an If-Modified-Since, and the fake does the same.
+        feed = [h for (m, p, f, h) in self.w.gh.calls if p.startswith("notifications?")]
+        self.assertFalse(any(x.lower().startswith("if-modified-since") for x in feed[-1]))
         self.w.gh.permission_error = False
         self.w.gh.writers.add("someone")
         self.w.poll()
         self.assertEqual(len(self.w.spawner.argvs), 1)
         self.assertEqual(len(self.w.gh.patched()), 1)
+
+    def test_a_newer_update_on_a_stuck_thread_warns_again(self):
+        self.w.gh.permission_error = True
+        self.w.request("jjstack", 57, reason="mention", by="someone")
+        self.w.poll()
+        self.w.request("jjstack", 57, reason="mention", by="someone", updated="2026-09-10T19:00:00Z")
+        out = self.w.poll()
+        self.assertEqual(len([1 for level, _ in out if level == "warn"]), 1)
+
+    def test_a_failing_login_sorted_first_does_not_hide_a_writer(self):
+        self.w.gh.failing_logins.add("Aaron")  # sorts before JesperJurcenoks
+        self.w.request("jjstack", 58, reason="mention", by="Aaron")
+        self.w.request("jjstack", 58, reason="mention", by="JesperJurcenoks")
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 1)
+
+    def test_a_thread_that_could_not_be_marked_read_is_not_handled_twice(self):
+        # With the fake now answering 304 as GitHub does, only a feed re-listed
+        # by a newer thread shows an old unread thread again; the ledger's
+        # (thread, update) record is what keeps it from being handled twice.
+        self.w.gh.patch_fails = True
+        self.w.request("jjstack", 48, pr=pull(PULL_MERGED, 48))
+        self.w.poll()
+        self.w.request("jjstack", 50)  # re-lists the feed; 48 is still unread in it
+        out = self.w.poll()
+        self.assertEqual([t for _, t in out if "#48" in t], [])
+
+    def test_a_login_github_does_not_know_is_refused_not_retried(self):
+        self.w.gh.missing_logins.add("Copilot")
+        self.w.request("jjstack", 59, reason="mention", by="Copilot")
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 0)
+        self.assertEqual(len(self.w.gh.patched()), 1)  # marked read: not stuck forever
+        path = os.path.join(self.w.cwd, ".review-daemon", "ignored.jsonl")
+        self.assertIn('"Copilot"', open(path).read())
 
 
 class Console(unittest.TestCase):

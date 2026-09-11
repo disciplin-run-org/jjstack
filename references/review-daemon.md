@@ -54,13 +54,19 @@ background.
     already puts that gate on a review request. Anyone can mention an
     account on a public repo, but only a writer can request its review.
     Without the gate, a stranger's mention would open a session that runs
-    the PR's own tooling. As on GitHub, a handle inside a code span, a
-    fenced code block or a `>` quote line is not a mention. A permission
-    lookup that fails opens nothing and leaves the thread unread, so the
-    next poll asks again. The warning is printed once per update. The
-    mention's text is not passed on.
+    the PR's own tooling. What counts as a mention is GitHub's own
+    rendering: a `user-mention` link to `@ai-assistant-2026` in the
+    `body_html` GitHub returns. So a handle in code is not a mention, and
+    a handle in a `>` quote is, exactly as GitHub shows it. The raw
+    markdown is never read. A permission lookup that fails opens nothing
+    and leaves the thread unread, so the next poll asks again. The warning
+    is printed once per update. A login GitHub answers 404 for, such as a
+    bot name, counts as no access and is not retried. The mention's text is
+    not passed on.
 
   An update that confirms nothing is marked read and written to `daemon.log`.
+  The one exception is a mention whose author's permission could not be
+  read. That thread stays unread until GitHub answers.
   A mention from someone without write access also goes to `ignored.jsonl`.
 - **Owners.** Only repos whose owner is on `--owners` are served. The default
   list is `JesperJurcenoks,disciplin-run-org`, compared without case. A
@@ -189,7 +195,12 @@ posted as the PR's author cannot approve it, so rung 4 could never be met.
 - On gh 2.4.0, `--paginate` prints one JSON array per page, back to back, with
   nothing between them. The daemon reads that as a stream of arrays.
 - The permission endpoint answers `read`, not 404, for an account with no
-  access to a public repo.
+  access to a public repo. It answers 404 for a login that is not a user,
+  such as `Copilot`.
+- Under `Accept: application/vnd.github.html+json`, comments, review
+  comments, reviews and the pull all carry `body_html`. Issue comments then
+  carry no `body` at all. The web UI stores CRLF line endings, and
+  `body_html` has already dealt with them.
 - The notification feed carries `X-Poll-Interval: 60`. The daemon never polls
   faster than that. Two minutes costs about 30 core calls an hour, plus two
   per open session.

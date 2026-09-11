@@ -81,12 +81,14 @@ DAY = 86400.0
 # Anyone may @-mention an account on a public repo; only a writer may request
 # its review. A mention counts only from an author GitHub says can write.
 WRITE_PERMISSIONS = ("admin", "write")
-MENTION_RE = re.compile(r"(?<![\w@.-])@%s(?![\w-])" % re.escape(REVIEWER), re.IGNORECASE)
-# GitHub does not treat a handle as a mention inside code or a quoted reply,
-# so neither does the daemon: these are removed before MENTION_RE runs.
-_FENCE_RE = re.compile(r"(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)")
-_QUOTE_RE = re.compile(r"(?m)^[ \t]*>.*$")
-_CODE_SPAN_RE = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
+# A mention is what GitHub itself renders as one: a user-mention link in the
+# body_html it returns under HTML_ACCEPT. GitHub's rendering gets code, quotes
+# and CRLF right by definition, where a hand-written markdown reader did not,
+# and a scan that never crosses a '<' is linear, so a stranger's comment
+# cannot stall the daemon.
+HTML_ACCEPT = "Accept: application/vnd.github.html+json"
+_USER_MENTION_RE = re.compile(r'<a\s[^<>]*?\bclass="[^"<>]*\buser-mention\b[^"<>]*"[^<>]*>', re.IGNORECASE)
+_HREF_RE = re.compile(r'\bhref="https://github\.com/([^"/?#<>]+)"', re.IGNORECASE)
 
 # ── palette: no red. Ever. ────────────────────────────────────────────────
 RESET = "\033[0m"
@@ -319,16 +321,16 @@ def is_opus(model):
     return bool(model) and model.startswith("claude-opus")
 
 
-def mention_text(text):
-    """The part of a comment where GitHub would see a mention: everything but
-    fenced code blocks, `>` quote lines and inline code spans."""
-    text = _FENCE_RE.sub("", text)
-    text = _QUOTE_RE.sub("", text)
-    return _CODE_SPAN_RE.sub("", text)
-
-
-def mentions_reviewer(text):
-    return bool(text) and MENTION_RE.search(mention_text(text)) is not None
+def mentions_reviewer(html):
+    """True when GitHub's rendered body_html links a user-mention to the reviewer.
+    Raw markdown is never read: a handle in code renders as code, not a link."""
+    if not html:
+        return False
+    for tag in _USER_MENTION_RE.finditer(html):
+        href = _HREF_RE.search(tag.group(0))
+        if href and href.group(1).lower() == REVIEWER:
+            return True
+    return False
 
 
 def parse_json_stream(text):
@@ -741,7 +743,9 @@ class Daemon:
                                                 seen_at=iso(now)))
 
     def _pull(self, owner, repo, number):
-        _, _, body = self.gh.api("repos/%s/%s/pulls/%d" % (owner, repo, number))
+        # HTML_ACCEPT adds body_html, the description as GitHub renders it,
+        # which is the only form a mention is read from.
+        _, _, body = self.gh.api("repos/%s/%s/pulls/%d" % (owner, repo, number), headers=(HTML_ACCEPT,))
         return json.loads(body)
 
     def _handle_trigger(self, t, now):
@@ -793,8 +797,8 @@ class Daemon:
         self.say("info", "%s: %s; queued as %s" % (label, why, worker))
 
     # is this thread update a request? -------------------------------------
-    def _get_list(self, path):
-        _, _, body = self.gh.api(path, paginate=True)
+    def _get_list(self, path, headers=()):
+        _, _, body = self.gh.api(path, headers=headers, paginate=True)
         return parse_json_stream(body)
 
     def _permission(self, owner, repo, login):
@@ -808,6 +812,11 @@ class Daemon:
                 _, _, body = self.gh.api("repos/%s/%s/collaborators/%s/permission" % (owner, repo, login))
                 self._perm_cache[key] = json.loads(body).get("permission") or "none"
             except (GHError, ValueError) as e:
+                if "HTTP 404" in str(e):
+                    # Not an account GitHub knows (a bot name, a deleted user):
+                    # a permanent answer, so it is refused, not retried forever.
+                    self._perm_cache[key] = "none"
+                    return "none"
                 return "unknown: %s" % e
         return self._perm_cache[key]
 
@@ -820,10 +829,13 @@ class Daemon:
         for path, stamp in (("%s/issues/%d/comments?%s" % (base, number, query), "created_at"),
                             ("%s/pulls/%d/comments?%s" % (base, number, query), "created_at"),
                             ("%s/pulls/%d/reviews?per_page=100" % (base, number), "submitted_at")):
-            for item in self._get_list(path):
-                if item.get(stamp) and mentions_reviewer(item.get("body")):
+            for item in self._get_list(path, headers=(HTML_ACCEPT,)):
+                if "body_html" not in item and item.get("body"):
+                    self.warn_once("no-body-html", "GitHub sent no body_html, so no mention can be "
+                                   "read and none counts; is the %s header still honoured?" % HTML_ACCEPT)
+                if item.get(stamp) and mentions_reviewer(item.get("body_html")):
                     found.append((parse_iso(item[stamp]), (item.get("user") or {}).get("login") or ""))
-        if pr.get("created_at") and mentions_reviewer(pr.get("body")):
+        if pr.get("created_at") and mentions_reviewer(pr.get("body_html")):
             found.append((parse_iso(pr["created_at"]), (pr.get("user") or {}).get("login") or ""))
         return [(at, who) for at, who in found if at > floor and who and who.lower() != REVIEWER]
 

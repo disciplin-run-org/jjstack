@@ -83,7 +83,9 @@ printed: a token in the environment, no `GH_CONFIG_DIR`, or a login other than
 - Why a PR got nothing: look it up in `history.jsonl` (ended), in
   `ignored.jsonl` (the owner is off the allowlist, or the mention came from
   someone without write access), in `daemon.log` (a thread update that was
-  not a new request), and in the console lines. The usual causes are a PR
+  not a new request), and in the console lines. A mention whose author's
+  permission GitHub could not report stays unread and is asked about again
+  on every poll, with one warning on the console. The usual causes are a PR
   that was already closed, a missing re-request after fixes, or the queue
   being full at four sessions.
 

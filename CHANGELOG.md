@@ -38,12 +38,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Fixed
 
-- **The review daemon reads a mention the way GitHub does.** A handle inside
-  backticks, a code block or a `>` quote no longer starts a review round, so
-  a comment that only talks about `@ai-assistant-2026` stays a comment. And
-  when GitHub cannot say whether the person who mentioned the reviewer has
-  write access, the daemon now asks again on its next poll instead of
-  dropping the request. It still opens nothing until the answer is yes.
+- **The review daemon counts a mention only where GitHub shows one.** It now
+  reads the comment as GitHub renders it. A handle inside backticks or a
+  code block no longer starts a review round, so a comment that only talks
+  about `@ai-assistant-2026` stays a comment. A real mention written in the
+  browser, below a code block, is no longer missed. When GitHub cannot say
+  whether the person who mentioned the reviewer has write access, the
+  daemon asks again on its next poll instead of dropping the request. It
+  still opens nothing until the answer is yes.
 
 - **A re-run can no longer post on the previous round's answer.** When a round
   is voided because the author pushed, the answer that voided it names the new
