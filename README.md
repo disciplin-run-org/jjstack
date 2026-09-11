@@ -149,8 +149,9 @@ The daemon checks the session is on Opus, then sends `/review`. Later rounds go
 to the same session, so it knows what it found last time. When the PR merges
 or closes, the session gets `/save-and-exit`. Only repositories owned by
 `JesperJurcenoks` or `disciplin-run-org` are served. A stranger who adds the
-reviewer to their own repository gets nothing. On one of yours, only someone
-with access can request a review, so a stranger gets nothing there either.
+reviewer to their own repository gets nothing. On one of yours, a round starts
+only on a review request made by you or someone with write access. A request
+or re-request from anyone else, such as a fork PR's author, is refused.
 At most four sessions run at
 once and the rest wait their turn. `/review-daemon` covers starting and
 checking it, and `references/review-daemon.md` is the full contract.

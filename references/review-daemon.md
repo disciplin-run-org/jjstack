@@ -37,26 +37,34 @@ background.
   304 with no body. On the first poll, and every `--reconcile-every` polls
   after it (default 15), one search also catches requests the feed missed:
   `is:pr is:open review-requested:ai-assistant-2026`.
-- **Reasons.** Only a notification with reason `review_requested` on a
-  `PullRequest` counts. GitHub lets only an account with triage or write
-  access request a review, so that is the one trigger GitHub itself
-  authorises. An @-mention starts nothing. Anyone can mention an account on
-  a public repository, and every rule for whose mention counts, and in whose
-  words, left another way in: a stranger's mention on #49, then a quote, a
-  callout and a footnote across three rounds on #51. AR-11 records the
-  decision. To ask for another round, re-request the review. Mention,
-  comment, subscription and Issue notifications are left alone and stay
-  unread.
-- **A thread update is not a request.** GitHub moves a thread's update time on
-  a merge and on a comment too, and the reason stays the same. So before it
-  acts, the daemon confirms the request behind the notification:
-  - A review request on a PR with no session counts only while GitHub still
-    lists `ai-assistant-2026` in the PR's `requested_reviewers`.
-  - A review request on a PR that has a session counts only if the PR's
-    events hold a `review_requested` event for the reviewer that is newer
-    than the last round.
+- **Reasons do not decide.** A notification on a `PullRequest` thread is only
+  a hint that something changed, whatever its reason says. GitHub rewrites a
+  thread's reason to `mention` after a later @-mention and keeps it there, so
+  a re-request can arrive under any reason. An @-mention on its own starts
+  nothing. Anyone can mention an account on a public repository, and every
+  rule for whose mention counts left another way in: a stranger's mention on
+  #49, then a quote, a callout and a footnote across three rounds on #51.
+  AR-11 records the decision. To ask for another round, re-request the
+  review. Issue notifications and read threads are dropped.
+- **A review request, made by someone the repo trusts.** Before it acts, the
+  daemon reads GitHub's own records, never a comment:
+  - A PR with no session counts only while GitHub lists `ai-assistant-2026`
+    in the PR's `requested_reviewers`, and only if the newest
+    `review_requested` event for the reviewer was made by the owner or by
+    someone with write or admin access.
+  - A PR that has a session counts only if a `review_requested` event newer
+    than the last round was made by the owner or by someone with write or
+    admin access.
+  - Who made a request is the event's `actor`. Their access comes from
+    `collaborators/<login>/permission`. The web UI lets a PR's author
+    re-request a review without any access to the repo, so the actor is
+    always checked. A lookup that fails opens nothing and leaves the thread
+    unread, so the next poll asks again, with one warning per update. A 404,
+    a login GitHub does not know, counts as no access.
 
   An update that confirms nothing is marked read and written to `daemon.log`.
+  A request refused for want of access also goes to `ignored.jsonl`, with
+  who made it.
 - **Owners.** Only repos whose owner is on `--owners` are served. The default
   list is `JesperJurcenoks,disciplin-run-org`, compared without case. A
   request from anyone else is written to `ignored.jsonl` and nowhere else.
@@ -135,7 +143,9 @@ update on the PR. The daemon waits until the worker is idle and sends it
 harness's own path. The worker's terminal window closes when `claude-tm`
 exits cleanly. It stays open with a shell only if `claude-tm` fails, so the
 error can be read. When the hub shows the worker offline, the record moves to
-`history.jsonl`. If the worker is still open 15 minutes
+`history.jsonl`. The hub records a clean exit on the `<worker>-manager` row,
+the identity that posts `/goodbye`, and that is where the daemon reads it. An
+ending without a clean exit is reported as an error. If the worker is still open 15 minutes
 later, the daemon sends `/save-and-exit` once more, and never a third time.
 A request that arrives for a PR whose session is ending is ignored, and the
 daemon says why.
@@ -184,6 +194,15 @@ posted as the PR's author cannot approve it, so rung 4 could never be met.
   A comment does the same for a subscribed reviewer.
 - On gh 2.4.0, `--paginate` prints one JSON array per page, back to back, with
   nothing between them. The daemon reads that as a stream of arrays.
+- A thread's `reason` is not stable. GitHub's notification docs: after an
+  @-mention the reason becomes `mention`, and it stays `mention` whatever
+  comes next.
+- The web UI lets a PR's author re-request a reviewer without any access to
+  the repo (GitHub community discussion 151024). Only the API refuses it.
+- The permission endpoint answers `read`, not 404, for an account with no
+  access to a public repo. It answers 404 for a login that is not a user.
+- A clean exit is recorded on the `<worker>-manager` row, never on the
+  worker's own row (`test/fixtures/review-daemon/workers-after-exit.json`).
 - The notification feed carries `X-Poll-Interval: 60`. The daemon never polls
   faster than that. Two minutes costs about 30 core calls an hour, plus two
   per open session.
@@ -195,8 +214,9 @@ posted as the PR's author cannot approve it, so rung 4 could never be met.
   session.
 - It never posts on GitHub. It only marks threads read. The review is the
   session's work.
-- It never serves an owner off the allowlist, and never starts a round for an
-  @-mention.
+- It never serves an owner off the allowlist, never starts a round for an
+  @-mention, and never acts on a request made by someone without write
+  access.
 - It never sends a round to a session whose model it has not checked.
 
 The frozen specimens behind these rules are in

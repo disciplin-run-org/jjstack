@@ -42,16 +42,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   round. But anyone can mention an account on a public repository, and every
   rule for whose mention should count left a way in. The last one: if you
   quoted a stranger's mention to turn them down, their review started anyway.
-  Only people with access to a repository can request a review, so that is
-  now the one trigger. To ask for another round after fixes, re-request the
-  review.
+  A review request is now the one trigger. It counts only when you, or
+  someone with write access, made it. A pull request's author can
+  re-request a review in the browser even without access, and that no
+  longer starts a round. To ask for another round after fixes, re-request
+  the review.
 
 - **A review window now closes when its session ends.** After the session
   saves its lessons and exits, the terminal window closes too, instead of
   leaving an empty shell behind for every pull request. It stays open only
   when the session fails to start or crashes for good, so you can read what
-  went wrong. The daemon also stops reporting "did not exit cleanly" as an
-  error when a session has simply ended as asked.
+  went wrong. The daemon also reads a session's clean exit where the hub
+  actually records it, so a normal end is no longer reported as "did not exit
+  cleanly".
 
 - **A re-run can no longer post on the previous round's answer.** When a round
   is voided because the author pushed, the answer that voided it names the new

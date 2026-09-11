@@ -81,11 +81,12 @@ printed: a token in the environment, no `GH_CONFIG_DIR`, or a login other than
 - The sessions: `tm_list_workers` shows each `Code-Review-<repo>-pr<N>-tm`,
   and `tm_screenshot` of one shows where its round is.
 - Why a PR got nothing: look it up in `history.jsonl` (ended), in
-  `ignored.jsonl` (the owner is off the allowlist), in `daemon.log` (a
-  thread update that was not a new request), and in the console lines. The
-  usual causes are a PR that was already closed, a missing re-request after
-  fixes, an @-mention where a review request was needed, or the queue being
-  full at four sessions.
+  `ignored.jsonl` (the owner is off the allowlist, or the request was made by
+  someone without write access), in `daemon.log` (a thread update that was
+  not a new request), and in the console lines. The usual causes are a PR
+  that was already closed, a missing re-request after fixes, an @-mention
+  where a review request was needed, a re-request by the PR's author rather
+  than a writer, or the queue being full at four sessions.
 
 ### Stop it
 
