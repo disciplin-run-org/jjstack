@@ -308,7 +308,7 @@ class World:
             fh.write(json.dumps({"type": "assistant", "isSidechain": sidechain,
                                  "timestamp": ts, "message": {"model": model}}) + "\n")
 
-    def boot(self, repo, number, model="claude-opus-5", state="idle"):
+    def boot(self, repo, number, model="claude-sonnet-5", state="idle"):
         """Spawn → online → handshake → model line: the record is ready to dispatch."""
         self.request(repo, number)
         self.poll()
@@ -449,12 +449,20 @@ class Transcripts(unittest.TestCase):
     def test_latest_model_on_real_mixed_trail_is_opus(self):
         self.assertEqual(rd.latest_model(os.path.join(FIX, "transcript-mixed.jsonl")), "claude-opus-5")
 
-    def test_latest_model_fable_last_is_not_opus(self):
+    def test_latest_model_fable_last_does_not_match_sonnet_family(self):
         m = rd.latest_model(os.path.join(FIX, "transcript-fable-last.jsonl"))
         self.assertEqual(m, "claude-fable-5-1")
-        self.assertFalse(rd.is_opus(m))
-        self.assertTrue(rd.is_opus("claude-opus-5"))
-        self.assertFalse(rd.is_opus(None))
+        family = rd.model_family("sonnet[1m]")
+        self.assertFalse(rd.matches_family(m, family))
+        self.assertFalse(rd.matches_family("claude-opus-5", family))
+        self.assertTrue(rd.matches_family("claude-sonnet-5", family))
+        self.assertFalse(rd.matches_family(None, family))
+
+    def test_model_family_reads_either_flag_spelling(self):
+        self.assertEqual(rd.model_family("sonnet[1m]"), "claude-sonnet")
+        self.assertEqual(rd.model_family("claude-sonnet-5[1m]"), "claude-sonnet")
+        self.assertEqual(rd.model_family("opus[1m]"), "claude-opus")
+        self.assertEqual(rd.model_family("claude-opus-5[1m]"), "claude-opus")
 
     def test_boot_transcript_has_no_model_yet(self):
         self.assertIsNone(rd.latest_model(os.path.join(FIX, "transcript-boot.jsonl")))
@@ -590,7 +598,7 @@ class Polling(unittest.TestCase):
         self.w.poll()
         self.assertEqual(len(self.w.gh.patched()), 14)  # same threads, same updated_at: no second PATCH
 
-    def test_new_request_spawns_opus_with_a_session_id(self):
+    def test_new_request_spawns_sonnet_with_a_session_id(self):
         thread = self.w.request("jjstack", 48)
         self.w.poll()
         self.assertEqual(len(self.w.spawner.argvs), 1)
@@ -600,7 +608,7 @@ class Polling(unittest.TestCase):
         self.assertIn("--working-directory=" + self.w.cwd, argv)
         self.assertIn("/opt/bin/claude-tm", argv)
         self.assertIn("--role=jjstack-pr48", argv)
-        self.assertEqual(argv_value(argv, "--model"), "opus[1m]")
+        self.assertEqual(argv_value(argv, "--model"), "sonnet[1m]")
         sid = argv_value(argv, "--session-id")
         self.assertEqual(str(uuid.UUID(sid)), sid)
         self.assertNotIn("--resume", argv)
@@ -627,7 +635,7 @@ class Polling(unittest.TestCase):
         self.w.request("jjstack", 48)
         self.w.poll()
         rec = self.w.record("jjstack", 48)
-        self.w.say(rec["session_uuid"], "claude-opus-5", when=self.w.clock.t - 10)  # older than the handshake
+        self.w.say(rec["session_uuid"], "claude-sonnet-5", when=self.w.clock.t - 10)  # older than the handshake
         self.w.hub.set(rec["worker"])
         self.w.poll()
         self.w.poll()
@@ -652,7 +660,7 @@ class Polling(unittest.TestCase):
         self.w.poll()
         argv = self.w.spawner.argvs[-1]
         self.assertEqual(len(self.w.spawner.argvs), 2)
-        self.assertEqual(argv_value(argv, "--model"), "claude-opus-5[1m]")
+        self.assertEqual(argv_value(argv, "--model"), "claude-sonnet-5[1m]")
         self.assertNotIn("--resume", argv)
         self.assertNotEqual(argv_value(argv, "--session-id"), first_sid)
         rec = self.w.record("jjstack", 48)
@@ -953,7 +961,7 @@ class Polling(unittest.TestCase):
         rec = self.w.record("jjstack", 48)
         self.assertEqual(rec["session_uuid"], "hand-made")
         self.w.poll()  # handshake
-        self.w.say("hand-made", "claude-opus-5")
+        self.w.say("hand-made", "claude-sonnet-5")
         self.w.poll()
         self.assertEqual(self.w.mcp.texts()[-1], "/review disciplin-run-org/jjstack pr 48")
 

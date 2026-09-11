@@ -103,6 +103,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Changed
 
+- **The review daemon's reviewer sessions now run on Sonnet by default,
+  instead of Opus.** The model the daemon requires comes from its `--model`
+  flag, not from a name baked into the check, so pointing `--model` (and
+  `--retry-model`, kept in the same family) at a different model is now
+  enough on its own — no code change needed. Restart an already-running
+  daemon to pick this up; it keeps requiring Opus until you do.
+
 - **Clearing your context no longer picks the old task back up.** There are
   three things you can want at the end of a session, and until now two of them
   ran the same machinery. `/save-and-clear` filed a resume order whenever the

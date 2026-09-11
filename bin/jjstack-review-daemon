@@ -8,7 +8,8 @@ counts: GitHub lets only an account with triage or write access make one. An
 @-mention starts nothing. A notification is only a hint: the daemon confirms
 the request behind it, because GitHub also moves a thread on merges and
 comments.
-The daemon checks that the session runs on Opus, then sends it
+The daemon checks that the session runs on the model --model asks for (Sonnet
+by default), then sends it
 `/review <owner>/<repo> pr <N>`. A re-request on the same PR goes to the same
 session, so the next round knows what the last one found.
 When the PR is merged or closed, or has been idle for --idle-days, the daemon
@@ -29,8 +30,8 @@ Options:
   --owners A,B          repo owners whose requests are accepted
                         (default JesperJurcenoks,disciplin-run-org)
   --reconcile-every N   also sweep pending review requests every N polls (default 15)
-  --model M             model for new sessions (default opus[1m])
-  --retry-model M       model for the one retry after a wrong model (default claude-opus-5[1m])
+  --model M             model for new sessions (default sonnet[1m])
+  --retry-model M       model for the one retry after a wrong model (default claude-sonnet-5[1m])
   --cwd DIR             the reviewer directory (default: the current directory)
   --hub-url URL         the tubemail hub (default http://localhost:8001)
   --once                poll once, then exit
@@ -313,8 +314,23 @@ def latest_model(path, since=None):
     return found
 
 
-def is_opus(model):
-    return bool(model) and model.startswith("claude-opus")
+def model_family(model_flag):
+    """The 'claude-<family>' prefix a --model/--retry-model value asks for.
+
+    Accepts either spelling the daemon takes on the command line: a short
+    alias with an optional context-window suffix ('sonnet[1m]') or a full
+    model id ('claude-sonnet-5[1m]'). Both reduce to 'claude-sonnet', the
+    prefix a transcript's model line is checked against.
+    """
+    base = model_flag.split("[", 1)[0]
+    if not base.startswith("claude-"):
+        base = "claude-" + base
+    parts = base.split("-")
+    return "-".join(parts[:2])
+
+
+def matches_family(model, family):
+    return bool(model) and model.startswith(family)
 
 
 def parse_json_stream(text):
@@ -585,8 +601,8 @@ class Config:
     home: str = os.path.expanduser("~")
     claude_tm: str = "claude-tm"
     terminal: str = "gnome-terminal"
-    model: str = "opus[1m]"
-    retry_model: str = "claude-opus-5[1m]"
+    model: str = "sonnet[1m]"
+    retry_model: str = "claude-sonnet-5[1m]"
     max_sessions: int = 4
     idle_days: float = 7
     reconcile_every: int = 15
@@ -1060,11 +1076,12 @@ class Daemon:
                                 "and the review was not sent" % (label, worker))
             return
         rec["model"] = model
-        if not is_opus(model):
+        family = model_family(self.cfg.model)
+        if not matches_family(model, family):
             if not rec["model_retried"]:
-                self.say("warn", "%s: %s is running %s, not Opus; the review was not sent. "
+                self.say("warn", "%s: %s is running %s, not %s; the review was not sent. "
                          "Exiting it and retrying once with %s" % (
-                             label, worker, model, self.cfg.retry_model))
+                             label, worker, model, family, self.cfg.retry_model))
                 if self._send(rec, "/exit"):
                     rec.update(model_retried=True, respawn="fresh", model_flag=self.cfg.retry_model)
             else:
@@ -1181,8 +1198,8 @@ def main(argv=None):
     p.add_argument("--idle-days", type=float, default=7)
     p.add_argument("--owners", default=",".join(DEFAULT_OWNERS))
     p.add_argument("--reconcile-every", type=int, default=15)
-    p.add_argument("--model", default="opus[1m]")
-    p.add_argument("--retry-model", default="claude-opus-5[1m]")
+    p.add_argument("--model", default="sonnet[1m]")
+    p.add_argument("--retry-model", default="claude-sonnet-5[1m]")
     p.add_argument("--cwd", default=".")
     p.add_argument("--hub-url", default="http://localhost:8001")
     p.add_argument("--once", action="store_true")
