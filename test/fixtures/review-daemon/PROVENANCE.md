@@ -25,9 +25,9 @@ is the reviewer identity, `ai-assistant-2026`.
 | `pull-pending.json` | derived, not fetched: `pull-cleared.json` with `requested_reviewers` set to the `requested_reviewer` of the last `review_requested` event in `events.json`. No open PR anywhere had a pending request at freeze time |
 | `events.json` | `GH api "repos/disciplin-run-org/jjstack/issues/49/events?per_page=100" --jq '[.[] \| {event, created_at, actor: {login: .actor.login}, requested_reviewer: (if .requested_reviewer then {login: .requested_reviewer.login} else null end)}]'` |
 | `events-paginated.txt` | `GH api --paginate "repos/disciplin-run-org/jjstack/issues/48/events?per_page=2"`, raw. gh 2.4.0 prints one JSON array per page, back to back, with nothing between them |
-| `comments.json` | `GH api "repos/disciplin-run-org/jjstack/issues/48/comments?per_page=100" --jq '[.[] \| {id, created_at, user: {login: .user.login}, author_association, body: .body[0:200]}]'` |
 | `permission-admin.json` | `GH api repos/disciplin-run-org/jjstack/collaborators/JesperJurcenoks/permission --jq '{permission, role_name, user: {login: .user.login}}'` |
 | `permission-read.json` | the same call for `octocat`, an account with no access. On a public repo GitHub answers `read`, not 404 |
+| `workers-after-exit.json` | `GET http://localhost:8001/api/workers` with the hub bearer, on 2026-09-11, after `/save-and-exit` ended `Code-Review-jjstack-pr51-tm`: the two rows for that worker and its `-manager`, cut to `name, online, state, last_activity, exited_cleanly`. The clean exit is on the manager row |
 | `workers.json` | `GET http://localhost:8001/api/workers` with the hub bearer. Rows are filtered to `Code-Review-*` and cut to `name, online, state, last_activity, exited_cleanly` |
 | `transcript-mixed.jsonl` | every `type == "assistant"` line of the Code-Review session `176a7e3e-e8a6-43d1-b03b-7fc0fa2c141d.jsonl`, cut to `type, isSidechain, timestamp, message.model`. It holds 77 `claude-fable-5-1` lines, then 210 `claude-opus-5` lines |
 | `transcript-fable-last.jsonl` | `transcript-mixed.jsonl` cut after its last main-chain line that is not Opus |

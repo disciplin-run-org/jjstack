@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -33,7 +34,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # REVIEW_DAEMON_BIN points the suite at a mutant copy; the mutation proof uses it.
 BIN = os.environ.get("REVIEW_DAEMON_BIN") or os.path.join(REPO, "bin", "jjstack-review-daemon")
 FIX = os.path.join(REPO, "test", "fixtures", "review-daemon")
-MIN_TESTS = 74
+MIN_TESTS = 85
 FIXTURES = (
     "notifications-200.txt", "notifications-304.txt", "search.json",
     "search-empty.json", "pull-open.json", "pull-merged.json",
@@ -41,7 +42,7 @@ FIXTURES = (
     "transcript-mixed.jsonl", "transcript-fable-last.jsonl",
     "transcript-boot.jsonl", "transcript-synthetic.jsonl",
     "pull-cleared.json", "pull-pending.json", "events.json", "events-paginated.txt",
-    "comments.json", "permission-admin.json", "permission-read.json",
+    "permission-admin.json", "permission-read.json", "workers-after-exit.json",
 )
 _MISSING = [f for f in FIXTURES if not os.path.exists(os.path.join(FIX, f))]
 if _MISSING:  # before the module-level loads below, which would crash on it
@@ -78,11 +79,10 @@ PULL_CLOSED = fxj("pull-closed.json")
 REVIEWS = fxj("reviews.json")
 PULL_CLEARED = fxj("pull-cleared.json")    # open, the reviewer's request already cleared
 PULL_PENDING = fxj("pull-pending.json")    # open, the reviewer still requested
-EVENTS = fxj("events.json")
-COMMENTS = fxj("comments.json")
 PERM_ADMIN = fxj("permission-admin.json")
-PERM_READ = fxj("permission-read.json")
-MENTION_BODY = "@ai-assistant-2026 please take a look"
+PERM_READ = fxj("permission-read.json")     # what GitHub answers for no access on a public repo
+EXIT_ROWS = fxj("workers-after-exit.json")  # the hub after #51's /save-and-exit
+EVENTS = fxj("events.json")
 T0 = rd.parse_iso("2026-09-10T18:00:00Z")
 MIN = 60.0
 HOUR = 3600.0
@@ -129,10 +129,9 @@ class FakeGH:
         self.reviews = {}          # "owner/repo/N" -> list
         self.search = {"total_count": 0, "incomplete_results": False, "items": []}
         self.events = {}           # "owner/repo/N" -> issue events
-        self.comments = {}         # "owner/repo/N" -> issue comments
-        self.review_comments = {}  # "owner/repo/N" -> pull review comments
         self.writers = {"JesperJurcenoks"}
-        self.permission_error = False
+        self.permission_error = False  # every permission lookup fails (HTTP 502)
+        self.missing_logins = set()    # GitHub answers 404: not an account it knows
         self.login_as = rd.REVIEWER
         self.login_calls = 0
 
@@ -146,14 +145,15 @@ class FakeGH:
         if m:
             if self.permission_error:
                 raise rd.GHError("HTTP 502")
+            if m.group(3) in self.missing_logins:
+                raise rd.GHError("gh: %s is not a user (HTTP 404)" % m.group(3))
             p = copy.deepcopy(PERM_ADMIN if m.group(3) in self.writers else PERM_READ)
             p["user"]["login"] = m.group(3)
             return 200, {}, json.dumps(p)
-        m = re.match(r"repos/([^/]+)/([^/]+)/(issues|pulls)/(\d+)/(events|comments|reviews)(?:\?.*)?$", path)
+        m = re.match(r"repos/([^/]+)/([^/]+)/(issues|pulls)/(\d+)/(events|reviews)(?:\?.*)?$", path)
         if m:
             key = "%s/%s/%s" % (m.group(1), m.group(2), m.group(4))
-            table = {("issues", "events"): self.events, ("issues", "comments"): self.comments,
-                     ("pulls", "comments"): self.review_comments,
+            table = {("issues", "events"): self.events,
                      ("pulls", "reviews"): self.reviews}.get((m.group(3), m.group(5)))
             if table is None:
                 raise AssertionError("unexpected gh call %s %s" % (method, path))
@@ -196,8 +196,12 @@ class FakeHub:
         return copy.deepcopy(self.rows)
 
     def set(self, name, online=True, state="idle", exited_cleanly=False):
+        # As the real hub does (workers-after-exit.json): the clean exit is
+        # recorded on the manager's row, never on the worker's.
         self.rows[name] = {"name": name, "online": online, "state": state,
-                           "last_activity": T0, "exited_cleanly": exited_cleanly}
+                           "last_activity": T0, "exited_cleanly": False}
+        self.rows[name + "-manager"] = {"name": name + "-manager", "online": online, "state": "idle",
+                                        "last_activity": T0, "exited_cleanly": exited_cleanly}
 
 
 class FakeMCP:
@@ -272,9 +276,10 @@ class World:
 
     def request(self, repo, number, reason="review_requested", pr=None, updated=None,
                 by="JesperJurcenoks", new_event=True):
-        """Something happens on GitHub now. The thread moves; with new_event,
-        what really backs a request moves too: a review_requested event (and
-        the reviewer on requested_reviewers), or a comment that mentions it."""
+        """Something happens on GitHub now. The thread moves; with new_event and
+        a review_requested reason, what really backs a request moves too: a
+        review_requested event, and the reviewer on requested_reviewers. Any
+        other reason, such as a mention, moves the thread alone."""
         t = thread_for(repo, number)
         t["reason"] = reason
         t["updated_at"] = updated or rd.iso(self.clock.t + 1)
@@ -289,11 +294,6 @@ class World:
             ev = copy.deepcopy(EVENTS[-1])
             ev.update(created_at=rd.iso(self.clock.t + 1), actor={"login": by})
             self.gh.events.setdefault(key, []).append(ev)
-        if new_event and reason == "mention":
-            c = copy.deepcopy(COMMENTS[0])
-            c.update(id=len(self.gh.comments.get(key, [])) + 1, created_at=rd.iso(self.clock.t + 1),
-                     user={"login": by}, body=MENTION_BODY)
-            self.gh.comments.setdefault(key, []).append(c)
         return t
 
     def record(self, repo, number):
@@ -360,19 +360,23 @@ class Parsing(unittest.TestCase):
         self.assertIsNone(rd.parse_pr_url("https://api.github.com/repos/o/r/issues/3"))
         self.assertIsNone(rd.parse_pr_url("not a url"))
 
-    def test_real_notifications_yield_review_requests_only(self):
+    def test_real_notifications_are_all_hints(self):
         triggers, ignored = rd.select_triggers(THREADS, ("JesperJurcenoks", "disciplin-run-org"))
-        self.assertEqual(len(triggers), 9)
-        self.assertEqual({t["reason"] for t in triggers}, {"review_requested"})
+        self.assertEqual(len(triggers), 14)  # every PR thread: the reason does not filter
+        self.assertEqual({t["reason"] for t in triggers}, {"review_requested", "comment"})
         pairs = {(t["repo"], t["number"]) for t in triggers}
         self.assertIn(("inboundsavvy-cms", 573), pairs)
         self.assertIn(("jjstack", 48), pairs)
-        self.assertNotIn(("jjstack", 34), pairs)  # a `comment` thread
+        self.assertIn(("jjstack", 34), pairs)  # a `comment` thread is a hint too
         self.assertEqual(ignored, [])
 
-    def test_mention_kept_issue_read_and_outsider_split(self):
+    def test_every_pr_thread_is_a_hint_whatever_its_reason(self):
+        # GitHub rewrites a thread's reason to `mention` after a later mention,
+        # so the reason cannot decide; _confirm reads the request records.
         base = thread_for("jjstack", 1)
+        request = dict(copy.deepcopy(base), id="q1")
         mention = dict(copy.deepcopy(base), id="m1", reason="mention")
+        comment = dict(copy.deepcopy(base), id="c1", reason="comment")
         issue = copy.deepcopy(base)
         issue["id"] = "i1"
         issue["subject"]["type"] = "Issue"
@@ -382,10 +386,9 @@ class Parsing(unittest.TestCase):
         outsider["repository"]["owner"]["login"] = "someone-else"
         outsider["repository"]["full_name"] = "someone-else/freeloader"
         outsider["subject"]["url"] = "https://api.github.com/repos/someone-else/freeloader/pulls/7"
-        triggers, ignored = rd.select_triggers([mention, issue, read, outsider],
+        triggers, ignored = rd.select_triggers([request, mention, comment, issue, read, outsider],
                                                ("JesperJurcenoks", "disciplin-run-org"))
-        self.assertEqual([t["thread_id"] for t in triggers], ["m1"])
-        self.assertEqual(triggers[0]["reason"], "mention")
+        self.assertEqual([t["thread_id"] for t in triggers], ["q1", "m1", "c1"])
         self.assertEqual([i["thread_id"] for i in ignored], ["o1"])
         self.assertEqual(ignored[0]["owner"], "someone-else")
 
@@ -578,14 +581,14 @@ class Polling(unittest.TestCase):
             self.w.gh.pulls["%s/%s/%d" % (t["owner"], t["repo"], t["number"])] = pull(PULL_MERGED, t["number"])
         out = self.w.poll()
         self.assertEqual(self.w.spawner.argvs, [])
-        self.assertEqual(len(self.w.gh.patched()), 9)
+        self.assertEqual(len(self.w.gh.patched()), 14)
         self.assertEqual(self.w.ledger.records, {})
         # Skipped at the door: never queued, so never in history, and said so.
         self.assertEqual(len(out), 9)
         self.assertTrue(all("skipped: the PR is already merged" in t for _, t in out))
         self.assertFalse(os.path.exists(os.path.join(self.w.cwd, ".review-daemon", "history.jsonl")))
         self.w.poll()
-        self.assertEqual(len(self.w.gh.patched()), 9)  # same threads, same updated_at: no second PATCH
+        self.assertEqual(len(self.w.gh.patched()), 14)  # same threads, same updated_at: no second PATCH
 
     def test_new_request_spawns_opus_with_a_session_id(self):
         thread = self.w.request("jjstack", 48)
@@ -709,19 +712,44 @@ class Polling(unittest.TestCase):
         self.assertEqual(len(self.w.spawner.argvs), 1)
         self.assertEqual(len(self.w.gh.patched()), 2)
 
-    def test_mention_behaves_like_a_request(self):
+    def test_a_mention_alone_starts_nothing(self):
+        self.w.request("jjstack", 60, reason="mention", pr=pull(PULL_CLEARED, 60), new_event=False)
+        out = self.w.poll()
+        self.assertEqual(out, [])
+        self.assertIsNone(self.w.record("jjstack", 60))
+        self.assertEqual(self.w.spawner.argvs, [])
+        self.assertEqual(len(self.w.gh.patched()), 1)  # read: looked at, and not a request
+
+    def test_a_mention_on_a_reviewed_pr_sends_no_round(self):
         rec = self.w.boot("jjstack", 48)
         self.w.poll()
         self.w.request("jjstack", 48, reason="mention", updated="2026-09-10T19:00:00Z")
         self.w.poll()
+        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 1)
+        self.assertFalse(self.w.record("jjstack", 48)["pending_dispatch"])
+
+    def test_a_re_request_masked_by_a_mention_still_gets_its_round(self):
+        # #52 round 1 P1: after a re-request, any mention before the next poll
+        # turns the thread's reason into `mention`. The request is still real.
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        t = self.w.request("jjstack", 48, updated="2026-09-10T19:00:00Z")  # the re-request
+        t["reason"] = "mention"                                              # what the feed shows
+        self.w.poll()
         self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 2)
+
+    def test_a_mention_on_a_pr_with_a_pending_request_opens_its_session(self):
+        t = self.w.request("jjstack", 61)  # a writer's request, pending
+        t["reason"] = "mention"
+        self.w.poll()
         self.assertEqual(len(self.w.spawner.argvs), 1)
 
     def test_reconcile_does_not_redispatch_an_active_pr(self):
         rec = self.w.boot("jjstack", 48)
         self.w.poll()
         self.w.gh.search = fxj("search.json")
-        self.w.gh.pulls["disciplin-run-org/jjstack/47"] = pull(PULL_OPEN, 47)
+        self.w.gh.pulls["disciplin-run-org/jjstack/47"] = pull(PULL_PENDING, 47)
+        self.w.gh.events["disciplin-run-org/jjstack/47"] = [copy.deepcopy(EVENTS[-1])]  # a writer's request
         self.w.d.poll_count = self.w.cfg.reconcile_every - 1
         self.w.poll()
         self.assertEqual(self.w.mcp.texts(rec["worker"]).count("/review disciplin-run-org/jjstack pr 48"), 1)
@@ -794,6 +822,33 @@ class Polling(unittest.TestCase):
         hist = [json.loads(l) for l in open(os.path.join(self.w.cwd, ".review-daemon", "history.jsonl"))]
         self.assertEqual(hist[-1]["end_reason"], "merged")
         self.assertTrue(any("ended" in text for _, text in out))
+
+    def test_the_live_hub_rows_after_save_and_exit_read_as_a_clean_end(self):
+        # workers-after-exit.json is the hub after #51's /save-and-exit: the
+        # worker row says false, the manager row says true.
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.gh.pulls["disciplin-run-org/jjstack/48"] = pull(PULL_MERGED, 48)
+        self.w.poll()
+        self.assertEqual(self.w.mcp.texts()[-1], "/save-and-exit")
+        for row in EXIT_ROWS["workers"]:
+            name = row["name"].replace("Code-Review-jjstack-pr51-tm", rec["worker"])
+            self.w.hub.rows[name] = dict(row, name=name)
+        out = self.w.poll()
+        self.assertIsNone(self.w.record("jjstack", 48))
+        self.assertEqual([t for level, t in out if level == "error"], [])
+        hist = [json.loads(l) for l in open(os.path.join(self.w.cwd, ".review-daemon", "history.jsonl"))]
+        self.assertTrue(hist[-1]["exited_cleanly"])
+
+    def test_an_end_without_a_clean_exit_is_reported(self):
+        rec = self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.gh.pulls["disciplin-run-org/jjstack/48"] = pull(PULL_MERGED, 48)
+        self.w.poll()
+        self.w.hub.set(rec["worker"], online=False, exited_cleanly=False)
+        out = self.w.poll()
+        self.assertIsNone(self.w.record("jjstack", 48))
+        self.assertTrue(any(level == "error" and "did not exit cleanly" in t for level, t in out))
 
     def test_closed_unmerged_ends(self):
         rec = self.w.boot("jjstack", 48)
@@ -940,10 +995,11 @@ class Polling(unittest.TestCase):
 class RoundOneFindings(unittest.TestCase):
     """The two blocking findings from the independent review of PR #49.
 
-    P0: an @-mention was accepted from anyone. GitHub lets any account mention
-    the reviewer on a public repo; only an account with write access can
-    request a review. P1: a thread whose updated_at moved was read as a new
-    request, and GitHub moves it on a merge and on a comment."""
+    P0: an @-mention was accepted from anyone. It was gated by write access in
+    #49, and three rounds on #51 kept finding ways around the gate (quotes,
+    alerts, footnotes). AR-11 retired the trigger instead: a mention starts
+    nothing. P1: a thread whose updated_at moved was read as a new request,
+    and GitHub moves it on a merge and on a comment."""
 
     def setUp(self):
         self.w = World()
@@ -963,13 +1019,6 @@ class RoundOneFindings(unittest.TestCase):
         self.assertEqual([e["event"] for e in events],
                          ["review_requested", "referenced", "review_requested",
                           "merged", "closed", "head_ref_deleted"])
-
-    def test_mention_regex(self):
-        self.assertTrue(rd.mentions_reviewer("hi @ai-assistant-2026, please look"))
-        self.assertTrue(rd.mentions_reviewer("@AI-Assistant-2026"))
-        self.assertFalse(rd.mentions_reviewer("@ai-assistant-20260"))
-        self.assertFalse(rd.mentions_reviewer("mail me at x@ai-assistant-2026.dev"))
-        self.assertFalse(rd.mentions_reviewer(None))
 
     def test_p1_a_bump_without_a_new_request_sends_nothing(self):
         rec = self.w.boot("jjstack", 48)
@@ -999,63 +1048,152 @@ class RoundOneFindings(unittest.TestCase):
         self.assertEqual(len(self.w.gh.patched()), 1)
 
     def test_p0_a_strangers_fork_pr_mentioning_the_reviewer_opens_nothing(self):
-        fork = pull(PULL_CLEARED, 777, user={"login": "stranger"}, body=MENTION_BODY,
-                    created_at=rd.iso(self.w.clock.t + 1),
+        # The #49 round-1 repro, now with the trigger gone rather than gated.
+        fork = pull(PULL_CLEARED, 777, user={"login": "stranger"},
                     head={"sha": "c" * 40, "repo": {"full_name": "stranger/jjstack"}})
         self.w.request("jjstack", 777, reason="mention", pr=fork, new_event=False)
         out = self.w.poll()
         self.assertEqual(out, [])
         self.assertEqual(self.spawned(), 0)
         self.assertIsNone(self.w.record("jjstack", 777))
+
+
+class WhoAsked(unittest.TestCase):
+    """#52 round 1 P1: GitHub's web UI lets a PR's author re-request a review
+    without any access to the repo. A request counts only when the owner or
+    an account with write access made it, read from the event's actor."""
+
+    def setUp(self):
+        self.w = World()
+
+    def tearDown(self):
+        self.w.close()
+
+    def ignored(self):
+        path = os.path.join(self.w.cwd, ".review-daemon", "ignored.jsonl")
+        return open(path).read() if os.path.exists(path) else ""
+
+    def rounds(self, n):
+        return self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr %d" % n)
+
+    def test_a_re_request_by_someone_without_write_access_is_refused(self):
+        self.w.boot("jjstack", 48)
+        self.w.poll()
+        self.w.request("jjstack", 48, by="stranger", updated="2026-09-10T19:00:00Z")
+        self.w.poll()
+        self.assertEqual(self.rounds(48), 1)
         self.assertIn('"stranger"', self.ignored())
 
-    def test_p0_a_strangers_comment_mention_opens_nothing(self):
-        self.w.request("jjstack", 51, reason="mention", by="stranger")
+    def test_a_first_request_by_someone_without_write_access_opens_nothing(self):
+        self.w.request("jjstack", 62, by="stranger")
         self.w.poll()
-        self.assertEqual(self.spawned(), 0)
-        self.assertIn("stranger", self.ignored())
+        self.assertEqual(self.w.spawner.argvs, [])
+        self.assertIn('"stranger"', self.ignored())
 
-    def test_p0_a_writers_mention_in_the_pr_body_opens_a_session(self):
-        mine = pull(PULL_CLEARED, 60, user={"login": "JesperJurcenoks"}, body=MENTION_BODY,
-                    created_at=rd.iso(self.w.clock.t + 1))
-        self.w.request("jjstack", 60, reason="mention", pr=mine, new_event=False)
+    def test_after_a_session_ends_only_the_newest_request_stands(self):
+        # A writer asked once, long ago; the author re-requests later. With no
+        # session on record, the request that stands is the author's.
+        self.w.request("jjstack", 63, updated="2026-09-01T10:00:00Z")
+        self.w.gh.events["disciplin-run-org/jjstack/63"][-1]["created_at"] = "2026-09-01T10:00:00Z"
+        self.w.request("jjstack", 63, by="stranger")
         self.w.poll()
-        self.assertEqual(self.spawned(), 1)
+        self.assertEqual(self.w.spawner.argvs, [])
 
-    def test_p0_a_strangers_mention_after_a_round_sends_nothing(self):
-        rec = self.w.boot("jjstack", 48)
+    def test_a_writers_re_request_counts_with_a_strangers_after_it(self):
+        self.w.boot("jjstack", 48)
         self.w.poll()
-        self.w.request("jjstack", 48, reason="mention", by="stranger", updated="2026-09-10T19:00:00Z")
+        self.w.request("jjstack", 48, updated="2026-09-10T19:00:00Z")
+        self.w.request("jjstack", 48, by="stranger", updated="2026-09-10T19:01:00Z")
         self.w.poll()
-        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 1)
-        self.assertIn("stranger", self.ignored())
+        self.assertEqual(self.rounds(48), 2)
 
-    def test_p0_a_writers_mention_counts_even_with_a_stranger_after_it(self):
-        rec = self.w.boot("jjstack", 48)
+    def test_the_reconcile_sweep_checks_who_asked(self):
+        self.w.gh.search = fxj("search.json")
+        for n in (48, 47):
+            self.w.gh.pulls["disciplin-run-org/jjstack/%d" % n] = pull(PULL_PENDING, n)
+            ev = copy.deepcopy(EVENTS[-1])
+            ev["actor"] = {"login": "stranger"}
+            self.w.gh.events["disciplin-run-org/jjstack/%d" % n] = [ev]
         self.w.poll()
-        self.w.request("jjstack", 48, reason="mention", by="JesperJurcenoks", updated="2026-09-10T19:00:00Z")
-        self.w.request("jjstack", 48, reason="mention", by="stranger", updated="2026-09-10T19:01:00Z")
-        self.w.poll()
-        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 48"), 2)
+        self.assertEqual(self.w.spawner.argvs, [])
 
-    def test_p0_an_old_writers_mention_does_not_carry_a_strangers_new_one(self):
-        self.w.request("jjstack", 53, reason="mention", by="JesperJurcenoks")
-        self.w.poll()
-        rec = self.w.record("jjstack", 53)
-        self.w.hub.set(rec["worker"])
-        self.w.poll()  # handshake
-        self.w.say(rec["session_uuid"], "claude-opus-5")
-        self.w.poll()  # round 1, asked for by the writer
-        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 53"), 1)
-        self.w.request("jjstack", 53, reason="mention", by="stranger", updated="2026-09-10T19:00:00Z")
-        self.w.poll()
-        self.assertEqual(self.w.mcp.texts().count("/review disciplin-run-org/jjstack pr 53"), 1)
-
-    def test_p0_a_permission_that_cannot_be_read_fails_closed(self):
+    def test_a_permission_that_cannot_be_read_is_retried_not_marked_read(self):
         self.w.gh.permission_error = True
-        self.w.request("jjstack", 52, reason="mention", by="someone")
+        self.w.request("jjstack", 64, by="someone")
+        out1 = self.w.poll()
+        self.assertEqual(self.w.spawner.argvs, [])
+        self.assertEqual(self.w.gh.patched(), [])
+        self.assertEqual(len([1 for level, _ in out1 if level == "warn"]), 1)
+        out2 = self.w.poll()
+        self.assertEqual([1 for level, _ in out2 if level == "warn"], [])  # once per update
+        self.w.gh.permission_error = False
+        self.w.gh.writers.add("someone")
         self.w.poll()
-        self.assertEqual(self.spawned(), 0)
+        self.assertEqual(len(self.w.spawner.argvs), 1)
+
+    def test_a_request_already_answered_opens_nothing(self):
+        # A writer's request is on record, but a review cleared it, and no
+        # session is on record (a restart, or after an idle end). A comment
+        # moves the thread. The reviewer is no longer requested, so nothing.
+        self.w.request("jjstack", 66)
+        self.w.gh.pulls["disciplin-run-org/jjstack/66"] = pull(PULL_CLEARED, 66)
+        self.w.gh.threads[-1]["reason"] = "comment"
+        self.w.poll()
+        self.assertEqual(self.w.spawner.argvs, [])
+
+    def test_a_newer_update_on_a_stuck_thread_warns_again(self):
+        self.w.gh.permission_error = True
+        self.w.request("jjstack", 67, by="someone")
+        self.w.poll()
+        self.w.request("jjstack", 67, by="someone", updated="2026-09-10T19:00:00Z")
+        out = self.w.poll()
+        self.assertEqual(len([1 for level, _ in out if level == "warn"]), 1)
+
+    def test_a_login_github_does_not_know_is_refused(self):
+        self.w.gh.missing_logins.add("Copilot")
+        self.w.request("jjstack", 65, by="Copilot")
+        self.w.poll()
+        self.assertEqual(self.w.spawner.argvs, [])
+        self.assertEqual(len(self.w.gh.patched()), 1)
+        self.assertIn('"Copilot"', self.ignored())
+
+    def test_the_owner_needs_no_lookup(self):
+        self.assertEqual(self.w.d._permission("JesperJurcenoks", "x", "jesperjurcenoks"), "admin")
+        self.assertEqual([c for c in self.w.gh.calls if "permission" in c[1]], [])
+
+
+class Window(unittest.TestCase):
+    """The worker's window closes when its session ends cleanly and stays open
+    only when claude-tm fails. The script is run for real, with a stub `bash`
+    on PATH that records whether the window would have been held open."""
+
+    def held_open(self, rc):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "held-open")
+            stub = os.path.join(d, "bash")
+            with open(stub, "w") as fh:
+                fh.write("#!/bin/sh\n: > '%s'\n" % marker)
+            os.chmod(stub, 0o755)
+            env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""))
+            subprocess.run(["/bin/bash", "-c", rd.WINDOW_SCRIPT, "sh", "-c", "exit %d" % rc],
+                           env=env, stdin=subprocess.DEVNULL, timeout=20)
+            return os.path.exists(marker)
+
+    def test_a_clean_exit_closes_the_window(self):
+        self.assertFalse(self.held_open(0))
+
+    def test_a_failure_holds_the_window_open(self):
+        self.assertTrue(self.held_open(3))
+
+    def test_the_spawn_runs_the_window_script(self):
+        w = World()
+        try:
+            w.request("jjstack", 48)
+            w.poll()
+            argv = w.spawner.argvs[0]
+            self.assertEqual(argv[argv.index("-c") + 1], rd.WINDOW_SCRIPT)
+        finally:
+            w.close()
 
 
 class Console(unittest.TestCase):

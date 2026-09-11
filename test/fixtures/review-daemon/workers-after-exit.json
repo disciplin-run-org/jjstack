@@ -1,0 +1,18 @@
+{
+ "workers": [
+  {
+   "name": "Code-Review-jjstack-pr51-tm-manager",
+   "online": false,
+   "state": "idle",
+   "last_activity": 1789135993.8670816,
+   "exited_cleanly": true
+  },
+  {
+   "name": "Code-Review-jjstack-pr51-tm",
+   "online": false,
+   "state": "idle",
+   "last_activity": 1789136060.952794,
+   "exited_cleanly": false
+  }
+ ]
+}

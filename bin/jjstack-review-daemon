@@ -2,14 +2,15 @@
 """jjstack-review-daemon - open a review session for every PR review request.
 
 Polls GitHub as the reviewer account, ai-assistant-2026, every two minutes.
-A review request, or an @-mention by an account with write access, on a PR in
-a repo whose owner is on the allowlist gets its own Claude Code worker session,
-in a new terminal window. A notification is only a hint: the daemon confirms
+A review request on a PR, in a repo whose owner is on the allowlist, gets its
+own Claude Code worker session in a new terminal window. Only a review request
+counts: GitHub lets only an account with triage or write access make one. An
+@-mention starts nothing. A notification is only a hint: the daemon confirms
 the request behind it, because GitHub also moves a thread on merges and
 comments.
 The daemon checks that the session runs on Opus, then sends it
-`/review <owner>/<repo> pr <N>`. A re-request or a new mention on the same PR
-goes to the same session, so the next round knows what the last one found.
+`/review <owner>/<repo> pr <N>`. A re-request on the same PR goes to the same
+session, so the next round knows what the last one found.
 When the PR is merged or closed, or has been idle for --idle-days, the daemon
 sends that session `/save-and-exit`. It never kills a session.
 
@@ -68,7 +69,12 @@ from datetime import datetime, timezone
 
 REVIEWER = "ai-assistant-2026"
 DEFAULT_OWNERS = ("JesperJurcenoks", "disciplin-run-org")
-TRIGGER_REASONS = ("review_requested", "mention")
+# Only a review request starts or re-sends a round (AR-11), and only one made
+# by the owner or an account with write access. A notification's reason is a
+# hint and nothing more: GitHub rewrites it to `mention` after a later
+# mention, so a re-request can arrive under any reason. _confirm reads
+# GitHub's own record of who requested what, and never a comment.
+WRITE_PERMISSIONS = ("admin", "write")
 REASON_WORDS = {"review_requested": "review requested", "mention": "mentioned",
                 "reconcile": "pending review request"}
 # The hub refuses any other worker name; a '#' in it never registers.
@@ -78,10 +84,6 @@ PR_URL_RE = re.compile(
     r"^https://(?:api\.github\.com/repos|github\.com)/([^/\s]+)/([^/\s]+)/pulls?/(\d+)$")
 EXIT_IDENTITY = 3
 DAY = 86400.0
-# Anyone may @-mention an account on a public repo; only a writer may request
-# its review. A mention counts only from an author GitHub says can write.
-WRITE_PERMISSIONS = ("admin", "write")
-MENTION_RE = re.compile(r"(?<![\w@.-])@%s(?![\w-])" % re.escape(REVIEWER), re.IGNORECASE)
 
 # ── palette: no red. Ever. ────────────────────────────────────────────────
 RESET = "\033[0m"
@@ -234,17 +236,18 @@ def handshake_text(owner, repo, number):
 
 
 def select_triggers(threads, owners):
-    """Unread PR threads whose reason is a review request or a mention.
+    """Unread PR threads, whatever their reason. The reason is only a hint;
+    _confirm decides from GitHub's request records.
 
     Returns (triggers, ignored): ignored are the same shape from owners off
-    the allowlist. Any other reason, an Issue, or a read thread is dropped.
+    the allowlist. An Issue or a read thread is dropped.
     """
     triggers, ignored = [], []
     for t in threads:
         if t.get("unread") is False:
             continue
         subject = t.get("subject") or {}
-        if subject.get("type") != "PullRequest" or t.get("reason") not in TRIGGER_REASONS:
+        if subject.get("type") != "PullRequest":
             continue
         parsed = parse_pr_url(subject.get("url"))
         if not parsed:
@@ -252,7 +255,7 @@ def select_triggers(threads, owners):
         owner, repo, number = parsed
         item = {"owner": owner, "repo": repo, "number": number,
                 "thread_id": str(t.get("id")), "reason": t["reason"],
-                "updated_at": t.get("updated_at"), "last_read_at": t.get("last_read_at")}
+                "updated_at": t.get("updated_at")}
         (triggers if is_allowlisted(owner, owners) else ignored).append(item)
     return triggers, ignored
 
@@ -314,10 +317,6 @@ def is_opus(model):
     return bool(model) and model.startswith("claude-opus")
 
 
-def mentions_reviewer(text):
-    return bool(text) and MENTION_RE.search(text) is not None
-
-
 def parse_json_stream(text):
     """Every value in `text`, flattened into one list.
 
@@ -361,12 +360,18 @@ def find_session_for_worker(home, cwd, worker):
     return None
 
 
+# What runs in each worker's window. "$0" "$@" is claude-tm with its arguments
+# verbatim. A clean exit (a /save-and-exit, or the /exit before a model retry)
+# ends the shell, so gnome-terminal closes the window. A failure execs an
+# interactive shell instead, so the window stays open and the error stays
+# readable. The window closes because its process ended; nothing kills it.
+WINDOW_SCRIPT = '"$0" "$@" || exec bash'
+
+
 def spawn_argv(cfg, worker, role, model, session_uuid, resume):
-    # "$0" "$@" runs claude-tm with its arguments verbatim; `exec bash` keeps
-    # the window open after the session exits, as the desktop launcher does.
     return [cfg.terminal, "--window", "--title=%s" % worker,
             "--working-directory=%s" % cfg.cwd, "--",
-            "bash", "-c", '"$0" "$@"; exec bash',
+            "bash", "-c", WINDOW_SCRIPT,
             cfg.claude_tm, "--role=%s" % role, "--model", model,
             "--resume" if resume else "--session-id", session_uuid]
 
@@ -690,8 +695,9 @@ class Daemon:
             try:
                 self._handle_trigger(t, now)
             except (GHError, ValueError) as e:
-                self.say("warn", "%s/%s#%d: could not act on the request: %s" % (
-                    t["owner"], t["repo"], t["number"], e))
+                self.warn_once("act:%s:%s" % (t["thread_id"], t["updated_at"]),
+                               "%s/%s#%d: could not act on the request: %s" % (
+                                   t["owner"], t["repo"], t["number"], e))
                 self.ledger.last_modified = None  # re-list next poll; the thread stays unread
                 continue
             if not self.cfg.dry_run:
@@ -733,33 +739,36 @@ class Daemon:
     def _handle_trigger(self, t, now):
         key = record_key(t["owner"], t["repo"], t["number"])
         label = "%s/%s#%d" % (t["owner"], t["repo"], t["number"])
-        why = REASON_WORDS.get(t["reason"], t["reason"])
+        why = REASON_WORDS.get(t["reason"], "updated (%s)" % t["reason"])
+        # What a confirmed update is, whatever the notification's reason said.
+        asked = "pending review request" if t["reason"] == "reconcile" else "review requested"
         rec = self.ledger.records.get(key)
         if rec is not None:
             if t["reason"] == "reconcile":
                 return  # the notification feed already brought this one in
-            ok, note, strangers = self._confirm(t, rec, None)
+            ok, note, refused = self._confirm(t, rec, None)
             if not ok:
-                self._not_a_request(t, label, why, note, strangers, now)
+                self._not_a_request(t, label, why, note, refused, now)
                 return
             if rec["status"] == "ending":
                 self.say("info", "%s: %s, ignored: the session is closing (%s)" % (
-                    label, why, rec.get("end_reason")))
+                    label, asked, rec.get("end_reason")))
                 return
             rec["pending_dispatch"] = True
             rec["last_request_at"] = now
             if t["thread_id"] and t["thread_id"] not in rec["threads"]:
                 rec["threads"].append(t["thread_id"])
-            self.say("info", "%s: %s again; next round goes to %s" % (label, why, rec["worker"]))
+            self.say("info", "%s: %s again; next round goes to %s" % (label, asked, rec["worker"]))
             return
         pr = self._pull(t["owner"], t["repo"], t["number"])
         if pr.get("state") != "open":
-            self.say("info", "%s: %s, skipped: the PR is already %s" % (
-                label, why, "merged" if pr.get("merged") else "closed"))
+            if t["reason"] in ("review_requested", "reconcile"):
+                self.say("info", "%s: %s, skipped: the PR is already %s" % (
+                    label, why, "merged" if pr.get("merged") else "closed"))
             return
-        ok, note, strangers = self._confirm(t, None, pr)
+        ok, note, refused = self._confirm(t, None, pr)
         if not ok:
-            self._not_a_request(t, label, why, note, strangers, now)
+            self._not_a_request(t, label, why, note, refused, now)
             return
         worker = worker_name(self.base, t["repo"], t["number"])
         self.ledger.records[key] = {
@@ -776,7 +785,7 @@ class Daemon:
             "end_reason": None, "exit_sent_at": None, "exit_sends": 0,
             "model_retried": False, "respawn": None, "blocked": None, "notes": {},
         }
-        self.say("info", "%s: %s; queued as %s" % (label, why, worker))
+        self.say("info", "%s: %s; queued as %s" % (label, asked, worker))
 
     # is this thread update a request? -------------------------------------
     def _get_list(self, path):
@@ -784,8 +793,11 @@ class Daemon:
         return parse_json_stream(body)
 
     def _permission(self, owner, repo, login):
-        """GitHub's permission for `login` on the repo. A failed lookup is
-        returned as 'unknown', never cached, and never counts as write."""
+        """GitHub's permission for `login` on the repo. The owner of a personal
+        repo is admin. A 404 (not an account GitHub knows) is a permanent none.
+        Any other failure is 'unknown': never cached, and never write."""
+        if not login:
+            return "none"
         if login.lower() == owner.lower():
             return "admin"
         key = (owner.lower(), repo.lower(), login.lower())
@@ -794,78 +806,72 @@ class Daemon:
                 _, _, body = self.gh.api("repos/%s/%s/collaborators/%s/permission" % (owner, repo, login))
                 self._perm_cache[key] = json.loads(body).get("permission") or "none"
             except (GHError, ValueError) as e:
-                return "unknown: %s" % e
+                if "HTTP 404" in str(e):
+                    self._perm_cache[key] = "none"
+                else:
+                    return "unknown: %s" % e
         return self._perm_cache[key]
 
-    def _mentions_since(self, owner, repo, number, floor, pr):
-        """(time, author) of each mention of the reviewer written after `floor`,
-        in a comment, a review comment, a review, or the PR description."""
-        base = "repos/%s/%s" % (owner, repo)
-        query = "per_page=100" + ("&since=%s" % iso(floor) if floor else "")
-        found = []
-        for path, stamp in (("%s/issues/%d/comments?%s" % (base, number, query), "created_at"),
-                            ("%s/pulls/%d/comments?%s" % (base, number, query), "created_at"),
-                            ("%s/pulls/%d/reviews?per_page=100" % (base, number), "submitted_at")):
-            for item in self._get_list(path):
-                if item.get(stamp) and mentions_reviewer(item.get("body")):
-                    found.append((parse_iso(item[stamp]), (item.get("user") or {}).get("login") or ""))
-        if pr.get("created_at") and mentions_reviewer(pr.get("body")):
-            found.append((parse_iso(pr["created_at"]), (pr.get("user") or {}).get("login") or ""))
-        return [(at, who) for at, who in found if at > floor and who and who.lower() != REVIEWER]
-
     def _confirm(self, t, rec, pr):
-        """Is there a real request behind this thread update? GitHub moves a
-        thread on a merge or a comment too, with the reason unchanged.
+        """Is there a real review request behind this thread update, made by
+        someone the repository trusts?
 
-        Returns (ok, note, strangers): strangers are (login, permission) pairs
-        whose mention was refused for want of write access.
+        Only GitHub's own records are read, never a comment: the reviewer's
+        place in requested_reviewers, for a PR with no session, and the PR's
+        review_requested events with their actor. A PR with no session needs
+        its newest request to come from the owner or a writer. A PR with a
+        session needs such a request newer than the last round. A PR's author
+        can re-request in the web UI without any access, which is why the
+        actor is checked. Returns (ok, note, refused); refused is (login,
+        permission) for a request made by someone without write access.
+        Raises GHError when a permission could not be read, so the thread
+        stays unread and the next poll asks again.
         """
         owner, repo, number = t["owner"], t["repo"], t["number"]
+        if rec is None:
+            wanted = {((u or {}).get("login") or "").lower() for u in pr.get("requested_reviewers") or []}
+            if REVIEWER not in wanted:
+                return False, "%s is not a requested reviewer" % REVIEWER, None
         last_round = (rec or {}).get("last_dispatch_at") or 0
-        if t["reason"] == "reconcile":
-            return True, "", []  # the search lists only requests still pending
-        if t["reason"] == "review_requested":
-            if rec is None:
-                wanted = {((u or {}).get("login") or "").lower() for u in pr.get("requested_reviewers") or []}
-                if REVIEWER in wanted:
-                    return True, "", []
-                return False, "%s is no longer a requested reviewer" % REVIEWER, []
-            if not last_round:
-                return True, "", []  # nothing sent yet; the round is still owed
-            asked = [parse_iso(e["created_at"]) for e in self._get_list(
-                "repos/%s/%s/issues/%d/events?per_page=100" % (owner, repo, number))
-                if e.get("event") == "review_requested" and e.get("created_at")
-                and ((e.get("requested_reviewer") or {}).get("login") or "").lower() == REVIEWER]
-            if asked and max(asked) > last_round:
-                return True, "", []
-            return False, "no review request newer than the last round", []
-        floor = max(last_round, parse_iso(t["last_read_at"]) if t.get("last_read_at") else 0)
-        if pr is None:
-            pr = self._pull(owner, repo, number)
-        found = self._mentions_since(owner, repo, number, floor, pr)
-        if not found:
-            return False, "no mention of @%s since the last round" % REVIEWER, []
-        strangers = []
-        for login in sorted({who for _, who in found}):
-            perm = self._permission(owner, repo, login)
+        asked = sorted((e for e in self._get_list(
+            "repos/%s/%s/issues/%d/events?per_page=100" % (owner, repo, number))
+            if e.get("event") == "review_requested" and e.get("created_at")
+            and ((e.get("requested_reviewer") or {}).get("login") or "").lower() == REVIEWER),
+            key=lambda e: parse_iso(e["created_at"]), reverse=True)
+        if rec is None:
+            asked = asked[:1]  # the request that stands is the newest one
+        else:
+            asked = [e for e in asked if parse_iso(e["created_at"]) > last_round]
+        if not asked:
+            return False, ("no review request newer than the last round" if rec
+                           else "no review request on record"), None
+        refused, undecided = None, []
+        for e in asked:
+            who = (e.get("actor") or {}).get("login") or ""
+            perm = self._permission(owner, repo, who)
             if perm in WRITE_PERMISSIONS:
-                return True, "", []
-            strangers.append((login, perm))
-        return False, "mentioned only by %s, without write access" % ", ".join(
-            "%s (%s)" % s for s in strangers), strangers
+                return True, "", None
+            if perm.startswith("unknown"):
+                undecided.append(who)
+            elif refused is None:
+                refused = (who, perm)
+        if undecided:
+            raise GHError("could not read the permission of %s; asking again next poll"
+                          % ", ".join(undecided))
+        return False, "requested by %s, who has %s access" % refused, refused
 
-    def _not_a_request(self, t, label, why, note, strangers, now):
+    def _not_a_request(self, t, label, why, note, refused, now):
         text = "%s: %s, not acted on: %s" % (label, why, note)
         if self.cfg.dry_run:
             self.say("note", text)
             return
         self.ledger.log_line("%s %s" % (iso(now), text))
-        for login, perm in strangers:
+        if refused:
             self.ledger.append_ignored({
                 "owner": t["owner"], "repo": t["repo"], "number": t["number"], "pr": _pr_name(t),
-                "reason": t["reason"], "by": login, "permission": perm,
-                "thread_id": "%s:%s" % (t["thread_id"], login), "updated_at": t["updated_at"],
-                "seen_at": iso(now)})
+                "requested_by": refused[0], "permission": refused[1],
+                "thread_id": "%s:%s" % (t["thread_id"], refused[0]),
+                "updated_at": t["updated_at"], "seen_at": iso(now)})
 
     def _check_prs(self, now):
         for key, rec in list(self.ledger.records.items()):
@@ -1085,7 +1091,7 @@ class Daemon:
                 rec["respawn"] = None
                 self._spawn(rec, now, fresh=True)
             return
-        clean = bool(row and row.get("exited_cleanly"))
+        clean = self._clean_exit(roster, worker)
         d = rec.get("last_dispatch_at")
         if not clean and d and (rec.get("last_review_at") or 0) < d and not rec["pending_dispatch"]:
             rec["pending_dispatch"] = True
@@ -1113,7 +1119,7 @@ class Daemon:
                                 "%s: %s is running but not connected to the hub; leaving it alone" % (
                                     label_of(rec), rec["worker"]))
                 return
-            self._finish(rec, now, clean=bool(row and row.get("exited_cleanly")))
+            self._finish(rec, now, clean=self._clean_exit(roster, rec["worker"]))
             return
         if row.get("state") != "idle":
             return
@@ -1126,6 +1132,12 @@ class Daemon:
                 rec.update(exit_sent_at=now, exit_sends=2)
                 self.say("warn", "%s: %s is still open %d min after /save-and-exit; sent it once more" % (
                     label_of(rec), rec["worker"], int(self.cfg.exit_resend_after / 60)))
+
+    def _clean_exit(self, roster, worker):
+        """The hub records a clean exit on `<worker>-manager`, the identity that
+        posts /goodbye; the worker's own row never gets it. Live on #51 after a
+        /save-and-exit: the manager row said true, the worker row false."""
+        return bool((roster.get(worker + "-manager") or {}).get("exited_cleanly"))
 
     def _finish(self, rec, now, clean):
         del self.ledger.records[record_key(rec["owner"], rec["repo"], rec["number"])]
