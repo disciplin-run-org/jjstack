@@ -145,7 +145,8 @@ directory and leave it running. It watches GitHub for review requests for the
 reviewer account. An @-mention starts nothing: to ask for a round, request the
 review. Each PR gets its own worker session,
 named after it, for example `Code-Review-jjstack-pr12-tm`, in its own window.
-The daemon checks the session is on Opus, then sends `/review`. Later rounds go
+The daemon checks the session is on the configured model (Sonnet by default,
+settable with `--model`), then sends `/review`. Later rounds go
 to the same session, so it knows what it found last time. When the PR merges
 or closes, the session gets `/save-and-exit`. Only repositories owned by
 `JesperJurcenoks` or `disciplin-run-org` are served. A stranger who adds the
@@ -332,7 +333,7 @@ loads. Read them directly or let skills load them for you.
 | `hard-gate-convention.md` | The HARD-GATE pattern for skills that must block until verified |
 | `definition-of-done.md` | The canonical 11-rung "done-done" Definition of Done + reporting rule |
 | `independent-review.md` | Rung 4: who reviews a PR before merge (the AI reviewer session, then a human on InboundSavvy repos), why the author never reviews their own, the reviewer identity, and the branch-protection settings |
-| `review-daemon.md` | How reviewer sessions are opened and closed for you: what counts as a request, the owner allowlist, the Opus check, next rounds, crash recovery, and how a session ends |
+| `review-daemon.md` | How reviewer sessions are opened and closed for you: what counts as a request, the owner allowlist, the model check, next rounds, crash recovery, and how a session ends |
 | `memory-promotion.md` | When recurring patterns should be promoted to memory or skills |
 | `output-capture.md` | Protocol for copying gstack outputs into `{repo}/jjstack/` |
 | `memory-sweep.md` | The shared base all three session-boundary skills run — what to keep before the context goes |

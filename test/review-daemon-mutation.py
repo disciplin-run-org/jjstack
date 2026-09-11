@@ -32,7 +32,7 @@ TEST = os.path.join(REPO, "test", "review-daemon-check.py")
 
 # name, anchor (must occur exactly once), replacement
 MUTANTS = [
-    ("opus-check-off", 'return bool(model) and model.startswith("claude-opus")', "return True"),
+    ("model-check-off", "return bool(model) and model.startswith(family)", "return True"),
     ("allowlist-off", 'return (owner or "").lower() in {o.lower() for o in owners}', "return True"),
     ("no-mark-read", 'self.gh.api("notifications/threads/%s" % t["thread_id"], method="PATCH")', "pass"),
     ("no-thread-dedup", 'if self.ledger.seen_threads.get(t["thread_id"]) == t["updated_at"]:', "if False:"),

@@ -5,7 +5,8 @@ description: >
   Claude Code review session per pull request for the reviewer account
   ai-assistant-2026. For each review request (an @-mention starts nothing),
   it spawns a worker
-  in ~/PycharmProjects/Code-Review, confirms the session runs on Opus, sends
+  in ~/PycharmProjects/Code-Review, confirms the session runs on the
+  configured model (Sonnet by default), sends
   it /review, sends later rounds to the same session, and ends it with
   /save-and-exit when the PR merges or closes. Only repos owned by
   JesperJurcenoks or disciplin-run-org are served; other requests are logged

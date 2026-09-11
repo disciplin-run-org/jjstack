@@ -89,7 +89,7 @@ background.
   working in the reviewer directory, runs:
 
   ```bash
-  claude-tm --role=<repo>-pr<N> --model opus[1m] --session-id <uuid>
+  claude-tm --role=<repo>-pr<N> --model sonnet[1m] --session-id <uuid>
   ```
 
   The daemon picks the uuid and keeps it, so it can resume that exact session
@@ -101,15 +101,20 @@ background.
   a turn. And the hub reports `idle` before Claude has finished starting. So
   once the worker is online and idle, the daemon sends it one line asking it
   to reply `READY`. That reply is the readiness check.
-- **Model gate.** The daemon reads the session transcript,
+- **Model gate.** The family the daemon requires is derived from `--model`
+  itself, never hardcoded: `sonnet[1m]` and `claude-sonnet-5[1m]` both reduce
+  to the prefix `claude-sonnet`, so changing `--model` (and, to match,
+  `--retry-model`) is enough to require a different model — no code change.
+  The daemon reads the session transcript,
   `~/.claude/projects/<dashed cwd>/<uuid>.jsonl`, and takes the newest
   main-chain assistant line written after the handshake. Subagent lines and
-  `<synthetic>` placeholders are skipped. The model must start with
-  `claude-opus`. If it does not, the review is not sent. The daemon sends
-  `/exit`, then opens a fresh session once with `--retry-model` (default
-  `claude-opus-5[1m]`). If that session is also not on Opus, the daemon
-  prints an error and leaves the PR for a person. The model is checked again
-  before every round, not only the first.
+  `<synthetic>` placeholders are skipped. The model must start with that
+  prefix (default `claude-sonnet`). If it does not, the review is not sent.
+  The daemon sends `/exit`, then opens a fresh session once with
+  `--retry-model` (default `claude-sonnet-5[1m]`). If that session is also
+  not on the required family, the daemon prints an error and leaves the PR
+  for a person. The model is checked again before every round, not only the
+  first.
 - **Dispatch.** Once the model passes and the worker is idle, the daemon sends
   `/review <owner>/<repo> pr <N>`. It never sends to a worker that is not
   online, because a message to an unknown name creates a ghost row on the hub.
