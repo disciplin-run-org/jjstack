@@ -35,7 +35,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # REVIEW_DAEMON_BIN points the suite at a mutant copy; the mutation proof uses it.
 BIN = os.environ.get("REVIEW_DAEMON_BIN") or os.path.join(REPO, "bin", "jjstack-review-daemon")
 FIX = os.path.join(REPO, "test", "fixtures", "review-daemon")
-MIN_TESTS = 85
+MIN_TESTS = 88
 FIXTURES = (
     "notifications-200.txt", "notifications-304.txt", "search.json",
     "search-empty.json", "pull-open.json", "pull-merged.json",
@@ -46,7 +46,8 @@ FIXTURES = (
     "comments.json", "permission-admin.json", "permission-read.json",
     "comment-code-span.json", "markdown-mention.html", "markdown-quote.html",
     "markdown-crlf-fence.html", "markdown-other-user.html", "markdown-stray-backtick.html",
-    "markdown-fence.html",
+    "markdown-fence.html", "markdown-quote-reply.html", "markdown-nested-quote.html",
+    "markdown-after-quote.html",
 )
 _MISSING = [f for f in FIXTURES if not os.path.exists(os.path.join(FIX, f))]
 if _MISSING:  # before the module-level loads below, which would crash on it
@@ -99,6 +100,9 @@ CRLF_FENCE_HTML = fx("markdown-crlf-fence.html")    # CRLF code block, then a me
 OTHER_USER_HTML = fx("markdown-other-user.html")    # a user-mention, of someone else
 STRAY_TICK_HTML = fx("markdown-stray-backtick.html")  # a lone ` does not swallow it
 FENCE_HTML = fx("markdown-fence.html")              # a handle inside a code block
+QUOTE_REPLY_HTML = fx("markdown-quote-reply.html")  # a writer quoting a stranger's mention
+NESTED_QUOTE_HTML = fx("markdown-nested-quote.html")  # a mention two quotes deep
+AFTER_QUOTE_HTML = fx("markdown-after-quote.html")  # the author's own mention, after a quote
 T0 = rd.parse_iso("2026-09-10T18:00:00Z")
 MIN = 60.0
 HOUR = 3600.0
@@ -152,6 +156,7 @@ class FakeGH:
         self.failing_logins = set()    # lookups for these fail (HTTP 502)
         self.missing_logins = set()    # GitHub answers 404: not a user it knows
         self.patch_fails = False       # marking a thread read fails (HTTP 502)
+        self.ignore_accept = False     # GitHub stops honouring the HTML accept header
         self.read_ids = set()          # threads marked read; GitHub lists them read
         self.login_as = rd.REVIEWER
         self.login_calls = 0
@@ -179,7 +184,7 @@ class FakeGH:
                      ("pulls", "reviews"): self.reviews}.get((m.group(3), m.group(5)))
             if table is None:
                 raise AssertionError("unexpected gh call %s %s" % (method, path))
-            items = table.get(key, [])
+            items = [self._as_served(i, headers) for i in table.get(key, [])]
             if paginate and len(items) > 1:  # gh 2.4.0: one array per page, back to back
                 half = len(items) // 2
                 return 200, {}, json.dumps(items[:half]) + json.dumps(items[half:])
@@ -208,8 +213,18 @@ class FakeGH:
             key = "%s/%s/%s" % (m.group(1), m.group(2), m.group(3))
             if key not in self.pulls:
                 raise AssertionError("no pull stubbed for " + key)
-            return 200, {}, json.dumps(self.pulls[key])
+            return 200, {}, json.dumps(self._as_served(self.pulls[key], headers))
         raise AssertionError("unexpected gh call %s %s" % (method, path))
+
+    def _as_served(self, obj, headers):
+        """As GitHub does: body_html comes only under the HTML accept header.
+        With ignore_accept, GitHub sends the raw body instead."""
+        obj = copy.deepcopy(obj)
+        if self.ignore_accept or rd.HTML_ACCEPT not in headers:
+            html = obj.pop("body_html", None)
+            if self.ignore_accept and html and "body" not in obj:
+                obj["body"] = "(the raw markdown)"
+        return obj
 
     def patched(self):
         return [p for (m, p, _, _) in self.calls if m == "PATCH"]
@@ -1094,10 +1109,13 @@ class RoundOneFindings(unittest.TestCase):
 
 
 class RoundTwoNotes(unittest.TestCase):
-    """The two coverage notes from round 2 of the review of PR #49.
+    """The two coverage notes from round 2 of the review of PR #49, and the
+    two rounds of the review of PR #51 that followed.
 
-    A handle inside code or a quoted reply is not a mention on GitHub, and a
-    permission lookup that fails must not cost a writer their request."""
+    A mention is GitHub's user-mention link, and only one the comment's author
+    wrote: a handle in code is not a mention, and a handle in a quote is
+    someone else's words. A permission lookup that fails must not cost a
+    writer their request."""
 
     def setUp(self):
         self.w = World()
@@ -1111,9 +1129,34 @@ class RoundTwoNotes(unittest.TestCase):
 
     def test_githubs_rendering_decides_what_a_mention_is(self):
         self.assertFalse(rd.mentions_reviewer(FENCE_HTML))      # in a code block: code
-        self.assertTrue(rd.mentions_reviewer(QUOTE_HTML))       # in a > quote: GitHub links it
         self.assertTrue(rd.mentions_reviewer(CRLF_FENCE_HTML))  # after a CRLF block (#51 P1)
         self.assertTrue(rd.mentions_reviewer(STRAY_TICK_HTML))  # after a lone backtick (#51 P2)
+
+    def test_a_quoted_mention_is_not_the_authors_request(self):
+        # #51 round 2 P1: GitHub links a quoted handle, but the words are not
+        # the comment author's, and the permission gate vouches for the author.
+        self.assertIn("user-mention", QUOTE_HTML)          # GitHub does link it
+        self.assertFalse(rd.mentions_reviewer(QUOTE_HTML))
+        self.assertFalse(rd.mentions_reviewer(QUOTE_REPLY_HTML))
+        self.assertFalse(rd.mentions_reviewer(NESTED_QUOTE_HTML))
+        self.assertTrue(rd.mentions_reviewer(AFTER_QUOTE_HTML))  # the author's own words still count
+
+    def test_a_writers_quote_reply_of_a_strangers_mention_opens_nothing(self):
+        # The reviewer's repro: the stranger is refused, then a writer quotes
+        # the stranger's mention to decline it.
+        self.w.request("jjstack", 77, reason="mention", by="stranger")
+        self.w.poll()
+        self.w.request("jjstack", 77, reason="mention", by="JesperJurcenoks", updated="2026-09-10T19:00:00Z")
+        self.w.gh.comments["disciplin-run-org/jjstack/77"][-1]["body_html"] = QUOTE_REPLY_HTML
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 0)
+
+    def test_github_ignoring_the_accept_header_is_warned_and_counts_nothing(self):
+        self.w.gh.ignore_accept = True
+        self.w.request("jjstack", 78, reason="mention", by="JesperJurcenoks")
+        out = self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 0)
+        self.assertEqual(len([1 for level, text in out if level == "warn" and "body_html" in text]), 1)
 
     def test_only_a_user_mention_link_to_the_reviewer_counts(self):
         self.assertFalse(rd.mentions_reviewer(OTHER_USER_HTML))

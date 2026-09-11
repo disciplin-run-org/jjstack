@@ -56,9 +56,13 @@ background.
     Without the gate, a stranger's mention would open a session that runs
     the PR's own tooling. What counts as a mention is GitHub's own
     rendering: a `user-mention` link to `@ai-assistant-2026` in the
-    `body_html` GitHub returns. So a handle in code is not a mention, and
-    a handle in a `>` quote is, exactly as GitHub shows it. The raw
-    markdown is never read. A permission lookup that fails opens nothing
+    `body_html` GitHub returns. So a handle in code is not a mention. A
+    handle inside a `>` quote is not one either, although GitHub links it.
+    Those are someone else's words, and the permission check vouches for
+    the comment's author. Counting a quote would let a writer who
+    quote-replies a stranger's mention, to decline it, hand the stranger a
+    session. The raw markdown is never read. If a response has a body but
+    no `body_html`, the daemon warns once and counts no mention. A permission lookup that fails opens nothing
     and leaves the thread unread, so the next poll asks again. The warning
     is printed once per update. A login GitHub answers 404 for, such as a
     bot name, counts as no access and is not retried. The mention's text is

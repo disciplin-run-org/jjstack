@@ -82,12 +82,18 @@ DAY = 86400.0
 # its review. A mention counts only from an author GitHub says can write.
 WRITE_PERMISSIONS = ("admin", "write")
 # A mention is what GitHub itself renders as one: a user-mention link in the
-# body_html it returns under HTML_ACCEPT. GitHub's rendering gets code, quotes
-# and CRLF right by definition, where a hand-written markdown reader did not,
-# and a scan that never crosses a '<' is linear, so a stranger's comment
-# cannot stall the daemon.
+# body_html it returns under HTML_ACCEPT. GitHub's rendering gets code and CRLF
+# right by definition, where a hand-written markdown reader did not. The scan
+# never crosses a '<', and GitHub's sanitiser strips class attributes from
+# user-written HTML, so a stranger cannot make one tag expensive to read.
+#
+# A user-mention inside a <blockquote> does not count. It is GitHub's mention,
+# but it is somebody else's words: the permission gate vouches for the
+# comment's author, and a writer who quote-replies a stranger's mention to
+# decline it has not asked for a review.
 HTML_ACCEPT = "Accept: application/vnd.github.html+json"
-_USER_MENTION_RE = re.compile(r'<a\s[^<>]*?\bclass="[^"<>]*\buser-mention\b[^"<>]*"[^<>]*>', re.IGNORECASE)
+_USER_MENTION = r'<a\s[^<>]*?\bclass="[^"<>]*\buser-mention\b[^"<>]*"[^<>]*>'
+_TAG_RE = re.compile(r"<(/?)blockquote\b[^<>]*>|(" + _USER_MENTION + ")", re.IGNORECASE)
 _HREF_RE = re.compile(r'\bhref="https://github\.com/([^"/?#<>]+)"', re.IGNORECASE)
 
 # ── palette: no red. Ever. ────────────────────────────────────────────────
@@ -326,10 +332,14 @@ def mentions_reviewer(html):
     Raw markdown is never read: a handle in code renders as code, not a link."""
     if not html:
         return False
-    for tag in _USER_MENTION_RE.finditer(html):
-        href = _HREF_RE.search(tag.group(0))
-        if href and href.group(1).lower() == REVIEWER:
-            return True
+    depth = 0  # how many <blockquote>s the scan is inside
+    for m in _TAG_RE.finditer(html):
+        if m.group(2) is None:
+            depth = max(0, depth + (-1 if m.group(1) else 1))
+        elif depth == 0:
+            href = _HREF_RE.search(m.group(2))
+            if href and href.group(1).lower() == REVIEWER:
+                return True
     return False
 
 
@@ -820,6 +830,15 @@ class Daemon:
                 return "unknown: %s" % e
         return self._perm_cache[key]
 
+    def _html_of(self, obj):
+        """body_html, GitHub's rendering; the raw body is never read. A body with
+        no body_html means GitHub did not honour HTML_ACCEPT: say so once, and
+        count no mention rather than guess at the markdown."""
+        if "body_html" not in obj and obj.get("body"):
+            self.warn_once("no-body-html", "GitHub sent no body_html, so no mention can be "
+                           "read and none counts; is the %s header still honoured?" % HTML_ACCEPT)
+        return obj.get("body_html")
+
     def _mentions_since(self, owner, repo, number, floor, pr):
         """(time, author) of each mention of the reviewer written after `floor`,
         in a comment, a review comment, a review, or the PR description."""
@@ -830,12 +849,9 @@ class Daemon:
                             ("%s/pulls/%d/comments?%s" % (base, number, query), "created_at"),
                             ("%s/pulls/%d/reviews?per_page=100" % (base, number), "submitted_at")):
             for item in self._get_list(path, headers=(HTML_ACCEPT,)):
-                if "body_html" not in item and item.get("body"):
-                    self.warn_once("no-body-html", "GitHub sent no body_html, so no mention can be "
-                                   "read and none counts; is the %s header still honoured?" % HTML_ACCEPT)
-                if item.get(stamp) and mentions_reviewer(item.get("body_html")):
+                if item.get(stamp) and mentions_reviewer(self._html_of(item)):
                     found.append((parse_iso(item[stamp]), (item.get("user") or {}).get("login") or ""))
-        if pr.get("created_at") and mentions_reviewer(pr.get("body_html")):
+        if pr.get("created_at") and mentions_reviewer(self._html_of(pr)):
             found.append((parse_iso(pr["created_at"]), (pr.get("user") or {}).get("login") or ""))
         return [(at, who) for at, who in found if at > floor and who and who.lower() != REVIEWER]
 
