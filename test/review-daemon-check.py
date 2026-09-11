@@ -33,7 +33,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # REVIEW_DAEMON_BIN points the suite at a mutant copy; the mutation proof uses it.
 BIN = os.environ.get("REVIEW_DAEMON_BIN") or os.path.join(REPO, "bin", "jjstack-review-daemon")
 FIX = os.path.join(REPO, "test", "fixtures", "review-daemon")
-MIN_TESTS = 74
+MIN_TESTS = 79
 FIXTURES = (
     "notifications-200.txt", "notifications-304.txt", "search.json",
     "search-empty.json", "pull-open.json", "pull-merged.json",
@@ -42,6 +42,7 @@ FIXTURES = (
     "transcript-boot.jsonl", "transcript-synthetic.jsonl",
     "pull-cleared.json", "pull-pending.json", "events.json", "events-paginated.txt",
     "comments.json", "permission-admin.json", "permission-read.json",
+    "comment-code-span.json",
 )
 _MISSING = [f for f in FIXTURES if not os.path.exists(os.path.join(FIX, f))]
 if _MISSING:  # before the module-level loads below, which would crash on it
@@ -83,6 +84,9 @@ COMMENTS = fxj("comments.json")
 PERM_ADMIN = fxj("permission-admin.json")
 PERM_READ = fxj("permission-read.json")
 MENTION_BODY = "@ai-assistant-2026 please take a look"
+# The real comment the round-2 reviewer found the daemon matching: the author's
+# own round-1 response on #49, where the handle only appears in backticks.
+COMMENT_CODE_SPAN = fxj("comment-code-span.json")
 T0 = rd.parse_iso("2026-09-10T18:00:00Z")
 MIN = 60.0
 HOUR = 3600.0
@@ -1056,6 +1060,57 @@ class RoundOneFindings(unittest.TestCase):
         self.w.request("jjstack", 52, reason="mention", by="someone")
         self.w.poll()
         self.assertEqual(self.spawned(), 0)
+
+
+class RoundTwoNotes(unittest.TestCase):
+    """The two coverage notes from round 2 of the review of PR #49.
+
+    A handle inside code or a quoted reply is not a mention on GitHub, and a
+    permission lookup that fails must not cost a writer their request."""
+
+    def setUp(self):
+        self.w = World()
+
+    def tearDown(self):
+        self.w.close()
+
+    def test_a_handle_in_a_code_span_is_not_a_mention(self):
+        body = COMMENT_CODE_SPAN["body"]
+        self.assertIn("`@ai-assistant-2026`", body)  # the specimen is what it claims
+        self.assertFalse(rd.mentions_reviewer(body))
+
+    def test_quotes_and_fences_are_not_mentions(self):
+        self.assertFalse(rd.mentions_reviewer("> @ai-assistant-2026 please look\n\nthanks"))
+        self.assertFalse(rd.mentions_reviewer("see:\n```\n@ai-assistant-2026 review\n```\n"))
+        self.assertFalse(rd.mentions_reviewer("see:\n~~~text\n@ai-assistant-2026 review\n~~~\n"))
+        self.assertFalse(rd.mentions_reviewer("``a `@ai-assistant-2026` b``"))
+
+    def test_a_mention_outside_code_still_counts(self):
+        self.assertTrue(rd.mentions_reviewer("`x` and then @ai-assistant-2026 please"))
+        self.assertTrue(rd.mentions_reviewer("```\ncode\n```\n@ai-assistant-2026 please review"))
+        self.assertTrue(rd.mentions_reviewer("> quoted\n@ai-assistant-2026 please review"))
+
+    def test_a_writers_handle_in_backticks_opens_nothing(self):
+        self.w.request("jjstack", 55, reason="mention", by="JesperJurcenoks")
+        self.w.gh.comments["disciplin-run-org/jjstack/55"][-1]["body"] = COMMENT_CODE_SPAN["body"]
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 0)
+
+    def test_a_failed_lookup_is_retried_not_marked_read(self):
+        self.w.gh.permission_error = True
+        self.w.request("jjstack", 54, reason="mention", by="someone")
+        out1 = self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 0)
+        self.assertEqual(self.w.gh.patched(), [])
+        self.assertEqual(len([1 for level, _ in out1 if level == "warn"]), 1)
+        out2 = self.w.poll()  # still failing: still unread, and no second warning
+        self.assertEqual(self.w.gh.patched(), [])
+        self.assertEqual([1 for level, _ in out2 if level == "warn"], [])
+        self.w.gh.permission_error = False
+        self.w.gh.writers.add("someone")
+        self.w.poll()
+        self.assertEqual(len(self.w.spawner.argvs), 1)
+        self.assertEqual(len(self.w.gh.patched()), 1)
 
 
 class Console(unittest.TestCase):

@@ -82,6 +82,11 @@ DAY = 86400.0
 # its review. A mention counts only from an author GitHub says can write.
 WRITE_PERMISSIONS = ("admin", "write")
 MENTION_RE = re.compile(r"(?<![\w@.-])@%s(?![\w-])" % re.escape(REVIEWER), re.IGNORECASE)
+# GitHub does not treat a handle as a mention inside code or a quoted reply,
+# so neither does the daemon: these are removed before MENTION_RE runs.
+_FENCE_RE = re.compile(r"(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)")
+_QUOTE_RE = re.compile(r"(?m)^[ \t]*>.*$")
+_CODE_SPAN_RE = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
 
 # ── palette: no red. Ever. ────────────────────────────────────────────────
 RESET = "\033[0m"
@@ -314,8 +319,16 @@ def is_opus(model):
     return bool(model) and model.startswith("claude-opus")
 
 
+def mention_text(text):
+    """The part of a comment where GitHub would see a mention: everything but
+    fenced code blocks, `>` quote lines and inline code spans."""
+    text = _FENCE_RE.sub("", text)
+    text = _QUOTE_RE.sub("", text)
+    return _CODE_SPAN_RE.sub("", text)
+
+
 def mentions_reviewer(text):
-    return bool(text) and MENTION_RE.search(text) is not None
+    return bool(text) and MENTION_RE.search(mention_text(text)) is not None
 
 
 def parse_json_stream(text):
@@ -690,8 +703,9 @@ class Daemon:
             try:
                 self._handle_trigger(t, now)
             except (GHError, ValueError) as e:
-                self.say("warn", "%s/%s#%d: could not act on the request: %s" % (
-                    t["owner"], t["repo"], t["number"], e))
+                self.warn_once("act:%s:%s" % (t["thread_id"], t["updated_at"]),
+                               "%s/%s#%d: could not act on the request: %s" % (
+                                   t["owner"], t["repo"], t["number"], e))
                 self.ledger.last_modified = None  # re-list next poll; the thread stays unread
                 continue
             if not self.cfg.dry_run:
@@ -845,12 +859,20 @@ class Daemon:
         found = self._mentions_since(owner, repo, number, floor, pr)
         if not found:
             return False, "no mention of @%s since the last round" % REVIEWER, []
-        strangers = []
+        strangers, undecided = [], []
         for login in sorted({who for _, who in found}):
             perm = self._permission(owner, repo, login)
             if perm in WRITE_PERMISSIONS:
                 return True, "", []
-            strangers.append((login, perm))
+            if perm.startswith("unknown"):
+                undecided.append(login)
+            else:
+                strangers.append((login, perm))
+        if undecided:
+            # Closed now, decided later: raising leaves the thread unread, so
+            # the next poll asks again and a 502 does not cost a writer the round.
+            raise GHError("could not read the permission of %s; asking again next poll"
+                          % ", ".join(undecided))
         return False, "mentioned only by %s, without write access" % ", ".join(
             "%s (%s)" % s for s in strangers), strangers
 

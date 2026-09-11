@@ -26,6 +26,7 @@ is the reviewer identity, `ai-assistant-2026`.
 | `events.json` | `GH api "repos/disciplin-run-org/jjstack/issues/49/events?per_page=100" --jq '[.[] \| {event, created_at, actor: {login: .actor.login}, requested_reviewer: (if .requested_reviewer then {login: .requested_reviewer.login} else null end)}]'` |
 | `events-paginated.txt` | `GH api --paginate "repos/disciplin-run-org/jjstack/issues/48/events?per_page=2"`, raw. gh 2.4.0 prints one JSON array per page, back to back, with nothing between them |
 | `comments.json` | `GH api "repos/disciplin-run-org/jjstack/issues/48/comments?per_page=100" --jq '[.[] \| {id, created_at, user: {login: .user.login}, author_association, body: .body[0:200]}]'` |
+| `comment-code-span.json` | `GH api repos/disciplin-run-org/jjstack/issues/comments/5624626836 --jq '{id, created_at, user: {login: .user.login}, author_association, body}'`, the round-1 response on #49. The handle appears in it only in backticks, and round 2 found the daemon reading it as a mention |
 | `permission-admin.json` | `GH api repos/disciplin-run-org/jjstack/collaborators/JesperJurcenoks/permission --jq '{permission, role_name, user: {login: .user.login}}'` |
 | `permission-read.json` | the same call for `octocat`, an account with no access. On a public repo GitHub answers `read`, not 404 |
 | `workers.json` | `GET http://localhost:8001/api/workers` with the hub bearer. Rows are filtered to `Code-Review-*` and cut to `name, online, state, last_activity, exited_cleanly` |

@@ -54,8 +54,11 @@ background.
     already puts that gate on a review request. Anyone can mention an
     account on a public repo, but only a writer can request its review.
     Without the gate, a stranger's mention would open a session that runs
-    the PR's own tooling. A permission lookup that fails counts as no
-    access. The mention's text is not passed on.
+    the PR's own tooling. As on GitHub, a handle inside a code span, a
+    fenced code block or a `>` quote line is not a mention. A permission
+    lookup that fails opens nothing and leaves the thread unread, so the
+    next poll asks again. The warning is printed once per update. The
+    mention's text is not passed on.
 
   An update that confirms nothing is marked read and written to `daemon.log`.
   A mention from someone without write access also goes to `ignored.jsonl`.
