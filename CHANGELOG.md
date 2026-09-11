@@ -25,18 +25,33 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 - **Review requests now open their own review session.** Start
   `jjstack-review-daemon` in the reviewer directory and leave it running.
-  When someone requests a review from `ai-assistant-2026`, or someone with
-  write access @-mentions it on a pull request, the daemon opens a new window with a worker session named
-  after that PR. It checks the session is running on Opus, then sends it
+  When someone requests a review from `ai-assistant-2026` on a pull request,
+  the daemon opens a new window with a worker session named after that PR. It checks the session is running on Opus, then sends it
   `/review`. When the author fixes things and re-requests, the next round goes
   to the same session, so it remembers the last one. When the PR is merged or
   closed, the session saves its lessons and exits on its own. Requests from
-  repositories you do not own are ignored, and so is a mention from anyone
-  without write access, so nobody else can use the reviewer for free. Four sessions run at once at most; the rest wait their turn. This
+  repositories you do not own are ignored, so nobody else can use the
+  reviewer for free. Four sessions run at once at most; the rest wait their turn. This
   replaces typing `claude-tm --role=...` and `/review ...` by hand for every
   pull request. `/review-daemon` explains how to start and check it.
 
 ### Fixed
+
+- **Only a review request starts a review now, not an @-mention.** In 0.46.0 a
+  mention of `ai-assistant-2026` from someone with write access also started a
+  round. But anyone can mention an account on a public repository, and every
+  rule for whose mention should count left a way in. The last one: if you
+  quoted a stranger's mention to turn them down, their review started anyway.
+  Only people with access to a repository can request a review, so that is
+  now the one trigger. To ask for another round after fixes, re-request the
+  review.
+
+- **A review window now closes when its session ends.** After the session
+  saves its lessons and exits, the terminal window closes too, instead of
+  leaving an empty shell behind for every pull request. It stays open only
+  when the session fails to start or crashes for good, so you can read what
+  went wrong. The daemon also stops reporting "did not exit cleanly" as an
+  error when a session has simply ended as asked.
 
 - **A re-run can no longer post on the previous round's answer.** When a round
   is voided because the author pushed, the answer that voided it names the new
