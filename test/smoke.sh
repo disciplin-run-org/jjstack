@@ -3874,14 +3874,44 @@ check "…and a second run reports clean with exit 0" "[ \$(cat '$F/second.rc') 
 F=$(swfix); gone_local "$F" d2 "only here"
 check "a gone-upstream branch with a commit GitHub does not have is KEPT and says so" \
       "sw '$F' --apply | grep -q 'keep.*local  d2 — has commits GitHub does not have' && git -C '$F/work' rev-parse --verify -q refs/heads/d2 >/dev/null"
-# Never pushed: the only copy.
-F=$(swfix); git -C "$F/work" branch -q d3
+# Never pushed, with a commit main does not have: the only copy. (At main's
+# tip it would be preserved on reachability alone and prove nothing about the
+# no-upstream guard; review caught that.)
+F=$(swfix); git -C "$F/work" checkout -q -b d3; gc "$F/work" "unique"; git -C "$F/work" checkout -q main
 check "a branch that was never pushed is KEPT as the only copy" \
       "sw '$F' --apply | grep -q 'keep.*local  d3 — never pushed' && git -C '$F/work' rev-parse --verify -q refs/heads/d3 >/dev/null"
-# Checked out in a worktree: kept even though it is otherwise dead.
+# Checked out in ANOTHER worktree: kept even though it is otherwise dead.
 F=$(swfix); gone_local "$F" d4; git -C "$F/work" worktree add -q "$F/wt" d4 2>/dev/null
-check "a dead branch checked out in a worktree is KEPT" \
-      "sw '$F' --apply | grep -q 'keep.*local  d4 — checked out' && git -C '$F/work' rev-parse --verify -q refs/heads/d4 >/dev/null"
+check "a dead branch checked out in another worktree is KEPT" \
+      "sw '$F' --apply | grep -q 'keep.*local  d4 — checked out in another worktree' && git -C '$F/work' rev-parse --verify -q refs/heads/d4 >/dev/null"
+# …but a worktree whose directory was removed without `worktree remove` no
+# longer shields it: the stale record is pruned first.
+rm -rf "$F/wt"
+check "…and once that worktree's directory is gone, the branch is DEAD (stale records are pruned)" \
+      "sw '$F' | grep -q 'DEAD.*local  d4'"
+# Checked out in THIS clone: the branch a merge leaves you on. Swept, and
+# --apply moves the clone to the default branch first. The P0 of round 1: an
+# unconditional "checked out" exemption reported clean over exactly this branch.
+F=$(swfix); gone_local "$F" d5; git -C "$F/work" checkout -q d5
+check "a dead branch checked out in this clone is DEAD and says --apply will switch first" \
+      "sw '$F' | grep -q 'DEAD.*local  d5 .*checked out here; --apply switches to main first'"
+check "…and --apply switches the clone to main, deletes it, and exits 0" \
+      "[ \$(swrc '$F' --apply) -eq 0 ] && [ \"\$(git -C '$F/work' symbolic-ref --short HEAD)\" = main ] && ! git -C '$F/work' rev-parse --verify -q refs/heads/d5 >/dev/null 2>&1"
+# The printed undo is shell-safe: a name carrying \$(...) is quoted, not run
+# when a person pastes it. (git refuses a name that starts with a dash or holds
+# a space, so those two spellings cannot be fixtures; `--` before every ref
+# stays as the cheap guard against a future git that accepts one.)
+F=$(swfix); gone_local "$F" 'x$(id)'
+check "the undo line quotes a branch name that carries a command substitution" \
+      "sw '$F' --apply | grep -qF 'undo: git branch x\\\$\\(id\\) '"
+# The decision is re-checked at deletion: a commit added to a DEAD local branch
+# between decide and apply is kept, not discarded.
+F=$(swfix); gone_local "$F" d6
+sw "$F" > /dev/null; git -C "$F/work" checkout -q d6; gc "$F/work" "late"; git -C "$F/work" checkout -q main
+check "a dead branch that gained a commit after the decision is kept by the sha re-check" \
+      "sw '$F' --apply | grep -q 'keep.*local  d6 — has commits GitHub does not have' && git -C '$F/work' rev-parse --verify -q refs/heads/d6 >/dev/null"
+check "--help exits 0 and prints the contract" \
+      "'$BIN/jjstack-branch-sweep' --help | grep -q 'A branch is DEAD when every commit' "
 
 # REMOTE. A branch whose tip is a pull request head, and no open PR: dead, and
 # preserved by the PR rather than by main, which is the other half of the test.

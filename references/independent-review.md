@@ -144,6 +144,7 @@ belong to the author. On this machine the reviewer's clones live under
 `~/.code-review/repos/<owner>/<repo>`, made once with `git clone`; a reviewer
 that borrows the author's checkout instead leaves its worktrees in the author's
 `git worktree list`, which is where four of them were found on 2026-09-10.
+The author's side of the same hygiene is `bin/jjstack-branch-sweep` (rung 5).
 
 ```bash
 git -C <clone> fetch origin pull/<PR>/head
