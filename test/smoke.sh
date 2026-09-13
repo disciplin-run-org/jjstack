@@ -3860,7 +3860,9 @@ check "…and the open-PR question was put to gh (the stub was consulted)" \
       "grep -q 'pr list' '$F/gh.log'"
 check "…and --apply deletes it, prints the undo, and exits 0" \
       "sw '$F' --apply | grep -q 'undo: git branch d1 ' && ! git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null 2>&1"
-check "…and a second run reports clean with exit 0" "[ \$(swrc '$F' --apply) -eq 0 ]"
+sw "$F" --apply > "$F/second.out"; echo $? > "$F/second.rc"
+[ "$(cat "$F/second.rc")" = 0 ] || { echo "     second run exit $(cat "$F/second.rc"):"; sed 's/^/     | /' "$F/second.out"; }
+check "…and a second run reports clean with exit 0" "[ \$(cat '$F/second.rc') -eq 0 ]"
 
 # ONE THING DIFFERENT EACH. A commit GitHub does not have: kept.
 F=$(swfix); gone_local "$F" d2 "only here"
