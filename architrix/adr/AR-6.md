@@ -7,7 +7,7 @@ paths: ["references/definition-of-done.md", "references/independent-review.md", 
 supersedes: null
 superseded_by: null
 created: 2026-09-10T02:51:43+00:00
-updated: 2026-09-13T00:00:00+00:00
+updated: 2026-09-13T18:31:23+00:00
 ---
 
 # AR-6: A PR is merged only after a session that did not write it approves it, and after every push that answers findings

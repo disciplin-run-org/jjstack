@@ -7,7 +7,7 @@ paths: ["skills/review/SKILL.md", "bin/jjstack-review-preflight", "bin/jjstack-r
 supersedes: null
 superseded_by: null
 created: 2026-09-08T17:16:22+00:00
-updated: 2026-09-09T02:00:28+00:00
+updated: 2026-09-13T18:31:23+00:00
 ---
 
 # AR-3: /review is bounded by a budget and a convergence rule, not by recall

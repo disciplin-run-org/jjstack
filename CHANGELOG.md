@@ -24,7 +24,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 - **`/review` rebuilt clean, in about two thirds of the lines.** It had grown
   by patches over a dozen review rounds. The rebuild kept the same budgets,
-  verdicts, GitHub review, commit status and gates before posting, at 464
+  verdicts, GitHub review, commit status and gates before posting, at 465
   lines instead of 740; the incident stories are gone from its instructions,
   because the tests that guard against those incidents already hold them. It
   ran side by side under the name `/review-lean` while both versions were

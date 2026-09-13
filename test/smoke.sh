@@ -1726,6 +1726,8 @@ check "review holds the line budget it was rebuilt for" \
 check "…and carries no emdash anywhere" "! grep -q '—' '$DIR/skills/review/SKILL.md'"
 check "…and exists, so the two checks above cannot pass on nothing (anti-vacuity floor)" \
       "[ -s '$DIR/skills/review/SKILL.md' ]"
+check "review-lean is gone, not just unreferenced (the identical rename check security-review has)" \
+      "[ ! -e '$DIR/skills/review-lean' ]"
 
 # ── the governing docs: the same for every review skill ──────────────────
 IRV="$DIR/references/independent-review.md"
