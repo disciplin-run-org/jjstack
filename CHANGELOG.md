@@ -22,17 +22,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
   with the reason, so a branch that is the only copy of its work is never
   touched. `/receiving-code-review` runs it after the merge.
 
-- **`/review-lean`: the same review, rebuilt clean.** `/review` grew by
-  patches over a dozen review rounds. `/review-lean` is the production build:
-  the same budgets, verdicts, GitHub review, commit status and gates before
-  posting, in 469 lines instead of 740. The incident stories are gone from its
-  instructions, because the tests that guard against those incidents already
-  hold them. Both skills now share one test contract, so the rules and
-  commands it pins cannot drift apart. Run it with `/review-lean`; `/review` is unchanged and stays the
-  default until the swap. Its comments open with
-  `Claude jjstack/skills/review-lean/SKILL.md` and its status check is
-  `jjstack/review-lean`, so you can always tell which of the two wrote a
-  verdict.
+- **`/review` rebuilt clean, in about two thirds of the lines.** It had grown
+  by patches over a dozen review rounds. The rebuild kept the same budgets,
+  verdicts, GitHub review, commit status and gates before posting, at 464
+  lines instead of 740; the incident stories are gone from its instructions,
+  because the tests that guard against those incidents already hold them. It
+  ran side by side under the name `/review-lean` while both versions were
+  proven against real pull requests - including a case where it caught a
+  security defect the old version had marked clean - sharing one test
+  contract so neither could drift from the other, then replaced `/review`
+  outright under its original name.
 
 - **Review requests now open their own review session.** Start
   `jjstack-review-daemon` in the reviewer directory and leave it running.

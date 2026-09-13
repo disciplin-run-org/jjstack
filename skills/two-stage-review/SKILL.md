@@ -176,8 +176,7 @@ the point of the separation.
   pre-flight, four passes, a verdict posted to the PR. It judges the change
   against the intent the PR states, not against a spec, so use
   `/two-stage-review` when a spec or work order exists and compliance with it
-  is the question. `/review-lean` is its rebuild, run side by side until the
-  swap.
+  is the question.
 - **`/smart-review`** — triggers the Anthropic code-review plugin
   automatically. That plugin does general quality review; it does not
   enforce spec compliance. Run `/two-stage-review` first for spec-critical
