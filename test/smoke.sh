@@ -3856,10 +3856,16 @@ check "…and report-only exits 1 and leaves it in place" \
       "[ \$(swrc '$F') -eq 1 ] && git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null"
 check "…and the default branch is never listed, local or remote" \
       "! sw '$F' | grep -qE ' (local|remote) +main( |\$)'"
+# origin/HEAD is a symref to main, not a branch. git 2.55 shortens it to plain
+# `origin`, git 2.34 to `origin/HEAD`; CI reported a dead branch named origin.
+check "…and origin/HEAD is never listed under any spelling" \
+      "! sw '$F' | grep -qE ' remote +(origin|HEAD|origin/HEAD)( |\$)'"
 check "…and the open-PR question was put to gh (the stub was consulted)" \
       "grep -q 'pr list' '$F/gh.log'"
+sw "$F" --apply > "$F/first.out"; echo $? > "$F/first.rc"
+[ "$(cat "$F/first.rc")" = 0 ] || { echo "     first --apply run exit $(cat "$F/first.rc"):"; sed 's/^/     | /' "$F/first.out"; }
 check "…and --apply deletes it, prints the undo, and exits 0" \
-      "sw '$F' --apply | grep -q 'undo: git branch d1 ' && ! git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null 2>&1"
+      "[ \$(cat '$F/first.rc') -eq 0 ] && grep -q 'undo: git branch d1 ' '$F/first.out' && ! git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null 2>&1"
 sw "$F" --apply > "$F/second.out"; echo $? > "$F/second.rc"
 [ "$(cat "$F/second.rc")" = 0 ] || { echo "     second run exit $(cat "$F/second.rc"):"; sed 's/^/     | /' "$F/second.out"; }
 check "…and a second run reports clean with exit 0" "[ \$(cat '$F/second.rc') -eq 0 ]"

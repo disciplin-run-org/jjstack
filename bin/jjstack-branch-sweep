@@ -90,9 +90,14 @@ say_dead() { dead=$((dead + 1)); printf '  %bDEAD%b  %-6s %s (%s)\n' "$YEL" "$RS
 echo "jjstack-branch-sweep — $(g remote get-url origin) · default $DEFAULT · $([ "$APPLY" = true ] && echo apply || echo report-only)"
 
 # ── remote ───────────────────────────────────────────────────────────────────
-g for-each-ref 'refs/remotes/origin' --format='%(refname:short) %(objectname)' \
-  | while read -r ref sha; do
-      name="${ref#origin/}"
+# Full ref names, and symrefs skipped by their own field: `%(refname:short)`
+# renders refs/remotes/origin/HEAD as `origin/HEAD` on git 2.34 and as plain
+# `origin` on 2.55, and the second spelling walked past a `HEAD` test and was
+# reported as a dead branch named origin (CI, 2026-09-13).
+g for-each-ref 'refs/remotes/origin/' --format='%(refname) %(objectname) %(symref)' \
+  | while read -r ref sha symref; do
+      [ -n "$symref" ] && continue
+      name="${ref#refs/remotes/origin/}"
       [ "$name" = HEAD ] && continue
       [ "$name" = "$DEFAULT" ] && continue
       if grep -qxF "$name" "$TMP/openheads"; then say_keep remote "$name" "open PR"; continue; fi
