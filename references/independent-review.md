@@ -140,7 +140,11 @@ The reviewer directory is not a checkout, so each round makes what it needs and
 removes it at the end. Work from a clone the reviewer owns, not the author's
 working checkout: the fetch overwrites that clone's `FETCH_HEAD` and the
 worktree lands in its worktree list, and on the author's checkout both of those
-belong to the author.
+belong to the author. On this machine the reviewer's clones live under
+`~/.code-review/repos/<owner>/<repo>`, made once with `git clone`; a reviewer
+that borrows the author's checkout instead leaves its worktrees in the author's
+`git worktree list`, which is where four of them were found on 2026-09-10.
+The author's side of the same hygiene is `bin/jjstack-branch-sweep` (rung 5).
 
 ```bash
 git -C <clone> fetch origin pull/<PR>/head

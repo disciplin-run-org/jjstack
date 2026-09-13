@@ -11,6 +11,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
 ### Added
 
+- **Done now includes a branch sweep, and it is one command.** Rung 5 of the
+  Definition of Done said the merged branch is deleted, and that was checked by
+  reading: this repo carried five dead branches on GitHub, three in the clone
+  and four leftover review worktrees before anyone noticed. GitHub deletes a
+  branch when its pull request merges, not when it is closed, and a merge run
+  with `--repo` deletes on GitHub only. `jjstack-branch-sweep --apply` now
+  closes the rung: it deletes every branch whose commits are all on main or on
+  a pull request already, prints the undo for each, and keeps anything else
+  with the reason, so a branch that is the only copy of its work is never
+  touched. `/receiving-code-review` runs it after the merge.
+
 - **`/review-lean`: the same review, rebuilt clean.** `/review` grew by
   patches over a dozen review rounds. `/review-lean` is the production build:
   the same budgets, verdicts, GitHub review, commit status and gates before

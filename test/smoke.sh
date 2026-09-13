@@ -3800,6 +3800,150 @@ check "the daemon has no way to kill a session (no tm_stop, no signal)" \
       "! grep -qE 'tm_stop|SIGTERM|SIGKILL|\\.terminate\\(' '$RDD'"
 check "setup puts the daemon on PATH" "grep -qF '.local/bin/jjstack-review-daemon' '$DIR/setup'"
 
+echo "== 19. done-done rung 5: the branch sweep deletes only what is already preserved =="
+# Rung 5 named the PR's own branch and was checked by reading; on 2026-09-10
+# this repo carried five dead branches on GitHub, three in the clone and four
+# stale reviewer worktrees. The sweep is the rung's evidence now. Driven END TO
+# END against a throwaway origin+clone in the sandbox: a bare origin, a clone
+# on main, and refs/pull/1/head pushed straight to the origin as the one pull
+# request the fixture knows. `gh` is stubbed because the open-PR question is
+# the one git cannot answer; the stub logs every call so the assertion that it
+# was consulted is not vacuous. Each case is its own fixture and differs from
+# the deletable one in exactly one thing.
+SW="$SANDBOX/sweep"; mkdir -p "$SW/bin"
+cat > "$SW/bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo "$*" >> "${SWEEP_LOG:?}"
+if [ "$(cat "${SWEEP_GHMODE:?}")" = fail ]; then echo "gh: HTTP 502" >&2; exit 1; fi
+cat "${SWEEP_OPEN:?}"
+GHEOF
+chmod +x "$SW/bin/gh"
+gc() { git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$2"; }
+swfix() {  # swfix → root with origin, work clone on main, and refs/pull/1/head one commit off main
+  local r; r=$(tmp sweep)
+  git init -q --bare "$r/origin"
+  git clone -q "$r/origin" "$r/work" 2>/dev/null
+  gc "$r/work" init
+  git -C "$r/work" branch -q -M main
+  git -C "$r/work" push -q -u origin main 2>/dev/null
+  git -C "$r/work" remote set-head origin main 2>/dev/null
+  git -C "$r/work" checkout -q -b prwork
+  gc "$r/work" "pr work"
+  git -C "$r/work" push -q origin HEAD:refs/pull/1/head 2>/dev/null
+  git -C "$r/work" checkout -q main
+  git -C "$r/work" branch -q -D prwork
+  : > "$r/open"; echo ok > "$r/ghmode"; : > "$r/gh.log"
+  echo "$r"
+}
+prhead() { git -C "$1/work" ls-remote origin refs/pull/1/head | cut -f1; }
+sw()   { local r="$1"; shift; SWEEP_LOG="$r/gh.log" SWEEP_GHMODE="$r/ghmode" SWEEP_OPEN="$r/open" PATH="$SW/bin:$PATH" "$BIN/jjstack-branch-sweep" --repo "$r/work" "$@" 2>&1; }
+swrc() { sw "$@" >/dev/null; echo $?; }
+# gone_local <root> <name> [extra-commit]: a branch pushed, then deleted on the
+# origin as a merge elsewhere would, so its upstream is gone after the prune.
+gone_local() {
+  git -C "$1/work" checkout -q -b "$2"
+  [ -n "${3:-}" ] && gc "$1/work" "$3"
+  git -C "$1/work" push -q -u origin "$2" 2>/dev/null
+  git -C "$1/work" checkout -q main
+  git -C "$1/work" push -q origin --delete "$2" 2>/dev/null
+}
+
+# THE DELETABLE ONE: upstream gone, tip on main, not checked out.
+F=$(swfix); gone_local "$F" d1
+check "a local branch whose upstream is gone and whose tip is on main is DEAD" \
+      "sw '$F' | grep -q 'DEAD.*local  d1'"
+check "…and report-only exits 1 and leaves it in place" \
+      "[ \$(swrc '$F') -eq 1 ] && git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null"
+check "…and the default branch is never listed, local or remote" \
+      "! sw '$F' | grep -qE ' (local|remote) +main( |\$)'"
+# origin/HEAD is a symref to main, not a branch. git 2.55 shortens it to plain
+# `origin`, git 2.34 to `origin/HEAD`; CI reported a dead branch named origin.
+check "…and origin/HEAD is never listed under any spelling" \
+      "! sw '$F' | grep -qE ' remote +(origin|HEAD|origin/HEAD)( |\$)'"
+check "…and the open-PR question was put to gh (the stub was consulted)" \
+      "grep -q 'pr list' '$F/gh.log'"
+sw "$F" --apply > "$F/first.out"; echo $? > "$F/first.rc"
+[ "$(cat "$F/first.rc")" = 0 ] || { echo "     first --apply run exit $(cat "$F/first.rc"):"; sed 's/^/     | /' "$F/first.out"; }
+check "…and --apply deletes it, prints the undo, and exits 0" \
+      "[ \$(cat '$F/first.rc') -eq 0 ] && grep -q 'undo: git branch d1 ' '$F/first.out' && ! git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null 2>&1"
+sw "$F" --apply > "$F/second.out"; echo $? > "$F/second.rc"
+[ "$(cat "$F/second.rc")" = 0 ] || { echo "     second run exit $(cat "$F/second.rc"):"; sed 's/^/     | /' "$F/second.out"; }
+check "…and a second run reports clean with exit 0" "[ \$(cat '$F/second.rc') -eq 0 ]"
+
+# ONE THING DIFFERENT EACH. A commit GitHub does not have: kept.
+F=$(swfix); gone_local "$F" d2 "only here"
+check "a gone-upstream branch with a commit GitHub does not have is KEPT and says so" \
+      "sw '$F' --apply | grep -q 'keep.*local  d2 — has commits GitHub does not have' && git -C '$F/work' rev-parse --verify -q refs/heads/d2 >/dev/null"
+# Never pushed, with a commit main does not have: the only copy. (At main's
+# tip it would be preserved on reachability alone and prove nothing about the
+# no-upstream guard; review caught that.)
+F=$(swfix); git -C "$F/work" checkout -q -b d3; gc "$F/work" "unique"; git -C "$F/work" checkout -q main
+check "a branch that was never pushed is KEPT as the only copy" \
+      "sw '$F' --apply | grep -q 'keep.*local  d3 — never pushed' && git -C '$F/work' rev-parse --verify -q refs/heads/d3 >/dev/null"
+# Checked out in ANOTHER worktree: kept even though it is otherwise dead.
+F=$(swfix); gone_local "$F" d4; git -C "$F/work" worktree add -q "$F/wt" d4 2>/dev/null
+check "a dead branch checked out in another worktree is KEPT" \
+      "sw '$F' --apply | grep -q 'keep.*local  d4 — checked out in another worktree' && git -C '$F/work' rev-parse --verify -q refs/heads/d4 >/dev/null"
+# …but a worktree whose directory was removed without `worktree remove` no
+# longer shields it: the stale record is pruned first.
+rm -rf "$F/wt"
+check "…and once that worktree's directory is gone, the branch is DEAD (stale records are pruned)" \
+      "sw '$F' | grep -q 'DEAD.*local  d4'"
+# Checked out in THIS clone: the branch a merge leaves you on. Swept, and
+# --apply moves the clone to the default branch first. The P0 of round 1: an
+# unconditional "checked out" exemption reported clean over exactly this branch.
+F=$(swfix); gone_local "$F" d5; git -C "$F/work" checkout -q d5
+check "a dead branch checked out in this clone is DEAD and says --apply will switch first" \
+      "sw '$F' | grep -q 'DEAD.*local  d5 .*checked out here; --apply switches to main first'"
+check "…and --apply switches the clone to main, deletes it, and exits 0" \
+      "[ \$(swrc '$F' --apply) -eq 0 ] && [ \"\$(git -C '$F/work' symbolic-ref --short HEAD)\" = main ] && ! git -C '$F/work' rev-parse --verify -q refs/heads/d5 >/dev/null 2>&1"
+# The printed undo is shell-safe: a name carrying \$(...) is quoted, not run
+# when a person pastes it. (git refuses a name that starts with a dash or holds
+# a space, so those two spellings cannot be fixtures; `--` before every ref
+# stays as the cheap guard against a future git that accepts one.)
+F=$(swfix); gone_local "$F" 'x$(id)'
+check "the undo line quotes a branch name that carries a command substitution" \
+      "sw '$F' --apply | grep -qF 'undo: git branch x\\\$\\(id\\) '"
+# The decision is re-checked at deletion: a commit added to a DEAD local branch
+# between decide and apply is kept, not discarded.
+F=$(swfix); gone_local "$F" d6
+sw "$F" > /dev/null; git -C "$F/work" checkout -q d6; gc "$F/work" "late"; git -C "$F/work" checkout -q main
+check "a dead branch that gained a commit after the decision is kept by the sha re-check" \
+      "sw '$F' --apply | grep -q 'keep.*local  d6 — has commits GitHub does not have' && git -C '$F/work' rev-parse --verify -q refs/heads/d6 >/dev/null"
+check "--help exits 0 and prints the contract" \
+      "'$BIN/jjstack-branch-sweep' --help | grep -q 'A branch is DEAD when every commit' "
+
+# REMOTE. A branch whose tip is a pull request head, and no open PR: dead, and
+# preserved by the PR rather than by main, which is the other half of the test.
+F=$(swfix); P=$(prhead "$F"); git -C "$F/work" push -q origin "$P:refs/heads/r1" 2>/dev/null
+check "a remote branch at a PR head with no open PR is DEAD (preserved by the PR, not main)" \
+      "sw '$F' | grep -q 'DEAD.*remote r1'"
+check "…and --apply deletes it on the origin and prints the push-form undo" \
+      "sw '$F' --apply | grep -q 'undo: git push origin '\$P':refs/heads/r1' && [ -z \"\$(git -C '$F/work' ls-remote origin refs/heads/r1)\" ]"
+# The same branch as the head of an OPEN pull request: kept.
+F=$(swfix); P=$(prhead "$F"); git -C "$F/work" push -q origin "$P:refs/heads/r2" 2>/dev/null; echo r2 > "$F/open"
+check "the head of an open pull request is KEPT" \
+      "sw '$F' --apply | grep -q 'keep.*remote r2 — open PR' && [ -n \"\$(git -C '$F/work' ls-remote origin refs/heads/r2)\" ]"
+# A pushed branch with work on neither main nor any PR: kept on both sides.
+F=$(swfix); git -C "$F/work" checkout -q -b r3; gc "$F/work" wip; git -C "$F/work" push -q -u origin r3 2>/dev/null; git -C "$F/work" checkout -q main
+check "a pushed branch whose commits are on neither main nor a PR is KEPT on the origin" \
+      "sw '$F' --apply | grep -q 'keep.*remote r3 — has commits that are on neither'"
+check "…and its local branch is KEPT because it tracks a live remote branch" \
+      "sw '$F' --apply | grep -q 'keep.*local  r3 — tracks origin/r3, which is alive'"
+
+# FAIL CLOSED. gh cannot answer the open-PR question: nothing is deleted.
+F=$(swfix); gone_local "$F" d1; echo fail > "$F/ghmode"
+check "when gh fails the sweep exits 2 and deletes nothing, even with --apply" \
+      "[ \$(swrc '$F' --apply) -eq 2 ] && git -C '$F/work' rev-parse --verify -q refs/heads/d1 >/dev/null"
+check "…and says it could not read rather than reporting clean" \
+      "sw '$F' --apply | grep -q 'cannot read'"
+
+# THE RUNG CITES THE TOOL, in the definition and in the skill that merges.
+check "rung 5 of the definition of done names the sweep" \
+      "grep -q 'jjstack-branch-sweep --apply' '$DIR/references/definition-of-done.md'"
+check "…and /receiving-code-review runs it after the merge" \
+      "grep -q 'jjstack-branch-sweep --apply' '$DIR/skills/receiving-code-review/SKILL.md'"
+
 echo "== 6. hermeticity guard (this file lints itself) =="
 # Hermeticity that lives only in the fixtures decays the moment someone adds an
 # assertion without one — which is exactly what happened here: the fixture built

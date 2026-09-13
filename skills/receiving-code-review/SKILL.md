@@ -234,6 +234,18 @@ thread has moved, chained to the merge so no turn can pass between them:
 ~/.claude/skills/jjstack/bin/jjstack-pr-unread-check --pr <N> --repo <REPO> --since <the moment you last READ the thread> && gh pr merge <N> --repo <REPO> --squash --delete-branch
 ```
 
+Then, from the clone, sweep what the merge left behind. Rung 5 holds when
+this reports clean:
+
+```bash
+~/.claude/skills/jjstack/bin/jjstack-branch-sweep --apply --repo <clone>
+```
+
+`--delete-branch` with `--repo` deletes on GitHub only; the local branch
+outlives the merge, and a pull request closed instead of merged keeps its
+branch on GitHub. The sweep deletes a branch only when every commit on it is
+already on main or on a pull request, and names what it keeps and why.
+
 **The exit code is the whole mechanism, and this is the second attempt at it.**
 The first printed `gh pr view` and called that the chain. `gh pr view` exits 0
 whether or not anything is unread, so `read && merge` gated on nothing while

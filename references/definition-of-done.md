@@ -37,7 +37,10 @@ done — this is the one checklist. ALL rungs, no exceptions.
      never Jesper — requested only after the AI round is clean.
    - **disciplin.run org repos and Jesper's other repos**: one AI review is
      enough.
-5. **Merged to main** — PR merged, dangling branch deleted.
+5. **Merged to main** — PR merged, its branch deleted, and dead branches
+   swept: `jjstack-branch-sweep --apply` reports the repo clean, locally and
+   on GitHub. A branch is dead when every commit on it is already on main or
+   on a pull request; the sweep keeps anything else and says why.
 6. **Deployed** — container/service rebuilt and restarted; the change is
    running live, not just sitting in git.
 7. **QA green** — iris-qa BDD tests pass against the LIVE surface (where
