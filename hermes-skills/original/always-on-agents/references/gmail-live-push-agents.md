@@ -9,10 +9,8 @@ from user Gmail actions.
 Load this when the target is Gmail specifically. For the general shape of
 always-on daemons regardless of source, see the umbrella SKILL.md.
 
-The template that inspired this doc lives at
-`/home/hermes/.hermes/plans/2026-07-21_200000-email-agent-push.md` — a
-2200-line implementation plan with copy-pasteable code for every piece
-described below.
+This doc is distilled from a much longer implementation plan on the machine
+that wrote it; the technique is portable, the plan is not.
 
 ---
 

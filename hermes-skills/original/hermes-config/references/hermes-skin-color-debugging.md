@@ -26,7 +26,7 @@ foreground, which on a black terminal is dark grey — invisible against dark na
 
 3. Compare against `slate` which has a complete status bar color set as a working reference.
 
-## Fix Applied (Jesper's machine, July 2026)
+## Fix Applied (one operator's machine, 2026-07)
 
 Kept the default skin but patched in the missing status bar text colors:
 

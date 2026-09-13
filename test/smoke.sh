@@ -4037,24 +4037,41 @@ echo "== 20. hermes-skills carry nothing instance-specific =="
 # Scoped to hermes-skills/ excluding README.md, which names the withheld skills
 # on purpose.
 HS="$DIR/hermes-skills"
-hs_grep() { grep -rniE "$1" "$HS" --exclude=README.md 2>/dev/null; }
+# Excluded by PATH, not by basename: `--exclude=README.md` would also skip a
+# nested references/README.md, and everything under it would escape the guard.
+hs_grep() { grep -rniE "$1" "${2:-$HS}" 2>/dev/null | grep -v "^${2:-$HS}/README.md:"; }
 
-for pat in 'radicalhonesty|radical honesty' 'brevo|squarespace' 'trainer' \
-           'jesper@' 'gudrun' 'coloradosos' 'on this machine|this install' '/vault/'; do
+check "hermes-skills is present and scannable (anti-vacuity floor)" \
+      "[ -d '$HS' ] && [ \$(find '$HS' -type f -name '*.md' | wc -l) -ge 20 ]"
+
+HS_PATTERNS=('radical[ -]?honesty' 'brevo|squarespace' 'trainer' "jesper" 'gudrun' \
+             'coloradosos' 'on this machine|this install' '/vault/')
+for pat in "${HS_PATTERNS[@]}"; do
   check "no '$pat' in hermes-skills" "! hs_grep '$pat' | grep -q ."
 done
 
-# +1555xxxxxxx is the reserved documentation range and is allowed; anything else
-# NANP-shaped is a real subscriber.
-check "no real phone numbers in hermes-skills" \
-  "! grep -rEo '\\+1[0-9]{10}' '$HS' --exclude=README.md 2>/dev/null | grep -v 555 | grep -q ."
+# +1-555-01xx is the reserved documentation block; any other NANP-shaped number
+# is a real subscriber. `grep -v 555` excused every number with 555 anywhere in
+# it, which is most of them; review caught that.
+phone_leaks() { grep -rEo '\+1[0-9]{10}' "$1" 2>/dev/null | grep -v "^$1/README.md:" | grep -vE '\+1[0-9]{3}5550[01][0-9]{2}$'; }
+check "no real phone numbers in hermes-skills" "! phone_leaks '$HS' | grep -q ."
 
-# Positive control — the pattern must be able to fire. A grep that can never
-# match looks exactly like a clean tree, which is how a broken guard passes for
-# months.
-probe=$(tmp probe); printf 'contact +15033806100\n' > "$probe/x.md"
-check "phone pattern actually catches a real number" \
-  "grep -rEo '\\+1[0-9]{10}' '$probe' | grep -v 555 | grep -q ."
+# POSITIVE CONTROLS THROUGH THE REAL WIRING. A copy of the archive with one
+# known-bad line planted in a nested file: every pattern and the phone rule
+# must fire through hs_grep/phone_leaks themselves (path, recursion, the
+# README exclusion), not through a bare regex in an empty dir.
+HSP=$(tmp hsprobe); cp -r "$HS" "$HSP/hermes-skills"; HSPR="$HSP/hermes-skills"
+mkdir -p "$HSPR/original/probe/references"
+printf 'Radical-Honesty brevo trainer jesper gudrun coloradosos on this machine /vault/\n' > "$HSPR/original/probe/references/leak.md"
+printf 'contact +15033806100 and +15035550123\n' >> "$HSPR/original/probe/references/leak.md"
+for pat in "${HS_PATTERNS[@]}"; do
+  check "…and the '$pat' guard FIRES on a planted leak (positive control)" "hs_grep '$pat' '$HSPR' | grep -q ."
+done
+check "…and the phone guard FIRES on a real number and stays silent on the 555-01xx block" \
+      "[ \$(phone_leaks '$HSPR' | wc -l) -eq 1 ] && phone_leaks '$HSPR' | grep -q 5033806100"
+printf 'Radical-Honesty\n' > "$HSPR/README.md"
+check "…and the top-level README is excused but a nested README.md is not" \
+      "! hs_grep 'radical[ -]?honesty' '$HSPR' | grep -q '/README.md:' && mkdir -p '$HSPR/original/probe' && printf 'brevo\n' > '$HSPR/original/probe/README.md' && hs_grep 'brevo' '$HSPR' | grep -q 'probe/README.md:'"
 
 # The two withheld skills must stay withheld.
 for withheld in google-workspace-pitfalls hermes-security-hardening; do
