@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# jjstack-branch-sweep — done-done rung 5: dead branches are gone, locally and
+# on GitHub.
+#
+# Rung 5 said "PR merged, dangling branch deleted" and named only the PR's own
+# branch, so it was checked by reading. On 2026-09-10 jjstack carried five dead
+# branches on GitHub (four from pull requests closed by hand, which GitHub does
+# not auto-delete, and one review report pushed as a branch), three dead local
+# branches (a merge run with --repo deletes on GitHub only), and four reviewer
+# worktrees from rounds weeks old. None of it was wrong to delete and none of
+# it had been, because "swept" was nobody's step. Now it is one command.
+#
+#   jjstack-branch-sweep [--apply] [--repo DIR]
+#
+# Report-only by default; --apply deletes. A branch is DEAD when every commit on
+# it is already preserved, so deleting it loses nothing:
+#
+#   local   not the default branch, not checked out in any worktree, not
+#           tracking a live remote branch, and its tip is reachable from
+#           origin/<default> or equals some refs/pull/*/head on origin.
+#   remote  not the default branch, not the head of an OPEN pull request, and
+#           its tip passes the same reachable-or-PR-head test.
+#
+# Everything else is KEPT and says why: "never pushed, only copy", "has commits
+# GitHub does not have", "open PR", "checked out". Each deletion prints its
+# undo. Decisions are all made before anything is deleted, so a failure to read
+# (fetch, ls-remote, gh) deletes nothing.
+#
+# Exit: 0 clean after this run · 1 dead branches remain (report-only, or a
+#       deletion failed) · 2 could not read the repo or GitHub; nothing deleted.
+set -o pipefail
+
+CYA="\033[96m"; YEL="\033[33m"; GRN="\033[32m"; RST="\033[0m"
+
+APPLY=false; REPO_DIR="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=true ;;
+    --repo)  shift; [ -n "${1-}" ] || { echo "--repo needs a value" >&2; exit 2; }; REPO_DIR="$1" ;;
+    -h|--help) sed -n '2,/^set -o/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1; exit 0 ;;
+    *) echo "unknown arg: $1 (use --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+g() { git -C "$REPO_DIR" "$@"; }
+fail() { echo -e "${CYA}sweep: cannot read${RST} $1 — nothing deleted" >&2; exit 2; }
+
+g rev-parse --git-dir >/dev/null 2>&1 || fail "$REPO_DIR is not a git repository"
+g remote get-url origin >/dev/null 2>&1 || fail "no origin remote"
+
+DEFAULT="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+[ -n "$DEFAULT" ] || DEFAULT=main
+
+# Gone upstreams are only visible after a prune; a merge done elsewhere leaves
+# the stale remote-tracking ref in place until then.
+g fetch --prune --quiet origin || fail "git fetch --prune origin failed"
+g rev-parse --verify --quiet "origin/$DEFAULT" >/dev/null || fail "origin/$DEFAULT does not exist"
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+# Every pull request head, open or closed, straight from the remote. A branch
+# whose tip is one of these is restorable from its PR page, so it is preserved
+# whether or not it was merged. No gh needed for this half.
+g ls-remote --quiet origin 'refs/pull/*/head' 2>/dev/null | cut -f1 | sort -u > "$TMP/prheads" \
+  || fail "git ls-remote origin refs/pull/*/head failed"
+
+# Open pull requests, by head branch. This is the one question git cannot
+# answer, and the one that must not be guessed: deleting the head of an open PR
+# closes it.
+if ! (cd "$REPO_DIR" && gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName') \
+     > "$TMP/openheads" 2>"$TMP/gh.err"; then
+  fail "gh pr list failed: $(head -1 "$TMP/gh.err")"
+fi
+
+preserved() {   # preserved SHA → 0 when nothing on it would be lost
+  g merge-base --is-ancestor "$1" "origin/$DEFAULT" 2>/dev/null && return 0
+  grep -qx "$1" "$TMP/prheads"
+}
+
+# Branches checked out in any worktree, including this one.
+g worktree list --porcelain | sed -n 's#^branch refs/heads/##p' | sort -u > "$TMP/checkedout"
+
+dead=0; kept=0; deleted=0; failed=0
+: > "$TMP/dead_remote"; : > "$TMP/dead_local"
+
+say_keep() { kept=$((kept + 1)); printf '  %bkeep%b  %-6s %s — %s\n' "$GRN" "$RST" "$1" "$2" "$3"; }
+say_dead() { dead=$((dead + 1)); printf '  %bDEAD%b  %-6s %s (%s)\n' "$YEL" "$RST" "$1" "$2" "$3"; }
+
+echo "jjstack-branch-sweep — $(g remote get-url origin) · default $DEFAULT · $([ "$APPLY" = true ] && echo apply || echo report-only)"
+
+# ── remote ───────────────────────────────────────────────────────────────────
+g for-each-ref 'refs/remotes/origin' --format='%(refname:short) %(objectname)' \
+  | while read -r ref sha; do
+      name="${ref#origin/}"
+      [ "$name" = HEAD ] && continue
+      [ "$name" = "$DEFAULT" ] && continue
+      if grep -qxF "$name" "$TMP/openheads"; then say_keep remote "$name" "open PR"; continue; fi
+      if preserved "$sha"; then
+        say_dead remote "$name" "${sha:0:7}"; printf '%s %s\n' "$name" "$sha" >> "$TMP/dead_remote"
+      else
+        say_keep remote "$name" "has commits that are on neither $DEFAULT nor any PR"
+      fi
+    done
+
+# ── local ────────────────────────────────────────────────────────────────────
+g for-each-ref 'refs/heads' --format='%(refname:short) %(objectname) %(upstream:short) %(upstream:track)' \
+  | while read -r name sha upstream track; do
+      [ "$name" = "$DEFAULT" ] && continue
+      if grep -qxF "$name" "$TMP/checkedout"; then say_keep local "$name" "checked out in a worktree"; continue; fi
+      if [ -z "$upstream" ]; then say_keep local "$name" "never pushed — this is the only copy"; continue; fi
+      if [ "$track" != "[gone]" ] && ! grep -q "^${upstream#origin/} " "$TMP/dead_remote"; then
+        say_keep local "$name" "tracks $upstream, which is alive"; continue
+      fi
+      if preserved "$sha"; then
+        say_dead local "$name" "${sha:0:7}"; printf '%s %s\n' "$name" "$sha" >> "$TMP/dead_local"
+      else
+        say_keep local "$name" "has commits GitHub does not have"
+      fi
+    done
+
+# The loops ran in subshells; re-derive the counts from the files they wrote.
+dead=$(( $(grep -c . "$TMP/dead_remote") + $(grep -c . "$TMP/dead_local") ))
+
+if [ "$APPLY" = true ] && [ "$dead" -gt 0 ]; then
+  echo
+  while read -r name sha; do
+    [ -n "$name" ] || continue
+    if g push --quiet origin --delete "$name" 2>"$TMP/push.err"; then
+      deleted=$((deleted + 1))
+      echo "  deleted remote $name — undo: git push origin $sha:refs/heads/$name (or the PR page's Restore button)"
+    else
+      failed=$((failed + 1)); echo -e "  ${CYA}FAILED${RST} remote $name — $(head -1 "$TMP/push.err")"
+    fi
+  done < "$TMP/dead_remote"
+  while read -r name sha; do
+    [ -n "$name" ] || continue
+    if g branch -D "$name" >/dev/null 2>"$TMP/br.err"; then
+      deleted=$((deleted + 1))
+      echo "  deleted local  $name — undo: git branch $name $sha"
+    else
+      failed=$((failed + 1)); echo -e "  ${CYA}FAILED${RST} local $name — $(head -1 "$TMP/br.err")"
+    fi
+  done < "$TMP/dead_local"
+  # A remote deletion leaves its stale tracking ref until the next prune.
+  g fetch --prune --quiet origin 2>/dev/null || true
+fi
+
+echo
+if [ "$dead" -eq 0 ]; then
+  echo -e "${GRN}clean${RST}: no dead branches"; exit 0
+elif [ "$APPLY" = true ] && [ "$failed" -eq 0 ]; then
+  echo -e "${GRN}clean${RST}: $deleted dead branch(es) deleted"; exit 0
+elif [ "$APPLY" = true ]; then
+  echo -e "${YEL}$failed deletion(s) failed${RST}; $deleted deleted"; exit 1
+else
+  echo -e "${YEL}$dead dead branch(es)${RST} — re-run with --apply to delete them"; exit 1
+fi

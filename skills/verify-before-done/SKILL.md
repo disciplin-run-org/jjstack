@@ -42,7 +42,8 @@ canonical **done-done** meaning — the 11-rung checklist defined in
 `references/definition-of-done.md` (the version-controlled source of truth;
 mirrored in global CLAUDE.md). If the work is verified but not all rungs
 hold, report **"done N/11"** and name the missing rungs — never bare
-"done".
+"done". Rung 5 has its own evidence: `jjstack-branch-sweep --apply` on the
+clone exits 0 and prints `clean`; anything else is rung 5 not held.
 
 ## What counts as verification
 

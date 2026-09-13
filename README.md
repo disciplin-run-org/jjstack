@@ -111,7 +111,9 @@ On InboundSavvy repositories a human (Andre or Santiago) is asked after the AI
 round is clean; on disciplin.run and personal repositories one AI review is
 enough. `references/independent-review.md` has the table, both sides of the
 protocol, and the branch-protection settings that make the rule a floor rather
-than prose.
+than prose. Rung 5, merged, ends with `bin/jjstack-branch-sweep --apply`: it
+deletes every branch, local or on GitHub, whose commits are all on main or on
+a pull request already, and names what it keeps and why.
 
 ### Where the review runs
 
