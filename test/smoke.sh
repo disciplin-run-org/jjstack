@@ -1025,10 +1025,10 @@ check "the canonical line carries lgtm verbatim" \
 # --attribution. A sibling skill posts under its OWN path - the line exists so
 # a reader can open the rules that ran - so the byline is a parameter, and the
 # two canonical one-liners derive from it rather than from the default.
-ATT2='Claude jjstack/skills/review-lean/SKILL.md'
+ATT2='Claude jjstack/skills/example-review/SKILL.md'
 lint2() { "$BIN/jjstack-pr-comment-lint" "$1" --attribution "$ATT2" >/dev/null 2>&1; echo $?; }
-RPT_LEAN='\n<details><summary>Full report</summary>\n\n## /review-lean: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
-body att2_ok "$ATT2: all issues resolved - lgtm - approved\n$RPT_LEAN"
+RPT_SIBLING='\n<details><summary>Full report</summary>\n\n## /example-review: fixture (commit 0000000, 1 min)\n\n**Verdict:** APPROVE - fixture\n\n</details>\n'
+body att2_ok "$ATT2: all issues resolved - lgtm - approved\n$RPT_SIBLING"
 check "--attribution: another skill's canonical line passes under the flag" "[ \$(lint2 '$PCL/att2_ok.md') = 0 ]"
 # The report below the fold names the rules that ran, like the byline above it.
 body att2_wrongrep "$ATT2: all issues resolved - lgtm - approved\n$RPT_OK"
@@ -1102,12 +1102,12 @@ check "--out naming the head is refused too" "[ \$? -eq 4 ]"
 check "…and the head survives" "cmp -s '$ASM/head.md' '$ASM/head.keep'"
 
 echo "== 9. the review skill says what it does =="
-# ONE CONTRACT, EVERY REVIEW SKILL. /review and its rebuild /review-lean must
-# behave identically, so both are held to the same assertions: the rules pinned
-# as text, the tables pinned as row sets, and the shipped command lines
-# extracted and EXECUTED. The body is the contract; the calls below it name the
-# skills. What does not depend on a skill - the governing docs, the repo-wide
-# sweep for deleted tools - runs once, after the calls.
+# ONE CONTRACT, THE REVIEW SKILL. /review (the review-lean rebuild, swapped in
+# under the original name) is held to the same assertions its predecessor was:
+# the rules pinned as text, the tables pinned as row sets, and the shipped
+# command lines extracted and EXECUTED. The body is the contract; the call
+# below it names the skill. What does not depend on a skill - the governing
+# docs, the repo-wide sweep for deleted tools - runs once, after the call.
 # Nothing may reference a tool this branch deleted.
 REVIEW_GONE=(jjstack-review-baseline jjstack-review-calibration jjstack-review-ledger
              jjstack-review-run-report jjstack-review-normalize jjstack-review-vocab.sh
@@ -1713,19 +1713,21 @@ hd_resolve_ln=$(grep -n 'gh pr view --json number,url,commits' "$HDSK" | head -1
 check "a reviewer with no tree is told to make one before the command that needs one" \
       "[ -n \"\$hd_fetch_ln\" ] && [ -n \"\$hd_resolve_ln\" ] && [ \"\$hd_fetch_ln\" -lt \"\$hd_resolve_ln\" ]"
 }  # end review_skill_contract
-review_skill_contract "$DIR/skills/review/SKILL.md"      'Claude jjstack/skills/review/SKILL.md'      review
-review_skill_contract "$DIR/skills/review-lean/SKILL.md" 'Claude jjstack/skills/review-lean/SKILL.md' review-lean
+review_skill_contract "$DIR/skills/review/SKILL.md" 'Claude jjstack/skills/review/SKILL.md' review
 check "the run label does not outlive the contract (every later section reads unlabelled)" \
       "[ -z \"\${CK_PREFIX-}\" ]"
-# The rebuild exists to be smaller; the budget is a rule, the way AR-3 states
-# the others, and the voice rule it posts under holds for its own prose. 470 is
-# a ratchet at the size it shipped (740 before): lower it when a trim lands,
-# never raise it to fit an addition - an addition pays for itself elsewhere.
-check "review-lean holds the line budget it was rebuilt for" \
-      "[ \$(wc -l < '$DIR/skills/review-lean/SKILL.md') -le 470 ]"
-check "…and carries no emdash anywhere" "! grep -q '—' '$DIR/skills/review-lean/SKILL.md'"
+# The rebuild (review-lean, swapped in as /review itself) exists to be smaller;
+# the budget is a rule, the way AR-3 states the others, and the voice rule it
+# posts under holds for its own prose. 470 is a ratchet at the size it shipped
+# (740 before the rebuild): lower it when a trim lands, never raise it to fit
+# an addition - an addition pays for itself elsewhere.
+check "review holds the line budget it was rebuilt for" \
+      "[ \$(wc -l < '$DIR/skills/review/SKILL.md') -le 470 ]"
+check "…and carries no emdash anywhere" "! grep -q '—' '$DIR/skills/review/SKILL.md'"
 check "…and exists, so the two checks above cannot pass on nothing (anti-vacuity floor)" \
-      "[ -s '$DIR/skills/review-lean/SKILL.md' ]"
+      "[ -s '$DIR/skills/review/SKILL.md' ]"
+check "review-lean is gone, not just unreferenced (the identical rename check security-review has)" \
+      "[ ! -e '$DIR/skills/review-lean' ]"
 
 # ── the governing docs: the same for every review skill ──────────────────
 IRV="$DIR/references/independent-review.md"
