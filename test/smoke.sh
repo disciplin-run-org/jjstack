@@ -4029,6 +4029,57 @@ check "the scrub keeps that dir's other binaries (control)" "[ -n \"\$( PATH=\"\
 # assertion pointed at the real store, silently.
 check "the sandbox \$HOME survived the whole run" "[ \"\${HOME#\$SANDBOX}\" != \"\$HOME\" ]"
 
+echo "== 20. hermes-skills carry nothing instance-specific =="
+# This directory is captured from a live agent, and Hermes writes its MEMORIES
+# as skills — so a capture naturally drags in one machine's phone number, its
+# paths, and worked examples about real people. Two skills were withheld for
+# being memory rather than technique; four were sanitised on the way in. This
+# section is what stops the next capture quietly undoing that.
+#
+# Scoped to hermes-skills/ excluding README.md, which names the withheld skills
+# on purpose.
+HS="$DIR/hermes-skills"
+# Excluded by PATH, not by basename: `--exclude=README.md` would also skip a
+# nested references/README.md, and everything under it would escape the guard.
+hs_grep() { grep -rniE "$1" "${2:-$HS}" 2>/dev/null | grep -v "^${2:-$HS}/README.md:"; }
+
+check "hermes-skills is present and scannable (anti-vacuity floor)" \
+      "[ -d '$HS' ] && [ \$(find '$HS' -type f -name '*.md' | wc -l) -ge 20 ]"
+
+HS_PATTERNS=('radical[ -]?honesty' 'brevo|squarespace' 'trainer' "jesper" 'gudrun' \
+             'coloradosos' 'on this machine|this install' '/vault/')
+for pat in "${HS_PATTERNS[@]}"; do
+  check "no '$pat' in hermes-skills" "! hs_grep '$pat' | grep -q ."
+done
+
+# +1-555-01xx is the reserved documentation block; any other NANP-shaped number
+# is a real subscriber. `grep -v 555` excused every number with 555 anywhere in
+# it, which is most of them; review caught that.
+phone_leaks() { grep -rEo '\+1[0-9]{10}' "$1" 2>/dev/null | grep -v "^$1/README.md:" | grep -vE '\+1[0-9]{3}5550[01][0-9]{2}$'; }
+check "no real phone numbers in hermes-skills" "! phone_leaks '$HS' | grep -q ."
+
+# POSITIVE CONTROLS THROUGH THE REAL WIRING. A copy of the archive with one
+# known-bad line planted in a nested file: every pattern and the phone rule
+# must fire through hs_grep/phone_leaks themselves (path, recursion, the
+# README exclusion), not through a bare regex in an empty dir.
+HSP=$(tmp hsprobe); cp -r "$HS" "$HSP/hermes-skills"; HSPR="$HSP/hermes-skills"
+mkdir -p "$HSPR/original/probe/references"
+printf 'Radical-Honesty brevo trainer jesper gudrun coloradosos on this machine /vault/\n' > "$HSPR/original/probe/references/leak.md"
+printf 'contact +15033806100 and +15035550123\n' >> "$HSPR/original/probe/references/leak.md"
+for pat in "${HS_PATTERNS[@]}"; do
+  check "…and the '$pat' guard FIRES on a planted leak (positive control)" "hs_grep '$pat' '$HSPR' | grep -q ."
+done
+check "…and the phone guard FIRES on a real number and stays silent on the 555-01xx block" \
+      "[ \$(phone_leaks '$HSPR' | wc -l) -eq 1 ] && phone_leaks '$HSPR' | grep -q 5033806100"
+printf 'Radical-Honesty\n' > "$HSPR/README.md"
+check "…and the top-level README is excused but a nested README.md is not" \
+      "! hs_grep 'radical[ -]?honesty' '$HSPR' | grep -q '/README.md:' && mkdir -p '$HSPR/original/probe' && printf 'brevo\n' > '$HSPR/original/probe/README.md' && hs_grep 'brevo' '$HSPR' | grep -q 'probe/README.md:'"
+
+# The two withheld skills must stay withheld.
+for withheld in google-workspace-pitfalls hermes-security-hardening; do
+  check "withheld skill absent: $withheld" "[ ! -d '$HS/original/$withheld' ]"
+done
+
 echo
 if [ "$fail" -eq 0 ]; then printf '\033[92mALL %d PASS\033[0m\n' "$pass"; exit 0
 else printf '\033[95m%d FAIL\033[0m, %d pass\n' "$fail" "$pass"; exit 1; fi

@@ -579,6 +579,13 @@ If you want the full superpowers methodology in parallel:
 Both distributions coexist. Pick either per task; use both when the
 workflows compose.
 
+The [Hermes agent](https://github.com/JesperJurcenoks/hermes-rh) was given the
+full jjstack suite and then wrote skills of its own. Twenty of them are
+archived in [`hermes-skills/`](hermes-skills/README.md): twelve rewrites of
+jjstack skills against Hermes' primitives, and eight with no counterpart here.
+It is a tree to read and port from, not an installed one; the archive README
+says what each one does and what was withheld or stripped before capture.
+
 ---
 
 ## Acknowledgments
